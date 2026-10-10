@@ -206,7 +206,8 @@ fn with_acquired_doc_with_policies<T>(
         ));
     }
     fib::validate_fixed_prefix(&word)?;
-    let effective_nfib = fib::effective_version(&word)?;
+    let fib_schema = fib::known_schema(&word)?;
+    let effective_nfib = fib_schema.effective_version();
     if effective_nfib < FIB_WORD_97 {
         return Err(unsupported(
             "only Word 97-2003 binary documents are supported",
@@ -226,7 +227,7 @@ fn with_acquired_doc_with_policies<T>(
     let table = streams
         .stream(&[table_name], MAX_DOC_STREAM_BYTES)
         .map_err(unsupported)?;
-    let document_settings = settings::read(&word, &table)?;
+    let document_settings = settings::read(&word, &table, fib_schema)?;
     let ccp_text = usize::try_from(u32_at(&word, CCP_TEXT_OFFSET)?)
         .map_err(|_| unsupported("Word main story is too large"))?;
     let fc_clx = usize::try_from(u32_at(&word, FC_CLX_OFFSET)?)

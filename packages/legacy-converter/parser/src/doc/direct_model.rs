@@ -2378,6 +2378,117 @@ mod tests {
         );
     }
 
+    // Public invented CFB: mutate named streams and rebuild their directory,
+    // never assume physical sectors. The fixture's first CP begins at 0x400.
+    fn fib_dop_owner_fixture(base: u16, extension: Option<(u16, u16)>, dop: &[u8]) -> Vec<u8> {
+        let bytes = source("quartz\r");
+        let cfb = CompoundFile::open(&bytes).unwrap();
+        let mut word = cfb.stream("WordDocument").unwrap();
+        let mut table = cfb.stream("0Table").unwrap();
+        assert_eq!(u16::from_le_bytes(word[0x3e..0x40].try_into().unwrap()), 22);
+        assert_eq!(
+            u16::from_le_bytes(word[0x98..0x9a].try_into().unwrap()),
+            0x005d
+        );
+        assert!(word[0x382..0x400].iter().all(|byte| *byte == 0));
+        word[2..4].copy_from_slice(&base.to_le_bytes());
+        if let Some((selector, words)) = extension {
+            // The full D9 fc/lcb array plus two extension words ends at 0x400.
+            // A one-word extension is the distinct reader-minimum control.
+            assert!(words == 1 || words == 2 || words == u16::MAX);
+            word[0x98..0x9a].copy_from_slice(&0x006cu16.to_le_bytes());
+            let extension_offset = 32 + 2 + 14 * 2 + 2 + 22 * 4 + 2 + 0x006c * 8;
+            assert_eq!(extension_offset, 0x3fa);
+            word[extension_offset..extension_offset + 2].copy_from_slice(&words.to_le_bytes());
+            word[extension_offset + 2..extension_offset + 4]
+                .copy_from_slice(&selector.to_le_bytes());
+        }
+        append_table_part(&mut word, &mut table, 0x192, dop);
+        build_scoped_cfb(&[("WordDocument", word), ("0Table", table)])
+    }
+
+    fn fib_dop_owner_dop(size: usize, flags: u32) -> Vec<u8> {
+        let mut dop = default_note_dop();
+        dop.resize(size, 0);
+        if size >= 516 {
+            dop[512..516].copy_from_slice(&flags.to_le_bytes());
+        }
+        dop
+    }
+
+    #[test]
+    fn fib_dop_owner_absent_extension_ignores_unowned_compatibility_word() {
+        let project = |bytes: &[u8]| {
+            super::super::direct_model(&CompoundFile::open(bytes).unwrap(), 1024 * 1024)
+                .map(|result| serde_json::to_value(result.document).unwrap())
+        };
+        let canonical = fib_dop_owner_fixture(0x00c1, None, &fib_dop_owner_dop(500, 0));
+        let expected = project(&canonical).unwrap();
+        assert_eq!(body_outline(&expected["body"]), ["p[t:quartz]"]);
+        for base in [0x00c1, 0x0101] {
+            // A higher recognized base remains Dop97 when cswNew is zero (2.7.1).
+            // This is the reader's existing tolerated input, not producer conformance.
+            let bytes =
+                fib_dop_owner_fixture(base, None, &fib_dop_owner_dop(544, (1 << 2) | (1 << 3)));
+            assert_eq!(project(&bytes).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn fib_dop_owner_present_extension_projects_flags_and_preserves_atomic_refusal() {
+        let project = |bytes: &[u8], budget| {
+            super::super::direct_model(&CompoundFile::open(bytes).unwrap(), budget)
+                .map(|result| result.document)
+        };
+        let canonical =
+            fib_dop_owner_fixture(0x00c1, Some((0x00d9, 2)), &fib_dop_owner_dop(544, 0));
+        let normal = project(&canonical, 1024 * 1024).unwrap();
+        assert_eq!(
+            body_outline(&serde_json::to_value(&normal).unwrap()["body"]),
+            ["p[t:quartz]"]
+        );
+        let mut flagged = project(&canonical, 1024 * 1024).unwrap();
+        let settings = flagged.settings.as_mut().unwrap();
+        assert_eq!(settings.adjust_line_height_in_table, Some(true));
+        assert_eq!(settings.do_not_use_html_paragraph_auto_spacing, Some(false));
+        settings.adjust_line_height_in_table = Some(false);
+        settings.do_not_use_html_paragraph_auto_spacing = Some(true);
+        let expected = serde_json::to_value(flagged).unwrap();
+        for words in [1, 2] {
+            let bytes = fib_dop_owner_fixture(
+                0x00c1,
+                Some((0x00d9, words)),
+                &fib_dop_owner_dop(544, (1 << 2) | (1 << 3)),
+            );
+            assert_eq!(
+                serde_json::to_value(project(&bytes, 1024 * 1024).unwrap()).unwrap(),
+                expected
+            );
+        }
+        let unknown = fib_dop_owner_fixture(0x00c1, Some((0xfeee, 2)), &fib_dop_owner_dop(544, 0));
+        assert!(project(&unknown, 1024 * 1024)
+            .unwrap_err()
+            .contains("unsupported Word FIB version"));
+        let truncated =
+            fib_dop_owner_fixture(0x00c1, Some((0x00d9, u16::MAX)), &fib_dop_owner_dop(544, 0));
+        assert!(project(&truncated, 1024 * 1024)
+            .unwrap_err()
+            .contains("truncated Word FIB extension"));
+        let mut zero_interval = fib_dop_owner_dop(544, 0);
+        zero_interval[10..12].fill(0);
+        let bytes = fib_dop_owner_fixture(0x00c1, Some((0x00d9, 2)), &zero_interval);
+        assert!(project(&bytes, 1024 * 1024)
+            .unwrap_err()
+            .contains("zero Word default tab interval"));
+        assert_eq!(project(&canonical, 0).unwrap_err(), "OUTPUT_TOO_LARGE");
+        // No missing DOP semantic word is zero-filled: preserve current absence.
+        let short = fib_dop_owner_fixture(0x00c1, Some((0x00d9, 1)), &fib_dop_owner_dop(500, 0));
+        let doc = project(&short, 1024 * 1024).unwrap();
+        let settings = doc.settings.as_ref().unwrap();
+        assert_eq!(settings.adjust_line_height_in_table, Some(true));
+        assert_eq!(settings.do_not_use_html_paragraph_auto_spacing, None);
+    }
+
     #[test]
     fn documented_word97_base_aliases_preserve_complete_document_projection() {
         let bytes = source("quartz\r");
