@@ -3723,6 +3723,99 @@ mod tests {
     }
 
     #[test]
+    fn reading_picture_bullet_single_unknown_bit_has_no_passive_display_proof() {
+        // Wholly invented PICF/list source. Only the hidden U+0001 owns the
+        // special-character, picture-location and vanish CHPX operands.
+        // A visible prefix puts the control strictly inside the helper's
+        // three nonempty CHPX ranges; both visible texts stay ordinary.
+        let carrier = reading_picture_bullet_source(1);
+        let carrier = CompoundFile::open(&carrier).unwrap();
+        let text = source_with_control_chpx(
+            "X\u{1}\rLabel\r",
+            1,
+            &[0x55, 0x08, 1, 0x03, 0x6a, 0, 0, 0, 0, 0x3c, 0x08, 1],
+        );
+        let text = with_numbering_level_chpx(&text, &picture_bullet_level(0, 1));
+        let text = with_bookmarks(&text, &[("_PictureBullets", 1, 2)]);
+        let text = CompoundFile::open(&text).unwrap();
+        let source = build_scoped_cfb(&[
+            ("WordDocument", text.stream("WordDocument").unwrap()),
+            ("0Table", text.stream("0Table").unwrap()),
+            ("Data", carrier.stream("Data").unwrap()),
+        ]);
+        let original = CompoundFile::open(&source).unwrap();
+        let original_data = original.stream("Data").unwrap();
+        assert_eq!(&original_data[136..138], &0x0106u16.to_le_bytes());
+        assert_eq!(&original_data[138..142], &0u32.to_le_bytes());
+
+        // MS-ODRAW 2.3.23.9/2.4.8: recognized pibFlags has no defined bit 6
+        // or ignore rule. Unknown property-ID rules cannot authorize masking
+        // an unknown operand bit in this recognized display/name property.
+        let mut changed_data = original_data.clone();
+        changed_data[138..142].copy_from_slice(&0x40u32.to_le_bytes());
+        let differences: Vec<_> = original_data
+            .iter()
+            .zip(&changed_data)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(differences, vec![138]);
+        assert_eq!(original_data[138] ^ changed_data[138], 1 << 6);
+        let changed = build_scoped_cfb(&[
+            ("WordDocument", original.stream("WordDocument").unwrap()),
+            ("0Table", original.stream("0Table").unwrap()),
+            ("Data", changed_data.clone()),
+        ]);
+        let changed_cfb = CompoundFile::open(&changed).unwrap();
+        for stream in ["WordDocument", "0Table"] {
+            assert_eq!(
+                original.stream(stream).unwrap(),
+                changed_cfb.stream(stream).unwrap()
+            );
+        }
+        assert_eq!(changed_cfb.stream("Data").unwrap(), changed_data);
+
+        // Establish real positive projection before exercising the refusal.
+        let accepted = reading_picture_bullet_result(&source, 1024 * 1024).unwrap();
+        let model = serde_json::to_value(&accepted.document).unwrap();
+        assert_eq!(body_outline(&model["body"]), ["p[t:X]", "p[t:Label]"]);
+        assert_eq!(accepted.resources.len(), 1);
+        let resource = &accepted.resources[0];
+        assert_eq!(resource.key, "legacy-doc/bullet/0");
+        assert_eq!(resource.mime_type, "image/png");
+        let mut expected_image = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        expected_image.extend_from_slice(&2u32.to_be_bytes());
+        expected_image.extend_from_slice(&3u32.to_be_bytes());
+        expected_image.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(resource.bytes, expected_image);
+        for paragraph in model["body"].as_array().unwrap() {
+            let numbering = &paragraph["numbering"];
+            let owner = &numbering["__nativeReadingPictureBullet"];
+            assert_eq!(numbering["picBulletImagePath"], resource.key);
+            assert_eq!(owner["resourceKey"], resource.key);
+            assert_eq!(owner["relativeCp"], 0);
+            assert_eq!(owner["picfOffset"], 0);
+            assert_eq!(owner["rawPbiFlags"], 1);
+            assert_eq!(
+                owner["pibFlags"],
+                serde_json::json!({ "key": 0x0106, "value": 0 })
+            );
+        }
+        // Err returns no partial DirectDocResult, model or selected resources.
+        assert_eq!(
+            reading_picture_bullet_result(&changed, 1024 * 1024).unwrap_err(),
+            "UNSUPPORTED:invalid Word picture bullet MSOBLIPFLAGS"
+        );
+        assert!(picture_bullet_result(&source).is_err());
+        assert!(picture_bullet_result(&changed).is_err());
+        assert_eq!(
+            CompoundFile::open(&changed).unwrap().stream("Data").unwrap(),
+            changed_data
+        );
+    }
+
+    #[test]
     fn picture_bullet_reading_validates_msoblipflags_then_bounded_passive_domain() {
         let source = reading_picture_bullet_source(1);
         let cfb = CompoundFile::open(&source).unwrap();
