@@ -4,6 +4,7 @@ import type { InternalShapeRun } from '../parser-model.js';
 import { layoutBodyModel } from '../test-support/document-layout.test-support.js';
 import type { AnchorAcquisitionInput, AnchorEdgesInput, InternalAnchorRunWire } from './anchor-input.js';
 import type { DrawingLayout, ParagraphLayout } from './types.js';
+import { resolveAnchorFrame, resolveAnchorPlacement } from './anchor-frame.js';
 
 const edges: AnchorEdgesInput = {
   topPt: null, topStatus: 'missing', rightPt: null, rightStatus: 'missing',
@@ -71,10 +72,10 @@ const section: SectionProps = {
   headerDistance: 0, footerDistance: 0, titlePage: false, evenAndOddHeaders: false,
 };
 
-function anchorRunBody(reading = true): AuthoredParagraph[] {
+function anchorRunBody(reading = true, wrapSide: 'bothSides' | null = 'bothSides'): AuthoredParagraph[] {
     const group: AnchorAcquisitionInput = {
       ...anchor('group', 50, 10, 60, 40), ...(reading ? {nativeReadingRelocation:'completeScene' as const} : {}),
-      wrap: { kind: 'through', authoredKinds: ['wrapThrough'], side: 'bothSides', distances: edges, effectExtent: null, polygon: null },
+      wrap: { kind: 'through', authoredKinds: ['wrapThrough'], side: wrapSide, distances: edges, effectExtent: null, polygon: null },
       group: { childSourceId: 'rectangle', sourceIndex: 0, sourceCount: 1, transformChain: [], childTransform: null,
         resolvedChildFrame: { offsetXPt: 0, offsetYPt: 0, widthPt: 60, heightPt: 40, rotationDeg: 0, flipH: false, flipV: false } },
     };
@@ -92,6 +93,37 @@ function anchorRunBody(reading = true): AuthoredParagraph[] {
 }
 
 describe('source-owned native reading anchor runs', () => {
+  it('acquires canonical source origins without requiring a side for a disclosed missing-contour scene', () => {
+    const body = anchorRunBody(true,null);
+    const original = JSON.stringify(body);
+    const layout = layoutBodyModel(body,section,measureContext());
+    const nodes = layout.pages.flatMap(p=>p.layers.body).filter((n):n is ParagraphLayout=>n.kind==='paragraph');
+    const first = nodes.find(n=>n.source.path[0]===0)!, next = nodes.find(n=>n.source.path[0]===1)!;
+    const group = first.drawings.find(d=>first.nativeReadingRelocations?.includes(d.id))!;
+    const label = first.drawings.find(d=>d.source.path.at(-1)===1)!;
+    const arrow = next.drawings.find(d=>d.source.path.at(-1)===1)!;
+    expect(group.flowBounds.xPt-label.flowBounds.xPt).toBe(42);
+    expect(group.flowBounds.yPt-label.flowBounds.yPt).toBe(10);
+    expect(arrow.flowBounds.xPt-group.flowBounds.xPt).toBe(4);
+    expect(arrow.flowBounds.yPt-group.flowBounds.yPt).toBe(0);
+    expect(nodes.flatMap(p=>p.drawings)).toHaveLength(4);
+    expect(nodes.flatMap(p=>p.textBoxes).flatMap(b=>b.story.blocks).flatMap(b=>b.kind==='paragraph'
+      ? b.lines.flatMap(l=>l.placements).flatMap(p=>p.kind==='text'?[p.text]:[]) : [])).toEqual(['A','B']);
+    expect(JSON.stringify(body)).toBe(original);
+    // Ordinary wrap acquisition still requires a side. Position-only reading
+    // acquisition must retain the same canonical rejection of invalid axes.
+    const authored = {...anchor('placement-owner',50,10,60,40),
+      wrap:{kind:'through' as const,authoredKinds:['wrapThrough'],side:null,distances:edges,effectExtent:null,polygon:null}};
+    const frames = {page:{xPt:0,yPt:0,widthPt:220,heightPt:140},margin:{xPt:10,yPt:10,widthPt:200,heightPt:120},
+      column:{xPt:10,yPt:10,widthPt:200,heightPt:120},paragraph:{xPt:10,yPt:10,widthPt:200,heightPt:10},
+      line:null,character:null,pageParity:'odd' as const};
+    expect(resolveAnchorFrame({acquisition:authored,frames})).toMatchObject({status:'unsupported',
+      issues:[{code:'invalid-wrap-side',path:'wrap.side'}]});
+    expect(resolveAnchorPlacement({acquisition:{...authored,
+      horizontal:{...authored.horizontal,choice:{kind:'invalid'}}},frames})).toMatchObject({status:'unsupported',
+      issues:[{code:'invalid-axis-choice'}]});
+  });
+
   it('keeps sibling labels and following paragraph anchors colocated with a complete reading group', () => {
     const body = anchorRunBody();
     const original = JSON.stringify(body);

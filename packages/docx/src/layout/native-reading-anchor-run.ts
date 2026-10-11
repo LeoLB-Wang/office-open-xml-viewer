@@ -2,7 +2,7 @@ import { drawingMLGeometryBounds } from '@silurus/ooxml-core';
 import type { BodyLayoutInput, BodyParagraphSourceInput } from './body-layout-input.js';
 import type { ParagraphAcquisitionInput } from './text.js';
 import type { AnchorReferenceFramesInput } from './anchor-frame.js';
-import { resolveAnchorFrame } from './anchor-frame.js';
+import { resolveAnchorPlacement } from './anchor-frame.js';
 import { NativeReadingSceneError } from './native-reading-block-scene.js';
 import { endnoteIdsInRetainedSlice, footnoteIdsInRetainedSlice } from './note-reference-ownership.js';
 import type { acquireParagraphAnchorRunStage } from './paragraph.js';
@@ -181,11 +181,13 @@ export function composeNativeReadingAnchorRun(
       const first = paragraph.runs.find(r => (r.type === 'shape' || r.type === 'image')
         && r.anchorAcquisitionInput?.occurrenceId === scene.occurrenceId);
       if (!first || (first.type !== 'shape' && first.type !== 'image') || !first.anchorAcquisitionInput) fail('scene source owner is missing');
-      const resolved = resolveAnchorFrame({acquisition:first.anchorAcquisitionInput,
+      const resolved = resolveAnchorPlacement({acquisition:first.anchorAcquisitionInput,
         frames:{...frames,paragraph:layout.flowBounds,line:null,character:null}});
       const h = resolved.axes.horizontal,v = resolved.axes.vertical;
-      if (h.status !== 'resolved' || v.status !== 'resolved'
-        || resolved.issues.some(i=>i.code !== 'invalid-wrap-polygon')) fail('scene authored origin is unresolved');
+      // Completed scenes already own full paint geometry. This acquisition is
+      // solely the authored origin, not ordinary wrap geometry admission.
+      if (resolved.status !== 'resolved' || h.status !== 'resolved' || v.status !== 'resolved')
+        fail('scene authored origin is unresolved');
       const behavior = first.anchorAcquisitionInput.behavior;
       if (typeof behavior.behindDoc !== 'boolean' || typeof behavior.relativeHeight !== 'number') fail('scene stacking owner is unresolved');
       const d = {...translateDrawing(scene.drawing,{xPt:h.resolvedOriginPt,yPt:v.resolvedOriginPt}),
