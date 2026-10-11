@@ -3810,7 +3810,10 @@ mod tests {
         assert!(picture_bullet_result(&source).is_err());
         assert!(picture_bullet_result(&changed).is_err());
         assert_eq!(
-            CompoundFile::open(&changed).unwrap().stream("Data").unwrap(),
+            CompoundFile::open(&changed)
+                .unwrap()
+                .stream("Data")
+                .unwrap(),
             changed_data
         );
     }

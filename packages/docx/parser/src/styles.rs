@@ -2621,9 +2621,12 @@ mod tests {
         let styles = StyleMap::parse(xml);
         let inherited = styles.resolve_table_style("PublicChild");
         for edge in [
-            &inherited.borders.top, &inherited.borders.left,
-            &inherited.borders.bottom, &inherited.borders.right,
-            &inherited.borders.inside_h, &inherited.borders.inside_v,
+            &inherited.borders.top,
+            &inherited.borders.left,
+            &inherited.borders.bottom,
+            &inherited.borders.right,
+            &inherited.borders.inside_h,
+            &inherited.borders.inside_v,
         ] {
             let edge = edge.as_ref().expect("inherited base border");
             assert_eq!(edge.style, "single");
