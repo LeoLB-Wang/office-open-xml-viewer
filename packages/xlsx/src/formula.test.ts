@@ -167,6 +167,15 @@ describe('evalFormulaToBool — numeric functions', () => {
   it('CEILING / FLOOR', () => {
     expect(ev('CEILING(4.2,1)=5')).toBe(true);
     expect(ev('FLOOR(4.8,1)=4')).toBe(true);
+    expect(ev('FLOOR(-2.5,2)=-4')).toBe(true);
+    expect(ev('FLOOR(-2.5,-2)=-2')).toBe(true);
+    expect(ev('FLOOR(0,-2)=0')).toBe(true);
+  });
+  it('propagates FLOOR positive-number/negative-significance errors to existing error consumers', () => {
+    expect(evaluateFormula('FLOOR(2.5,-2)', ctx())).toEqual({ kind: 'error' });
+    expect(ev('FLOOR(2.5,-2)>0')).toBe(false);
+    expect(ev('ISERROR(FLOOR(2.5,-2))')).toBe(true);
+    expect(evaluateFormula('IFERROR(FLOOR(2.5,-2),-1)', ctx())).toEqual({ kind: 'value', value: -1 });
   });
 });
 
