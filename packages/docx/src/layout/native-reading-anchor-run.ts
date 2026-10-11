@@ -125,6 +125,12 @@ export function composeNativeReadingAnchorRun(
   const prepared = members.map(({input,paragraph,stage,frames}) => {
     debit(paragraph.runs.length+1);
     const layout = stage.acquired.layout;
+    // This profile contains anchored paint and zero-paint host/empty marks.
+    // Paragraph decoration and bar-tab/line-number strokes need their own
+    // complete enclosure before they can participate in horizontal rebasing.
+    if (layout.borders.length || layout.shading || layout.lineNumbers?.length
+      || layout.lines.some(line=>line.barTabRules?.length))
+      fail('anchor run cannot rebase decorated paragraph paint');
     // markOnly is reserved for the genuinely run-free measurement path.
     // Anchor hosts use ordinary metric-only lines (paragraph-measure), so the
     // retained source and zero-paint host placements establish this class.
@@ -173,7 +179,16 @@ export function composeNativeReadingAnchorRun(
         || frame.geometry.objectFrame.yPt !== vertical.resolvedOriginPt)
         fail('anchor run cannot preserve a collision-shifted source origin');
     }
-    const drawings = layout.drawings.map(d => completeDrawing(d,registry,debit));
+    const drawings = layout.drawings.map(d => {
+      const complete = completeDrawing(d,registry,debit);
+      if (!complete.anchorLayer || complete.anchorLayer.verticalOwnership !== 'host')
+        fail('anchor run ordinary paint has unresolved host ownership');
+      // Ordinary column anchors remain page-owned during paragraph projection.
+      // This admitted reading cohort instead owns one common relocation of its
+      // complete geometry. Retained ownership changes only here; original
+      // column/paragraph source references and ordinary acquisition stay intact.
+      return {...complete,anchorLayer:{...complete.anchorLayer,horizontalOwnership:'host' as const}};
+    });
     const lines = [...layout.lines];
     const requestedIds: string[] = [];
     for (const scene of stage.scenes) {
@@ -216,7 +231,8 @@ export function composeNativeReadingAnchorRun(
       // this profile. Rotated/local or nested stories require a corresponding
       // translation/enclosure proof before joining a source-owned run.
       if (t.a !== 1 || t.b !== 0 || t.c !== 0 || t.d !== 1 || t.e !== 0 || t.f !== 0
-        || box.story.bandDependent === true || box.story.blocks.some(b=>b.kind !== 'paragraph' || b.drawings.length || b.textBoxes.length || b.resources.length))
+        || box.story.bandDependent === true || box.story.blocks.some(b=>b.kind !== 'paragraph' || b.drawings.length || b.textBoxes.length || b.resources.length
+          || b.borders.length || b.shading || b.lineNumbers?.length || b.lines.some(line=>line.barTabRules?.length)))
         fail('anchor run requires complete horizontal glyph-only textbox stories');
       for (const block of box.story.blocks) {
         if (block.kind !== 'paragraph') fail('anchor run textbox story kind is unsupported');
@@ -231,27 +247,84 @@ export function composeNativeReadingAnchorRun(
       }
     }
     const ink = union([layout.inkBounds,...drawings.map(d=>d.inkBounds),...layout.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds])]);
-    return {input,layout:snapshotPlainData({...layout,drawings,lines,inkBounds:ink,
+    return {input,sourceOwners,stageLineCount:layout.lines.length,stageInk:layout.inkBounds,
+      layout:snapshotPlainData({...layout,drawings,lines,inkBounds:ink,
+      ...(layout.anchorCollisions ? {anchorCollisions:layout.anchorCollisions.map(entry=>sourceOwners.has(entry.occurrenceId)
+        ? {...entry,horizontalOwnership:'host' as const} : entry)} : {}),
       ...(requestedIds.length ? {nativeReadingRelocations:requestedIds} : {}),
       ...(paragraph.runs.some(r=>r.type === 'image' && [r.anchorAcquisitionInput?.nativePictureMetadata?.inactiveFillCarrier,
         r.anchorAcquisitionInput?.nativePictureMetadata?.inactiveLineCarrier].some(p=>p != null && p.retention !== 'ignoredZeroIndex'))
         ? {nativeReadingInactivePictureData:true} : {})},'composed reading anchor paragraph',layout)};
   });
-  const all = union(prepared.flatMap(m=>[m.layout.flowBounds,m.layout.inkBounds]));
+  // Full-column paragraph flow boxes reserve vertical mark advances, not
+  // horizontal paint. Include every authored drawing reserve, canonical paint
+  // enclosure and owned glyph story in the independent horizontal fit proof.
+  const content = union(prepared.flatMap(m=>[
+    ...m.layout.drawings.flatMap(d=>[d.flowBounds,d.inkBounds]),
+    ...m.layout.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds]),
+  ]));
+  // Reserve authored drawing height even when its painted child occupies only
+  // part of that frame. Marks and complete paint/reserve share one vertical
+  // envelope; their full-column logical widths do not enter horizontal fitting.
+  const all = union([...prepared.flatMap(m=>[m.layout.flowBounds,m.layout.inkBounds]),content]);
   // Column rebase is library policy. Preserve relative positions instead of
-  // individually normalizing every requested scene to the left flow edge.
-  const dx = all.xPt < column.xPt ? column.xPt-all.xPt : 0;
-  if (all.xPt+dx+all.widthPt > column.xPt+column.widthPt) fail('anchor run exceeds column width');
+  // individually normalizing scenes. The nearest-to-zero feasible common
+  // translation supports either overhanging edge; an empty interval is a real
+  // complete-content overflow and cannot be repaired without changing content.
+  const minimumDx = column.xPt-content.xPt;
+  const maximumDx = column.xPt+column.widthPt-(content.xPt+content.widthPt);
+  if (minimumDx > maximumDx) fail('anchor run exceeds column width');
+  const dx = Math.max(minimumDx,Math.min(0,maximumDx));
   let dy = Math.max(0,start-all.yPt);
   const ordered = externalInk.map(b=>{debit(1);union([b]);return b;}).sort((a,b)=>(a.yPt+a.heightPt)-(b.yPt+b.heightPt));
   for (const b of ordered) {
-    if (all.xPt+dx < b.xPt+b.widthPt && all.xPt+dx+all.widthPt > b.xPt
+    if (content.xPt+dx < b.xPt+b.widthPt && content.xPt+dx+content.widthPt > b.xPt
       && all.yPt+dy < b.yPt+b.heightPt && all.yPt+dy+all.heightPt > b.yPt)
       dy = b.yPt+b.heightPt-all.yPt;
   }
   const extent = all.yPt+dy+all.heightPt-start;
   if (!Number.isFinite(extent) || extent < 0 || extent > column.heightPt) fail('complete anchor run exceeds a full column');
-  const placed = prepared.map(m=>({input:m.input,layout:translateParagraphLayout(m.layout,{xPt:dx,yPt:dy}),blockExtentPt:m.layout.advancePt}));
+  const placed = prepared.map(m=> {
+    const translated = translateParagraphLayout(m.layout,{xPt:dx,yPt:dy});
+    // Canonical translation moves all commands, glyphs, owned stories and
+    // anchor diagnostics together. The logical paragraph column allocation
+    // remains horizontally authoritative; only its vertical mark origin moves.
+    const lines = translated.lines.map((line,i)=> {
+      if (i >= m.stageLineCount) return line; // Appended scene lines own paint geometry.
+      const original = m.layout.lines[i];
+      // Stage metric lines and zero-paint hosts retain the logical column
+      // origin; their drawing placements still follow the common paint shift.
+      return {...line,bounds:{...line.bounds,xPt:original.bounds.xPt},
+        ...(line.wrapBounds && original.wrapBounds ? {wrapBounds:{...line.wrapBounds,xPt:original.wrapBounds.xPt}} : {}),
+        ...(line.wrapFragments && original.wrapFragments ? {wrapFragments:line.wrapFragments.map((b,j)=>
+          ({...b,xPt:original.wrapFragments![j].xPt}))} : {}),
+        placements:line.placements.map((p,j)=> {
+          if (p.kind !== 'anchor-host') return p;
+          const originalHost = original.placements[j];
+          if (originalHost.kind !== 'anchor-host') fail('anchor run metric host ownership changed');
+          return {...p,bounds:{...p.bounds,xPt:originalHost.bounds.xPt}};
+        })};
+    });
+    const layout = snapshotPlainData({...translated,lines,
+      inkBounds:union([{...m.stageInk,yPt:m.stageInk.yPt+dy},
+        ...translated.drawings.map(d=>d.inkBounds),...translated.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds])]),
+      flowBounds:{...translated.flowBounds,
+      xPt:m.layout.flowBounds.xPt,widthPt:m.layout.flowBounds.widthPt},
+      ...(translated.paragraphMark && m.layout.paragraphMark ? {paragraphMark:{...translated.paragraphMark,
+        bounds:{...translated.paragraphMark.bounds,xPt:m.layout.paragraphMark.bounds.xPt},
+        ...(translated.paragraphMark.wrapBounds && m.layout.paragraphMark.wrapBounds ? {wrapBounds:{
+          ...translated.paragraphMark.wrapBounds,xPt:m.layout.paragraphMark.wrapBounds.xPt}} : {})}} : {}),
+      // Inherited registry authority belongs to its own previously admitted
+      // occurrence. Only this member's owned wrap/collision geometry moves.
+      exclusions:translated.exclusions.map((entry,i)=> {
+        const original = m.layout.exclusions[i];
+        return original.anchorOccurrenceId && m.sourceOwners.has(original.anchorOccurrenceId) ? entry : original;
+      }),
+      ...(translated.anchorCollisions ? {anchorCollisions:translated.anchorCollisions.map((entry,i)=>
+        m.sourceOwners.has(entry.occurrenceId) ? entry : m.layout.anchorCollisions![i])} : {}),
+    },'placed complete reading anchor paragraph',m.layout);
+    return {input:m.input,layout,blockExtentPt:m.layout.advancePt};
+  });
   // The final member owns the remaining translated envelope allocation once.
   // No inter-member page/keep/wrap retry changes the acquired source origins.
   const last = placed.at(-1)!;

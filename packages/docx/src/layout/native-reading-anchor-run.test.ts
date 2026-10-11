@@ -3,7 +3,7 @@ import type { BodyElement, DocRun, SectionProps, ShapeRun } from '../types.js';
 import type { InternalShapeRun } from '../parser-model.js';
 import { layoutBodyModel } from '../test-support/document-layout.test-support.js';
 import type { AnchorAcquisitionInput, AnchorEdgesInput, InternalAnchorRunWire } from './anchor-input.js';
-import type { DrawingLayout, ParagraphLayout } from './types.js';
+import type { DrawingLayout, DrawingPlacement, ParagraphLayout } from './types.js';
 import { resolveAnchorFrame, resolveAnchorPlacement } from './anchor-frame.js';
 
 const edges: AnchorEdgesInput = {
@@ -93,6 +93,111 @@ function anchorRunBody(reading = true, wrapSide: 'bothSides' | null = 'bothSides
 }
 
 describe('source-owned native reading anchor runs', () => {
+  it('fits a complete left-overhanging paint enclosure without translating full-column mark allocation', () => {
+    const body = anchorRunBody();
+    const leftPeer: AnchorAcquisitionInput = {...anchor('label-a', -8, 0, 20, 10),
+      wrap:{kind:'square',authoredKinds:['wrapSquare'],side:'bothSides',distances:edges,effectExtent:null,polygon:null}};
+    body[0].runs[1] = shape(leftPeer, 'A');
+    const original = JSON.stringify(body);
+    const layout = layoutBodyModel(body, section, measureContext());
+    const nodes = layout.pages.flatMap(p=>p.layers.body).filter((n):n is ParagraphLayout=>n.kind==='paragraph');
+    const first = nodes.find(n=>n.source.path[0]===0)!, next = nodes.find(n=>n.source.path[0]===1)!;
+    const group = first.drawings.find(d=>first.nativeReadingRelocations?.includes(d.id))!;
+    const label = first.drawings.find(d=>d.source.path.at(-1)===1)!;
+    const arrow = next.drawings.find(d=>d.source.path.at(-1)===1)!;
+    expect(label.flowBounds.xPt).toBe(10);
+    expect(group.flowBounds.xPt-label.flowBounds.xPt).toBe(58);
+    expect(group.flowBounds.yPt-label.flowBounds.yPt).toBe(10);
+    expect(arrow.flowBounds.xPt-group.flowBounds.xPt).toBe(4);
+    expect(arrow.flowBounds.yPt-group.flowBounds.yPt).toBe(0);
+    const frame = first.anchorFrames!.find(f=>f.occurrenceId===label.anchorLayer!.occurrenceId)!;
+    expect(frame.status).toBe('resolved');
+    if (frame.status === 'resolved') expect(frame.geometry.objectFrame.xPt).toBe(label.flowBounds.xPt);
+    const collision = first.anchorCollisions!.find(c=>c.occurrenceId===label.anchorLayer!.occurrenceId)!;
+    expect(collision.bounds.xPt).toBe(label.flowBounds.xPt);
+    const exclusion = first.exclusions.find(e=>e.anchorOccurrenceId===label.anchorLayer!.occurrenceId)!;
+    expect(exclusion.bounds.xPt).toBe(label.flowBounds.xPt);
+    const hostDrawing = first.lines.flatMap(l=>l.placements).find((p):p is DrawingPlacement=>p.kind==='drawing' && p.drawingId===label.id)!;
+    expect(hostDrawing.bounds.xPt).toBe(label.flowBounds.xPt);
+    expect(nodes.flatMap(p=>p.drawings)).toHaveLength(4);
+    for (const p of nodes.filter(p=>p.source.path[0] < 3)) {
+      expect(p.flowBounds.xPt).toBe(10);
+      expect(p.flowBounds.widthPt).toBe(200);
+    }
+    // This genuinely empty source mark is below the square-wrapped peer.
+    // Earlier host lines may retain a valid wrap offset, not the column edge.
+    expect(first.lines[0].bounds.xPt).toBe(22); // Original square-wrap metric offset.
+    const empty = nodes.find(p=>p.source.path[0]===2)!;
+    expect(empty.paragraphMark!.bounds.xPt).toBe(10);
+    expect(nodes.flatMap(p=>p.textBoxes).flatMap(b=>b.story.blocks).flatMap(b=>b.kind==='paragraph'
+      ? b.lines.flatMap(l=>l.placements).flatMap(p=>p.kind==='text'?[p.text]:[]) : [])).toEqual(['A','B']);
+    const labelText = first.textBoxes[0].story.blocks[0];
+    expect(labelText.kind).toBe('paragraph');
+    if (labelText.kind === 'paragraph') {
+      const glyph = labelText.lines.flatMap(l=>l.placements).find(p=>p.kind==='text')!;
+      expect(glyph.bounds.xPt).toBe(label.flowBounds.xPt);
+      expect(glyph.bounds.xPt+glyph.bounds.widthPt).toBeLessThanOrEqual(label.flowBounds.xPt+label.flowBounds.widthPt);
+    }
+    expect(JSON.stringify(body)).toBe(original);
+  });
+
+  it('atomically refuses an actual complete paint enclosure wider than the column', () => {
+    const body = anchorRunBody();
+    body[0].runs[1] = shape(anchor('label-a', -8, 0, 20, 10), 'A');
+    body[1].runs[3] = shape(anchor('label-b', 220, 10, 20, 10), 'B');
+    const original = JSON.stringify(body);
+    expect(()=>layoutBodyModel(body, section, measureContext())).toThrow('anchor run exceeds column width');
+    expect(JSON.stringify(body)).toBe(original);
+  });
+
+  it('rebases a fitting right-overhanging complete scene left without shrinking its paint', () => {
+    const body = anchorRunBody();
+    body[0].runs[1] = shape(anchor('label-a', 50, 0, 20, 10), 'A');
+    body[1].runs[3] = shape(anchor('label-b', 190, 10, 20, 10), 'B');
+    const original = JSON.stringify(body);
+    const layout = layoutBodyModel(body, section, measureContext());
+    const nodes = layout.pages.flatMap(p=>p.layers.body).filter((n):n is ParagraphLayout=>n.kind==='paragraph');
+    const first = nodes.find(n=>n.source.path[0]===0)!, next = nodes.find(n=>n.source.path[0]===1)!;
+    const group = first.drawings.find(d=>first.nativeReadingRelocations?.includes(d.id))!;
+    const right = next.drawings.find(d=>d.source.path.at(-1)===3)!;
+    expect(right.flowBounds.xPt+right.flowBounds.widthPt).toBe(210);
+    expect(group.flowBounds.xPt).toBe(50);
+    expect(group.flowBounds.widthPt).toBe(60);
+    expect(right.flowBounds.xPt-group.flowBounds.xPt).toBe(140);
+    expect(first.flowBounds.xPt).toBe(10);
+    expect(first.flowBounds.widthPt).toBe(200);
+    expect(JSON.stringify(body)).toBe(original);
+  });
+
+  it('refuses real bar-tab paragraph paint before rebasing an anchored run', () => {
+    const body = anchorRunBody();
+    body[0].tabStops = [{pos:40,alignment:'bar',leader:'none'}];
+    const original = JSON.stringify(body);
+    expect(()=>layoutBodyModel(body, section, measureContext())).toThrow('anchor run cannot rebase decorated paragraph paint');
+    expect(JSON.stringify(body)).toBe(original);
+  });
+
+  it('reserves the complete authored group height when its painted child is thin', () => {
+    const body = anchorRunBody();
+    const group: AnchorAcquisitionInput = {
+      ...anchor('group', 50, 10, 60, 80), nativeReadingRelocation:'completeScene',
+      wrap:{kind:'through',authoredKinds:['wrapThrough'],side:'bothSides',distances:edges,effectExtent:null,polygon:null},
+      group:{childSourceId:'thin-child',sourceIndex:0,sourceCount:1,transformChain:[],childTransform:null,
+        resolvedChildFrame:{offsetXPt:0,offsetYPt:0,widthPt:60,heightPt:1,rotationDeg:0,flipH:false,flipV:false}},
+    };
+    body[0].runs[3] = shape(group);
+    const original = JSON.stringify(body);
+    const layout = layoutBodyModel(body, section, measureContext());
+    const nodes = layout.pages.flatMap(p=>p.layers.body).filter((n):n is ParagraphLayout=>n.kind==='paragraph');
+    const first = nodes.find(n=>n.source.path[0]===0)!;
+    const scene = first.drawings.find(d=>first.nativeReadingRelocations?.includes(d.id))!;
+    const following = nodes.find(n=>n.source.path[0]===3)!;
+    expect(scene.flowBounds.heightPt).toBe(80);
+    expect(scene.inkBounds.heightPt).toBe(1);
+    expect(following.flowBounds.yPt).toBeGreaterThanOrEqual(scene.flowBounds.yPt+scene.flowBounds.heightPt);
+    expect(JSON.stringify(body)).toBe(original);
+  });
+
   it('acquires canonical source origins without requiring a side for a disclosed missing-contour scene', () => {
     const body = anchorRunBody(true,null);
     const original = JSON.stringify(body);
