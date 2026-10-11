@@ -124,6 +124,38 @@ describe('native reading paragraph production candidate', () => {
     assert.equal(result.drawings[0].commands[0].kind, 'resource');
     assert.deepEqual(result.nativeReadingRelocations, ['paragraph:reading:picture']);
   });
+  it('keeps a relocated image visible beside an unchanged wrap-none sibling anchor', () => {
+    const raw = JSON.parse(JSON.stringify(paragraph()));
+    raw.runs.push({ type: 'anchorHost', anchorOccurrenceId: 'ordinary-picture' });
+    raw.runs.push({ type: 'image', imagePath: 'ordinary.jpeg', mimeType: 'image/jpeg',
+      anchorAcquisitionInput: { ...raw.runs[2].anchorAcquisitionInput,
+        occurrenceId: 'ordinary-picture', nativeReadingRelocation: undefined, wrap: { kind: 'none', polygon: null } } });
+    const retained = snapshotPlainData(raw, 'mixed reading and ordinary image anchors') as unknown as ParagraphAcquisitionInput;
+    const sibling = { kind: 'drawing' as const, id: 'ordinary-picture', source: { ...source, path: [0, 4] },
+      flowDomainId: 'body', ordinaryFlow: false, advancePt: 0,
+      flowBounds: { xPt: 30, yPt: 105, widthPt: 40, heightPt: 35 },
+      inkBounds: { xPt: 30, yPt: 105, widthPt: 40, heightPt: 35 },
+      commands: [{ kind: 'resource' as const, resourceKind: 'image' as const, resourceKey: 'ordinary-picture-resource',
+        rect: { xPt: 30, yPt: 105, widthPt: 40, heightPt: 35 } }],
+    };
+    const input = { ...layout(), drawings: [sibling] }, before = JSON.stringify(input);
+    const result = appendNativeReadingScenes(retained, input, frame, registry);
+    const relocated = result.drawings.find(drawing => drawing.id === 'paragraph:reading:picture');
+    assert.ok(relocated);
+    // A foreground anchor paints after the ordinary reading block. Its lack
+    // of a text-wrap exclusion must not let it cover the relocated bitmap.
+    assert.equal(relocated.flowBounds.yPt, 140);
+    assert.equal(result.flowBounds.heightPt, 66);
+    assert.strictEqual(result.drawings[0], sibling);
+    assert.equal(JSON.stringify(input), before);
+    assert.deepEqual(result.nativeReadingRelocations, ['paragraph:reading:picture']);
+    assert.deepEqual(result.exclusions, []);
+    const beside = { ...sibling, flowBounds: { ...sibling.flowBounds, xPt: 80 },
+      inkBounds: { ...sibling.inkBounds, xPt: 80 } };
+    const besideResult = appendNativeReadingScenes(retained, { ...layout(), drawings: [beside] }, frame, registry);
+    assert.equal(besideResult.drawings[1].flowBounds.yPt, 112);
+    assert.equal(besideResult.flowBounds.heightPt, 38);
+  });
   it('reading_scene_exclusion lets the real indivisible selector defer and reacquire the whole paragraph', () => {
     const base = layout(), input = { ...base, exclusions: [{ id: 'prior-float', wrap: 'square' as const,
       bounds: { xPt: 50, yPt: 120, widthPt: 10, heightPt: 10 }, polygon: [] }] };

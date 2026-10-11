@@ -32,17 +32,21 @@ export function appendNativeReadingScenes(
   if (occurrences.length === 0) return input;
   if (input.source.story !== 'body' || !input.ordinaryFlow || input.continuation || input.clipBounds)
     throw new NativeReadingSceneError('placement', 'reading blocks require complete unclipped body paragraphs');
-  if (paragraph.runs.length > maximumWork || occurrences.length > maximumWork)
+  if (paragraph.runs.length > maximumWork || occurrences.length > maximumWork
+    || input.drawings.length > maximumWork)
     throw new NativeReadingSceneError('budget', 'reading paragraph source allowance exceeded');
-  const exclusionWork = input.exclusions.length * (occurrences.length + 1);
+  const anchoredDrawings = input.drawings.filter(drawing => !drawing.ordinaryFlow);
+  const exclusionWork = (input.exclusions.length + anchoredDrawings.length) * (occurrences.length + 1);
   if (!Number.isSafeInteger(exclusionWork) || exclusionWork > maximumWork)
     throw new NativeReadingSceneError('budget', 'reading exclusion scan allowance exceeded');
   // The disclosed reading policy places complete scenes in ordinary flow; it
-  // does not reconstruct Word's unavailable contour. Retain prior exclusions
-  // and move below each intersecting allocation, charging every gap. Sorting
-  // by bottom makes one monotonic pass sufficient, independent of input order.
-  const exclusions = input.exclusions.map(exclusion => {
-    const b = exclusion.bounds;
+  // does not reconstruct Word's unavailable contour. Ordinary sibling anchors
+  // can paint over that flow even when wrapNone supplies no text exclusion.
+  // Avoid their retained ink as well as prior exclusions, preserving each
+  // authored anchor and charging every added gap to the indivisible block.
+  // Sorting by bottom makes one monotonic pass sufficient.
+  const exclusions = [...input.exclusions.map(exclusion => exclusion.bounds),
+    ...anchoredDrawings.map(drawing => drawing.inkBounds)].map(b => {
     if (![b.xPt,b.yPt,b.widthPt,b.heightPt,b.xPt+b.widthPt,b.yPt+b.heightPt].every(Number.isFinite)
       || b.widthPt < 0 || b.heightPt < 0)
       throw new NativeReadingSceneError('placement', 'invalid reading exclusion bounds');

@@ -23,7 +23,7 @@ import { firstFreeGapLeftPt, polygonMeetsRect, type FloatRect } from './float-wr
 import type { AnchorAcquisitionInput } from './anchor-input.js';
 import { retainedAnchorChildFrame } from './retained-anchor-child-frame.js';
 import { planRetainedAnchorShape, NativeReadingSceneError } from './native-reading-block-scene.js';
-import { appendNativeReadingScenes, nativeReadingOccurrenceIds } from './native-reading-paragraph.js';
+import { appendNativeReadingScenes, acquireRequestedNativeReadingScenes, nativeReadingOccurrenceIds } from './native-reading-paragraph.js';
 import type {
   LayoutImageSeg,
   LayoutLine,
@@ -4888,6 +4888,29 @@ export function acquireParagraphResult(
   options: ParagraphAcquisitionOptions,
   continuation?: Parameters<typeof measureParagraph>[5],
 ): AcquiredParagraphResult {
+  return acquireParagraphCandidate(paragraph, options, continuation, 'complete');
+}
+
+/** Internal acquisition stage, not a publication-ready paragraph. The body
+ * anchor-run owner must compose every acquired scene before admitting any
+ * member. Ordinary measurement, anchors and complete textbox stories use the
+ * same acquisition core; the stage has a separate retained-cache identity. */
+export function acquireParagraphAnchorRunStage(
+  paragraph: ParagraphAcquisitionInput, options: ParagraphAcquisitionOptions,
+) {
+  const acquired = acquireParagraphCandidate(paragraph, options, undefined, 'anchor-run');
+  const scenes = acquireRequestedNativeReadingScenes(paragraph, options.source,
+    options.id, options.flowDomainId,
+    options.environment.layoutServices ? paintResourceRegistryOf(options.environment.layoutServices) : undefined);
+  return Object.freeze({ kind: 'native-reading-anchor-stage' as const, acquired, scenes });
+}
+
+function acquireParagraphCandidate(
+  paragraph: ParagraphAcquisitionInput,
+  options: ParagraphAcquisitionOptions,
+  continuation: Parameters<typeof measureParagraph>[5] | undefined,
+  stage: 'complete' | 'anchor-run',
+): AcquiredParagraphResult {
   const readingOccurrences = nativeReadingOccurrenceIds(paragraph);
   if (readingOccurrences.length && (continuation || options.continuesFromPrevious || options.anchorCellBounds || options.environment.verticalPageFrame))
     throw new NativeReadingSceneError('placement', 'reading blocks require complete horizontal body paragraphs');
@@ -4895,7 +4918,7 @@ export function acquireParagraphResult(
     ? paragraphAcquisitionCacheOf(options.environment.layoutServices)
     : undefined;
   const cacheKey = cache
-    ? paragraphAcquisitionCacheKey(cache, paragraph, options, continuation)
+    ? `${stage}:${paragraphAcquisitionCacheKey(cache, paragraph, options, continuation)}`
     : undefined;
   const cached = cacheKey === undefined
     ? undefined
@@ -4960,12 +4983,13 @@ export function acquireParagraphResult(
           },
           continuation,
           );
-        const layout = paragraphLayoutFromMeasurement(
+        const layout = projectAcquiredParagraph(
           paragraph,
           anchorLineExemptions && anchorLineExemptions.size > 0
             ? { ...acquisitionOptions, anchorLineExemptions }
             : acquisitionOptions,
           measured,
+          stage,
         );
         const ownedExclusions = canonicalOwnedExclusions(layout, occurrenceIds);
         if (anchorLineExemptions === undefined) {
@@ -5276,9 +5300,17 @@ export function acquireRetainedFrameGroup(
 
 /** Projects an already-acquired line partition without measuring a second time. */
 export function paragraphLayoutFromMeasurement(
+  paragraph: ParagraphAcquisitionInput, options: ParagraphAcquisitionOptions,
+  measured: MeasuredParagraph,
+): ParagraphLayout {
+  return projectAcquiredParagraph(paragraph, options, measured, 'complete');
+}
+
+function projectAcquiredParagraph(
   paragraph: ParagraphAcquisitionInput,
   options: ParagraphAcquisitionOptions,
   measured: MeasuredParagraph,
+  stage: 'complete' | 'anchor-run',
 ): ParagraphLayout {
   const planningContext = options.continuesFromPrevious
     ? { ...options.context, firstIndentPt: 0 }
@@ -5673,7 +5705,7 @@ export function paragraphLayoutFromMeasurement(
       bounds: { xPt: paragraphXPt, yPt: measured.contentStartYPt, widthPt: 0, heightPt: contentHeightPt },
     } : undefined,
   };
-  if (nativeReadingOccurrenceIds(paragraph).length === 0) return layoutParagraph(retainedInput);
+  if (stage === 'anchor-run' || nativeReadingOccurrenceIds(paragraph).length === 0) return layoutParagraph(retainedInput);
   const frame = options.anchorFrames?.column;
   if (!frame) throw new NativeReadingSceneError('placement', 'reading paragraph has no resolved column');
   const readingImage = paragraph.runs.some(run => run.type === 'image' && run.anchorAcquisitionInput?.nativeReadingRelocation === 'completeScene');
