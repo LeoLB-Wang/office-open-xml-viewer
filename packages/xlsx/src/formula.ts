@@ -832,7 +832,17 @@ function callFunc(name: string, argNodes: FormulaNode[], ctx: EvalCtx): EvalValu
     case 'INT':        return Math.floor(toNum(args[0]));
     case 'TRUNC':      { const n = toNum(args[0]); const d = toNum(args[1] ?? 0); const p = Math.pow(10, d); return (n >= 0 ? Math.floor(n * p) : Math.ceil(n * p)) / p; }
     case 'CEILING':    { const n = toNum(args[0]); const sig = toNum(args[1]); return sig === 0 ? 0 : Math.ceil(n / sig) * sig; }
-    case 'FLOOR':      { const n = toNum(args[0]); const sig = toNum(args[1]); return sig === 0 ? 0 : Math.floor(n / sig) * sig; }
+    case 'FLOOR': {
+      const n = toNum(args[0]); const sig = toNum(args[1]);
+      // Documented Excel FLOOR returns #NUM! for a positive number with
+      // negative significance:
+      // https://support.microsoft.com/en-us/excel/functions/floor-function
+      // ECMA-376 §18.17.7.125 specifies mismatched-sign errors generally;
+      // retain the existing modern-Excel negative-number/positive-significance
+      // result and zero handling outside this bounded domain correction.
+      if (n > 0 && sig < 0) return formulaError('#NUM!');
+      return sig === 0 ? 0 : Math.floor(n / sig) * sig;
+    }
     // Domain failures are §18.17 error values (#DIV/0!, #NUM!), not blanks
     // that a comparison would read as 0.
     case 'MOD':        { const a = toNum(args[0]); const b = toNum(args[1]); return b === 0 ? formulaError('#DIV/0!') : a - Math.floor(a / b) * b; }
