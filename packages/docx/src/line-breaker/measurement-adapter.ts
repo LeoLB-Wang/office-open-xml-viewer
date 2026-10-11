@@ -163,6 +163,7 @@ export class LineMeasurementAdapter {
     const measure = (request: typeof r) => service.shape({ ...request,
       fontSizePt: calcEffectiveFontPx(right, this.scale), measure: true, clusterGeometry: false });
     const joined = measure({ ...l, text: left.text + right.text,
+      registeredLatinPieceText: undefined,
       ...(physicalUnit ? { joinRegisteredLatinSlots: true } : {}),
     });
     if (physicalUnit && !(joined.spans.length === 1 && joined.spans[0]?.semanticSlotSpans)) return 0;

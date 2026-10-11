@@ -302,6 +302,9 @@ export interface TextShapeRequest {
    * native GPOS/GSUB context. This is library shaping policy, not an Office
    * metric rule. The service re-proves exact face/route and snapshot cmap. */
   readonly joinRegisteredLatinSlots?: boolean;
+  /** Exact text of a builder-adopted Latin physical piece. Only actual slices
+   * preserve this internal provenance; generated/expanded probes clear it. */
+  readonly registeredLatinPieceText?: string;
   /** Resolve script slots and faces without touching the measurement adapter. */
   readonly measure?: boolean;
   /** False acquires only aggregate metrics; 'spaces' acquires contextual
@@ -324,9 +327,10 @@ export function registeredLatinMarkGraphemeCandidate(text: string): boolean {
 
 /** Exclude non-Latin scripts even when §17.3.2.26 selects their ascii slot.
  * Soft hyphens and nonordinary separators keep their existing break path. */
+const REGISTERED_LATIN_SLOT_CHARSET =
+  /^(?:[\p{Script=Latin}\u0020-\u0040\u005B-\u0060\u007B-\u007E\u00A0-\u00AC\u00AE-\u00BF\u00D7\u00F7\u0300-\u036F])+$/u;
 export function registeredLatinSlotRunCandidate(text: string): boolean {
-  return /\p{Script=Latin}/u.test(text)
-    && /^(?:[\p{Script=Latin}\u0020-\u0040\u005B-\u0060\u007B-\u007E\u00A0-\u00AC\u00AE-\u00BF\u00D7\u00F7\u0300-\u036F])+$/u.test(text);
+  return /\p{Script=Latin}/u.test(text) && REGISTERED_LATIN_SLOT_CHARSET.test(text);
 }
 
 /** Structural word-seam admission over already resolved maximal slots.
@@ -393,9 +397,12 @@ export function sliceTextShapeRequest(
   end: number,
 ): TextShapeRequest {
   const context = request.substituteContext ?? { text: request.text, offset: 0 };
+  const text = request.text.slice(start, end);
   return {
     ...request,
-    text: request.text.slice(start, end),
+    text,
+    registeredLatinPieceText: request.joinRegisteredLatinSlots === true
+      && request.registeredLatinPieceText === request.text ? text : undefined,
     joinRegisteredGrapheme: start === 0 && end === request.text.length
       ? request.joinRegisteredGrapheme : undefined,
     substituteContext: { text: context.text, offset: context.offset + start },
@@ -408,7 +415,8 @@ export function independentTextShapeRequest(
   request: Readonly<TextShapeRequest>,
   text: string,
 ): TextShapeRequest {
-  return { ...request, text, joinRegisteredGrapheme: undefined, joinRegisteredLatinSlots: undefined, substituteContext: { text, offset: 0 } };
+  return { ...request, text, joinRegisteredGrapheme: undefined, joinRegisteredLatinSlots: undefined,
+    registeredLatinPieceText: undefined, substituteContext: { text, offset: 0 } };
 }
 
 /** Transform this range in its run (e.g. inserting justification kashidas),
@@ -418,7 +426,8 @@ export function replaceTextShapeRequest(
   text: string,
 ): TextShapeRequest {
   const context = request.substituteContext ?? { text: request.text, offset: 0 };
-  return { ...request, text, joinRegisteredGrapheme: undefined, joinRegisteredLatinSlots: undefined, substituteContext: {
+  return { ...request, text, joinRegisteredGrapheme: undefined, joinRegisteredLatinSlots: undefined,
+    registeredLatinPieceText: undefined, substituteContext: {
     text: context.text.slice(0, context.offset) + text
       + context.text.slice(context.offset + request.text.length),
     offset: context.offset,
@@ -1128,6 +1137,7 @@ export function createTextLayoutService(input: TextLayoutServiceInput): TextLayo
         request.kerning ?? null,
         request.joinRegisteredGrapheme ?? null,
         request.joinRegisteredLatinSlots ?? null,
+        request.registeredLatinPieceText !== undefined && request.registeredLatinPieceText === request.text,
         request.measure ?? null,
         request.clusterGeometry ?? null,
         ...(scopeDescriptor !== undefined ? [scopeDescriptor] : []),
@@ -1215,8 +1225,21 @@ export function createTextLayoutService(input: TextLayoutServiceInput): TextLayo
       // multi-grapheme GSUB is unqualified and retains baseline as well.
       const joinGrapheme = request.joinRegisteredGrapheme === true
         && registeredLatinMarkGraphemeCandidate(request.text) && graphemeBoundaries.length === 2;
+      // Emergency slicing can leave only highAnsi body + its ASCII SPACE tail.
+      // Retained paint still draws this adopted physical piece as one string;
+      // splitting its measurement would lose a native body/separator pair.
+      // Only exact slices of a previously adopted piece get this zero-word-seam
+      // exception. Fresh words and expanded/generated probes keep the ordinary
+      // predicate. The parent's Latin character may have been cut away (e.g.
+      // km² SPACE -> ² SPACE); its alphabet bound is still checked on the slice.
+      // Every suffix scalar still passes the same face/route/cmap
+      // proof below; provenance alone never admits a resource or peer.
+      const joinedLatinSlice = request.registeredLatinPieceText === request.text
+        && merged.length === 2 && merged[0]!.script === 'highAnsi'
+        && merged[0]!.text.length > 0 && /^ +$/u.test(merged[1]!.text);
       const joinLatin = request.joinRegisteredLatinSlots === true && request.kerning === true
-        && registeredLatinSingleSeamCandidate(merged) && registeredLatinSlotRunCandidate(request.text);
+        && ((registeredLatinSingleSeamCandidate(merged) && registeredLatinSlotRunCandidate(request.text))
+          || (joinedLatinSlice && REGISTERED_LATIN_SLOT_CHARSET.test(request.text)));
       if ((joinGrapheme || joinLatin) && merged.length > 1 && scopeDescriptor === undefined) {
         const first = merged[0]!;
         const face = first.font;
