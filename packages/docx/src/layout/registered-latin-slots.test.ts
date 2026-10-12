@@ -566,3 +566,104 @@ it('retains a real cross-run hard join while shaping the separated body', () => 
   expect(candidate[1].joinPrev).toBe(baseline[1].joinPrev);
   expect(candidate[1].hardJoinPrev).toBe(baseline[1].hardJoinPrev);
 });
+
+// A native é/² + SPACE pair makes the sliced physical-unit contract observable.
+const suffixAdvance = (text: string, kerning = true): number => nativeAdvance(text, kerning)
+  - (kerning ? (text.match(/[é²] /gu)?.length ?? 0) * 2 : 0);
+function suffixFixture(peer?: readonly (readonly [number, number])[] | null) {
+  return createTextLayoutService({
+    fonts: createFontResolver([{ requestedFamily: 'Test Face', resolvedFamily: 'Test Resource',
+      resourceIdentity: identity, source: 'embedded', weight: 400, style: 'normal' }]),
+    fontMetrics: { one: { family: 'Test Resource', sourceIdentity: identity, weight: 400,
+      style: 'normal', unicodeRanges: [[0x20, 0x7a], [0xb2, 0xb2], [0xe9, 0xef], [0x301, 0x301]] },
+      ...(peer === undefined ? {} : { peer: { family: 'Test Resource', sourceIdentity: 'peer',
+        weight: 400, style: 'normal' as const, ...(peer ? { unicodeRanges: peer } : {}) } }) },
+    measurer: { fingerprint: 'independent-highAnsi-space-pair', measure: ({ text, kerning }) => ({
+      advancePt: suffixAdvance(text, kerning), ascentPt: 9, descentPt: 0,
+    }) },
+  });
+}
+it.each([['é', ' '], ['é', '  '], ['²', ' ']] as const)(
+  'keeps the emergency suffix %s with tail %j consistent with its native paint', (body, tail) => {
+    const service = suffixFixture();
+    const text = 'T'.repeat(tail.length === 1 ? 4 : 6) + body + tail;
+    const original = segments(text, environment(service))[0];
+    expect(original.semanticSlotSpans).toBeDefined();
+    const start = original.text.indexOf(body);
+    const suffix = { ...original, text: original.text.slice(start),
+      ...slicedTextMetadata(original, start, original.text.length) };
+    const adapter = new LineMeasurementAdapter(context, 1, () => '10px Test Resource');
+    expect(suffix.text).toBe(body + tail);
+    const lines = layoutLines(context, segments(text, environment(service)), tail.length === 1 ? 13 : 19, 0, 1);
+    const retained = lines.flatMap(line => line.segments).filter((v): v is LayoutTextSeg => 'text' in v);
+    const actualSuffix = retained.find(v => v.text === body + tail);
+    expect(actualSuffix).toBeDefined();
+    expect(retained.map(v => v.text).join('')).toBe(text);
+    expect(actualSuffix!.measuredWidth).toBe(suffixAdvance(actualSuffix!.text));
+    expect(adapter.measureSegment(suffix).width).toBe(suffixAdvance(suffix.text));
+  },
+);
+it('separates fresh and proved-slice acquisitions in both cache orders', () => {
+  const original = segments('TTé ', environment(suffixFixture()))[0];
+  const admitted = { ...sliceTextShapeRequest(original.textShapeRequest!, 2, 4), measure: true };
+  const fresh = { ...admitted, registeredLatinPieceText: undefined };
+  for (const order of [[fresh, admitted], [admitted, fresh]]) {
+    const service = suffixFixture();
+    for (const request of order) expect(service.shape(request).advancePt)
+      .toBe(request.registeredLatinPieceText ? 10 : 12);
+  }
+  expect(segments('é ', environment(suffixFixture())).map(v => v.text)).toEqual(['é', ' ']);
+  expect(segments('² ', environment(suffixFixture())).map(v => v.text)).toEqual(['²', ' ']);
+});
+it('reproves the complete suffix including its tail against foreign face and peer facts', () => {
+  const original = segments('TTé ', environment(suffixFixture()))[0];
+  const request = { ...sliceTextShapeRequest(original.textShapeRequest!, 2, 4), measure: true };
+  expect(suffixFixture([]).shape(request).advancePt).toBe(10);
+  for (const peer of [null, [[0xe9, 0xe9]]] as const) {
+    const service = suffixFixture(peer);
+    expect(service.shape(request).advancePt).toBe(12);
+    expect(segments('TTé ', environment(service)).every(v => !v.semanticSlotSpans)).toBe(true);
+  }
+  const service = suffixFixture();
+  expect(service.shape({ ...request, fonts: { ...request.fonts, highAnsi: 'Different Face' } }).spans).toHaveLength(2);
+  expect(service.shape({ ...request, kerning: false }).advancePt).toBe(12);
+});
+it('projects repeated slices and clears transformed, generated and expanded provenance', () => {
+  const service = suffixFixture();
+  const original = segments('TTé  ', environment(service))[0];
+  const request = { ...sliceTextShapeRequest(original.textShapeRequest!, 2, 5), measure: true };
+  const repeated = sliceTextShapeRequest(request, 0, 2);
+  expect(service.shape(repeated).advancePt).toBe(10);
+  expect(service.shape(sliceTextShapeRequest(repeated, 1, 2)).spans[0].semanticSlotSpans).toBeUndefined();
+  for (const generated of [independentTextShapeRequest(repeated, 'é '), replaceTextShapeRequest(repeated, 'é '),
+    { ...repeated, text: '² ', substituteContext: { text: '² ', offset: 0 } }]) {
+    expect(service.shape(generated).advancePt).toBe(12);
+  }
+});
+it('keeps suffix source ownership, selection and boundary-pair charge on the correct text', () => {
+  const service = suffixFixture();
+  const doc = document([run('TTTé'), run(' b')]);
+  doc.section.marginRight = 612 - 72 - 20;
+  const services = Object.freeze({ ...createLayoutServices(doc, { measureContext: context }), text: service });
+  const layout = layoutDocument(doc, services, { currentDateMs: 0 });
+  const paragraph = layout.pages[0]!.layers.body.find(p => p.kind === 'paragraph');
+  if (!paragraph || paragraph.kind !== 'paragraph') throw new Error('Expected body paragraph');
+  const placements = paragraph.lines.flatMap(l => l.placements).filter((p): p is TextPlacement => p.kind === 'text');
+  expect(placements.map(p => p.text)).toEqual(['TTT', 'é ', 'b']);
+  const suffix = placements[1];
+  expect(suffix.paintOps.map(o => o.text)).toEqual(['é ']);
+  expect(suffix.bounds.widthPt).toBe(suffixAdvance('é '));
+  expect(suffix.clusters.reduce((sum, c) => sum + c.advancePt, 0)).toBe(suffix.advancePt);
+  expect(sourceOwnedTextPlacements(suffix).map(p => [p.text, p.sourceRunIndex, p.range]))
+    .toEqual([['é', 0, { start: 3, end: 4 }], [' ', 1, { start: 4, end: 5 }]]);
+  const index = buildTextIndex(textRunsForPage(layout, 0, { scale: 1 }));
+  expect(index.text).toBe('TTTé b');
+  expect(findMatches(index, 'é b')).toHaveLength(1);
+  const s = segments('TTTé b', environment(suffixFixture()));
+  const lines = layoutLines(context, s, 20, 0, 1, [], undefined, {}, 0,
+    undefined, undefined, undefined, undefined, false, true, false,
+    undefined, 'bounded', undefined, false, true);
+  const second = lines[1].segments.filter((v): v is LayoutTextSeg => 'text' in v);
+  expect(second.map(v => [v.text, v.measuredWidth])).toEqual([['é ', 10], ['b', 6]]);
+  expect(second.at(-1)!.leadingWordBoundaryPx ?? 0).toBe(0);
+});
