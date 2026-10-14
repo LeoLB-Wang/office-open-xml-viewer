@@ -1367,7 +1367,9 @@ function emitResolvedTextSegment(
     const compound = environment.layoutServices?.text.shape(compoundRequest);
     if (compound?.spans.length === 1 && compound.spans[0]?.semanticSlotSpans) {
       shaped = compound;
-      textShapeRequest = compoundRequest;
+      textShapeRequest = compoundRequest.joinRegisteredLatinSlots === true
+        ? Object.freeze({ ...compoundRequest, registeredLatinPieceText: text })
+        : compoundRequest;
     }
   }
   // ASCII Latin base + marks followed only by U+0020, when the whole piece was
