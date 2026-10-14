@@ -8564,20 +8564,25 @@ fn resolve_inline_blip(
 
 /// The first picture of a text box paragraph `<w:p>`: the first `<a:blip>` in
 /// the paragraph's own story, resolved against the drawing that owns it (its
-/// nearest `wp:inline`/`wp:anchor` ancestor), so blip and `wp:extent` always
-/// come from the same drawing. Text box stories nested inside that paragraph's
-/// drawings are not part of this paragraph.
+/// nearest `wp:inline`/`wp:anchor` ancestor inside the paragraph), so blip and
+/// `wp:extent` always come from the same drawing. Text box stories nested
+/// inside that paragraph's drawings are not part of this paragraph, and a blip
+/// without its own container never resolves against the drawing that owns the
+/// paragraph's story.
 fn resolve_story_paragraph_blip(
     paragraph: roxmltree::Node,
     media_map: &HashMap<String, String>,
     theme: &ThemeColors,
 ) -> Option<InlineBlip> {
     let blip = story_bounded_descendants(paragraph).find(|n| n.tag_name().name() == "blip")?;
-    let container = blip.ancestors().find(|node| {
-        node.is_element()
-            && is_wp_ns(node.tag_name().namespace())
-            && matches!(node.tag_name().name(), "inline" | "anchor")
-    })?;
+    let container = blip
+        .ancestors()
+        .take_while(|node| *node != paragraph)
+        .find(|node| {
+            node.is_element()
+                && is_wp_ns(node.tag_name().namespace())
+                && matches!(node.tag_name().name(), "inline" | "anchor")
+        })?;
     resolve_inline_blip(container, media_map, theme)
 }
 
@@ -9331,11 +9336,14 @@ fn parse_inline_drawing_impl(
 
 /// Diagnose only extent decisions made by the real DrawingML acquisition path.
 ///
-/// A shape/group obtains its geometry from `a:xfrm`, so `wp:extent` is not a
-/// retention precondition there. For a picture/chart, missing or invalid
-/// extent is reported only when the other payload input resolves and no run was
-/// emitted; a valid zero extent is reported only when an Image/Chart run was
-/// actually retained. This keeps the fixed "was omitted" messages factual.
+/// An anchored shape/group obtains its geometry from `a:xfrm`, so `wp:extent`
+/// is not a retention precondition there. For a picture/chart, missing or
+/// invalid extent is reported only when the other payload input resolves and
+/// no run was emitted. An inline group/shape payload ([`inline_group_payload`],
+/// [`inline_wps_payload`]) is never retained without a usable extent, so it is
+/// reported whenever its extent is missing or invalid. A valid zero extent is
+/// reported only when an Image/Chart run was actually retained. This keeps the
+/// fixed "was omitted" messages factual.
 fn collect_drawing_extent_diagnostic(
     drawing: roxmltree::Node,
     media_map: &HashMap<String, String>,
@@ -32791,6 +32799,67 @@ mod nested_story_payload_tests {
             .collect();
         sources.sort_unstable();
         assert_eq!(sources, vec![(0, 2), (1, 2)]);
+    }
+
+    /// Picture fallbacks resolve only the drawing's own blip: neither a shape
+    /// that fails to parse nor a text box paragraph picks up a picture that
+    /// belongs to a nested story or to the containing drawing.
+    #[test]
+    fn picture_fallbacks_stay_within_their_own_drawing() {
+        let outer_extent = r#"<wp:extent cx="3810000" cy="1270000"/>"#;
+        // The outer wsp has no a:xfrm, so parse_wsp_shape rejects it; the
+        // nested picture must not be promoted to the outer drawing.
+        let rejected = text_box(true, outer_extent, &nested(Payload::Picture, false)).replace(
+            r#"<a:xfrm><a:off x="0" y="0"/><a:ext cx="3810000" cy="1270000"/></a:xfrm>"#,
+            "",
+        );
+        let (runs, _) = parse(&rejected);
+        assert!(
+            !runs.iter().any(|run| matches!(run, DocRun::Image(_))),
+            "nested picture promoted: {runs:?}"
+        );
+
+        let story_image = |inner: &str| {
+            let (runs, _) = parse(&text_box(true, outer_extent, inner));
+            let [DocRun::Shape(outer)] = runs.as_slice() else {
+                panic!("outer text box missing: {runs:?}")
+            };
+            outer
+                .text_blocks
+                .first()
+                .and_then(|block| block.image_path.clone())
+        };
+        // A paragraph whose only drawing is a text box: the picture inside that
+        // text box's own story is not this paragraph's picture.
+        let inner_text_box = text_box(
+            false,
+            r#"<wp:extent cx="635000" cy="317500"/>"#,
+            &nested(Payload::Picture, false),
+        )
+        .replacen(&format!("<w:drawing {NS}>"), "<w:drawing>", 1);
+        assert_eq!(story_image(&inner_text_box), None);
+        // A blip without its own wp container never resolves against the
+        // containing drawing (here given its own picture fill).
+        let orphan = format!(
+            r#"<w:drawing><a:graphic>{}</a:graphic></w:drawing>"#,
+            graphic_data(Payload::Picture)
+        );
+        let (runs, _) = parse(&text_box(true, outer_extent, &orphan).replace(
+            r#"<a:prstGeom prst="rect"/></wps:spPr>"#,
+            r#"<a:prstGeom prst="rect"/><a:blipFill><a:blip r:embed="rIdImg"/></a:blipFill></wps:spPr>"#,
+        ));
+        let [DocRun::Shape(outer)] = runs.as_slice() else {
+            panic!("outer text box missing: {runs:?}")
+        };
+        assert_eq!(
+            outer.text_blocks.first().and_then(|b| b.image_path.clone()),
+            None
+        );
+        // Control: a paragraph's own picture still resolves.
+        assert_eq!(
+            story_image(&nested(Payload::Picture, false)).as_deref(),
+            Some("word/media/inner.png")
+        );
     }
 
     /// #1779: an outer drawing without its own `wp:extent` does not borrow a
