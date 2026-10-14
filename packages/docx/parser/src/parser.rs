@@ -8645,6 +8645,36 @@ fn unavailable_drawing_run(
     )))
 }
 
+/// The `w:drawing`'s own `wp:inline` / `wp:anchor` (ECMA-376 §17.3.3.9: a
+/// child of `w:drawing`). An `mc:AlternateContent` child is replaced by its
+/// selected branch's content first (Part 3 §9.3–9.4), with the same
+/// application configuration the streamed projector uses. Descendants of the
+/// container — including drawings nested in a text box story — are never
+/// considered.
+fn drawing_own_container<'a, 'i>(
+    drawing: roxmltree::Node<'a, 'i>,
+    is_container: impl Fn(roxmltree::Node<'a, 'i>) -> bool + Copy,
+) -> Option<roxmltree::Node<'a, 'i>> {
+    drawing
+        .children()
+        .filter(|n| n.is_element())
+        .find_map(|child| {
+            if is_container(child) {
+                return Some(child);
+            }
+            if child.tag_name().namespace() == Some(ooxml_common::bounded_xml::MCE_NS)
+                && child.tag_name().name() == "AlternateContent"
+            {
+                return ooxml_common::mce::select_alternate_content(
+                    child,
+                    &crate::document_projector::docx_understands_namespace,
+                )
+                .and_then(|branch| drawing_own_container(branch, is_container));
+            }
+            None
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_inline_drawing_impl(
     style_map: &StyleMap,
@@ -8656,17 +8686,18 @@ fn parse_inline_drawing_impl(
     theme: &ThemeColors,
     depth: DepthGuard,
 ) -> Vec<DocRun> {
-    // Distinguish inline vs anchor. ECMA-376 §17.3.3.9: `wp:inline` /
-    // `wp:anchor` are direct children of `w:drawing`. A drawing nested in a
-    // text box story owns its own container and must not classify (or supply
-    // geometry for) the containing drawing.
-    let is_anchor = node.children().any(|n| n.tag_name().name() == "anchor");
+    // Distinguish inline vs anchor from this drawing's own container. A
+    // drawing nested in a text box story owns its own container and must not
+    // classify (or supply geometry for) the containing drawing.
+    let Some(drawing_container) =
+        drawing_own_container(node, |n| matches!(n.tag_name().name(), "inline" | "anchor"))
+    else {
+        return vec![];
+    };
+    let is_anchor = drawing_container.tag_name().name() == "anchor";
 
     if !is_anchor {
-        let container = match node.children().find(|n| n.tag_name().name() == "inline") {
-            Some(c) => c,
-            None => return vec![],
-        };
+        let container = drawing_container;
         // §20.4.2.5 — a `<wp:docPr hidden="1">` inline drawing is not rendered.
         if drawing_container_hidden(container) {
             return vec![];
@@ -9003,10 +9034,7 @@ fn parse_inline_drawing_impl(
     }
 
     // ── Anchor image/shape ─────────────────────────────────
-    let container = match node.children().find(|n| n.tag_name().name() == "anchor") {
-        Some(c) => c,
-        None => return vec![],
-    };
+    let container = drawing_container;
     // §20.4.2.5 — a `<wp:docPr hidden="1">` anchored drawing is not rendered.
     // Suppressing it also drops its wrap band (the minimal skip; matching how a
     // hidden pptx/xlsx shape simply does not exist).
@@ -9285,9 +9313,8 @@ fn collect_drawing_extent_diagnostic(
     runs: &[DocRun],
     diagnostics: &mut Vec<PendingParseDiagnostic>,
 ) {
-    let Some(container) = drawing.children().find(|node| {
-        node.is_element()
-            && is_wp_ns(node.tag_name().namespace())
+    let Some(container) = drawing_own_container(drawing, |node| {
+        is_wp_ns(node.tag_name().namespace())
             && matches!(node.tag_name().name(), "inline" | "anchor")
     }) else {
         return;
@@ -27594,6 +27621,48 @@ mod inline_wps_shape_tests {
             assert_eq!(picture.anchor, floating);
             assert_eq!((picture.width_pt, picture.height_pt), (50.0, 25.0));
         }
+
+        // ECMA-376 Part 3 §9.3–9.4: an `mc:AlternateContent` child of
+        // `w:drawing` is replaced by its selected branch, whose container is
+        // then the drawing's own.
+        const MC: &str = r#"xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:unk="urn:unknown""#;
+        let wrap = |drawing: String, choice_requires: &str, fallback: Option<String>| {
+            let (open_tag, rest) = drawing.split_once('>').expect("drawing start tag");
+            let body = rest.strip_suffix("</w:drawing>").expect("drawing end tag");
+            let fallback = fallback
+                .map(|fallback| {
+                    let (_, fallback_rest) = fallback.split_once('>').unwrap();
+                    format!(
+                        "<mc:Fallback>{}</mc:Fallback>",
+                        fallback_rest.strip_suffix("</w:drawing>").unwrap()
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                r#"{open_tag} {MC}><mc:AlternateContent><mc:Choice Requires="{choice_requires}">{body}</mc:Choice>{fallback}</mc:AlternateContent></w:drawing>"#
+            )
+        };
+        for floating in [false, true] {
+            let plain = image(floating).replacen("<w:drawing>", &format!("<w:drawing {NS}>"), 1);
+            let runs = parse(&wrap(plain.clone(), "wp", None));
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("MCE-wrapped picture missing (floating={floating}): {runs:?}")
+            };
+            assert_eq!(picture.anchor, floating);
+            // An unsupported Choice selects the Fallback's container.
+            let runs = parse(&wrap(plain.clone(), "unk", Some(image(!floating))));
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("MCE fallback picture missing (floating={floating}): {runs:?}")
+            };
+            assert_eq!(picture.anchor, !floating, "Fallback owns the container");
+        }
+        // The wrapped outer text box still ignores its nested picture's anchor.
+        let runs = parse(&wrap(text_box(false, true), "wp", None));
+        let [DocRun::Shape(outer)] = runs.as_slice() else {
+            panic!("MCE-wrapped text box missing: {runs:?}")
+        };
+        assert!(outer.inline);
+        assert_eq!((outer.width_pt, outer.height_pt), (300.0, 100.0));
     }
 }
 
