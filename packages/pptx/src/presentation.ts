@@ -514,6 +514,7 @@ export class PptxPresentation {
       (response as Extract<PptxWorkerResponse, { kind: 'presentationOpened' }>).bootstrap,
     );
     this._bootstrap = bootstrap;
+    this._prefetchThemeOfficeRoute(bootstrap);
     // Font extraction is independent of the retained slide cursor, so start it
     // from bootstrap metadata while the worker preflights the slide sequence.
     // Rendering still awaits `_parse`, which does not return until both finish.
@@ -605,6 +606,7 @@ export class PptxPresentation {
       (response as Extract<PptxWorkerResponse, { kind: 'presentationOpened' }>).bootstrap,
     );
     this._bootstrap = bootstrap;
+    this._prefetchThemeOfficeRoute(bootstrap);
     const embeddedFontLoad = loadEmbeddedFonts(
       bootstrap.embeddedFonts,
       (path) => this.getFontBytes(path),
@@ -1041,6 +1043,22 @@ export class PptxPresentation {
    */
   resolveInternalTarget(ref: string, currentIndex = 0): number | undefined {
     return resolveInternalSlideTarget(ref, this._partIndex(), currentIndex);
+  }
+
+  /**
+   * A theme Calibri text run makes the first render wait for Calibri's exact
+   * local() route. Start the regular tuple while the worker preflights the
+   * slides; renderSlide awaits the same cached load, and a deck that never
+   * requests it only holds a privately named face until destroy. An embedded
+   * Calibri covers the tuple, so nothing is started for it.
+   */
+  private _prefetchThemeOfficeRoute(bootstrap: PresentationBootstrap): void {
+    const fontSet = typeof document !== 'undefined' ? document.fonts : null;
+    const isCalibri = (family: string | null | undefined) => family?.trim().toLowerCase() === 'calibri';
+    if (!fontSet || ![bootstrap.majorFont, bootstrap.minorFont].some(isCalibri)
+      || bootstrap.embeddedFonts.some((font) => isCalibri(font.fontName))) return;
+    void this._officeRoutesForRequests([{ family: 'Calibri', weight: 400, style: 'normal' }], fontSet)
+      .catch(() => undefined);
   }
 
   private async _officeRoutesForRequests(
