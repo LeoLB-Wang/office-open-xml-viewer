@@ -119,8 +119,7 @@ pub(super) fn known_schema(word: &[u8]) -> Result<KnownFibSchema, String> {
     if legacy_forward {
         validate_fixed_prefix(word)?;
     }
-    if (!matches!(version, 0x00c1 | 0x00d9 | 0x0101 | 0x010c | 0x0112)
-        && !legacy_forward)
+    if (!matches!(version, 0x00c1 | 0x00d9 | 0x0101 | 0x010c | 0x0112) && !legacy_forward)
         || (count != 0 && version == 0x00c1)
     {
         return Err(unsupported("unsupported Word FIB version"));

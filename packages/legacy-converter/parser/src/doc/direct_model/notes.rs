@@ -704,7 +704,10 @@ mod tests {
         assert_eq!(settings["footnoteSeparator"], "none");
         assert_eq!(settings["footnoteContinuationSeparator"], "none");
         for role in ["separator", "continuationSeparator", "continuationNotice"] {
-            assert_eq!(settings["nativeSeparators"]["footnote"][role]["class"], "empty");
+            assert_eq!(
+                settings["nativeSeparators"]["footnote"][role]["class"],
+                "empty"
+            );
         }
     }
 
