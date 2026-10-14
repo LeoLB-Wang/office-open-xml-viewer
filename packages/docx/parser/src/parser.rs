@@ -32876,6 +32876,41 @@ mod nested_story_payload_tests {
         );
     }
 
+    /// The legacy text box text walk skips every nested story under a run: a
+    /// VML `v:textbox` (both `mc:AlternateContent` branches carry the same
+    /// story) and one inside a ruby base.
+    #[test]
+    fn legacy_story_text_skips_nested_stories() {
+        let text_of = |paragraph_body: &str| {
+            let xml = format!(
+                r#"<w:p {NS} xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                  xmlns:v="urn:schemas-microsoft-com:vml">{paragraph_body}</w:p>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).expect("paragraph fixture");
+            super::extract_simple_paragraph_text(
+                &StyleMap::default(),
+                &mut NumberingMap::default(),
+                doc.root_element(),
+                &ThemeColors::default(),
+                &HashMap::new(),
+            )
+            .map(|block| block.text)
+        };
+        let story = "<w:txbxContent><w:p><w:r><w:t>IN</w:t></w:r></w:p></w:txbxContent>";
+        let alternate = format!(
+            r#"<w:r><w:t>A</w:t></w:r><w:r><mc:AlternateContent>
+            <mc:Choice Requires="wps"><w:drawing><wps:txbx>{story}</wps:txbx></w:drawing></mc:Choice>
+            <mc:Fallback><w:pict><v:shape><v:textbox>{story}</v:textbox></v:shape></w:pict></mc:Fallback>
+            </mc:AlternateContent></w:r><w:r><w:t>B</w:t></w:r>"#
+        );
+        assert_eq!(text_of(&alternate).as_deref(), Some("AB"));
+        let ruby = format!(
+            r#"<w:r><w:ruby><w:rt><w:r><w:t>k</w:t></w:r></w:rt><w:rubyBase><w:r><w:t>K</w:t>
+            <w:pict><v:shape><v:textbox>{story}</v:textbox></v:shape></w:pict></w:r></w:rubyBase></w:ruby></w:r>"#
+        );
+        assert_eq!(text_of(&ruby).as_deref(), Some("K"));
+    }
+
     /// #1779: an outer drawing without its own `wp:extent` does not borrow a
     /// nested drawing's extent. The inline text box (sized from `wp:extent`)
     /// is omitted with the missing-extent diagnostic; the anchored one is sized
