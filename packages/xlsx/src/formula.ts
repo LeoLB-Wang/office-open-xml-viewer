@@ -362,6 +362,7 @@ interface FoldedNameIndex {
 }
 const foldedNameIndexes = new WeakMap<ReadonlyMap<string, DefinedName>, FoldedNameIndex>();
 
+/** ASCII folding shared by defined names and the bounded text-criteria domain. */
 function asciiFold(name: string): string {
   return name.replace(/[A-Z]+/gu, (letters) => letters.toLowerCase());
 }
@@ -864,15 +865,25 @@ function callFunc(name: string, argNodes: FormulaNode[], ctx: EvalCtx): EvalValu
     case 'COUNTIF':    return countIf(flatten(args[0]), args[1]);
     // ── Text ────────────────────────────────────────────────────────────────
     case 'LEN':        return toStr(args[0]).length;
-    case 'LEFT':       return toStr(args[0]).slice(0, Math.max(0, toNum(args[1] ?? 1)));
-    case 'RIGHT':      { const s = toStr(args[0]); const n = Math.max(0, toNum(args[1] ?? 1)); return n >= s.length ? s : s.slice(s.length - n); }
-    case 'MID':        { const s = toStr(args[0]); const start = Math.max(1, toNum(args[1])) - 1; const len = Math.max(0, toNum(args[2])); return s.slice(start, start + len); }
+    // ECMA-376 §18.17.7.191/275: negative LEFT/RIGHT counts are #VALUE!,
+    // not empty text that a CF comparison could turn into a stopIfTrue match.
+    // Positive fractional slicing is unchanged; no new integer-coercion rule.
+    case 'LEFT':       { const s = toStr(args[0]); const n = toNum(args[1] ?? 1); return n < 0 ? formulaError('#VALUE!') : s.slice(0, n); }
+    case 'RIGHT':      { const s = toStr(args[0]); const n = toNum(args[1] ?? 1); return n < 0 ? formulaError('#VALUE!') : n >= s.length ? s : s.slice(s.length - n); }
+    // §18.17.7.210: MID requires a position >= 1 and a nonnegative count.
+    case 'MID':        { const s = toStr(args[0]); const start = toNum(args[1]); const len = toNum(args[2]); return start < 1 || len < 0 ? formulaError('#VALUE!') : s.slice(start - 1, start - 1 + len); }
     case 'UPPER':      return toStr(args[0]).toUpperCase();
     case 'LOWER':      return toStr(args[0]).toLowerCase();
-    case 'TRIM':       return toStr(args[0]).replace(/\s+/g, ' ').trim();
+    // Excel TRIM removes only ASCII spaces (Microsoft TRIM documentation).
+    // NBSP and controls are text, not separators to collapse or strip.
+    case 'TRIM': {
+      const s = toStr(args[0]).replace(/ +/g, ' ');
+      return s.slice(s.startsWith(' ') ? 1 : 0, s.endsWith(' ') ? s.length - 1 : s.length);
+    }
     case 'EXACT':      return toStr(args[0]) === toStr(args[1]);
     // A text not found is #VALUE! (so ISNUMBER(SEARCH(...)) stays FALSE).
-    case 'FIND':       { const needle = toStr(args[0]); const hay = toStr(args[1]); const start = Math.max(1, toNum(args[2] ?? 1)) - 1; const idx = hay.indexOf(needle, start); return idx < 0 ? formulaError('#VALUE!') : idx + 1; }
+    // §18.17.7.119: a FIND position below 1 is #VALUE!, not position 1.
+    case 'FIND':       { const needle = toStr(args[0]); const hay = toStr(args[1]); const start = toNum(args[2] ?? 1); if (start < 1) return formulaError('#VALUE!'); const idx = hay.indexOf(needle, start - 1); return idx < 0 ? formulaError('#VALUE!') : idx + 1; }
     case 'SEARCH':     { const needle = toStr(args[0]).toLowerCase(); const hay = toStr(args[1]).toLowerCase(); const start = Math.max(1, toNum(args[2] ?? 1)) - 1; const idx = hay.indexOf(needle, start); return idx < 0 ? formulaError('#VALUE!') : idx + 1; }
     case 'CONCATENATE':
     case 'CONCAT':     return args.flatMap(flatten).map(v => toStr(v)).join('');
@@ -994,6 +1005,7 @@ function makeCriteriaPredicate(criteria: EvalValue): (v: EvalScalar) => boolean 
   const rhsStr = m ? m[2] : raw;
   const rhsNum = rhsStr.trim() === '' ? NaN : parseFloat(rhsStr);
   const rhsIsNum = !isNaN(rhsNum) && /^-?\d+(\.\d+)?$/.test(rhsStr.trim());
+  const foldedText = asciiFold(rhsStr);
   return (v) => {
     if (rhsIsNum && typeof v === 'number') {
       switch (op) {
@@ -1004,6 +1016,14 @@ function makeCriteriaPredicate(criteria: EvalValue): (v: EvalScalar) => boolean 
         case '<>': return v !== rhsNum;
         default:   return v === rhsNum;
       }
+    }
+    // Microsoft COUNTIF documents case-insensitive text criteria. Correct its
+    // ASCII equality domain. SUMIF/AVERAGEIF inherit this shared predicate as
+    // library policy; their wiring tests are not separate Excel authority.
+    // Non-ASCII case folding and relational collation remain unresolved.
+    if (typeof v === 'string' && (op === '=' || op === '<>')) {
+      const equal = asciiFold(v) === foldedText;
+      return op === '=' ? equal : !equal;
     }
     const sv = v == null ? '' : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE')
       : v instanceof FormulaErrorValue ? v.code : String(v);
