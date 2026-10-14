@@ -33243,6 +33243,7 @@ mod nested_story_payload_tests {
             &ThemeColors::default(),
             DepthGuard::root(),
             &mut diagnostics,
+            &|_| {},
         );
         (runs, diagnostics.iter().map(|d| d.code).collect())
     }
@@ -33264,11 +33265,6 @@ mod nested_story_payload_tests {
         for outer_floating in [false, true] {
             for payload in [Payload::Group, Payload::Picture, Payload::Chart] {
                 for inner_floating in [false, true] {
-                    // TEMP until #1776 lands: an inline drawing containing a
-                    // nested anchor is the container-classification bug #1774.
-                    if !outer_floating && inner_floating {
-                        continue;
-                    }
                     let case = format!(
                         "outer floating={outer_floating}, nested {payload:?} floating={inner_floating}"
                     );
