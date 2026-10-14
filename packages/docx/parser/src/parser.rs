@@ -8212,7 +8212,7 @@ fn parse_run_inner(
                 }
             }
             "drawing" => {
-                let mut drawing_runs = parse_inline_drawing(
+                let drawing_runs = parse_inline_drawing(
                     style_map,
                     num_map,
                     child,
@@ -8222,8 +8222,8 @@ fn parse_run_inner(
                     theme,
                     depth,
                     diagnostics,
+                    &attach_anchor_host_metrics,
                 );
-                attach_anchor_host_metrics(&mut drawing_runs);
                 runs.extend(drawing_runs);
             }
             "footnoteReference" | "endnoteReference" | "footnoteRef" | "endnoteRef" => {
@@ -8358,7 +8358,7 @@ fn parse_run_inner(
                         if inner.tag_name().name() == "drawing"
                             && (!use_fallback || is_w_ns(inner.tag_name().namespace()))
                         {
-                            let mut drawing_runs = parse_inline_drawing(
+                            let drawing_runs = parse_inline_drawing(
                                 style_map,
                                 num_map,
                                 inner,
@@ -8368,8 +8368,8 @@ fn parse_run_inner(
                                 theme,
                                 depth,
                                 diagnostics,
+                                &attach_anchor_host_metrics,
                             );
-                            attach_anchor_host_metrics(&mut drawing_runs);
                             runs.extend(drawing_runs);
                         } else if use_fallback
                             && is_w_ns(inner.tag_name().namespace())
@@ -8441,7 +8441,7 @@ fn parse_run_inner(
                     .children()
                     .find(|n| n.is_element() && n.tag_name().name() == "drawing");
                 if let Some(drawing) = drawing {
-                    let mut drawing_runs = parse_inline_drawing(
+                    let drawing_runs = parse_inline_drawing(
                         style_map,
                         num_map,
                         drawing,
@@ -8451,8 +8451,8 @@ fn parse_run_inner(
                         theme,
                         depth,
                         diagnostics,
+                        &attach_anchor_host_metrics,
                     );
-                    attach_anchor_host_metrics(&mut drawing_runs);
                     runs.extend(drawing_runs);
                 } else if let Some(img) = parse_object_ole_image(child, media_map) {
                     let anchored = img.anchor;
@@ -8674,11 +8674,25 @@ fn parse_inline_drawing(
     theme: &ThemeColors,
     depth: DepthGuard,
     diagnostics: &mut Vec<PendingParseDiagnostic>,
+    // Applied to each container's runs: every floating container is its own
+    // anchor occurrence and owns its own host metrics.
+    finish_container: &dyn Fn(&mut Vec<DocRun>),
 ) -> Vec<DocRun> {
-    let runs = parse_inline_drawing_impl(
-        style_map, num_map, node, media_map, chart_map, rel_map, theme, depth,
-    );
-    collect_drawing_extent_diagnostic(node, media_map, chart_map, &runs, diagnostics);
+    let mut runs = Vec::new();
+    for container in drawing_own_containers(node) {
+        let mut container_runs = parse_drawing_container(
+            style_map, num_map, container, media_map, chart_map, rel_map, theme, depth,
+        );
+        collect_drawing_extent_diagnostic(
+            container,
+            media_map,
+            chart_map,
+            &container_runs,
+            diagnostics,
+        );
+        finish_container(&mut container_runs);
+        runs.extend(container_runs);
+    }
     runs
 }
 
@@ -8757,6 +8771,60 @@ fn inline_wps_payload<'a, 'input>(
         .find(|n| n.is_element() && n.tag_name().name() == "wsp")
 }
 
+/// The `w:drawing`'s own `wp:inline` / `wp:anchor` containers, in document
+/// order. ECMA-376 §17.3.3.9 / wml.xsd `CT_Drawing`: an unbounded choice of
+/// `wp:anchor` / `wp:inline` children. An `mc:AlternateContent` is replaced by
+/// its selected branch (Part 3 §9.3, same application configuration as the
+/// streamed projector). Foreign-namespace wrapper elements (e.g. an
+/// `mc:ProcessContent` wrapper) are searched through; the native paths do not
+/// apply `mc:Ignorable` removal elsewhere either. An understood element that is
+/// not a container is not part of `CT_Drawing` and is skipped. A container's own subtree —
+/// including drawings nested in its text box story — is never searched, so
+/// each node outside the containers is visited once.
+fn drawing_own_containers<'a, 'i>(
+    drawing: roxmltree::Node<'a, 'i>,
+) -> Vec<roxmltree::Node<'a, 'i>> {
+    let mut containers = Vec::new();
+    // Elements still to visit, in reverse document order.
+    let mut pending: Vec<_> = drawing.children().filter(|n| n.is_element()).collect();
+    pending.reverse();
+    while let Some(node) = pending.pop() {
+        let namespace = node.tag_name().namespace();
+        let local = node.tag_name().name();
+        let parent = if is_wp_ns(namespace) && matches!(local, "inline" | "anchor") {
+            containers.push(node);
+            continue;
+        } else if namespace == Some(ooxml_common::bounded_xml::MCE_NS) {
+            if local != "AlternateContent" {
+                continue;
+            }
+            match ooxml_common::mce::select_alternate_content(
+                node,
+                &crate::document_projector::docx_understands_namespace,
+            ) {
+                Some(branch) => branch,
+                None => continue,
+            }
+        } else if namespace.is_some_and(|namespace| {
+            !crate::document_projector::docx_understands_namespace(namespace)
+        }) {
+            // A foreign element can only be a markup-compatibility wrapper.
+            node
+        } else {
+            // An understood non-container element is not part of CT_Drawing;
+            // its content is not this drawing's.
+            continue;
+        };
+        let start = pending.len();
+        pending.extend(parent.children().filter(|n| n.is_element()));
+        pending[start..].reverse();
+    }
+    containers
+}
+
+/// Parse every container the drawing owns without diagnostics; see
+/// [`drawing_own_containers`].
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn parse_inline_drawing_impl(
     style_map: &StyleMap,
@@ -8768,14 +8836,31 @@ fn parse_inline_drawing_impl(
     theme: &ThemeColors,
     depth: DepthGuard,
 ) -> Vec<DocRun> {
-    // Distinguish inline vs anchor
-    let is_anchor = node.descendants().any(|n| n.tag_name().name() == "anchor");
+    let mut runs = Vec::new();
+    for container in drawing_own_containers(node) {
+        runs.extend(parse_drawing_container(
+            style_map, num_map, container, media_map, chart_map, rel_map, theme, depth,
+        ));
+    }
+    runs
+}
+
+/// One `wp:inline` / `wp:anchor` container of a `w:drawing`.
+#[allow(clippy::too_many_arguments)]
+fn parse_drawing_container(
+    style_map: &StyleMap,
+    num_map: &mut NumberingMap,
+    drawing_container: roxmltree::Node,
+    media_map: &HashMap<String, String>,
+    chart_map: &ChartMap,
+    rel_map: &HashMap<String, String>,
+    theme: &ThemeColors,
+    depth: DepthGuard,
+) -> Vec<DocRun> {
+    let is_anchor = drawing_container.tag_name().name() == "anchor";
 
     if !is_anchor {
-        let container = match node.descendants().find(|n| n.tag_name().name() == "inline") {
-            Some(c) => c,
-            None => return vec![],
-        };
+        let container = drawing_container;
         // §20.4.2.5 — a `<wp:docPr hidden="1">` inline drawing is not rendered.
         if drawing_container_hidden(container) {
             return vec![];
@@ -9074,10 +9159,7 @@ fn parse_inline_drawing_impl(
     }
 
     // ── Anchor image/shape ─────────────────────────────────
-    let container = match node.descendants().find(|n| n.tag_name().name() == "anchor") {
-        Some(c) => c,
-        None => return vec![],
-    };
+    let container = drawing_container;
     // §20.4.2.5 — a `<wp:docPr hidden="1">` anchored drawing is not rendered.
     // Suppressing it also drops its wrap band (the minimal skip; matching how a
     // hidden pptx/xlsx shape simply does not exist).
@@ -9345,19 +9427,12 @@ fn parse_inline_drawing_impl(
 /// reported only when an Image/Chart run was actually retained. This keeps the
 /// fixed "was omitted" messages factual.
 fn collect_drawing_extent_diagnostic(
-    drawing: roxmltree::Node,
+    container: roxmltree::Node,
     media_map: &HashMap<String, String>,
     chart_map: &ChartMap,
     runs: &[DocRun],
     diagnostics: &mut Vec<PendingParseDiagnostic>,
 ) {
-    let Some(container) = drawing.descendants().find(|node| {
-        node.is_element()
-            && is_wp_ns(node.tag_name().namespace())
-            && matches!(node.tag_name().name(), "inline" | "anchor")
-    }) else {
-        return;
-    };
     if drawing_container_hidden(container) {
         return;
     }
@@ -21749,6 +21824,7 @@ mod anchor_image_relative_from_tests {
             theme,
             DepthGuard::root(),
             &mut diagnostics,
+            &|_| {},
         )
     }
 
@@ -21864,6 +21940,163 @@ mod anchor_image_relative_from_tests {
                 _ => None,
             })
             .expect("expected one unavailable drawing")
+    }
+
+    fn nested_drawing_container(anchor: bool, outer: bool, payload: &str) -> String {
+        let (cx, cy, id) = if outer {
+            (2540000, 1270000, 1)
+        } else {
+            (254000, 127000, 2)
+        };
+        let extent = format!(r#"<wp:extent cx="{cx}" cy="{cy}"/>"#);
+        let graphic = format!(
+            r#"<wp:docPr id="{id}" name="Drawing {id}"/><wp:cNvGraphicFramePr/><a:graphic>{payload}</a:graphic>"#
+        );
+        if anchor {
+            let (x, y, wrap) = if outer {
+                (889000, 1016000, r#"<wp:wrapSquare wrapText="bothSides"/>"#)
+            } else {
+                (381000, 508000, "<wp:wrapNone/>")
+            };
+            format!(
+                r#"<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+              <wp:simplePos x="0" y="0"/>
+              <wp:positionH relativeFrom="page"><wp:posOffset>{x}</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="page"><wp:posOffset>{y}</wp:posOffset></wp:positionV>
+              {extent}{wrap}{graphic}</wp:anchor>"#
+            )
+        } else {
+            format!("<wp:inline>{extent}{graphic}</wp:inline>")
+        }
+    }
+
+    fn nested_drawing_body(outer_anchor: bool, inner_anchor: bool) -> String {
+        let image = nested_drawing_container(
+            inner_anchor,
+            false,
+            r#"
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic><pic:nvPicPr><pic:cNvPr id="2" name="Inner image"/><pic:cNvPicPr/></pic:nvPicPr>
+              <pic:blipFill><a:blip r:embed="rIdPng"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+              <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="254000" cy="127000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+            </pic:pic>
+          </a:graphicData>"#,
+        );
+        let shape = nested_drawing_container(
+            outer_anchor,
+            true,
+            &format!(
+                r#"
+          <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <wps:wsp><wps:cNvSpPr txBox="1"/>
+              <wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="1270000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr>
+              <wps:txbx><w:txbxContent><w:p>
+                <w:r><w:t>Before image</w:t></w:r><w:r><w:drawing>{image}</w:drawing></w:r><w:r><w:t>After image</w:t></w:r>
+              </w:p></w:txbxContent></wps:txbx><wps:bodyPr><a:noAutofit/></wps:bodyPr>
+            </wps:wsp>
+          </a:graphicData>"#
+            ),
+        );
+        format!(
+            r#"<w:p><w:r><w:drawing
+          xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+          xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+          xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+          {shape}</w:drawing></w:r></w:p>"#
+        )
+    }
+
+    fn assert_nested_drawing(outer_anchor: bool, inner_anchor: bool) {
+        let doc = parse_from_bytes(&build_docx(&nested_drawing_body(
+            outer_anchor,
+            inner_anchor,
+        )))
+        .expect("nested drawing document parses");
+        let [BodyElement::Paragraph(host)] = doc.body.as_slice() else {
+            panic!("expected one drawing paragraph");
+        };
+        let drawings: Vec<_> = host
+            .runs
+            .iter()
+            .filter(|run| !matches!(run, DocRun::AnchorHost(_)))
+            .collect();
+        let [DocRun::Shape(shape)] = drawings.as_slice() else {
+            panic!("expected outer textbox, got {drawings:?}");
+        };
+        assert_eq!(shape.inline, !outer_anchor);
+        assert_eq!((shape.width_pt, shape.height_pt), (200.0, 100.0));
+        if outer_anchor {
+            assert_eq!((shape.anchor_x_pt, shape.anchor_y_pt), (70.0, 80.0));
+            assert_eq!(shape.wrap_mode.as_deref(), Some("square"));
+            assert_eq!(shape.anchor_x_relative_from.as_deref(), Some("page"));
+            assert_eq!(shape.anchor_y_relative_from.as_deref(), Some("page"));
+        } else {
+            assert!(shape.anchor_acquisition.is_none());
+        }
+        let [TextBoxBlockWire::Body(BodyElement::Paragraph(paragraph))] =
+            shape.text_box_content.as_slice()
+        else {
+            panic!("expected retained textbox paragraph");
+        };
+        let content: Vec<_> = paragraph
+            .runs
+            .iter()
+            .filter(|run| !matches!(run, DocRun::AnchorHost(_)))
+            .collect();
+        let [DocRun::Text(before), DocRun::Image(image), DocRun::Text(after)] = content.as_slice()
+        else {
+            panic!("expected text, one image, text; got {content:?}");
+        };
+        assert_eq!(before.text, "Before image");
+        assert_eq!(after.text, "After image");
+        assert_eq!(image.image_path, "word/media/image1.png");
+        assert_eq!((image.width_pt, image.height_pt), (20.0, 10.0));
+        assert_eq!(image.anchor, inner_anchor);
+        if inner_anchor {
+            assert_eq!((image.anchor_x_pt, image.anchor_y_pt), (30.0, 40.0));
+            assert_eq!(image.wrap_mode.as_deref(), Some("none"));
+            assert_eq!(image.anchor_x_relative_from.as_deref(), Some("page"));
+            assert_eq!(image.anchor_y_relative_from.as_deref(), Some("page"));
+        } else {
+            assert!(image.anchor_acquisition.is_none());
+        }
+    }
+
+    #[test]
+    fn inline_textbox_retains_nested_floating_image() {
+        assert_nested_drawing(false, true);
+    }
+
+    #[test]
+    fn nested_images_keep_their_own_inline_and_anchor_geometry() {
+        for (outer_anchor, inner_anchor) in [(false, false), (true, false), (true, true)] {
+            assert_nested_drawing(outer_anchor, inner_anchor);
+        }
+    }
+
+    #[test]
+    fn malformed_drawing_does_not_promote_a_nested_positioning_container() {
+        for anchor in [false, true] {
+            // Deliberately invalid CT_Drawing: a wrapper replaces its direct container.
+            let body = nested_drawing_body(anchor, false);
+            let tag = if anchor { "anchor" } else { "inline" };
+            let body = body
+                .replacen(&format!("<wp:{tag}"), &format!("<w:wrapper><wp:{tag}"), 1)
+                .replace(
+                    &format!("</wp:{tag}></w:drawing></w:r></w:p>"),
+                    &format!("</wp:{tag}></w:wrapper></w:drawing></w:r></w:p>"),
+                );
+            let doc = parse_from_bytes(&build_docx(&body)).expect("malformed drawing is tolerated");
+            let [BodyElement::Paragraph(paragraph)] = doc.body.as_slice() else {
+                panic!("expected one paragraph");
+            };
+            assert!(
+                paragraph.runs.is_empty(),
+                "nested container must not become an outer drawing"
+            );
+        }
     }
 
     /// Body XML for an anchor image with the given `<wp:positionH>` and
@@ -27542,6 +27775,319 @@ mod inline_wps_shape_tests {
             "a nested drawing cannot replace its containing inline shape"
         );
         assert!(outer.text_blocks[0].text.starts_with("OUTER"));
+    }
+
+    /// ECMA-376 §17.3.3.9 / §20.4.2.3 / §20.4.2.8 — `wp:inline` and `wp:anchor`
+    /// are children of `w:drawing`. A drawing nested in a text box story owns
+    /// its own container, so it must not decide whether the containing drawing
+    /// is inline or floating, nor supply the containing drawing's geometry.
+    #[test]
+    fn nested_drawing_container_does_not_classify_containing_drawing() {
+        const NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+          xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+          xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+          xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape""#;
+        // Picture 50pt x 25pt.
+        fn image(floating: bool) -> String {
+            let (open, close) = container(floating);
+            format!(
+                r#"<w:drawing>{open}<wp:extent cx="635000" cy="317500"/><wp:docPr id="2" name="Inner"/>
+                <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic><pic:blipFill><a:blip r:embed="rIdImg"/></pic:blipFill>
+                <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="317500"/></a:xfrm></pic:spPr></pic:pic>
+                </a:graphicData></a:graphic>{close}</w:drawing>"#
+            )
+        }
+        fn container(floating: bool) -> (&'static str, &'static str) {
+            if floating {
+                (
+                    r#"<wp:anchor behindDoc="0" relativeHeight="1"><wp:simplePos x="0" y="0"/>
+                    <wp:positionH relativeFrom="column"><wp:posOffset>127000</wp:posOffset></wp:positionH>
+                    <wp:positionV relativeFrom="paragraph"><wp:posOffset>254000</wp:posOffset></wp:positionV>"#,
+                    r#"<wp:wrapSquare wrapText="bothSides"/></wp:anchor>"#,
+                )
+            } else {
+                ("<wp:inline>", "</wp:inline>")
+            }
+        }
+        // Text box 300pt x 100pt whose story is BEFORE, nested picture, AFTER.
+        let text_box = |outer_floating: bool, inner_floating: bool| {
+            let (open, close) = container(outer_floating);
+            let inner = image(inner_floating);
+            format!(
+                r#"<w:drawing {NS}>{open}<wp:extent cx="3810000" cy="1270000"/><wp:docPr id="1" name="Outer"/>
+                <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3810000" cy="1270000"/></a:xfrm><a:prstGeom prst="rect"/></wps:spPr>
+                <wps:txbx><w:txbxContent><w:p><w:r><w:t>BEFORE</w:t></w:r><w:r>{inner}</w:r><w:r><w:t>AFTER</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/>
+                </wps:wsp></a:graphicData></a:graphic>{close}</w:drawing>"#
+            )
+        };
+        let media = HashMap::from([("rIdImg".into(), "word/media/inner.png".into())]);
+        let parse = |xml: &str| {
+            let doc = roxmltree::Document::parse(xml).expect("drawing fixture");
+            parse_inline_drawing_impl(
+                &StyleMap::default(),
+                &mut NumberingMap::default(),
+                doc.root_element(),
+                &media,
+                &ChartMap::default(),
+                &HashMap::new(),
+                &ThemeColors::default(),
+                DepthGuard::root(),
+            )
+        };
+
+        for outer_floating in [false, true] {
+            for inner_floating in [false, true] {
+                let case =
+                    format!("outer floating={outer_floating}, inner floating={inner_floating}");
+                let runs = parse(&text_box(outer_floating, inner_floating));
+                let [DocRun::Shape(outer)] = runs.as_slice() else {
+                    panic!("{case}: outer text box must survive, got {runs:?}")
+                };
+                assert_eq!(outer.inline, !outer_floating, "{case}: outer container");
+                assert_eq!((outer.width_pt, outer.height_pt), (300.0, 100.0), "{case}");
+                if outer_floating {
+                    assert_eq!(
+                        (outer.anchor_x_pt, outer.anchor_y_pt),
+                        (10.0, 20.0),
+                        "{case}"
+                    );
+                }
+                let TextBoxBlockWire::Body(BodyElement::Paragraph(story)) =
+                    &outer.text_box_content[0]
+                else {
+                    panic!("{case}: story missing")
+                };
+                let texts: Vec<&str> = story
+                    .runs
+                    .iter()
+                    .filter_map(|run| match run {
+                        DocRun::Text(text) => Some(text.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(texts, vec!["BEFORE", "AFTER"], "{case}: surrounding text");
+                let images: Vec<&ImageRun> = story
+                    .runs
+                    .iter()
+                    .filter_map(|run| match run {
+                        DocRun::Image(image) => Some(image.as_ref()),
+                        _ => None,
+                    })
+                    .collect();
+                let [inner] = images.as_slice() else {
+                    panic!("{case}: nested picture missing")
+                };
+                assert_eq!(inner.anchor, inner_floating, "{case}: inner container");
+                assert_eq!((inner.width_pt, inner.height_pt), (50.0, 25.0), "{case}");
+                if inner_floating {
+                    assert_eq!(
+                        (inner.anchor_x_pt, inner.anchor_y_pt),
+                        (10.0, 20.0),
+                        "{case}"
+                    );
+                }
+            }
+        }
+
+        // Ordinary pictures keep their own classification.
+        for floating in [false, true] {
+            let runs =
+                parse(&image(floating).replacen("<w:drawing>", &format!("<w:drawing {NS}>"), 1));
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("plain picture missing (floating={floating})")
+            };
+            assert_eq!(picture.anchor, floating);
+            assert_eq!((picture.width_pt, picture.height_pt), (50.0, 25.0));
+        }
+
+        // ECMA-376 Part 3 §9.3–9.4: an `mc:AlternateContent` child of
+        // `w:drawing` is replaced by its selected branch, whose container is
+        // then the drawing's own.
+        const MC: &str = r#"xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:unk="urn:unknown""#;
+        let wrap = |drawing: String, choice_requires: &str, fallback: Option<String>| {
+            let (open_tag, rest) = drawing.split_once('>').expect("drawing start tag");
+            let body = rest.strip_suffix("</w:drawing>").expect("drawing end tag");
+            let fallback = fallback
+                .map(|fallback| {
+                    let (_, fallback_rest) = fallback.split_once('>').unwrap();
+                    format!(
+                        "<mc:Fallback>{}</mc:Fallback>",
+                        fallback_rest.strip_suffix("</w:drawing>").unwrap()
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                r#"{open_tag} {MC}><mc:AlternateContent><mc:Choice Requires="{choice_requires}">{body}</mc:Choice>{fallback}</mc:AlternateContent></w:drawing>"#
+            )
+        };
+        for floating in [false, true] {
+            let plain = image(floating).replacen("<w:drawing>", &format!("<w:drawing {NS}>"), 1);
+            let runs = parse(&wrap(plain.clone(), "wp", None));
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("MCE-wrapped picture missing (floating={floating}): {runs:?}")
+            };
+            assert_eq!(picture.anchor, floating);
+            // An unsupported Choice selects the Fallback's container.
+            let runs = parse(&wrap(plain.clone(), "unk", Some(image(!floating))));
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("MCE fallback picture missing (floating={floating}): {runs:?}")
+            };
+            assert_eq!(picture.anchor, !floating, "Fallback owns the container");
+        }
+        // An `mc:ProcessContent` wrapper (Part 3 §9.2) is searched through, so
+        // its container is the drawing's own.
+        for floating in [false, true] {
+            let (open_tag, rest) = image(floating)
+                .replacen("<w:drawing>", &format!("<w:drawing {NS}>"), 1)
+                .split_once('>')
+                .map(|(open_tag, rest)| (open_tag.to_string(), rest.to_string()))
+                .unwrap();
+            let body = rest.strip_suffix("</w:drawing>").unwrap();
+            let xml = format!(
+                r#"{open_tag} {MC} mc:Ignorable="unk" mc:ProcessContent="unk:wrap"><unk:wrap>{body}</unk:wrap></w:drawing>"#
+            );
+            let runs = parse(&xml);
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("ProcessContent-wrapped picture missing (floating={floating}): {runs:?}")
+            };
+            assert_eq!(picture.anchor, floating);
+        }
+        // CT_Drawing is an unbounded choice of wp:anchor / wp:inline: every
+        // container is acquired in document order, and a hidden one does not
+        // suppress its visible siblings.
+        let containers = |first_hidden: bool| {
+            let first = image(false).replacen(
+                r#"name="Inner"/>"#,
+                if first_hidden {
+                    r#"name="Inner" hidden="1"/>"#
+                } else {
+                    r#"name="Inner"/>"#
+                },
+                1,
+            );
+            let (_, first_rest) = first.split_once('>').unwrap();
+            let (_, second_rest) = image(true)
+                .split_once('>')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .unwrap();
+            format!(
+                "<w:drawing {NS}>{}{}",
+                first_rest.strip_suffix("</w:drawing>").unwrap(),
+                second_rest
+            )
+        };
+        let runs = parse(&containers(true));
+        let [DocRun::Image(visible)] = runs.as_slice() else {
+            panic!("visible sibling container missing: {runs:?}")
+        };
+        assert!(visible.anchor);
+        let runs = parse(&containers(false));
+        let anchors: Vec<bool> = runs
+            .iter()
+            .map(|run| match run {
+                DocRun::Image(picture) => picture.anchor,
+                other => panic!("unexpected run {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            anchors,
+            vec![false, true],
+            "both containers, document order"
+        );
+
+        // Each floating container is its own anchor occurrence and receives its
+        // own host metrics, immediately before its runs.
+        let metrics = AnchorHostMetrics {
+            font_size: 11.0,
+            font_family: None,
+            font_family_east_asia: None,
+            bold: false,
+            italic: false,
+            anchor_occurrence_id: None,
+        };
+        for first_floating in [false, true] {
+            let first = image(first_floating);
+            let (_, first_rest) = first.split_once('>').unwrap();
+            let second = image(true);
+            let (_, second_rest) = second.split_once('>').unwrap();
+            let xml = format!(
+                "<w:drawing {NS}>{}{second_rest}",
+                first_rest.strip_suffix("</w:drawing>").unwrap()
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let runs = parse_inline_drawing(
+                &StyleMap::default(),
+                &mut NumberingMap::default(),
+                doc.root_element(),
+                &media,
+                &ChartMap::default(),
+                &HashMap::new(),
+                &ThemeColors::default(),
+                DepthGuard::root(),
+                &mut Vec::new(),
+                &|runs| prepend_anchor_host_metrics(runs, &metrics),
+            );
+            let mut hosts = Vec::new();
+            let mut pending_host = None;
+            for run in &runs {
+                match run {
+                    DocRun::AnchorHost(host) => {
+                        assert!(pending_host.is_none(), "one host per occurrence");
+                        pending_host = Some(host.anchor_occurrence_id.clone());
+                    }
+                    DocRun::Image(picture) if picture.anchor => {
+                        let id = picture
+                            .anchor_acquisition
+                            .as_ref()
+                            .map(|facts| facts.occurrence_id.clone());
+                        assert!(id.is_some());
+                        assert_eq!(
+                            pending_host.take(),
+                            Some(id.clone()),
+                            "host precedes its own occurrence"
+                        );
+                        hosts.push(id);
+                    }
+                    DocRun::Image(_) => {
+                        assert!(pending_host.is_none(), "inline picture has no host")
+                    }
+                    other => panic!("unexpected run {other:?}"),
+                }
+            }
+            let expected = if first_floating { 2 } else { 1 };
+            assert_eq!(hosts.len(), expected, "first floating={first_floating}");
+            if first_floating {
+                assert_ne!(hosts[0], hosts[1], "distinct occurrences");
+            }
+        }
+
+        // Nested wrappers and alternate content are searched through in
+        // document order.
+        let depth_xml = {
+            let plain = image(false);
+            let (_, rest) = plain.split_once('>').unwrap();
+            let body = rest.strip_suffix("</w:drawing>").unwrap();
+            let levels = 200;
+            format!(
+                r#"<w:drawing {NS} {MC} mc:Ignorable="unk" mc:ProcessContent="unk:wrap">{}<mc:AlternateContent><mc:Choice Requires="wp">{body}</mc:Choice></mc:AlternateContent>{}</w:drawing>"#,
+                "<unk:wrap>".repeat(levels),
+                "</unk:wrap>".repeat(levels)
+            )
+        };
+        let runs = parse(&depth_xml);
+        assert!(matches!(runs.as_slice(), [DocRun::Image(picture)] if !picture.anchor));
+
+        // The wrapped outer text box still ignores its nested picture's anchor.
+        let runs = parse(&wrap(text_box(false, true), "wp", None));
+        let [DocRun::Shape(outer)] = runs.as_slice() else {
+            panic!("MCE-wrapped text box missing: {runs:?}")
+        };
+        assert!(outer.inline);
+        assert_eq!((outer.width_pt, outer.height_pt), (300.0, 100.0));
     }
 }
 

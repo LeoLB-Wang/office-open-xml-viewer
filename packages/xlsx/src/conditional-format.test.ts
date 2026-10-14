@@ -487,6 +487,24 @@ describe('stopIfTrue — a matching rule stops lower-priority rules (ECMA-376 §
     expect(result.fill?.fgColor).toBe('#FF0000');
   });
 
+  it('CF1547 nonfinite and SEARCH domain errors cannot stop valid lower rules', () => {
+    const rule = (formula: string): CfRule => ({ type: 'expression', formula, dxfId: 1, priority: 1, stopIfTrue: true });
+    for (const formula of ['EXP(1000)', 'POWER(-1,0.5)', 'SEARCH("a","abc",0)=1']) {
+      const result = evalWith(rule(formula));
+      expect(result.fontColor, formula).toBeUndefined();
+      expect(result.fill?.fgColor, formula).toBe('#FF0000');
+    }
+    const caught = evalWith(rule('ISERROR(EXP(1000))'));
+    expect(caught.fontColor).toBe('#0000FF');
+    expect(caught.fill).toBeUndefined();
+  });
+
+  it('CF1547 COUNTA empty text is a value that can intentionally match', () => {
+    const result = evalWith({ type: 'expression', formula: 'COUNTA("")=1', dxfId: 1, priority: 1, stopIfTrue: true });
+    expect(result.fontColor).toBe('#0000FF');
+    expect(result.fill).toBeUndefined();
+  });
+
   it.each(stoppers)('%s: applies its own dxf and skips every lower-priority rule', (_, stopper) => {
     const res = evalWith(stopper);
     expect(res.fontColor).toBe('#0000FF');
