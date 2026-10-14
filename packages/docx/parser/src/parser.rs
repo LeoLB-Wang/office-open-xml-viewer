@@ -8656,11 +8656,14 @@ fn parse_inline_drawing_impl(
     theme: &ThemeColors,
     depth: DepthGuard,
 ) -> Vec<DocRun> {
-    // Distinguish inline vs anchor
-    let is_anchor = node.descendants().any(|n| n.tag_name().name() == "anchor");
+    // Distinguish inline vs anchor. ECMA-376 §17.3.3.9: `wp:inline` /
+    // `wp:anchor` are direct children of `w:drawing`. A drawing nested in a
+    // text box story owns its own container and must not classify (or supply
+    // geometry for) the containing drawing.
+    let is_anchor = node.children().any(|n| n.tag_name().name() == "anchor");
 
     if !is_anchor {
-        let container = match node.descendants().find(|n| n.tag_name().name() == "inline") {
+        let container = match node.children().find(|n| n.tag_name().name() == "inline") {
             Some(c) => c,
             None => return vec![],
         };
@@ -9000,7 +9003,7 @@ fn parse_inline_drawing_impl(
     }
 
     // ── Anchor image/shape ─────────────────────────────────
-    let container = match node.descendants().find(|n| n.tag_name().name() == "anchor") {
+    let container = match node.children().find(|n| n.tag_name().name() == "anchor") {
         Some(c) => c,
         None => return vec![],
     };
@@ -9282,7 +9285,7 @@ fn collect_drawing_extent_diagnostic(
     runs: &[DocRun],
     diagnostics: &mut Vec<PendingParseDiagnostic>,
 ) {
-    let Some(container) = drawing.descendants().find(|node| {
+    let Some(container) = drawing.children().find(|node| {
         node.is_element()
             && is_wp_ns(node.tag_name().namespace())
             && matches!(node.tag_name().name(), "inline" | "anchor")
@@ -27463,6 +27466,134 @@ mod inline_wps_shape_tests {
             "a nested drawing cannot replace its containing inline shape"
         );
         assert!(outer.text_blocks[0].text.starts_with("OUTER"));
+    }
+
+    /// ECMA-376 §17.3.3.9 / §20.4.2.3 / §20.4.2.8 — `wp:inline` and `wp:anchor`
+    /// are children of `w:drawing`. A drawing nested in a text box story owns
+    /// its own container, so it must not decide whether the containing drawing
+    /// is inline or floating, nor supply the containing drawing's geometry.
+    #[test]
+    fn nested_drawing_container_does_not_classify_containing_drawing() {
+        const NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+          xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+          xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+          xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape""#;
+        // Picture 50pt x 25pt.
+        fn image(floating: bool) -> String {
+            let (open, close) = container(floating);
+            format!(
+                r#"<w:drawing>{open}<wp:extent cx="635000" cy="317500"/><wp:docPr id="2" name="Inner"/>
+                <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic><pic:blipFill><a:blip r:embed="rIdImg"/></pic:blipFill>
+                <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="317500"/></a:xfrm></pic:spPr></pic:pic>
+                </a:graphicData></a:graphic>{close}</w:drawing>"#
+            )
+        }
+        fn container(floating: bool) -> (&'static str, &'static str) {
+            if floating {
+                (
+                    r#"<wp:anchor behindDoc="0" relativeHeight="1"><wp:simplePos x="0" y="0"/>
+                    <wp:positionH relativeFrom="column"><wp:posOffset>127000</wp:posOffset></wp:positionH>
+                    <wp:positionV relativeFrom="paragraph"><wp:posOffset>254000</wp:posOffset></wp:positionV>"#,
+                    r#"<wp:wrapSquare wrapText="bothSides"/></wp:anchor>"#,
+                )
+            } else {
+                ("<wp:inline>", "</wp:inline>")
+            }
+        }
+        // Text box 300pt x 100pt whose story is BEFORE, nested picture, AFTER.
+        let text_box = |outer_floating: bool, inner_floating: bool| {
+            let (open, close) = container(outer_floating);
+            let inner = image(inner_floating);
+            format!(
+                r#"<w:drawing {NS}>{open}<wp:extent cx="3810000" cy="1270000"/><wp:docPr id="1" name="Outer"/>
+                <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3810000" cy="1270000"/></a:xfrm><a:prstGeom prst="rect"/></wps:spPr>
+                <wps:txbx><w:txbxContent><w:p><w:r><w:t>BEFORE</w:t></w:r><w:r>{inner}</w:r><w:r><w:t>AFTER</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/>
+                </wps:wsp></a:graphicData></a:graphic>{close}</w:drawing>"#
+            )
+        };
+        let media = HashMap::from([("rIdImg".into(), "word/media/inner.png".into())]);
+        let parse = |xml: &str| {
+            let doc = roxmltree::Document::parse(xml).expect("drawing fixture");
+            parse_inline_drawing_impl(
+                &StyleMap::default(),
+                &mut NumberingMap::default(),
+                doc.root_element(),
+                &media,
+                &ChartMap::default(),
+                &HashMap::new(),
+                &ThemeColors::default(),
+                DepthGuard::root(),
+            )
+        };
+
+        for outer_floating in [false, true] {
+            for inner_floating in [false, true] {
+                let case =
+                    format!("outer floating={outer_floating}, inner floating={inner_floating}");
+                let runs = parse(&text_box(outer_floating, inner_floating));
+                let [DocRun::Shape(outer)] = runs.as_slice() else {
+                    panic!("{case}: outer text box must survive, got {runs:?}")
+                };
+                assert_eq!(outer.inline, !outer_floating, "{case}: outer container");
+                assert_eq!((outer.width_pt, outer.height_pt), (300.0, 100.0), "{case}");
+                if outer_floating {
+                    assert_eq!(
+                        (outer.anchor_x_pt, outer.anchor_y_pt),
+                        (10.0, 20.0),
+                        "{case}"
+                    );
+                }
+                let TextBoxBlockWire::Body(BodyElement::Paragraph(story)) =
+                    &outer.text_box_content[0]
+                else {
+                    panic!("{case}: story missing")
+                };
+                let texts: Vec<&str> = story
+                    .runs
+                    .iter()
+                    .filter_map(|run| match run {
+                        DocRun::Text(text) => Some(text.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(texts, vec!["BEFORE", "AFTER"], "{case}: surrounding text");
+                let images: Vec<&ImageRun> = story
+                    .runs
+                    .iter()
+                    .filter_map(|run| match run {
+                        DocRun::Image(image) => Some(image.as_ref()),
+                        _ => None,
+                    })
+                    .collect();
+                let [inner] = images.as_slice() else {
+                    panic!("{case}: nested picture missing")
+                };
+                assert_eq!(inner.anchor, inner_floating, "{case}: inner container");
+                assert_eq!((inner.width_pt, inner.height_pt), (50.0, 25.0), "{case}");
+                if inner_floating {
+                    assert_eq!(
+                        (inner.anchor_x_pt, inner.anchor_y_pt),
+                        (10.0, 20.0),
+                        "{case}"
+                    );
+                }
+            }
+        }
+
+        // Ordinary pictures keep their own classification.
+        for floating in [false, true] {
+            let runs =
+                parse(&image(floating).replacen("<w:drawing>", &format!("<w:drawing {NS}>"), 1));
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("plain picture missing (floating={floating})")
+            };
+            assert_eq!(picture.anchor, floating);
+            assert_eq!((picture.width_pt, picture.height_pt), (50.0, 25.0));
+        }
     }
 }
 
