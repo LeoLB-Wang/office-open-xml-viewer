@@ -155,7 +155,8 @@ function toNum(v: EvalValue): number {
   if (typeof s === 'number') {
     // §18.17.2.6 numbers are real numbers. An IEEE Infinity or NaN can only
     // come from an overflowed or undefined intermediate result, which §18.17.3
-    // classifies as #NUM!. Operator results are not range-checked themselves.
+    // classifies as #NUM!. This also guards cached/range operands and chain
+    // accumulators when numeric coercion is required.
     if (!Number.isFinite(s)) throw new FormulaFailure('error', '#NUM!');
     return s;
   }
@@ -439,19 +440,28 @@ function parseConcat(p: Parser): FormulaNode { return parseChain(p, ['&'], parse
 function parseAdd(p: Parser): FormulaNode { return parseChain(p, ['+', '-'], parseMul); }
 function parseMul(p: Parser): FormulaNode { return parseChain(p, ['*', '/'], parseUnary); }
 
+// §18.17.3: a numeric result outside the representable range is #NUM!.
+// Use only for direct arithmetic and the EXP/POWER results below. A blanket
+// node-level conversion would misclassify legacy rounding helpers whose
+// intermediate can overflow although the mathematical result is finite.
+// Correcting those algorithms and aggregate overflow is separate work.
+function numericResult(value: number): EvalScalar {
+  return Number.isFinite(value) ? value : formulaError('#NUM!');
+}
+
 function applyBinary(op: string, a: EvalValue, b: EvalValue): EvalValue {
   // Operands are coerced left to right, so the left operand's error wins.
   switch (op) {
     case '&': return toStr(a) + toStr(b);
-    case '+': return toNum(a) + toNum(b);
-    case '-': return toNum(a) - toNum(b);
-    case '*': return toNum(a) * toNum(b);
+    case '+': return numericResult(toNum(a) + toNum(b));
+    case '-': return numericResult(toNum(a) - toNum(b));
+    case '*': return numericResult(toNum(a) * toNum(b));
     case '/': {
       const n = toNum(a);
       const d = toNum(b);
       // ECMA-376 §18.17 error values: #DIV/0! is the result of dividing by
       // zero (a blank divisor reads as 0), never a numeric placeholder.
-      return d === 0 ? formulaError('#DIV/0!') : n / d;
+      return d === 0 ? formulaError('#DIV/0!') : numericResult(n / d);
     }
     default:  return applyCmp(op, operand(a), operand(b));
   }
@@ -847,11 +857,18 @@ function callFunc(name: string, argNodes: FormulaNode[], ctx: EvalCtx): EvalValu
     // Domain failures are §18.17 error values (#DIV/0!, #NUM!), not blanks
     // that a comparison would read as 0.
     case 'MOD':        { const a = toNum(args[0]); const b = toNum(args[1]); return b === 0 ? formulaError('#DIV/0!') : a - Math.floor(a / b) * b; }
-    case 'POWER':      return Math.pow(toNum(args[0]), toNum(args[1]));
+    case 'POWER': {
+      const base = toNum(args[0]); const exponent = toNum(args[1]);
+      // §18.17.7.255: zero to a nonpositive power is #DIV/0!; negative
+      // bases with fractional exponents and unrepresentable results are #NUM!.
+      // The section explicitly includes exponent zero in the #DIV/0! domain.
+      if (base === 0 && exponent <= 0) return formulaError('#DIV/0!');
+      return numericResult(Math.pow(base, exponent));
+    }
     case 'SQRT':       { const n = toNum(args[0]); return n < 0 ? formulaError('#NUM!') : Math.sqrt(n); }
     case 'ABS':        return Math.abs(toNum(args[0]));
     case 'SIGN':       { const n = toNum(args[0]); return n > 0 ? 1 : n < 0 ? -1 : 0; }
-    case 'EXP':        return Math.exp(toNum(args[0]));
+    case 'EXP':        return numericResult(Math.exp(toNum(args[0]))); // §18.17.7.113: overflow is #NUM!.
     case 'LN':         { const n = toNum(args[0]); return n <= 0 ? formulaError('#NUM!') : Math.log(n); }
     case 'LOG10':      { const n = toNum(args[0]); return n <= 0 ? formulaError('#NUM!') : Math.log10(n); }
     // ── Aggregates ──────────────────────────────────────────────────────────
@@ -860,7 +877,9 @@ function callFunc(name: string, argNodes: FormulaNode[], ctx: EvalCtx): EvalValu
     case 'SUM':        return flattenPropagatingErrors(args).reduce<number>((s, v) => s + (typeof v === 'number' ? v : 0), 0);
     case 'AVERAGE':    { const ns = flattenPropagatingErrors(args).filter(v => typeof v === 'number') as number[]; return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : formulaError('#DIV/0!'); }
     case 'COUNT':      return args.flatMap(flatten).filter(v => typeof v === 'number').length;
-    case 'COUNTA':     return args.flatMap(flatten).filter(v => v != null && v !== '').length;
+    // Microsoft COUNTA documentation counts empty text, including cached "";
+    // an absent/empty cell is null, which remains excluded.
+    case 'COUNTA':     return args.flatMap(flatten).filter(v => v != null).length;
     case 'COUNTBLANK': return args.flatMap(flatten).filter(v => v == null || v === '').length;
     case 'COUNTIF':    return countIf(flatten(args[0]), args[1]);
     // ── Text ────────────────────────────────────────────────────────────────
@@ -884,7 +903,18 @@ function callFunc(name: string, argNodes: FormulaNode[], ctx: EvalCtx): EvalValu
     // A text not found is #VALUE! (so ISNUMBER(SEARCH(...)) stays FALSE).
     // §18.17.7.119: a FIND position below 1 is #VALUE!, not position 1.
     case 'FIND':       { const needle = toStr(args[0]); const hay = toStr(args[1]); const start = toNum(args[2] ?? 1); if (start < 1) return formulaError('#VALUE!'); const idx = hay.indexOf(needle, start - 1); return idx < 0 ? formulaError('#VALUE!') : idx + 1; }
-    case 'SEARCH':     { const needle = toStr(args[0]).toLowerCase(); const hay = toStr(args[1]).toLowerCase(); const start = Math.max(1, toNum(args[2] ?? 1)) - 1; const idx = hay.indexOf(needle, start); return idx < 0 ? formulaError('#VALUE!') : idx + 1; }
+    case 'SEARCH': {
+      const needle = toStr(args[0]).toLowerCase(); const text = toStr(args[1]); const hay = text.toLowerCase();
+      const start = toNum(args[2] ?? 1);
+      // §18.17.7.285: start >= 1 and outside positions are #VALUE!, even
+      // for an empty needle. Bound the upper correction to integer positions
+      // in nonempty text: fractional truncation/validation order and the
+      // empty-text endpoint remain unverified and retain existing behavior.
+      // Check original text length: lowercase mapping can expand its length.
+      if (start < 1 || (text.length > 0 && Number.isInteger(start) && start > text.length)) return formulaError('#VALUE!');
+      const idx = hay.indexOf(needle, start - 1);
+      return idx < 0 ? formulaError('#VALUE!') : idx + 1;
+    }
     case 'CONCATENATE':
     case 'CONCAT':     return args.flatMap(flatten).map(v => toStr(v)).join('');
     case 'T':          { const s = operand(args[0]); return typeof s === 'string' ? s : ''; }
