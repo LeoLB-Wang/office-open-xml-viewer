@@ -8589,10 +8589,20 @@ fn parse_inline_drawing(
     depth: DepthGuard,
     diagnostics: &mut Vec<PendingParseDiagnostic>,
 ) -> Vec<DocRun> {
-    let runs = parse_inline_drawing_impl(
-        style_map, num_map, node, media_map, chart_map, rel_map, theme, depth,
-    );
-    collect_drawing_extent_diagnostic(node, media_map, chart_map, &runs, diagnostics);
+    let mut runs = Vec::new();
+    for container in drawing_own_containers(node) {
+        let container_runs = parse_drawing_container(
+            style_map, num_map, container, media_map, chart_map, rel_map, theme, depth,
+        );
+        collect_drawing_extent_diagnostic(
+            container,
+            media_map,
+            chart_map,
+            &container_runs,
+            diagnostics,
+        );
+        runs.extend(container_runs);
+    }
     runs
 }
 
@@ -8645,36 +8655,87 @@ fn unavailable_drawing_run(
     )))
 }
 
-/// The `w:drawing`'s own `wp:inline` / `wp:anchor` (ECMA-376 §17.3.3.9: a
-/// child of `w:drawing`). An `mc:AlternateContent` child is replaced by its
-/// selected branch's content first (Part 3 §9.3–9.4), with the same
-/// application configuration the streamed projector uses. Descendants of the
-/// container — including drawings nested in a text box story — are never
-/// considered.
-fn drawing_own_container<'a, 'i>(
+/// The `w:drawing`'s own `wp:inline` / `wp:anchor` containers, in document
+/// order. ECMA-376 §17.3.3.9 / wml.xsd `CT_Drawing`: an unbounded choice of
+/// `wp:anchor` / `wp:inline` children. Markup compatibility is applied to the
+/// drawing's children first (Part 3 §9.2–9.4): an `mc:AlternateContent` is
+/// replaced by its selected branch (same application configuration as the
+/// streamed projector) and an ignorable `mc:ProcessContent` wrapper by its
+/// children. Descendants of a container — including drawings nested in a text
+/// box story — are never considered.
+fn drawing_own_containers<'a, 'i>(
     drawing: roxmltree::Node<'a, 'i>,
-    is_container: impl Fn(roxmltree::Node<'a, 'i>) -> bool + Copy,
-) -> Option<roxmltree::Node<'a, 'i>> {
-    drawing
-        .children()
-        .filter(|n| n.is_element())
-        .find_map(|child| {
-            if is_container(child) {
-                return Some(child);
-            }
-            if child.tag_name().namespace() == Some(ooxml_common::bounded_xml::MCE_NS)
-                && child.tag_name().name() == "AlternateContent"
-            {
-                return ooxml_common::mce::select_alternate_content(
-                    child,
-                    &crate::document_projector::docx_understands_namespace,
-                )
-                .and_then(|branch| drawing_own_container(branch, is_container));
-            }
+) -> Vec<roxmltree::Node<'a, 'i>> {
+    let mut containers = Vec::new();
+    // Children still to visit, in reverse document order.
+    let mut pending: Vec<_> = drawing.children().filter(|n| n.is_element()).collect();
+    pending.reverse();
+    while let Some(child) = pending.pop() {
+        let namespace = child.tag_name().namespace();
+        let local = child.tag_name().name();
+        let expand_into = if is_wp_ns(namespace) && matches!(local, "inline" | "anchor") {
+            containers.push(child);
             None
-        })
+        } else if namespace == Some(ooxml_common::bounded_xml::MCE_NS)
+            && local == "AlternateContent"
+        {
+            ooxml_common::mce::select_alternate_content(
+                child,
+                &crate::document_projector::docx_understands_namespace,
+            )
+        } else if is_mce_process_content_wrapper(child) {
+            Some(child)
+        } else {
+            None
+        };
+        if let Some(parent) = expand_into {
+            let start = pending.len();
+            pending.extend(parent.children().filter(|n| n.is_element()));
+            pending[start..].reverse();
+        }
+    }
+    containers
 }
 
+/// ECMA-376 Part 3 §9.2: an element in a non-understood namespace declared
+/// `mc:Ignorable` in scope, whose qualified name (or `prefix:*`) appears in an
+/// in-scope `mc:ProcessContent`, is removed and its children processed in its
+/// place.
+fn is_mce_process_content_wrapper(node: roxmltree::Node) -> bool {
+    let Some(namespace) = node.tag_name().namespace() else {
+        return false;
+    };
+    if crate::document_projector::docx_understands_namespace(namespace) {
+        return false;
+    }
+    let local = node.tag_name().name();
+    let mut ignorable = false;
+    let mut process_content = false;
+    for scope in node.ancestors().filter(|n| n.is_element()) {
+        let tokens = |name: &str| {
+            scope
+                .attribute((ooxml_common::bounded_xml::MCE_NS, name))
+                .unwrap_or_default()
+                .split_whitespace()
+        };
+        ignorable |= tokens("Ignorable")
+            .any(|prefix| scope.lookup_namespace_uri(Some(prefix)) == Some(namespace));
+        process_content |= tokens("ProcessContent").any(|qname| {
+            qname.split_once(':').is_some_and(|(prefix, name)| {
+                scope.lookup_namespace_uri(Some(prefix)) == Some(namespace)
+                    && (name == local || name == "*")
+            })
+        });
+        if ignorable && process_content {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse every container the drawing owns without diagnostics; see
+/// [`drawing_own_containers`].
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn parse_inline_drawing_impl(
     style_map: &StyleMap,
@@ -8686,14 +8747,27 @@ fn parse_inline_drawing_impl(
     theme: &ThemeColors,
     depth: DepthGuard,
 ) -> Vec<DocRun> {
-    // Distinguish inline vs anchor from this drawing's own container. A
-    // drawing nested in a text box story owns its own container and must not
-    // classify (or supply geometry for) the containing drawing.
-    let Some(drawing_container) =
-        drawing_own_container(node, |n| matches!(n.tag_name().name(), "inline" | "anchor"))
-    else {
-        return vec![];
-    };
+    let mut runs = Vec::new();
+    for container in drawing_own_containers(node) {
+        runs.extend(parse_drawing_container(
+            style_map, num_map, container, media_map, chart_map, rel_map, theme, depth,
+        ));
+    }
+    runs
+}
+
+/// One `wp:inline` / `wp:anchor` container of a `w:drawing`.
+#[allow(clippy::too_many_arguments)]
+fn parse_drawing_container(
+    style_map: &StyleMap,
+    num_map: &mut NumberingMap,
+    drawing_container: roxmltree::Node,
+    media_map: &HashMap<String, String>,
+    chart_map: &ChartMap,
+    rel_map: &HashMap<String, String>,
+    theme: &ThemeColors,
+    depth: DepthGuard,
+) -> Vec<DocRun> {
     let is_anchor = drawing_container.tag_name().name() == "anchor";
 
     if !is_anchor {
@@ -9307,18 +9381,12 @@ fn parse_inline_drawing_impl(
 /// emitted; a valid zero extent is reported only when an Image/Chart run was
 /// actually retained. This keeps the fixed "was omitted" messages factual.
 fn collect_drawing_extent_diagnostic(
-    drawing: roxmltree::Node,
+    container: roxmltree::Node,
     media_map: &HashMap<String, String>,
     chart_map: &ChartMap,
     runs: &[DocRun],
     diagnostics: &mut Vec<PendingParseDiagnostic>,
 ) {
-    let Some(container) = drawing_own_container(drawing, |node| {
-        is_wp_ns(node.tag_name().namespace())
-            && matches!(node.tag_name().name(), "inline" | "anchor")
-    }) else {
-        return;
-    };
     if drawing_container_hidden(container) {
         return;
     }
@@ -27656,6 +27724,74 @@ mod inline_wps_shape_tests {
             };
             assert_eq!(picture.anchor, !floating, "Fallback owns the container");
         }
+        // Part 3 §9.2: an ignorable `mc:ProcessContent` wrapper is replaced
+        // by its children, so its container is the drawing's own.
+        for floating in [false, true] {
+            let (open_tag, rest) = image(floating)
+                .replacen("<w:drawing>", &format!("<w:drawing {NS}>"), 1)
+                .split_once('>')
+                .map(|(open_tag, rest)| (open_tag.to_string(), rest.to_string()))
+                .unwrap();
+            let body = rest.strip_suffix("</w:drawing>").unwrap();
+            let xml = format!(
+                r#"{open_tag} {MC} mc:Ignorable="unk" mc:ProcessContent="unk:wrap"><unk:wrap>{body}</unk:wrap></w:drawing>"#
+            );
+            let runs = parse(&xml);
+            let [DocRun::Image(picture)] = runs.as_slice() else {
+                panic!("ProcessContent-wrapped picture missing (floating={floating}): {runs:?}")
+            };
+            assert_eq!(picture.anchor, floating);
+            // Without ProcessContent the ignorable wrapper and its content are
+            // removed.
+            let ignored = xml.replace(r#" mc:ProcessContent="unk:wrap""#, "");
+            assert!(
+                parse(&ignored).is_empty(),
+                "ignored wrapper drops its content"
+            );
+        }
+        // CT_Drawing is an unbounded choice of wp:anchor / wp:inline: every
+        // container is acquired in document order, and a hidden one does not
+        // suppress its visible siblings.
+        let containers = |first_hidden: bool| {
+            let first = image(false).replacen(
+                r#"name="Inner"/>"#,
+                if first_hidden {
+                    r#"name="Inner" hidden="1"/>"#
+                } else {
+                    r#"name="Inner"/>"#
+                },
+                1,
+            );
+            let (_, first_rest) = first.split_once('>').unwrap();
+            let (_, second_rest) = image(true)
+                .split_once('>')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .unwrap();
+            format!(
+                "<w:drawing {NS}>{}{}",
+                first_rest.strip_suffix("</w:drawing>").unwrap(),
+                second_rest
+            )
+        };
+        let runs = parse(&containers(true));
+        let [DocRun::Image(visible)] = runs.as_slice() else {
+            panic!("visible sibling container missing: {runs:?}")
+        };
+        assert!(visible.anchor);
+        let runs = parse(&containers(false));
+        let anchors: Vec<bool> = runs
+            .iter()
+            .map(|run| match run {
+                DocRun::Image(picture) => picture.anchor,
+                other => panic!("unexpected run {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            anchors,
+            vec![false, true],
+            "both containers, document order"
+        );
+
         // The wrapped outer text box still ignores its nested picture's anchor.
         let runs = parse(&wrap(text_box(false, true), "wp", None));
         let [DocRun::Shape(outer)] = runs.as_slice() else {
