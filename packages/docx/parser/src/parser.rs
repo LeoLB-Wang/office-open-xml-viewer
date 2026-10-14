@@ -4444,8 +4444,13 @@ enum DrawingExtent {
 /// `0..=27273042316900`. Keeping one decision function prevents diagnostics
 /// from claiming that a drawing was omitted when the parser actually retained
 /// it (or missing an omission the parser actually made).
+///
+/// `wp:extent` is a direct child of `wp:inline` (§20.4.2.8) / `wp:anchor`
+/// (§20.4.2.3). Only that child is consulted: a drawing nested in the
+/// container's text box story carries its own extent, and a container without
+/// one takes the missing-extent path instead of borrowing the nested size.
 fn drawing_extent(container: roxmltree::Node) -> DrawingExtent {
-    let Some(extent) = container.descendants().find(|node| {
+    let Some(extent) = container.children().find(|node| {
         node.is_element()
             && is_wp_ns(node.tag_name().namespace())
             && node.tag_name().name() == "extent"
@@ -4466,6 +4471,63 @@ fn drawing_extent(container: roxmltree::Node) -> DrawingExtent {
         (Some(cx), Some(cy)) => DrawingExtent::Valid { cx, cy },
         _ => DrawingExtent::Invalid,
     }
+}
+
+/// Pre-order descendants of `root` (including `root`) that belong to the same
+/// DrawingML object rather than to a text box story inside it. A
+/// `w:txbxContent` (ECMA-376 §17.17.1.1, reached through `wps:txbx` or a
+/// group child's `wps:txbx`) is a separate WordprocessingML story whose runs
+/// may hold their own `w:drawing`s; its subtree is skipped so lookups for the
+/// enclosing drawing's payload (`wpg:wgp`, `wps:wsp`, `c:chart`, `a:blip`, …)
+/// never resolve to a nested drawing's payload. The story element itself is
+/// yielded, so callers can still see that a text box exists.
+fn story_bounded_descendants<'a, 'input: 'a>(
+    root: roxmltree::Node<'a, 'input>,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
+    let mut next = Some(root);
+    std::iter::from_fn(move || {
+        let current = next?;
+        let enters_story =
+            current != root && current.is_element() && current.tag_name().name() == "txbxContent";
+        next = current.first_child().filter(|_| !enters_story).or_else(|| {
+            let mut node = current;
+            loop {
+                if node == root {
+                    return None;
+                }
+                if let Some(sibling) = node.next_sibling() {
+                    return Some(sibling);
+                }
+                node = node.parent()?;
+            }
+        });
+        Some(current)
+    })
+}
+
+/// The drawing's own `a:graphicData`: `wp:inline`/`wp:anchor` → direct
+/// `a:graphic` (§20.4.2.8 / §20.4.2.3) → direct `a:graphicData`
+/// (§20.1.2.2.16 / §20.1.2.2.17).
+fn drawing_graphic_data<'a, 'input>(
+    container: roxmltree::Node<'a, 'input>,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    container
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "graphic")?
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "graphicData")
+}
+
+/// Every node of the drawing's own payload: its `a:graphicData` subtree
+/// without any text box story nested inside it. All payload-kind lookups
+/// (group, shape, chart, picture) of one drawing go through this, so the
+/// acquisition path and its diagnostics classify the same payload.
+fn drawing_payload_nodes<'a, 'input: 'a>(
+    container: roxmltree::Node<'a, 'input>,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
+    drawing_graphic_data(container)
+        .into_iter()
+        .flat_map(story_bounded_descendants)
 }
 
 fn drawing_extent_points(container: roxmltree::Node) -> Option<(f64, f64)> {
@@ -8457,11 +8519,11 @@ struct InlineBlip {
     height_pt: f64,
 }
 
-/// Resolve a single picture under `node`: the first `<a:blip>` descendant (via
-/// [`resolve_blip_urls`]) together with the first `<wp:extent>` descendant's
-/// `cx`/`cy` (EMU → pt at 12700 EMU/pt). `node` is the element enclosing one
-/// drawing — the `<wp:inline>` / `<wp:anchor>` container for the body image
-/// paths, or the text-box `<w:p>` for the txbx image path.
+/// Resolve a single picture drawing: the first `<a:blip>` of the container's
+/// own payload ([`drawing_payload_nodes`], via [`resolve_blip_urls`]) together
+/// with the container's own `<wp:extent>` `cx`/`cy` (EMU → pt at 12700
+/// EMU/pt). `container` is the `<wp:inline>` / `<wp:anchor>` of one drawing;
+/// pictures inside a text box story nested in it belong to their own drawings.
 ///
 /// Returns `None` unless BOTH a drawable blip AND a parseable extent (cx and cy
 /// present) are found — the strict "drawable image with a known size" contract
@@ -8472,13 +8534,13 @@ struct InlineBlip {
 ///
 /// Single-blip only: callers that handle composite drawings (`wgp`/`wsp`) must
 /// branch on those FIRST and reach this helper only for a regular single picture
-/// (so the first blip/extent descendant unambiguously belongs to that picture).
+/// (so the first payload blip unambiguously belongs to that picture).
 fn resolve_inline_blip(
-    node: roxmltree::Node,
+    container: roxmltree::Node,
     media_map: &HashMap<String, String>,
     theme: &ThemeColors,
 ) -> Option<InlineBlip> {
-    let blip = node.descendants().find(|n| n.tag_name().name() == "blip")?;
+    let blip = drawing_payload_nodes(container).find(|n| n.tag_name().name() == "blip")?;
     let (image_path, mime_type, svg_image_path) = resolve_blip_urls(blip, media_map)?;
     // The shared parsers take the `<*:blipFill>` (the blip's parent).
     let blip_fill = blip.parent();
@@ -8487,7 +8549,7 @@ fn resolve_inline_blip(
     let duotone = blip_fill.and_then(|bf| parse_blip_duotone_docx(bf, theme));
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
     let alpha = blip_fill.and_then(parse_blip_alpha);
-    let (width_pt, height_pt) = drawing_extent_points(node)?;
+    let (width_pt, height_pt) = drawing_extent_points(container)?;
     Some(InlineBlip {
         image_path,
         mime_type,
@@ -8498,6 +8560,25 @@ fn resolve_inline_blip(
         width_pt,
         height_pt,
     })
+}
+
+/// The first picture of a text box paragraph `<w:p>`: the first `<a:blip>` in
+/// the paragraph's own story, resolved against the drawing that owns it (its
+/// nearest `wp:inline`/`wp:anchor` ancestor), so blip and `wp:extent` always
+/// come from the same drawing. Text box stories nested inside that paragraph's
+/// drawings are not part of this paragraph.
+fn resolve_story_paragraph_blip(
+    paragraph: roxmltree::Node,
+    media_map: &HashMap<String, String>,
+    theme: &ThemeColors,
+) -> Option<InlineBlip> {
+    let blip = story_bounded_descendants(paragraph).find(|n| n.tag_name().name() == "blip")?;
+    let container = blip.ancestors().find(|node| {
+        node.is_element()
+            && is_wp_ns(node.tag_name().namespace())
+            && matches!(node.tag_name().name(), "inline" | "anchor")
+    })?;
+    resolve_inline_blip(container, media_map, theme)
 }
 
 /// True when a WordprocessingML drawing container (`<wp:inline>` /
@@ -8601,30 +8682,23 @@ fn unresolved_drawing_resource_kind(
 ) -> Option<UnavailableDrawingResourceKind> {
     // A group or WordprocessingShape owns child transforms and may mix several
     // payloads. This first slice retains only one picture/chart whose wp:extent
-    // is the complete outer geometry.
-    if container
-        .descendants()
-        .any(|node| matches!(node.tag_name().name(), "wgp" | "wsp"))
+    // is the complete outer geometry. Only the drawing's own payload counts: a
+    // drawing nested in a text box story is classified by its own parse.
+    if drawing_payload_nodes(container).any(|node| matches!(node.tag_name().name(), "wgp" | "wsp"))
     {
         return None;
     }
-    let chart = container
-        .descendants()
-        .find(|node| node.tag_name().name() == "graphicData")
-        .is_some_and(|graphic_data| {
-            graphic_data.attribute("uri").is_some_and(|uri| {
-                uri.contains("drawingml/2006/chart")
-                    || uri.contains("chartex")
-                    || uri.contains("chartEx")
-            }) && graphic_data
-                .descendants()
-                .any(|node| node.tag_name().name() == "chart")
-        });
+    let chart = drawing_graphic_data(container).is_some_and(|graphic_data| {
+        graphic_data.attribute("uri").is_some_and(|uri| {
+            uri.contains("drawingml/2006/chart")
+                || uri.contains("chartex")
+                || uri.contains("chartEx")
+        }) && story_bounded_descendants(graphic_data).any(|node| node.tag_name().name() == "chart")
+    });
     if chart {
         return Some(UnavailableDrawingResourceKind::Chart);
     }
-    container
-        .descendants()
+    drawing_payload_nodes(container)
         .any(|node| node.tag_name().name() == "blip")
         .then_some(UnavailableDrawingResourceKind::Image)
 }
@@ -8643,6 +8717,39 @@ fn unavailable_drawing_run(
             anchor_acquisition,
         },
     )))
+}
+
+/// The `wpg:wgp` payload an inline drawing renders as a group
+/// ([MS-ODRAWXML] §2.16.3.2): the direct child of the drawing's own
+/// `a:graphicData` with the WordprocessingGroup `uri`. The inline group path
+/// sizes the group from `wp:extent`, so the extent diagnostic shares this
+/// selection.
+fn inline_group_payload<'a, 'input>(
+    container: roxmltree::Node<'a, 'input>,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    const WPG: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup";
+    drawing_graphic_data(container)
+        .filter(|data| data.attribute("uri") == Some(WPG))?
+        .children()
+        .find(|n| {
+            n.is_element() && n.tag_name().name() == "wgp" && n.tag_name().namespace() == Some(WPG)
+        })
+}
+
+/// The direct `wps:wsp` payload an inline drawing renders as a shape: the
+/// direct child of the drawing's own WordprocessingShape `a:graphicData`.
+/// Like the inline group, it is sized from `wp:extent`.
+fn inline_wps_payload<'a, 'input>(
+    container: roxmltree::Node<'a, 'input>,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    drawing_graphic_data(container)
+        .filter(|graphic_data| {
+            graphic_data
+                .attribute("uri")
+                .is_some_and(|uri| uri.contains("wordprocessingShape"))
+        })?
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "wsp")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8686,19 +8793,15 @@ fn parse_inline_drawing_impl(
         // dispatches on the part's root namespace), so accepting the chartex
         // uri here — matching pptx's `uri.contains("chartex")` check in
         // `shape.rs` — is the only change needed to stop silently dropping it.
-        if let Some(graphic_data) = container
-            .descendants()
-            .find(|n| n.tag_name().name() == "graphicData")
-        {
+        if let Some(graphic_data) = drawing_graphic_data(container) {
             let is_chart = graphic_data.attribute("uri").is_some_and(|uri| {
                 uri.contains("drawingml/2006/chart")
                     || uri.contains("chartex")
                     || uri.contains("chartEx")
             });
             if is_chart {
-                if let Some(chart_node) = container
-                    .descendants()
-                    .find(|n| n.tag_name().name() == "chart")
+                if let Some(chart_node) =
+                    story_bounded_descendants(graphic_data).find(|n| n.tag_name().name() == "chart")
                 {
                     let rid = attr_ns(
                         &chart_node,
@@ -8744,29 +8847,7 @@ fn parse_inline_drawing_impl(
         // pictures and nested groups; their positioned children reuse one
         // retained story rather than each advancing the line pen. graphicFrame
         // and contentPart group children are not yet supported by these readers.
-        if let Some(wgp) = container
-            .children()
-            .find(|n| n.is_element() && n.tag_name().name() == "graphic")
-            .and_then(|graphic| {
-                graphic
-                    .children()
-                    .find(|n| n.is_element() && n.tag_name().name() == "graphicData")
-            })
-            .filter(|data| {
-                data.attribute("uri")
-                    == Some("http://schemas.microsoft.com/office/word/2010/wordprocessingGroup")
-            })
-            .and_then(|data| {
-                data.children().find(|n| {
-                    n.is_element()
-                        && n.tag_name().name() == "wgp"
-                        && n.tag_name().namespace()
-                            == Some(
-                                "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
-                            )
-                })
-            })
-        {
+        if let Some(wgp) = inline_group_payload(container) {
             if let Some((width_pt, height_pt)) = drawing_extent_points(container) {
                 let metadata = anchor_group_metadata_index(wgp);
                 let anchor = AnchorMeta::default();
@@ -8896,19 +8977,7 @@ fn parse_inline_drawing_impl(
         // in paragraph flow: no anchor-acquisition wire, wrap metadata, or page
         // positioning. Inline placement is resolved later from the paragraph
         // pen, so anchor-relative flags remain false just like an inline image.
-        let direct_wps_payload = container
-            .descendants()
-            .find(|n| n.tag_name().name() == "graphicData")
-            .filter(|graphic_data| {
-                graphic_data
-                    .attribute("uri")
-                    .is_some_and(|uri| uri.contains("wordprocessingShape"))
-            })
-            .and_then(|graphic_data| {
-                graphic_data
-                    .children()
-                    .find(|n| n.is_element() && n.tag_name().name() == "wsp")
-            });
+        let direct_wps_payload = inline_wps_payload(container);
         if let (Some(wsp), Some((width_pt, height_pt))) =
             (direct_wps_payload, drawing_extent_points(container))
         {
@@ -9066,19 +9135,15 @@ fn parse_inline_drawing_impl(
     // The ChartRun carries the full position and wrap metadata parsed above,
     // exactly like the anchor ImageRun path, so the renderer can position the
     // chart and reserve its text-wrap exclusion band with picture parity.
-    if let Some(graphic_data) = container
-        .descendants()
-        .find(|n| n.tag_name().name() == "graphicData")
-    {
+    if let Some(graphic_data) = drawing_graphic_data(container) {
         let is_chart = graphic_data.attribute("uri").is_some_and(|uri| {
             uri.contains("drawingml/2006/chart")
                 || uri.contains("chartex")
                 || uri.contains("chartEx")
         });
         if is_chart {
-            if let Some(chart_node) = container
-                .descendants()
-                .find(|n| n.tag_name().name() == "chart")
+            if let Some(chart_node) =
+                story_bounded_descendants(graphic_data).find(|n| n.tag_name().name() == "chart")
             {
                 let rid = attr_ns(
                     &chart_node,
@@ -9118,11 +9183,10 @@ fn parse_inline_drawing_impl(
         }
     }
 
-    // Check for wgp (Word Graphics Group) — expands to multiple per-element entries
-    if let Some(wgp) = container
-        .descendants()
-        .find(|n| n.tag_name().name() == "wgp")
-    {
+    // Check for wgp (Word Graphics Group) — expands to multiple per-element
+    // entries. Only this drawing's own payload is searched: a group inside a
+    // text box story belongs to the nested drawing (ECMA-376 §20.1.2.2.17).
+    if let Some(wgp) = drawing_payload_nodes(container).find(|n| n.tag_name().name() == "wgp") {
         let mut out: Vec<DocRun> = Vec::new();
         let group_metadata = anchor_group_metadata_index(wgp);
         let mut images = parse_wgp_images_with_metadata(
@@ -9173,10 +9237,7 @@ fn parse_inline_drawing_impl(
     }
 
     // wps:wsp directly under the anchor (no wgp wrapper)
-    if let Some(wsp) = container
-        .descendants()
-        .find(|n| n.tag_name().name() == "wsp")
-    {
+    if let Some(wsp) = drawing_payload_nodes(container).find(|n| n.tag_name().name() == "wsp") {
         if let Some(mut shp) = parse_wsp_shape(
             style_map,
             num_map,
@@ -9299,18 +9360,19 @@ fn collect_drawing_extent_diagnostic(
             DocRun::Image(_) | DocRun::Chart(_) | DocRun::UnavailableDrawing(_)
         )
     });
-    if !retained_extent_consumer {
-        // The implemented group/shape branches size from `a:xfrm` and never
+    // An inline group/shape payload is sized from `wp:extent` exactly like a
+    // picture (§20.4.2.7), so a missing/invalid extent omits it too.
+    let inline_extent_shape = container.tag_name().name() == "inline"
+        && (inline_group_payload(container).is_some() || inline_wps_payload(container).is_some());
+    if !retained_extent_consumer && !inline_extent_shape {
+        // The anchored group/shape branches size from `a:xfrm` and never
         // consult `wp:extent`; do not blame extent if such a payload is present.
-        if container
-            .descendants()
+        if drawing_payload_nodes(container)
             .any(|node| matches!(node.tag_name().name(), "wgp" | "wsp"))
         {
             return;
         }
-        let chart_resolves = container
-            .descendants()
-            .find(|node| node.tag_name().name() == "graphicData")
+        let chart_resolves = drawing_graphic_data(container)
             .filter(|graphic_data| {
                 graphic_data.attribute("uri").is_some_and(|uri| {
                     uri.contains("drawingml/2006/chart")
@@ -9318,9 +9380,8 @@ fn collect_drawing_extent_diagnostic(
                         || uri.contains("chartEx")
                 })
             })
-            .and_then(|_| {
-                container
-                    .descendants()
+            .and_then(|graphic_data| {
+                story_bounded_descendants(graphic_data)
                     .find(|node| node.tag_name().name() == "chart")
             })
             .and_then(|chart| {
@@ -9332,8 +9393,7 @@ fn collect_drawing_extent_diagnostic(
                 )
             })
             .is_some_and(|rid| chart_map.contains_key(rid));
-        let blip_resolves = container
-            .descendants()
+        let blip_resolves = drawing_payload_nodes(container)
             .find(|node| node.tag_name().name() == "blip")
             .and_then(|blip| resolve_blip_urls(blip, media_map))
             .is_some();
@@ -9596,10 +9656,21 @@ std::thread_local! {
 fn anchor_group_metadata_index(wgp: roxmltree::Node) -> AnchorGroupMetadataIndex {
     #[cfg(test)]
     ANCHOR_GROUP_METADATA_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
-    let source_count = wgp
-        .descendants()
-        .filter(|node| node.is_element() && matches!(node.tag_name().name(), "pic" | "wsp"))
-        .count();
+    // Count exactly the sources `visit` indexes (direct `pic`/`wsp` children of
+    // the group and its nested `grpSp`s). A `pic`/`wsp` inside a child's text
+    // box story belongs to a nested drawing, not to this group.
+    fn count_sources(group: roxmltree::Node) -> usize {
+        group
+            .children()
+            .filter(|node| node.is_element())
+            .map(|child| match child.tag_name().name() {
+                "pic" | "wsp" => 1,
+                "grpSp" => count_sources(child),
+                _ => 0,
+            })
+            .sum()
+    }
+    let source_count = count_sources(wgp);
     fn visit(
         group: roxmltree::Node,
         inherited_chain: &[AnchorRawTransformWire],
@@ -11571,7 +11642,7 @@ fn extract_simple_paragraph_text(
     // parseable extent are present, which simply leaves this an image-less
     // paragraph (the drop-if-no-text-and-no-image check below still applies).
     let (image_path, mime_type, svg_image_path, image_width_pt, image_height_pt) =
-        match resolve_inline_blip(p, media_map, theme) {
+        match resolve_story_paragraph_blip(p, media_map, theme) {
             Some(b) => (
                 Some(b.image_path),
                 Some(b.mime_type),
@@ -32489,5 +32560,263 @@ mod ruby_tab_tests {
             "ruby rides the first EMITTED piece (the tab), mirroring the body path",
         );
         assert!(st.runs[1].ruby.is_none());
+    }
+}
+
+/// ECMA-376 §20.1.2.2.16/§20.1.2.2.17: a drawing's payload is its own
+/// `a:graphic/a:graphicData`; §20.4.2.3/§20.4.2.8: its `wp:extent` is a direct
+/// child of its own `wp:anchor`/`wp:inline`. A text box story
+/// (`wps:txbx/w:txbxContent`) inside that payload is a separate story whose
+/// runs own their drawings, so none of the containing drawing's lookups may
+/// resolve into it (#1778, #1779).
+#[cfg(test)]
+mod nested_story_payload_tests {
+    use super::*;
+
+    const NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+      xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+      xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+      xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+      xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+      xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup""#;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Payload {
+        Group,
+        Picture,
+        Chart,
+    }
+
+    fn container(floating: bool, extent: &str) -> (String, &'static str) {
+        if floating {
+            (
+                format!(
+                    r#"<wp:anchor behindDoc="0" relativeHeight="1"><wp:simplePos x="0" y="0"/>
+                    <wp:positionH relativeFrom="column"><wp:posOffset>127000</wp:posOffset></wp:positionH>
+                    <wp:positionV relativeFrom="paragraph"><wp:posOffset>254000</wp:posOffset></wp:positionV>{extent}"#
+                ),
+                r#"<wp:wrapSquare wrapText="bothSides"/></wp:anchor>"#,
+            )
+        } else {
+            (format!("<wp:inline>{extent}"), "</wp:inline>")
+        }
+    }
+
+    fn pic(id: u32) -> String {
+        format!(
+            r#"<pic:pic><pic:nvPicPr><pic:cNvPr id="{id}" name="P{id}"/><pic:cNvPicPr/></pic:nvPicPr>
+            <pic:blipFill><a:blip r:embed="rIdImg"/></pic:blipFill>
+            <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="317500"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic>"#
+        )
+    }
+
+    fn graphic_data(payload: Payload) -> String {
+        match payload {
+            Payload::Group => format!(
+                r#"<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+                <wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="317500"/>
+                <a:chOff x="0" y="0"/><a:chExt cx="635000" cy="317500"/></a:xfrm></wpg:grpSpPr>
+                <wps:wsp><wps:cNvPr id="11" name="GroupRect"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="317500" cy="317500"/></a:xfrm>
+                <a:prstGeom prst="rect"/></wps:spPr><wps:bodyPr/></wps:wsp>{}</wpg:wgp></a:graphicData>"#,
+                pic(12)
+            ),
+            Payload::Picture => format!(
+                r#"<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">{}</a:graphicData>"#,
+                pic(13)
+            ),
+            Payload::Chart => {
+                r#"<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+                <c:chart r:id="rIdChart"/></a:graphicData>"#
+                    .into()
+            }
+        }
+    }
+
+    /// Nested drawing, 50pt x 25pt.
+    fn nested(payload: Payload, floating: bool) -> String {
+        let (open, close) = container(floating, r#"<wp:extent cx="635000" cy="317500"/>"#);
+        format!(
+            r#"<w:drawing>{open}<wp:docPr id="2" name="Inner"/><a:graphic>{}</a:graphic>{close}</w:drawing>"#,
+            graphic_data(payload)
+        )
+    }
+
+    /// Text box (xfrm 300pt x 100pt) whose story is BEFORE, `inner`, AFTER.
+    fn text_box(floating: bool, extent: &str, inner: &str) -> String {
+        let (open, close) = container(floating, extent);
+        format!(
+            r#"<w:drawing {NS}>{open}<wp:docPr id="1" name="Outer"/>
+            <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3810000" cy="1270000"/></a:xfrm><a:prstGeom prst="rect"/></wps:spPr>
+            <wps:txbx><w:txbxContent><w:p><w:r><w:t>BEFORE</w:t></w:r><w:r>{inner}</w:r><w:r><w:t>AFTER</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/>
+            </wps:wsp></a:graphicData></a:graphic>{close}</w:drawing>"#
+        )
+    }
+
+    fn chart_map() -> ChartMap {
+        let model = parse_docx_chart(
+            r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+                             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <c:chart><c:plotArea><c:barChart>
+                <c:barDir val="col"/><c:grouping val="clustered"/>
+                <c:ser><c:idx val="0"/><c:order val="0"/>
+                  <c:val><c:numRef><c:numCache><c:ptCount val="1"/>
+                    <c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val>
+                </c:ser><c:axId val="1"/><c:axId val="2"/>
+              </c:barChart></c:plotArea></c:chart></c:chartSpace>"#,
+            None,
+            &ThemeColors::default(),
+        )
+        .expect("chart model");
+        let mut chart_map = ChartMap::default();
+        chart_map.insert("rIdChart".to_string(), model);
+        chart_map
+    }
+
+    fn parse(xml: &str) -> (Vec<DocRun>, Vec<&'static str>) {
+        let doc = roxmltree::Document::parse(xml).expect("drawing fixture");
+        let media = HashMap::from([("rIdImg".into(), "word/media/inner.png".into())]);
+        let mut diagnostics = Vec::new();
+        let runs = parse_inline_drawing(
+            &StyleMap::default(),
+            &mut NumberingMap::default(),
+            doc.root_element(),
+            &media,
+            &chart_map(),
+            &HashMap::new(),
+            &ThemeColors::default(),
+            DepthGuard::root(),
+            &mut diagnostics,
+        );
+        (runs, diagnostics.iter().map(|d| d.code).collect())
+    }
+
+    fn story_runs(outer: &ShapeRun) -> &[DocRun] {
+        let Some(TextBoxBlockWire::Body(BodyElement::Paragraph(story))) =
+            outer.text_box_content.first()
+        else {
+            panic!("text box story missing")
+        };
+        &story.runs
+    }
+
+    /// #1778: the outer text box keeps its own payload for every outer
+    /// container and nested payload kind; the nested drawing stays in the story.
+    #[test]
+    fn nested_story_drawing_does_not_replace_containing_text_box() {
+        let outer_extent = r#"<wp:extent cx="3810000" cy="1270000"/>"#;
+        for outer_floating in [false, true] {
+            for payload in [Payload::Group, Payload::Picture, Payload::Chart] {
+                for inner_floating in [false, true] {
+                    // TEMP until #1776 lands: an inline drawing containing a
+                    // nested anchor is the container-classification bug #1774.
+                    if !outer_floating && inner_floating {
+                        continue;
+                    }
+                    let case = format!(
+                        "outer floating={outer_floating}, nested {payload:?} floating={inner_floating}"
+                    );
+                    let (runs, diagnostics) = parse(&text_box(
+                        outer_floating,
+                        outer_extent,
+                        &nested(payload, inner_floating),
+                    ));
+                    let [DocRun::Shape(outer)] = runs.as_slice() else {
+                        panic!("{case}: outer text box must survive alone, got {runs:?}")
+                    };
+                    assert!(diagnostics.is_empty(), "{case}: {diagnostics:?}");
+                    assert_eq!(outer.inline, !outer_floating, "{case}");
+                    assert_eq!((outer.width_pt, outer.height_pt), (300.0, 100.0), "{case}");
+                    let story = story_runs(outer);
+                    let texts: Vec<&str> = story
+                        .iter()
+                        .filter_map(|run| match run {
+                            DocRun::Text(text) => Some(text.text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(texts, vec!["BEFORE", "AFTER"], "{case}");
+                    let nested_survives = story.iter().any(|run| match (payload, run) {
+                        (Payload::Group, DocRun::Shape(shape)) => {
+                            inner_floating || !shape.text_box_content.is_empty()
+                        }
+                        (Payload::Picture, DocRun::Image(image)) => {
+                            (image.width_pt, image.height_pt) == (50.0, 25.0)
+                        }
+                        (Payload::Chart, DocRun::Chart(chart)) => {
+                            (chart.width_pt, chart.height_pt) == (50.0, 25.0)
+                        }
+                        _ => false,
+                    });
+                    assert!(nested_survives, "{case}: nested payload missing: {story:?}");
+                }
+            }
+        }
+    }
+
+    /// #1778: a group indexes only its own `pic`/`wsp` sources; a picture in a
+    /// group child's text box story belongs to the nested drawing.
+    #[test]
+    fn group_source_count_excludes_nested_story_drawings() {
+        let story_shape = format!(
+            r#"<wps:wsp><wps:cNvPr id="21" name="StoryRect"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="317500" cy="317500"/></a:xfrm>
+            <a:prstGeom prst="rect"/></wps:spPr><wps:txbx><w:txbxContent><w:p><w:r>{}</w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>"#,
+            nested(Payload::Picture, false)
+        );
+        let (open, close) = container(true, r#"<wp:extent cx="635000" cy="317500"/>"#);
+        let xml = format!(
+            r#"<w:drawing {NS}>{open}<wp:docPr id="1" name="Group"/><a:graphic>
+            <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+            <wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="317500"/>
+            <a:chOff x="0" y="0"/><a:chExt cx="635000" cy="317500"/></a:xfrm></wpg:grpSpPr>{story_shape}{}</wpg:wgp>
+            </a:graphicData></a:graphic>{close}</w:drawing>"#,
+            pic(22)
+        );
+        let (runs, _) = parse(&xml);
+        let mut sources: Vec<(usize, usize)> = runs
+            .iter()
+            .map(|run| {
+                let acquisition = match run {
+                    DocRun::Shape(shape) => shape.anchor_acquisition.as_ref(),
+                    DocRun::Image(image) => image.anchor_acquisition.as_ref(),
+                    other => panic!("unexpected group child {other:?}"),
+                };
+                let group = acquisition
+                    .and_then(|a| a.group.as_ref())
+                    .expect("group facts");
+                (group.source_index, group.source_count)
+            })
+            .collect();
+        sources.sort_unstable();
+        assert_eq!(sources, vec![(0, 2), (1, 2)]);
+    }
+
+    /// #1779: an outer drawing without its own `wp:extent` does not borrow a
+    /// nested drawing's extent. The inline text box (sized from `wp:extent`)
+    /// is omitted with the missing-extent diagnostic; the anchored one is sized
+    /// from its own `a:xfrm` and is unaffected.
+    #[test]
+    fn missing_outer_extent_does_not_borrow_nested_extent() {
+        for payload in [Payload::Group, Payload::Picture, Payload::Chart] {
+            let inner = nested(payload, false);
+            let (runs, diagnostics) = parse(&text_box(false, "", &inner));
+            assert!(
+                runs.is_empty(),
+                "{payload:?}: inline text box kept: {runs:?}"
+            );
+            assert_eq!(
+                diagnostics,
+                vec![PARSE_DIAGNOSTIC_CODE_MISSING_DRAWING_EXTENT]
+            );
+
+            let (runs, diagnostics) = parse(&text_box(true, "", &inner));
+            let [DocRun::Shape(outer)] = runs.as_slice() else {
+                panic!("{payload:?}: anchored text box missing: {runs:?}")
+            };
+            assert_eq!((outer.width_pt, outer.height_pt), (300.0, 100.0));
+            assert!(diagnostics.is_empty(), "{payload:?}: {diagnostics:?}");
+        }
     }
 }
