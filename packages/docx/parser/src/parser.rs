@@ -8663,9 +8663,10 @@ fn unavailable_drawing_run(
 /// order. ECMA-376 §17.3.3.9 / wml.xsd `CT_Drawing`: an unbounded choice of
 /// `wp:anchor` / `wp:inline` children. An `mc:AlternateContent` is replaced by
 /// its selected branch (Part 3 §9.3, same application configuration as the
-/// streamed projector). Other wrapper elements (e.g. an `mc:ProcessContent`
-/// wrapper) are searched through as before; the native paths do not apply
-/// `mc:Ignorable` removal elsewhere either. A container's own subtree —
+/// streamed projector). Foreign-namespace wrapper elements (e.g. an
+/// `mc:ProcessContent` wrapper) are searched through; the native paths do not
+/// apply `mc:Ignorable` removal elsewhere either. An understood element that is
+/// not a container is not part of `CT_Drawing` and is skipped. A container's own subtree —
 /// including drawings nested in its text box story — is never searched, so
 /// each node outside the containers is visited once.
 fn drawing_own_containers<'a, 'i>(
@@ -8692,8 +8693,15 @@ fn drawing_own_containers<'a, 'i>(
                 Some(branch) => branch,
                 None => continue,
             }
-        } else {
+        } else if namespace.is_some_and(|namespace| {
+            !crate::document_projector::docx_understands_namespace(namespace)
+        }) {
+            // A foreign element can only be a markup-compatibility wrapper.
             node
+        } else {
+            // An understood non-container element is not part of CT_Drawing;
+            // its content is not this drawing's.
+            continue;
         };
         let start = pending.len();
         pending.extend(parent.children().filter(|n| n.is_element()));
@@ -21853,6 +21861,163 @@ mod anchor_image_relative_from_tests {
                 _ => None,
             })
             .expect("expected one unavailable drawing")
+    }
+
+    fn nested_drawing_container(anchor: bool, outer: bool, payload: &str) -> String {
+        let (cx, cy, id) = if outer {
+            (2540000, 1270000, 1)
+        } else {
+            (254000, 127000, 2)
+        };
+        let extent = format!(r#"<wp:extent cx="{cx}" cy="{cy}"/>"#);
+        let graphic = format!(
+            r#"<wp:docPr id="{id}" name="Drawing {id}"/><wp:cNvGraphicFramePr/><a:graphic>{payload}</a:graphic>"#
+        );
+        if anchor {
+            let (x, y, wrap) = if outer {
+                (889000, 1016000, r#"<wp:wrapSquare wrapText="bothSides"/>"#)
+            } else {
+                (381000, 508000, "<wp:wrapNone/>")
+            };
+            format!(
+                r#"<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+              <wp:simplePos x="0" y="0"/>
+              <wp:positionH relativeFrom="page"><wp:posOffset>{x}</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="page"><wp:posOffset>{y}</wp:posOffset></wp:positionV>
+              {extent}{wrap}{graphic}</wp:anchor>"#
+            )
+        } else {
+            format!("<wp:inline>{extent}{graphic}</wp:inline>")
+        }
+    }
+
+    fn nested_drawing_body(outer_anchor: bool, inner_anchor: bool) -> String {
+        let image = nested_drawing_container(
+            inner_anchor,
+            false,
+            r#"
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic><pic:nvPicPr><pic:cNvPr id="2" name="Inner image"/><pic:cNvPicPr/></pic:nvPicPr>
+              <pic:blipFill><a:blip r:embed="rIdPng"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+              <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="254000" cy="127000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+            </pic:pic>
+          </a:graphicData>"#,
+        );
+        let shape = nested_drawing_container(
+            outer_anchor,
+            true,
+            &format!(
+                r#"
+          <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <wps:wsp><wps:cNvSpPr txBox="1"/>
+              <wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="1270000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr>
+              <wps:txbx><w:txbxContent><w:p>
+                <w:r><w:t>Before image</w:t></w:r><w:r><w:drawing>{image}</w:drawing></w:r><w:r><w:t>After image</w:t></w:r>
+              </w:p></w:txbxContent></wps:txbx><wps:bodyPr><a:noAutofit/></wps:bodyPr>
+            </wps:wsp>
+          </a:graphicData>"#
+            ),
+        );
+        format!(
+            r#"<w:p><w:r><w:drawing
+          xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+          xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+          xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+          {shape}</w:drawing></w:r></w:p>"#
+        )
+    }
+
+    fn assert_nested_drawing(outer_anchor: bool, inner_anchor: bool) {
+        let doc = parse_from_bytes(&build_docx(&nested_drawing_body(
+            outer_anchor,
+            inner_anchor,
+        )))
+        .expect("nested drawing document parses");
+        let [BodyElement::Paragraph(host)] = doc.body.as_slice() else {
+            panic!("expected one drawing paragraph");
+        };
+        let drawings: Vec<_> = host
+            .runs
+            .iter()
+            .filter(|run| !matches!(run, DocRun::AnchorHost(_)))
+            .collect();
+        let [DocRun::Shape(shape)] = drawings.as_slice() else {
+            panic!("expected outer textbox, got {drawings:?}");
+        };
+        assert_eq!(shape.inline, !outer_anchor);
+        assert_eq!((shape.width_pt, shape.height_pt), (200.0, 100.0));
+        if outer_anchor {
+            assert_eq!((shape.anchor_x_pt, shape.anchor_y_pt), (70.0, 80.0));
+            assert_eq!(shape.wrap_mode.as_deref(), Some("square"));
+            assert_eq!(shape.anchor_x_relative_from.as_deref(), Some("page"));
+            assert_eq!(shape.anchor_y_relative_from.as_deref(), Some("page"));
+        } else {
+            assert!(shape.anchor_acquisition.is_none());
+        }
+        let [TextBoxBlockWire::Body(BodyElement::Paragraph(paragraph))] =
+            shape.text_box_content.as_slice()
+        else {
+            panic!("expected retained textbox paragraph");
+        };
+        let content: Vec<_> = paragraph
+            .runs
+            .iter()
+            .filter(|run| !matches!(run, DocRun::AnchorHost(_)))
+            .collect();
+        let [DocRun::Text(before), DocRun::Image(image), DocRun::Text(after)] = content.as_slice()
+        else {
+            panic!("expected text, one image, text; got {content:?}");
+        };
+        assert_eq!(before.text, "Before image");
+        assert_eq!(after.text, "After image");
+        assert_eq!(image.image_path, "word/media/image1.png");
+        assert_eq!((image.width_pt, image.height_pt), (20.0, 10.0));
+        assert_eq!(image.anchor, inner_anchor);
+        if inner_anchor {
+            assert_eq!((image.anchor_x_pt, image.anchor_y_pt), (30.0, 40.0));
+            assert_eq!(image.wrap_mode.as_deref(), Some("none"));
+            assert_eq!(image.anchor_x_relative_from.as_deref(), Some("page"));
+            assert_eq!(image.anchor_y_relative_from.as_deref(), Some("page"));
+        } else {
+            assert!(image.anchor_acquisition.is_none());
+        }
+    }
+
+    #[test]
+    fn inline_textbox_retains_nested_floating_image() {
+        assert_nested_drawing(false, true);
+    }
+
+    #[test]
+    fn nested_images_keep_their_own_inline_and_anchor_geometry() {
+        for (outer_anchor, inner_anchor) in [(false, false), (true, false), (true, true)] {
+            assert_nested_drawing(outer_anchor, inner_anchor);
+        }
+    }
+
+    #[test]
+    fn malformed_drawing_does_not_promote_a_nested_positioning_container() {
+        for anchor in [false, true] {
+            // Deliberately invalid CT_Drawing: a wrapper replaces its direct container.
+            let body = nested_drawing_body(anchor, false);
+            let tag = if anchor { "anchor" } else { "inline" };
+            let body = body
+                .replacen(&format!("<wp:{tag}"), &format!("<w:wrapper><wp:{tag}"), 1)
+                .replace(
+                    &format!("</wp:{tag}></w:drawing></w:r></w:p>"),
+                    &format!("</wp:{tag}></w:wrapper></w:drawing></w:r></w:p>"),
+                );
+            let doc = parse_from_bytes(&build_docx(&body)).expect("malformed drawing is tolerated");
+            let [BodyElement::Paragraph(paragraph)] = doc.body.as_slice() else {
+                panic!("expected one paragraph");
+            };
+            assert!(
+                paragraph.runs.is_empty(),
+                "nested container must not become an outer drawing"
+            );
+        }
     }
 
     /// Body XML for an anchor image with the given `<wp:positionH>` and
