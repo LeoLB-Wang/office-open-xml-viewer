@@ -11426,7 +11426,8 @@ fn parse_shape_text_body(
 /// the block carries `image_path`/`mime_type`/`svg_image_path` and the
 /// `<wp:extent cx= cy=>` size (EMU→pt) so the renderer can draw it.
 ///
-/// A paragraph with neither text nor an image yields `None`; an image-only
+/// A paragraph with neither text nor an image yields `None` (after its
+/// numbering marker has advanced the list counter, §17.9); an image-only
 /// paragraph (empty text) still yields a block so the picture is not dropped.
 fn extract_simple_paragraph_text(
     style_map: &StyleMap,
@@ -28312,9 +28313,22 @@ mod numbering_marker_font_tests {
     /// #1781, ECMA-376 §17.9: a numbered text box paragraph with no content of
     /// its own still advances its list counter, so the next body item in the
     /// same list keeps Word's number. The legacy textBlocks view still omits
-    /// the empty paragraph itself.
+    /// the empty paragraph itself. Covered: a literally empty paragraph, and
+    /// one whose only content is a nested text box (its story text is not
+    /// this paragraph's text).
     #[test]
     fn empty_numbered_text_box_paragraph_advances_shared_counter() {
+        let nested_text_box = r#"<w:r><w:drawing><wp:inline><wp:extent cx="635000" cy="317500"/><wp:docPr id="2" name="Inner"/>
+            <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="317500"/></a:xfrm><a:prstGeom prst="rect"/></wps:spPr>
+            <wps:txbx><w:txbxContent><w:p><w:r><w:t>IN</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>
+            </a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#;
+        for content in ["", nested_text_box] {
+            assert_counter_advances(content);
+        }
+    }
+
+    fn assert_counter_advances(text_box_paragraph_content: &str) {
         let numbered = |content: &str| {
             format!(
                 r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>{content}</w:p>"#
@@ -28329,7 +28343,7 @@ mod numbering_marker_font_tests {
             <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/></wps:spPr>
             <wps:txbx><w:txbxContent>{}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>
             </a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#,
-            numbered("")
+            numbered(text_box_paragraph_content)
         );
         let body_xml = format!(
             r#"<w:document{NS} xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
