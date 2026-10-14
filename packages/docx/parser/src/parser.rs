@@ -11489,8 +11489,7 @@ fn extract_simple_paragraph_text(
                     .children()
                     .filter(|n| n.is_element() && n.tag_name().name() == "r")
                 {
-                    for n in rb_run
-                        .descendants()
+                    for n in story_bounded_descendants(rb_run)
                         .filter(|n| n.is_element() && is_w_ns(n.tag_name().namespace()))
                     {
                         match n.tag_name().name() {
@@ -11566,8 +11565,9 @@ fn extract_simple_paragraph_text(
         // Match by WordprocessingML NAMESPACE, not bare local name: an embedded
         // graphic under the same `<w:r>` can carry DrawingML `<a:tab>`/`<a:t>`,
         // which are NOT run content and must not leak into the paragraph text.
-        for n in r
-            .descendants()
+        // A drawing's text box story (`w:txbxContent`) under the run is a
+        // separate story, so its `w:t`s are skipped too.
+        for n in story_bounded_descendants(r)
             .filter(|n| n.is_element() && is_w_ns(n.tag_name().namespace()))
         {
             match n.tag_name().name() {
@@ -32801,11 +32801,11 @@ mod nested_story_payload_tests {
         assert_eq!(sources, vec![(0, 2), (1, 2)]);
     }
 
-    /// Picture fallbacks resolve only the drawing's own blip: neither a shape
-    /// that fails to parse nor a text box paragraph picks up a picture that
+    /// Fallbacks resolve only the drawing's own content: neither a shape that
+    /// fails to parse nor a text box paragraph picks up a picture or text that
     /// belongs to a nested story or to the containing drawing.
     #[test]
-    fn picture_fallbacks_stay_within_their_own_drawing() {
+    fn fallbacks_stay_within_their_own_drawing() {
         let outer_extent = r#"<wp:extent cx="3810000" cy="1270000"/>"#;
         // The outer wsp has no a:xfrm, so parse_wsp_shape rejects it; the
         // nested picture must not be promoted to the outer drawing.
@@ -32838,6 +32838,20 @@ mod nested_story_payload_tests {
         )
         .replacen(&format!("<w:drawing {NS}>"), "<w:drawing>", 1);
         assert_eq!(story_image(&inner_text_box), None);
+        let (runs, _) = parse(&text_box(
+            true,
+            outer_extent,
+            &format!("<w:t>X</w:t>{inner_text_box}<w:t>Y</w:t>"),
+        ));
+        let [DocRun::Shape(outer)] = runs.as_slice() else {
+            panic!("outer text box missing: {runs:?}")
+        };
+        let legacy_text: Vec<&str> = outer.text_blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(
+            legacy_text,
+            vec!["BEFOREXYAFTER"],
+            "nested story text leaked"
+        );
         // A blip without its own wp container never resolves against the
         // containing drawing (here given its own picture fill).
         let orphan = format!(
