@@ -11740,7 +11740,22 @@ fn extract_simple_paragraph_text(
     // text-box pictures in practice do not use <a:srcRect>, so this is a known
     // gap rather than a regression (the field exists on ImageRun only).
 
+    // ECMA-376 §17.9: a numbered paragraph advances its list level counter
+    // whether or not it has visible content. Resolve the marker (which advances
+    // the live counter shared with the body paragraphs after this shape) BEFORE
+    // the drop below, so an empty numbered text box paragraph still counts.
+    let direct_ind = ppr_node.map(parse_para_fmt).unwrap_or_default();
+    let numbering = direct_ind.num_id.or(style_para.num_id).and_then(|num_id| {
+        if num_id == 0 {
+            return None;
+        }
+        let num_level = direct_ind.num_level.or(style_para.num_level).unwrap_or(0);
+        resolve_numbering_marker(num_map, num_id, num_level, &mark_run, theme).map(Box::new)
+    });
+
     // Drop a paragraph that is neither text nor image; keep image-only ones.
+    // The stable textBlocks view keeps omitting it; only the counter advance
+    // above is retained.
     if text.is_empty() && image_path.is_none() {
         return None;
     }
@@ -11766,14 +11781,6 @@ fn extract_simple_paragraph_text(
     // as the docx BODY renderer does (Word honors a signed hanging first-line
     // list-independently), unlike the pptx/xlsx shape paths which clamp because
     // they have no list marker to hang.
-    let direct_ind = ppr_node.map(parse_para_fmt).unwrap_or_default();
-    let numbering = direct_ind.num_id.or(style_para.num_id).and_then(|num_id| {
-        if num_id == 0 {
-            return None;
-        }
-        let num_level = direct_ind.num_level.or(style_para.num_level).unwrap_or(0);
-        resolve_numbering_marker(num_map, num_id, num_level, &mark_run, theme).map(Box::new)
-    });
     let level = numbering
         .as_ref()
         .and_then(|num| num_map.get_level(num.num_id, num.level));
@@ -28300,6 +28307,75 @@ mod numbering_marker_font_tests {
             &HashMap::new(),
         )
         .expect("numbered text-box paragraph")
+    }
+
+    /// #1781, ECMA-376 §17.9: a numbered text box paragraph with no content of
+    /// its own still advances its list counter, so the next body item in the
+    /// same list keeps Word's number. The legacy textBlocks view still omits
+    /// the empty paragraph itself.
+    #[test]
+    fn empty_numbered_text_box_paragraph_advances_shared_counter() {
+        let numbered = |content: &str| {
+            format!(
+                r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>{content}</w:p>"#
+            )
+        };
+        let text_box = format!(
+            r#"<w:p><w:r><w:drawing><wp:anchor behindDoc="0" relativeHeight="1"><wp:simplePos x="0" y="0"/>
+            <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+            <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+            <wp:extent cx="1270000" cy="635000"/><wp:wrapNone/><wp:docPr id="1" name="Box"/>
+            <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+            <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/></wps:spPr>
+            <wps:txbx><w:txbxContent>{}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>
+            </a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#,
+            numbered("")
+        );
+        let body_xml = format!(
+            r#"<w:document{NS} xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+              xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body>{}{text_box}{}</w:body></w:document>"#,
+            numbered("<w:r><w:t>A</w:t></w:r>"),
+            numbered("<w:r><w:t>C</w:t></w:r>"),
+        );
+        let doc = roxmltree::Document::parse(&body_xml).unwrap();
+        let body = doc
+            .root_element()
+            .descendants()
+            .find(|node| node.tag_name().name() == "body")
+            .unwrap();
+        let style_map = StyleMap::parse(&styles_xml());
+        let mut num_map = NumberingMap::parse(&numbering_xml(), &HashMap::new());
+        let paragraphs: Vec<DocParagraph> = parse_body_elements(
+            body,
+            &style_map,
+            &mut num_map,
+            &HashMap::new(),
+            &ChartMap::default(),
+            &HashMap::new(),
+            &ThemeColors::default(),
+            &HashMap::new(),
+        )
+        .into_iter()
+        .filter_map(|element| match element {
+            BodyElement::Paragraph(para) => Some(*para),
+            _ => None,
+        })
+        .collect();
+        let markers: Vec<Option<&str>> = paragraphs
+            .iter()
+            .map(|para| para.numbering.as_ref().map(|n| n.text.as_str()))
+            .collect();
+        assert_eq!(markers, vec![Some("1"), None, Some("3")]);
+        let shape = paragraphs[1]
+            .runs
+            .iter()
+            .find_map(|run| match run {
+                DocRun::Shape(shape) => Some(shape),
+                _ => None,
+            })
+            .expect("text box shape");
+        assert!(shape.text_blocks.is_empty(), "{:?}", shape.text_blocks);
     }
 
     /// Parse a body whose single paragraph is the numbered Heading1 "原稿の体裁".
