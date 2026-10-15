@@ -1,3 +1,4 @@
+import { inheritCellFontLanguage, usesJapaneseCellFonts } from './internal/cell-font-language.js';
 import { drawShapeStackedText } from './shape-stacked-text.js';
 import type { CjkLang } from '@silurus/ooxml-core';
 import { quoteCssFontFamily } from '@silurus/ooxml-core/internal/css-font-family';
@@ -28,7 +29,6 @@ import type {
 import { usesPathShade, trackPaintPath, currentStrokeBounds, chartImageFillKey, paintOptionalImagePlaceholder, pathFillModeOverlay, withDrawingMLShapeTransform, buildPresetGeometryFillPath } from '@silurus/ooxml-core';
 import { placePhoneticRuns } from './phonetic.js';
 import { crispOffset, renderChart, renderSparkline, renderPresetShape, createAuxCanvas, PT_TO_PX, EMU_PER_PX, mathToMathML, rasterizeMathSvg, tintMathRaster, classifyCjkFont, classifyFontGeneric, googleCjkFontAlias, cjkFallbackChain, NON_CJK_SANS_FALLBACKS, NON_CJK_SERIF_FALLBACKS, isCjkBreakChar, xlsxBorderDashArray, drawImageCropped, hexToRgba, verticalTrLongMark, verticalVertGlyphReachable, applyStroke, resolveFill, type SparklineModel, type MathNode, type MathRenderer, type RasterizedMathSvg } from '@silurus/ooxml-core';
-import { isMacDesktop } from './internal/platform.js';
 import {
   canvasShapeFontBoxProbe, excelShapeSpacing, officeRequestKey, shapeOfficeRouteKey, shapeRunLineRatios,
   type ShapeRunLineRatios,
@@ -124,9 +124,32 @@ const googleSubstitutesByContext = new WeakMap<object, boolean>();
 const googleSubstitutesByWorksheet = new WeakMap<Worksheet, boolean>();
 const regularAliasesByContext = new WeakMap<object, ReadonlyMap<string, string>>();
 const regularAliasesByWorksheet = new WeakMap<Worksheet, ReadonlyMap<string, string>>();
-const worksheetByContext = new WeakMap<object, Worksheet>();
-type ResolvedThemeCellFont = { family: string | null; weight: number; fallbackAlias?: string };
-const themeCellFontByWorksheet = new WeakMap<Worksheet, Map<string, ResolvedThemeCellFont>>();
+type ResolvedThemeCellFont = {
+  family: string | null; weight: number; fallbackAlias?: string; syntheticBold?: true;
+};
+type ThemeCellFontState = Pick<Worksheet, 'themeJapaneseMajorFont' | 'themeJapaneseMinorFont'> & {
+  japanese: boolean;
+  cache: Map<string, ResolvedThemeCellFont>;
+};
+// A live caller-owned canvas must not retain a worksheet's cell/resource graph
+// after workbook destruction or cache eviction. Bind only two theme names, the
+// session language snapshot, and at most eight resolved style combinations.
+const themeCellFontByContext = new WeakMap<object, ThemeCellFontState>();
+const themeCellFontByWorksheet = new WeakMap<Worksheet, ThemeCellFontState>();
+
+function bindThemeCellFontState(ctx: CanvasRenderingContext2D, worksheet: Worksheet): void {
+  const japanese = usesJapaneseCellFonts(worksheet);
+  let state = themeCellFontByWorksheet.get(worksheet);
+  if (!state || state.japanese !== japanese
+      || state.themeJapaneseMajorFont !== worksheet.themeJapaneseMajorFont
+      || state.themeJapaneseMinorFont !== worksheet.themeJapaneseMinorFont) {
+    state = { themeJapaneseMajorFont: worksheet.themeJapaneseMajorFont,
+      themeJapaneseMinorFont: worksheet.themeJapaneseMinorFont, japanese, cache: new Map() };
+    inheritCellFontLanguage(worksheet, state);
+    themeCellFontByWorksheet.set(worksheet, state);
+  }
+  themeCellFontByContext.set(ctx, state);
+}
 
 function bindNormalFontState(
   worksheet: Worksheet, routes: OfficeRoutes | undefined,
@@ -167,7 +190,7 @@ export function bindXlsxOfficeFontRoutes(
   routes?: OfficeRoutes,
   googleSubstitutes = false,
 ): void {
-  worksheetByContext.set(ctx, worksheet);
+  bindThemeCellFontState(ctx, worksheet);
   if (officeRoutesByWorksheet.get(worksheet) !== routes ||
       googleSubstitutesByWorksheet.get(worksheet) !== googleSubstitutes) GridGeometry.invalidate(worksheet);
   googleSubstitutesByContext.set(ctx, googleSubstitutes);
@@ -366,12 +389,8 @@ const FREEZE_LINE_COLOR = '#7a7a7a';
 
 /** Measure the Max Digit Width (ECMA-376 §18.3.1.13) for an arbitrary font
  *  using Canvas2D. The maximum of `measureText('0'..'9').width` is taken.
- *  Mac Excel quantizes the advance in integer points before allocating column
- *  width: controlled Calibri 9/10/11/12/14 pt, Arial 11 pt, and Meiryo UI 11 pt
- *  workbooks in Excel for Mac 16.113.2 gave the point-rounded width classes,
- *  including the Calibri 11 pt
- *  boundary where rounding in CSS pixels is one pixel narrower. This is an
- *  observed Mac Office rule, not a different metric for the painted font.
+ *  Round to integer CSS pixels, using Windows Excel as the layout reference
+ *  independently of the viewer OS.
  *
  *  A bound worksheet caches the measured scalar for its current owner; each
  *  rebind refreshes it after font preflight, without retaining that Canvas.
@@ -411,9 +430,7 @@ export function computeMdw(
 }
 
 function quantizeMdw(widthPx: number): number {
-  return (isMacDesktop()
-    ? Math.round(Math.round(widthPx / PT_TO_PX) * PT_TO_PX)
-    : Math.round(widthPx)) || MDW_FALLBACK;
+  return Math.round(widthPx) || MDW_FALLBACK;
 }
 
 function hasDeclaredFamilyFace(family: string, fontSet: FontFaceSet | null): boolean {
@@ -836,61 +853,75 @@ function vMetricPx(sizePt: number, cs: number, factor = 1): number {
   return Math.round(sizePt * PT_TO_PX * factor * cs);
 }
 
-/** Excel for Mac 16.113.2 (Japanese UI locale) resolves a scheme-marked SpreadsheetML
- * cell through the theme's Jpan face even when `<font><name>` names a Latin
- * face. Controlled Excel PDFs covered minor/major, Calibri/Arial names, Latin
- * and Japanese text, regular/bold/italic styles, a changed Jpan face, absent
- * Jpan, and absent scheme. The italic controls retained the same embedded
- * theme face; local browser stroke synthesis can still differ from Excel.
- * This is an observed locale-dependent Office behavior, not an ECMA-376 rule
- * that all locales must choose Jpan. Browser locale is our declared proxy for
- * the producer's Excel UI locale because this workbook does not encode that
- * choice; a workbook created under a different UI locale may resolve another
- * theme face even on the same Mac. Preserve direct-name fonts otherwise. */
+/** Excel for Mac 16.113.2 and Windows Excel 16.0.20430 (Japanese UI,
+ * with Japanese editing enabled on Windows) select the theme's Jpan face for
+ * the whole scheme-marked cell, including Latin glyphs. Controlled Excel PDFs
+ * covered minor/major, Calibri/Arial authored names, Latin/Japanese/mixed text,
+ * regular/bold/italic, Gothic/Mincho themes, absent Jpan, and absent scheme.
+ * Missing scheme or Jpan retained the authored name; major Light/Demibold
+ * retained their named weight even with bold. Italic retained the theme family.
+ *
+ * SpreadsheetML name/scheme (§18.8.29/§18.8.35) and DrawingML's supplemental
+ * font (CT_SupplementalFont) encode the choices, not Excel's UI/editing language.
+ * This is observed Office behavior, not a normative rule for every locale.
+ * Snapshot navigator.language starting with 'ja' when opening the workbook as
+ * the declared proxy on every OS. Layout and paint keep that choice until the
+ * workbook is re-opened, including sheets loaded later and worker projections.
+ * Non-Japanese Windows UI remains unverified. Keeping the authored name for
+ * non-ja viewers is library policy: default Office themes commonly include
+ * Jpan. The proxy cannot recover a producer's different UI/editing language
+ * from the workbook. */
 export function resolvedThemeCellFont(
   font: Pick<CellFont, 'name' | 'scheme' | 'bold' | 'italic'>,
   worksheet?: Pick<Worksheet, 'themeJapaneseMajorFont' | 'themeJapaneseMinorFont'>,
 ): ResolvedThemeCellFont {
   const fallback = { family: font.name, weight: font.bold ? 700 : 400 };
-  if (!isMacJapaneseLocale()) return fallback;
+  if (!usesJapaneseCellFonts(worksheet)) return fallback;
   const themeFace = themeFaceForCellFont(font, worksheet);
   if (!themeFace) return fallback;
 
   // The pinned Office face catalog retains full/PostScript aliases. Keep the
   // authored theme name first: an installed face must win. A catalog alias
   // may follow for hosts that expose the same family under its PostScript
-  // base. This is name-table metadata, not proof of the selected font bytes.
-  const exactMatches = findReferenceFontMetrics(themeFace, {
-    source: 'office-mac', weight: font.bold ? 700 : 400,
-    style: font.italic ? 'italic' : 'normal',
-  });
-  const matches = exactMatches.length ? exactMatches
-    : findReferenceFontMetrics(themeFace, { source: 'office-mac' });
+  // base. Use this fixed catalog on every host; its source is not an OS gate.
+  // This is name-table metadata, not proof of the selected font bytes.
+  const profiles = findReferenceFontMetrics(themeFace, { source: 'office-mac' });
+  // Observed Japanese-UI Excel rule (not specified by CT_FontScheme): use
+  // the requested weight only if the theme name has that exact catalog face;
+  // otherwise retain its base weight. Regular families use 400; a name that
+  // identifies a single weight keeps that weight. Ambiguous names without a
+  // Regular face use CSS normal (400) as library policy; unknown names retain
+  // the authored bold request because the catalog supplies no face evidence.
+  // Weight selection is independent of italic availability: these controls
+  // have no italic faces, but italic cells still retain the selected weight.
+  const weights = new Set(profiles.map((profile) => profile.weight));
+  const baseWeight = weights.size === 1 ? profiles[0].weight : 400;
+  const weight = !profiles.length || weights.has(fallback.weight)
+    ? fallback.weight : baseWeight;
+  const weightMatches = profiles.filter((profile) => profile.weight === weight);
+  const styleMatches = weightMatches.filter((profile) => profile.style === (font.italic ? 'italic' : 'normal'));
+  const matches = styleMatches.length ? styleMatches : weightMatches;
+  // Office-produced controls covered Calibri/Arial, Latin/Japanese/mixed text:
+  // minor Gothic bold selects its 700 face; major Gothic Light, minor Mincho
+  // Regular, and major Mincho Demibold keep 300/400/600. PDF text mode 2 adds
+  // fill+stroke for bold Light and minor Mincho, but not Demibold or real
+  // Bold. Limit synthesis to catalog-proven Light/Regular weights (300/400);
+  // unknown faces keep the browser's bold request. Other retained weights are
+  // unverified. Do not request 700 to imitate the stroke: CSS may change face.
   const postScriptBases = new Set(matches.flatMap((profile) => profile.aliases)
     .filter((alias) => /-(?:Regular|Bold|Italic|BoldItalic|Light|Medium)$/i.test(alias))
     .map((alias) => alias.replace(/-(?:Regular|Bold|Italic|BoldItalic|Light|Medium)$/i, '')));
   const catalogFamilies = new Set(matches.map((profile) => profile.family));
-  // A theme face whose full name specifies a unique nonstandard weight (for
-  // example a Light face) stays at that authored weight even if the cell's
-  // `<b>` is set. Excel's major-Light PDFs preserve that face; a browser whose
-  // local family lacks Light may choose its nearest available stroke weight.
-  const weight = exactMatches.length === 0 && matches.length === 1
-    && ![400, 700].includes(matches[0].weight)
-    ? matches[0].weight : fallback.weight;
   const alias = postScriptBases.size === 1 ? [...postScriptBases][0]
     : catalogFamilies.size === 1 ? [...catalogFamilies][0] : undefined;
   return {
     family: themeFace,
     weight,
+    ...(font.bold && (weight === 300 || weight === 400) && profiles.length
+      ? { syntheticBold: true as const } : {}),
     ...(alias && alias.toLocaleLowerCase('en-US') !== themeFace.toLocaleLowerCase('en-US')
       ? { fallbackAlias: alias } : {}),
   };
-}
-
-function isMacJapaneseLocale(): boolean {
-  const nav = typeof navigator !== 'undefined' ? navigator : undefined;
-  return Boolean(isMacDesktop() && nav
-    && (nav.language || '').toLowerCase().startsWith('ja'));
 }
 
 function themeFaceForCellFont(
@@ -901,30 +932,58 @@ function themeFaceForCellFont(
     : font.scheme === 'minor' ? worksheet?.themeJapaneseMinorFont : undefined;
 }
 
-function cachedThemeCellFont(font: CellFont, worksheet?: Worksheet): ResolvedThemeCellFont {
-  const themeFace = isMacJapaneseLocale() && themeFaceForCellFont(font, worksheet);
-  if (!worksheet || !themeFace) return { family: font.name, weight: font.bold ? 700 : 400 };
-  // A worksheet has at most major/minor Jpan faces, each with four requested
-  // bold/italic combinations. Keep catalog alias work out of the cell paint
-  // loop while retaining a worksheet-scoped lifetime and a fixed entry bound.
-  let cache = themeCellFontByWorksheet.get(worksheet);
-  if (!cache) {
-    cache = new Map();
-    themeCellFontByWorksheet.set(worksheet, cache);
-  }
-  const key = `${font.scheme}:${themeFace}:${font.bold ? 1 : 0}:${font.italic ? 1 : 0}`;
-  let selected = cache.get(key);
+function cachedThemeCellFont(font: CellFont, state?: ThemeCellFontState): ResolvedThemeCellFont {
+  const themeFace = state?.japanese && themeFaceForCellFont(font, state);
+  if (!state || !themeFace) return { family: font.name, weight: font.bold ? 700 : 400 };
+  // Two theme faces × four requested bold/italic combinations. Neither the
+  // cached values nor the state contain a reference back to the worksheet.
+  const key = `${font.scheme}:${font.bold ? 1 : 0}:${font.italic ? 1 : 0}`;
+  let selected = state.cache.get(key);
   if (!selected) {
-    selected = resolvedThemeCellFont(font, worksheet);
-    if (cache.size < 8) cache.set(key, selected);
+    selected = resolvedThemeCellFont(font, state);
+    if (state.cache.size < 8) state.cache.set(key, selected);
   }
   return selected;
+}
+
+/** Observed Japanese-UI Excel synthetic bold, separate from face selection.
+ * Windows Excel 16.0.20430 PDF controls (Calibri/Arial authored names,
+ * Latin/Japanese/mixed text) use 2 Tr and 0.31543 w at 11.04 pt for the retained
+ * Light/Regular faces: stroke width = em / 35, independent of font name.
+ * Demibold and real Bold are fill-only counterexamples. This is compatibility
+ * paint, not a stroke prescribed by SpreadsheetML §18.8.2 b.
+ *
+ * These PDFs also have glyph-dependent TJ advance differences: Light Latin
+ * deltas 0.002–0.011 em, Mincho mostly zero except b/space (~0.01 em), and CJK
+ * zero. They do not establish a common tracking/advance rule. Retain Canvas
+ * shaping rather than applying uniform spacing that would alter CJK and the
+ * unchanged Latin advances. Exact Excel synthetic advance metrics remain
+ * unsupported until a resource-based rule is established.
+ */
+function paintCellText(
+  ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
+  font: CellFont, cs = 1,
+): void {
+  ctx.fillText(text, x, y);
+  if (!font.bold) return;
+  const state = themeCellFontByContext.get(ctx);
+  if (!state?.japanese || !cachedThemeCellFont(font, state).syntheticBold) return;
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle;
+  ctx.lineWidth = Math.max(1, Math.round(font.size * PT_TO_PX * cs)) / 35;
+  // Borders/decorations may have left a dash or join on the context; PDF text
+  // mode 2 uses a solid stroke with the default PDF join/miter settings.
+  ctx.setLineDash([]);
+  ctx.lineJoin = 'miter';
+  ctx.miterLimit = 10;
+  ctx.strokeText(text, x, y);
+  ctx.restore();
 }
 
 function buildFont(ctx: CanvasRenderingContext2D, font: CellFont, cs = 1, cjkFallback?: CjkLang, text = ''): string {
   const style = font.italic ? 'italic ' : '';
   const sizePx = Math.max(1, Math.round(font.size * PT_TO_PX * cs));
-  const selected = cachedThemeCellFont(font, worksheetByContext.get(ctx));
+  const selected = cachedThemeCellFont(font, themeCellFontByContext.get(ctx));
   const weight = selected.weight === 400 ? '' : `${selected.weight} `;
   return `${style}${weight}${sizePx}px ${fontStackFor(
     selected.family, cjkFallback, text,
@@ -987,7 +1046,7 @@ export function drawPhoneticBand(
     // width, in run order. Measured with the reading font already active.
     let cursor = baseLeftX;
     for (const run of runs) {
-      ctx.fillText(run.text, cursor, y);
+      paintCellText(ctx, run.text, cursor, y, phFont, cs);
       cursor += ctx.measureText(run.text).width;
     }
     ctx.restore();
@@ -1009,14 +1068,14 @@ export function drawPhoneticBand(
       // left edge and the last the right edge of the base span.
       const extra = (p.width - naturalW) / (cps.length - 1);
       try { (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${extra}px`; } catch { /* ignore */ }
-      ctx.fillText(p.text, p.x, y);
+      paintCellText(ctx, p.text, p.x, y, phFont, cs);
       try { (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = '0px'; } catch { /* ignore */ }
     } else if (p.spread === 'center') {
       // §18.18.56 center: centre the natural reading width over the base span.
-      ctx.fillText(p.text, p.x + (p.width - naturalW) / 2, y);
+      paintCellText(ctx, p.text, p.x + (p.width - naturalW) / 2, y, phFont, cs);
     } else {
       // §18.18.56 left: left-justified at the base span's left edge.
-      ctx.fillText(p.text, p.x, y);
+      paintCellText(ctx, p.text, p.x, y, phFont, cs);
     }
   }
   ctx.restore();
@@ -1264,7 +1323,7 @@ export function drawResolvedRichLine(
     let yShift = 0;
     if (seg.font.vertAlign === 'superscript') yShift = -Math.round(baseSizePx * 0.35);
     else if (seg.font.vertAlign === 'subscript') yShift = Math.round(baseSizePx * 0.10);
-    ctx.fillText(seg.text, x, textY + yShift);
+    paintCellText(ctx, seg.text, x, textY + yShift, drawFont, cs);
     const rSizePx = vMetricPx(drawFont.size, cs);
     if (seg.font.underline || seg.font.strike) {
       const deco = decoYForBaseline(baseline, textY, rSizePx);
@@ -1405,7 +1464,7 @@ function drawMultiLineRichText(
 function drawHashFill(
   ctx: CanvasRenderingContext2D,
   cx: number, cy: number, cellW: number, cellH: number,
-  alignV: string,
+  alignV: string, font: CellFont, cs: number,
 ): void {
   const padding = 3;
   const left = Math.max(0, cx) + padding;
@@ -1419,7 +1478,7 @@ function drawHashFill(
     leftPad: padding, paddingX: padding, paddingY: 2,
   });
   ctx.textBaseline = baseline;
-  ctx.fillText('#'.repeat(count), left, textY);
+  paintCellText(ctx, '#'.repeat(count), left, textY, font, cs);
 }
 
 /**
@@ -1474,7 +1533,7 @@ export function drawWrappedPlainText(
   if (lines.length === 1) {
     const { baseline, textY } = singleLineVerticalAnchor(geom);
     ctx.textBaseline = baseline;
-    ctx.fillText(lines[0], textX, textY);
+    paintCellText(ctx, lines[0], textX, textY, font, cs);
     return;
   }
 
@@ -1486,7 +1545,7 @@ export function drawWrappedPlainText(
   else startY = cy + cellH - totalTextH - paddingY;
   ctx.textBaseline = 'top';
   for (let li = 0; li < lines.length; li++) {
-    ctx.fillText(lines[li], textX, startY + li * lineH);
+    paintCellText(ctx, lines[li], textX, startY + li * lineH, font, cs);
   }
 }
 
@@ -2114,7 +2173,7 @@ function renderQuadrant(
     ctx.clip();
 
     if (formatted.fill) {
-      drawHashFill(ctx, aCx, aCy, cW, cH, alignV);
+      drawHashFill(ctx, aCx, aCy, cW, cH, alignV, fontForDraw, cs);
       ctx.restore();
       continue;
     }
@@ -2171,7 +2230,7 @@ function renderQuadrant(
         alignH, alignV, cx: aCx, cy: aCy, cellW: cW, cellH: cH, leftPad, paddingX, paddingY,
       });
       ctx.textBaseline = baseline;
-      ctx.fillText(text, textX, textY);
+      paintCellText(ctx, text, textX, textY, fontForDraw, cs);
     }
     ctx.restore();
   }
@@ -2750,7 +2809,7 @@ function renderQuadrant(
       ctx.clip();
 
       if (formatted.fill) {
-        drawHashFill(ctx, cx, cy, cellW, cellH, alignV);
+        drawHashFill(ctx, cx, cy, cellW, cellH, alignV, fontForDraw, cs);
         ctx.restore();
         return;
       }
@@ -2768,6 +2827,8 @@ function renderQuadrant(
           : cy + cellH - totalH - paddingY;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
+        const paintStacked = (value: string, x: number, y: number) =>
+          paintCellText(ctx, value, x, y, fontForDraw, cs);
         for (const ch of text) {
           // UAX#50 per-glyph orientation (issue #790): CJK/Latin stay upright,
           // 、。 substitute their vertical form, fullwidth brackets substitute
@@ -2775,7 +2836,7 @@ function renderQuadrant(
           const cp = ch.codePointAt(0) ?? 0;
           const vertCapable =
             verticalTrLongMark(cp) && verticalVertGlyphReachable(ctx, cp);
-          drawStackedVerticalChar(ctx, ch, cx + cellW / 2, charY, charH, vertCapable);
+          drawStackedVerticalChar(ctx, ch, cx + cellW / 2, charY, charH, vertCapable, paintStacked);
           charY += charH;
         }
         ctx.restore();
@@ -2791,7 +2852,7 @@ function renderQuadrant(
         ctx.rotate(angleRad);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(text, 0, 0);
+        paintCellText(ctx, text, 0, 0, fontForDraw, cs);
         ctx.restore();
         return;
       }
@@ -2930,14 +2991,14 @@ function renderQuadrant(
           else if (alignV === 'center') { startY = cy + (cellH - totalTextH) / 2; ctx.textBaseline = 'top'; }
           else { startY = cy + cellH - totalTextH - paddingY; ctx.textBaseline = 'top'; }
           for (let li = 0; li < lines.length; li++) {
-            ctx.fillText(lines[li], textX, startY + li * lineH + vaYShift);
+            paintCellText(ctx, lines[li], textX, startY + li * lineH + vaYShift, drawFont, cs);
           }
         } else {
           const { baseline, textY } = singleLineVerticalAnchor({
             alignH, alignV, cx, cy, cellW, cellH, leftPad, paddingX, paddingY,
           });
           ctx.textBaseline = baseline;
-          ctx.fillText(drawText, textX, textY + vaYShift);
+          paintCellText(ctx, drawText, textX, textY + vaYShift, drawFont, cs);
         }
       }
 
@@ -3773,6 +3834,7 @@ function virtualizedTextOverflowOverscan(
  * The projection may differ only in row/column sizing and outline flags; cells,
  * merges, formatting, tables, links, comments, and sparklines remain source-owned. */
 export function inheritSheetRenderCache(source: Worksheet, projection: Worksheet): void {
+  inheritCellFontLanguage(source, projection);
   inheritWorksheetPolicy(source, projection);
   sheetRenderCache.set(projection, getSheetRenderCache(source));
 }
