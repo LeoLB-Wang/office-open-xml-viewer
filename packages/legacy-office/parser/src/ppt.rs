@@ -57,7 +57,7 @@ use crate::officeart::{
 /// [MS-PPT] 2.3.2.
 fn parse_current_user_atom(bytes: &[u8], budget: &mut usize) -> Result<usize, String> {
     if *budget == 0 {
-        return Err(unsupported("too many PowerPoint records"));
+        return Err(crate::rejection::resource("too many PowerPoint records"));
     }
     *budget -= 1;
     if bytes.len() < 8 {
@@ -76,7 +76,7 @@ fn parse_current_user_atom(bytes: &[u8], budget: &mut usize) -> Result<usize, St
     match u32_at(payload, 4)? {
         CURRENT_USER_NOT_ENCRYPTED => {}
         CURRENT_USER_ENCRYPTED => {
-            return Err(unsupported(
+            return Err(crate::rejection::encryption(
                 "encrypted PowerPoint binary documents are not supported",
             ));
         }
@@ -221,7 +221,9 @@ fn contains_record(
     budget: &mut usize,
 ) -> Result<bool, String> {
     if depth > MAX_DEPTH {
-        return Err(unsupported("PowerPoint record nesting is too deep"));
+        return Err(crate::rejection::resource(
+            "PowerPoint record nesting is too deep",
+        ));
     }
     for record in parse_records(bytes, budget)? {
         if record.kind == expected {
@@ -261,7 +263,7 @@ fn decode_text(record: Record<'_>) -> Result<String, String> {
 fn charge_text(budget: &mut usize, bytes: usize) -> Result<(), String> {
     *budget = budget
         .checked_sub(bytes)
-        .ok_or_else(|| unsupported("PowerPoint decoded text budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("PowerPoint decoded text budget exceeded"))?;
     Ok(())
 }
 
@@ -302,7 +304,7 @@ fn theme() -> String {
 }
 
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 /// Fuzz driver for alternative shape XML resolution (`crate::fuzzing`):
@@ -639,5 +641,17 @@ mod tests {
         assert!(parse_records(&[0, 0, 0, 0, 0, 0, 0, 0, 1], &mut budget).is_err());
         let mut budget = MAX_RECORDS;
         assert!(parse_records(&[0; 9], &mut budget).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod depth_policy_tests {
+    use super::*;
+    #[test]
+    fn record_depth_ceiling_is_resource_policy() {
+        assert_eq!(contains_record(&[], 1, MAX_DEPTH, &mut 100), Ok(false));
+        assert!(contains_record(&[], 1, MAX_DEPTH + 1, &mut 100)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 }

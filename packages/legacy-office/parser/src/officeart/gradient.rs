@@ -108,17 +108,17 @@ fn decode(
     }
     *work_budget = work_budget
         .checked_sub(count)
-        .ok_or_else(|| unsupported("OfficeArt shade color work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("OfficeArt shade color work budget exceeded"))?;
     let charge = count
         .checked_mul(std::mem::size_of::<ShadeColor>())
-        .ok_or_else(|| unsupported("OfficeArt shade color model budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("OfficeArt shade color model budget exceeded"))?;
     *model_budget = model_budget
         .checked_sub(charge)
-        .ok_or_else(|| unsupported("OfficeArt shade color model budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("OfficeArt shade color model budget exceeded"))?;
     let mut result = Vec::new();
     result
         .try_reserve_exact(count)
-        .map_err(|_| unsupported("OfficeArt shade color allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("OfficeArt shade color allocation failed"))?;
     let mut previous = 0;
     for i in 0..count {
         let at = 6 + i * width;

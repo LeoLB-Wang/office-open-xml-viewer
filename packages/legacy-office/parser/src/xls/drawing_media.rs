@@ -38,7 +38,7 @@ pub(super) fn selected(
         {
             remaining = remaining
                 .checked_sub(image.bytes.len())
-                .ok_or_else(|| unsupported("BIFF retained image budget exceeded"))?;
+                .ok_or_else(|| crate::rejection::resource("BIFF retained image budget exceeded"))?;
             output.push((index, image.extension, image.bytes.into_owned()));
         }
     }
@@ -58,7 +58,7 @@ pub(super) fn images(records: &[Record<'_>]) -> Result<Vec<Media>, String> {
         ));
     }
     if records.iter().any(|r| r.kind == FILEPASS) {
-        return Err(unsupported("encrypted BIFF image store"));
+        return Err(crate::rejection::encryption("encrypted BIFF image store"));
     }
     let mut work = 2_000_000;
     let Some(bytes) = assemble(records, MAX_DRAWING_BYTES, &mut work)? else {
@@ -77,7 +77,7 @@ fn extract(bytes: &[u8], work: &mut usize, mut remaining: usize) -> Result<Vec<M
         if let Some(image) = raster::read_store_entry(entry, None, work, remaining)? {
             remaining = remaining
                 .checked_sub(image.bytes.len())
-                .ok_or_else(|| unsupported("BIFF retained image budget exceeded"))?;
+                .ok_or_else(|| crate::rejection::resource("BIFF retained image budget exceeded"))?;
             output.push((index as u32 + 1, image.extension, image.bytes.into_owned()));
         }
     }
@@ -109,14 +109,14 @@ fn assemble(
         }
         *work = work
             .checked_sub(1)
-            .ok_or_else(|| unsupported("BIFF drawing work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("BIFF drawing work budget exceeded"))?;
         if record.data.len() > 8224 {
             return Err(unsupported("oversized BIFF drawing fragment"));
         }
         length = length
             .checked_add(record.data.len())
             .filter(|n| *n <= max_bytes)
-            .ok_or_else(|| unsupported("BIFF drawing byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("BIFF drawing byte budget exceeded"))?;
         next += 1;
     }
     if globals[next..].iter().any(|r| r.kind == 0x00eb) {

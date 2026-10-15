@@ -72,7 +72,7 @@ test('each eager entry type rejects a transitive static model-source import', ()
 });
 
 test('a model-source marker leaking into eager emitted code fails', () => {
-  for (const marker of ['ooxml-model-source-module/v1', 'Native reading scene ',
+  for (const marker of ['ooxml-model-source-module/v2', 'Native reading scene ',
     'Invalid native reading word-breaking owner', 'DRAWINGS_RELOCATED_FOR_READING']) {
     assert.throws(() => assertNoSourceRuntime(JSON.stringify(marker), 'entry'), /optional source runtime/);
   }

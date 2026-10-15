@@ -53,7 +53,7 @@ const materializedSource: ModelSource<'docx'> = {
   claim: () => true,
   beginLoad: () => ({
     module: {
-      protocol: 'ooxml-model-source-module/v1',
+      protocol: 'ooxml-model-source-module/v2',
       target: 'docx',
       moduleUrl: new URL('./test-fixtures/docx-materialized-model-source.mjs', import.meta.url).href,
       config: {},

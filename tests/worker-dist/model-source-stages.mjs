@@ -11,7 +11,7 @@ function fakeSource(target, config) {
     claim: () => true,
     beginLoad: () => ({
       module: {
-        protocol: 'ooxml-model-source-module/v1',
+        protocol: 'ooxml-model-source-module/v2',
         target,
         moduleUrl: FAKE_MODULE,
         config: { format: target, ...config },

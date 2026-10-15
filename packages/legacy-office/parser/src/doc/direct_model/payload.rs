@@ -581,7 +581,7 @@ impl Total {
 }
 
 fn unsupported(message: &str) -> String {
-    format!("UNSUPPORTED:{message}")
+    crate::rejection::unsupported(message)
 }
 
 #[cfg(test)]

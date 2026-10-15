@@ -36,5 +36,5 @@ it.each([
 });
 
 it.each([0x03, 0xff])('rejects the reserved hsState value instead of revealing the sheet: %s', async flags => {
-  await expect(open(flags)).rejects.toThrow(/^UNSUPPORTED:invalid BIFF sheet visibility/);
+  await expect(open(flags)).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'xls', reason: 'source-subset' } });
 });

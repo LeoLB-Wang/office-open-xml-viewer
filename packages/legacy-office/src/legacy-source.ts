@@ -65,7 +65,7 @@ export function createLegacySource<T extends ModelSourceTarget>(
 ): ModelSource<T> {
   // The installed viewer owns protocol and transport. Pin our compiled
   // expectation too: copying its current protocol would hide a stale add-on.
-  assertCompanionRuntime(COMPANION_VERSION, 'ooxml-model-source-module/v1');
+  assertCompanionRuntime(COMPANION_VERSION, 'ooxml-model-source-module/v2');
   const label = `legacy ${family.toUpperCase()} source`;
   if (docConfig !== undefined) {
     if (family !== 'doc') throw new TypeError('Native reading policies belong only to the DOC source');
