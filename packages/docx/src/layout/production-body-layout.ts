@@ -3078,7 +3078,9 @@ function computeAdjacentTablePtLayouts(
     return prior.map((record) => record!.acquisition);
   }
   // Members memoize under the state key plus the group composition: each
-  // member's columns and decision derive from the whole logical table.
+  // member's columns and decision derive from the whole logical table. The
+  // member's own source index keeps a table object that a source reuses for
+  // two occurrences from receiving the other occurrence's acquisition.
   const stateKey = retainedTablePassKey(state, -1, contentWPt);
   const groupPassKey = stateKey === undefined
     ? undefined
@@ -3093,7 +3095,7 @@ function computeAdjacentTablePtLayouts(
         decision: group.decision,
         member,
       };
-    }, groupPassKey);
+    }, groupPassKey === undefined ? undefined : `${groupPassKey}|member:${sourceIndex}`);
     return retainedTableRecord(state, sourceIndex).acquisition;
   });
 }
