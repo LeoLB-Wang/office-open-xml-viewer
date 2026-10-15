@@ -73,6 +73,7 @@ pub struct ResourceUsage {
 pub enum HardResourceLimitKind {
     XmlEventBytes,
     XmlContextBytes,
+    XmlNamespaceDeclarations,
     XmlNestingDepth,
     DocxBodyBlockXmlBytes,
     DocxBodyChunkJsonBytes,
@@ -115,6 +116,7 @@ impl HardResourceLimitKind {
         match self {
             Self::XmlEventBytes => ("parsing", "xml-event", "bytes"),
             Self::XmlContextBytes => ("parsing", "xml-context", "bytes"),
+            Self::XmlNamespaceDeclarations => ("parsing", "xml-context", "declarations"),
             Self::XmlNestingDepth => ("parsing", "xml-tree", "depth"),
             Self::WorksheetReferenceCells => ("parsing", "worksheet-reference", "cells"),
             Self::WorksheetReferenceStringBytes => ("parsing", "worksheet-reference", "bytes"),
