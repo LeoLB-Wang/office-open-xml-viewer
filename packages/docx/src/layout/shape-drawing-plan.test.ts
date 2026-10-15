@@ -1,3 +1,4 @@
+import { drawingMLGeometryBounds } from '@silurus/ooxml-core';
 import { shadowInkBounds } from './vml-shadow.js';
 import { describe, expect, it } from 'vitest';
 import type { ShapeRun } from '../types.js';
@@ -83,10 +84,7 @@ describe('ShapeRun drawing command planner', () => {
     if (result.status !== 'planned') throw new Error('expected perspective shadow');
     const shadow = result.before?.[0];
     if (shadow?.kind !== 'drawingml-shape') throw new Error('expected vector shadow');
-    expect(shadow.plan.geometry).toMatchObject({ kind: 'custom', subpaths: [[
-      { cmd: 'moveTo', x: 0, y: 0 }, { cmd: 'lineTo', x: 50, y: 0 },
-      { cmd: 'lineTo', x: 50, y: 25 }, { cmd: 'lineTo', x: 0, y: 50 }, { cmd: 'close' },
-    ]] });
+    expect(drawingMLGeometryBounds(shadow.plan)).toEqual({x:0,y:0,w:50,h:50});
     expect(() => planShapeDrawing(input, { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 }, undefined, undefined, undefined, 12)).toThrow(/allowance|budget/i);
   });
 

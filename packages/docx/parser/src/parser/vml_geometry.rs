@@ -1016,26 +1016,6 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
     {
         return true;
     }
-    if let Some(skew) = skew(shape, definition) {
-        let stroke = resolve_vml_stroke(shape, definition);
-        let identity = skew.matrix == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-            && skew.offset.x_pt == 0.0
-            && skew.offset.y_pt == 0.0
-            && skew.offset.x_fraction == 0.0
-            && skew.offset.y_fraction == 0.0;
-        // Arrowheads are separate retained vectors. Nonidentity skew still
-        // needs to acquire their contours with the shaft; disclose this limit
-        // rather than claiming that regenerating an unskewed head is support.
-        if !identity
-            && stroke.color.is_some()
-            && (stroke.head_end.is_some() || stroke.tail_end.is_some())
-            && arrows_enabled(shape, definition)
-            && path_attr(shape, definition, "strokeok").and_then(parse_vml_true_false)
-                != Some(false)
-        {
-            return true;
-        }
-    }
     for (element, allowed) in [
         (
             "skew",

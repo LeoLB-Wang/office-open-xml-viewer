@@ -14,7 +14,7 @@ type Point = { x: number; y: number };
  * during paint. Curves use 48 chords, the shared WordArt numerical policy;
  * Canvas glyphs are locally affine, as with DrawingML text-warp envelopes. */
 export function planVmlPathText(
-  shape: DeepReadonly<Pick<ShapeRun, 'subpaths'>>,
+  shape: DeepReadonly<Pick<ShapeRun, 'subpaths' | 'presetGeometry'>>,
   bounds: LayoutRect,
   facts: VmlTextPathAcquisitionInput,
   command: Readonly<{ sourceBounds: LayoutRect; spans: readonly Readonly<{text: string}>[] }>,
@@ -65,7 +65,12 @@ export function planVmlPathText(
       };
     });
   };
-  if (facts.xScale || shape.subpaths.length === 0) {
+  if (!facts.xScale && shape.presetGeometry === 'line') {
+    // Part 4 §§19.1.2.12/.23: a primitive line is its actual baseline,
+    // including vertical and diagonal lines. A zero-width allocation is not
+    // a zero-length path, and must not become the box's horizontal edge.
+    paths.push([{x:0,y:0},{x:bounds.widthPt,y:bounds.heightPt}]);
+  } else if (facts.xScale || shape.subpaths.length === 0) {
     paths.push([
       { x: 0, y: bounds.heightPt },
       { x: bounds.widthPt, y: bounds.heightPt },

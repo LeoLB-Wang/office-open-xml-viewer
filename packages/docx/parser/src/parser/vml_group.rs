@@ -58,8 +58,8 @@ fn group_spec(group: roxmltree::Node, root: bool) -> Option<DrawingGroupSpec> {
         } else {
             vml_css_length_pt(style, "rotation").unwrap_or(0.0)
         },
-        flip_h: !root && flip.contains('x'),
-        flip_v: !root && flip.contains('y'),
+        flip_h: flip.contains('x'),
+        flip_v: flip.contains('y'),
     };
     (width.is_finite()
         && height.is_finite()
@@ -71,6 +71,101 @@ fn group_spec(group: roxmltree::Node, root: bool) -> Option<DrawingGroupSpec> {
         && spec.off_y.is_finite()
         && spec.rotation_degrees.is_finite())
     .then_some(spec)
+}
+
+const IDENTITY_EFFECT: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+// CT_Group includes o:skew in EG_ShapeElements. Part 4 §19.2.2.31
+// applies it to descendant vectors after this group's rotation, before its
+// ancestors' effects. Conjugate from the group's parent coordinates into the
+// root story's point space; never alter the image-data/brush transform.
+fn group_effect(
+    group: roxmltree::Node,
+    spec: DrawingGroupSpec,
+    parent: GroupTransform,
+    outer: [f64; 6],
+    diagnostics: &mut Vec<PendingParseDiagnostic>,
+) -> [f64; 6] {
+    if hidden(group) {
+        return outer;
+    }
+    if vml_direct_child(group, "skew").is_some_and(|node| {
+        node.attributes().any(|a| {
+            !matches!(
+                a.name(),
+                "id" | "ext" | "on" | "matrix" | "offset" | "origin"
+            )
+        })
+    }) {
+        unsupported(diagnostics);
+    }
+    let Some(skew) = vml_geometry::skew(group, None) else {
+        if vml_decoration_attr(group, None, "skew", "on").and_then(parse_vml_true_false)
+            == Some(true)
+        {
+            unsupported(diagnostics);
+        }
+        return outer;
+    };
+    let (ex, ey) = parent.map_point(0.0, 0.0);
+    let (ax, ay) = parent.map_point(1.0, 0.0);
+    let (bx, by) = parent.map_point(0.0, 1.0);
+    let (a, b, c, d) = (ax - ex, ay - ey, bx - ex, by - ey);
+    let det = a * d - b * c;
+    let ox = spec.off_x + spec.ext_x * (0.5 + skew.origin.0);
+    let oy = spec.off_y + spec.ext_y * (0.5 + skew.origin.1);
+    // Absolute offsets are physical points; fractional offsets follow the
+    // group extent. Remove parent scaling before mapping them to story points.
+    let dx = skew.offset.x_pt / parent.scale_x + skew.offset.x_fraction * spec.ext_x;
+    let dy = skew.offset.y_pt / parent.scale_y + skew.offset.y_fraction * spec.ext_y;
+    let project = |x: f64, y: f64| {
+        let u = (d * (x - ex) - c * (y - ey)) / det - ox;
+        let v = (-b * (x - ex) + a * (y - ey)) / det - oy;
+        let px = ox + skew.matrix[0] * u + skew.matrix[2] * v + dx;
+        let py = oy + skew.matrix[1] * u + skew.matrix[3] * v + dy;
+        let (px, py) = parent.map_point(px, py);
+        (
+            outer[0] * px + outer[2] * py + outer[4],
+            outer[1] * px + outer[3] * py + outer[5],
+        )
+    };
+    let (x, y) = project(0.0, 0.0);
+    let (ax, ay) = project(1.0, 0.0);
+    let (bx, by) = project(0.0, 1.0);
+    [ax - x, ay - y, bx - x, by - y, x, y]
+}
+
+// The root group's host transform belongs to the retained story wrapper.
+// Conjugate its own post-rotation skew into that wrapper's pre-host frame;
+// nested group effects already precede this outer host transform.
+fn root_effect(group: roxmltree::Node, spec: DrawingGroupSpec, effect: [f64; 6]) -> [f64; 6] {
+    if effect == IDENTITY_EFFECT {
+        return effect;
+    }
+    let style = group.attribute("style").unwrap_or("");
+    let radians = vml_css_length_pt(style, "rotation")
+        .unwrap_or(0.0)
+        .to_radians();
+    let (sin, cos) = radians.sin_cos();
+    // Unlike text in a leaf textbox, a group's descendants are vectors:
+    // group_spec already baked root reflection into their coordinate map.
+    // The retained story wrapper owns rotation only.
+    let (fx, fy) = (1.0, 1.0);
+    let (cx, cy) = (spec.ext_x / 2.0, spec.ext_y / 2.0);
+    let project = |x: f64, y: f64| {
+        let u = cx + cos * fx * (x - cx) - sin * fy * (y - cy);
+        let v = cy + sin * fx * (x - cx) + cos * fy * (y - cy);
+        let u2 = effect[0] * u + effect[2] * v + effect[4] - cx;
+        let v2 = effect[1] * u + effect[3] * v + effect[5] - cy;
+        (
+            cx + fx * (cos * u2 + sin * v2),
+            cy + fy * (-sin * u2 + cos * v2),
+        )
+    };
+    let (x, y) = project(0.0, 0.0);
+    let (ax, ay) = project(1.0, 0.0);
+    let (bx, by) = project(0.0, 1.0);
+    [ax - x, ay - y, bx - x, by - y, x, y]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -129,8 +224,16 @@ pub(super) fn parse_groups(
         let mut group_diagnostics = Vec::new();
         let diagnostics = &mut group_diagnostics;
         let mut children = Vec::new();
-        let mut pending = vec![(group, GroupTransform::from_group(spec))];
-        while let Some((parent, transform)) = pending.pop() {
+        let effect = group_effect(
+            group,
+            spec,
+            GroupTransform::IDENTITY,
+            IDENTITY_EFFECT,
+            diagnostics,
+        );
+        let effect = root_effect(group, spec, effect);
+        let mut pending = vec![(group, GroupTransform::from_group(spec), effect)];
+        while let Some((parent, transform, effect)) = pending.pop() {
             // A stack frame per group avoids recursive parser calls. Reverse
             // insertion preserves authored painter order across nested groups.
             if parent.has_tag_name((VML, "group")) {
@@ -162,12 +265,19 @@ pub(super) fn parse_groups(
                 for child in ordered_children.into_iter().rev() {
                     if child.has_tag_name((VML, "group")) {
                         if let Some(spec) = group_spec(child, false) {
-                            pending.push((child, transform.compose_group(spec)));
+                            let child_effect =
+                                group_effect(child, spec, transform, effect, diagnostics);
+                            pending.push((child, transform.compose_group(spec), child_effect));
                         } else {
                             unsupported(diagnostics);
                         }
+                    } else if child.tag_name().namespace()
+                        == Some("urn:schemas-microsoft-com:office:office")
+                        && child.tag_name().name() == "skew"
+                    {
+                        // A group property has been consumed by group_effect.
                     } else {
-                        pending.push((child, transform));
+                        pending.push((child, transform, effect));
                     }
                 }
                 // CT_Group (§19.1.2.7) does not declare shape-level opacity;
@@ -177,7 +287,7 @@ pub(super) fn parse_groups(
                 // The group itself is only a coordinate container.
                 continue;
             }
-            if let Some(run) = acquire_leaf(
+            if let Some(mut run) = acquire_leaf(
                 style_map,
                 num_map,
                 parent,
@@ -192,6 +302,19 @@ pub(super) fn parse_groups(
                 depth,
                 diagnostics,
             ) {
+                if effect != IDENTITY_EFFECT {
+                    if let DocRun::Shape(shape) = &mut run {
+                        let (x, y) = (shape.anchor_x_pt, shape.anchor_y_pt);
+                        shape.vml_group_transform = Some([
+                            effect[0],
+                            effect[1],
+                            effect[2],
+                            effect[3],
+                            effect[0] * x + effect[2] * y + effect[4] - x,
+                            effect[1] * x + effect[3] * y + effect[5] - y,
+                        ]);
+                    }
+                }
                 children.push(run);
             }
         }
@@ -723,7 +846,7 @@ mod tests {
                 image.width_pt,
                 image.height_pt
             ),
-            (50.0, 10.0, 10.0, 5.0)
+            (40.0, 35.0, 10.0, 5.0)
         );
     }
 

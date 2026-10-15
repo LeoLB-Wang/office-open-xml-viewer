@@ -653,13 +653,18 @@ it('preserves image host transforms with identity skew and renders affine text s
   expect(skewed.diagnostics).toEqual([]);
 });
 
-it('keeps acquired arrow tips unchanged under identity skew and diagnoses unacquired skewed heads', async () => {
+it('transforms acquired arrow contours with their shafts without retracting twice', async () => {
   const draw = (matrix?: string) => renderVml(`<v:group style="width:150pt;height:100pt" coordsize="150,100"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block"/>${matrix ? `<o:skew on="t" offset="0,0" matrix="${matrix}"/>` : ''}</v:line></v:group>`);
   const plain = await draw(), identity = await draw('1,0,0,1,0,0');
   expect(identity.pixels).toEqual(plain.pixels);
   expect(identity.diagnostics).toEqual([]);
   const skewed = await draw('1,.5,0,1,0,0');
-  expect(skewed.diagnostics.length).toBeGreaterThan(0);
+  expect(skewed.diagnostics).toEqual([]);
+  expect(skewed.pixels).not.toEqual(plain.pixels);
+  expect(counter(skewed.pixels)(0, 0, 255)).toBeGreaterThan(200);
+  // The transformed triangle contains this point; an ordinary regenerated
+  // head on the diagonal shaft does not, nor does the shaft itself.
+  expect([...skewed.pixels.slice((53*200+104)*4,(53*200+104)*4+3)]).toEqual([0,0,255]);
 });
 
 it('keeps page-aligned image-text brushes independent of reflected glyph masks', async () => {
@@ -672,4 +677,78 @@ it('keeps page-aligned image-text brushes independent of reflected glyph masks',
   }
   expect(redLeft).toBeGreaterThan(100); expect(blueRight).toBeGreaterThan(100); expect(wrong).toBe(0);
   expect(diagnostics).toEqual([]);
+});
+
+
+it('outlines horizontal and vertical path text in independent glyph frames with physical and image pens', async () => {
+  for (const vertical of [false, true]) {
+    const draw = (texture = false, transformed = false) => renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:line from="${vertical ? '70,20' : '20,70'}" to="${vertical ? '70,120' : '120,70'}" style="${transformed ? 'rotation:90;flip:x' : ''}" filled="f"><v:path textpathok="t"/><v:textpath on="t" fitpath="t" string="Fjp" style="font:24pt Arial"/><v:stroke weight="3pt" ${texture ? 'filltype="pattern" r:id="pic" color="lime" color2="lime"' : 'color="blue"'}/></v:line></v:group>`);
+    const plain = await draw(), rotated = await draw(false, true), image = await draw(true, true);
+    expect(counter(plain.pixels)(0, 0, 255)).toBeGreaterThan(300);
+    expect(counter(rotated.pixels)(0, 0, 255)).toBeGreaterThan(300);
+    expect(counter(image.pixels)(0, 255, 0)).toBeGreaterThan(100);
+    expect([...plain.diagnostics, ...rotated.diagnostics, ...image.diagnostics]).toEqual([]);
+  }
+});
+
+it('retains affine perspective glyph shadows for filled and outlined text', async () => {
+  for (const outline of [false, true]) {
+    const draw = (type: string, matrix = '1,0,0,1,0,0') => renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:shape style="left:20;top:20;width:100;height:40;flip:x" fillcolor="red" stroked="${outline ? 't' : 'f'}" strokecolor="blue" strokeweight="3pt"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="Fjp" style="font:24pt Arial"/><v:shadow on="t" type="${type}" color="lime" offset="0,70pt" matrix="${matrix}"/></v:shape></v:group>`);
+    const single = await draw('single'), perspective = await draw('perspective');
+    expect(counter(perspective.pixels)(0, 255, 0)).toBeGreaterThan(200);
+    // Native glyph fill and bounded acquired contours agree on area, while
+    // contour edge antialiasing can differ by a pixel.
+    const a = counter(single.pixels)(0, 255, 0), b = counter(perspective.pixels)(0, 255, 0);
+    expect(Math.abs(a-b)).toBeLessThan(.15*a);
+    const affine = await draw('perspective', '1,.3,0,1,0,0');
+    expect(affine.pixels).not.toEqual(perspective.pixels);
+    expect(counter(affine.pixels)(0, 255, 0)).toBeGreaterThan(200);
+    expect([...perspective.diagnostics, ...affine.diagnostics]).toEqual([]);
+  }
+});
+
+it('composes root and nested group skew across vector leaves, text and decorated lines', async () => {
+  const skew = '<o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0" origin="-.5,-.5"/>';
+  const draw = (at: 'none' | 'root' | 'nested' | 'both') => renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180">${at === 'root' || at === 'both' ? skew : ''}<v:group style="left:20;top:20;width:140;height:140" coordsize="140,140">${at === 'nested' || at === 'both' ? skew : ''}<v:rect style="left:10;top:10;width:40;height:20" fillcolor="red" stroked="f"/><v:line from="10,60" to="100,60" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block"/></v:line><v:shape style="left:10;top:90;width:100;height:30" fillcolor="lime" stroked="f"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="Fjp" style="font:20pt Arial"/></v:shape></v:group></v:group>`);
+  const plain = await draw('none'), root = await draw('root'), nested = await draw('nested'), both = await draw('both');
+  const at = (p: Uint8ClampedArray, x: number, y: number) => [...p.slice((y*200+x)*4, (y*200+x)*4+3)];
+  expect(at(plain.pixels, 60, 35)).toEqual([255,0,0]);
+  expect(at(root.pixels, 60, 35)).toEqual([255,255,255]);
+  expect(at(root.pixels, 60, 65)).toEqual([255,0,0]);
+  expect(at(nested.pixels, 60, 55)).toEqual([255,0,0]);
+  expect(at(both.pixels, 60, 85)).toEqual([255,0,0]);
+  for (const result of [root, nested, both]) {
+    expect(counter(result.pixels)(0,0,255)).toBeGreaterThan(100);
+    expect(counter(result.pixels)(0,255,0)).toBeGreaterThan(100);
+    expect(result.diagnostics).toEqual([]);
+  }
+});
+
+
+it('applies group skew after root rotation while picture data keeps its host frame', async () => {
+  const skew = '<o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0" origin="-.5,-.5"/>';
+  const rotated = await renderVml(`<v:group style="width:160pt;height:160pt;rotation:90;flip:x" coordsize="160,160">${skew}<v:rect style="left:30;top:30;width:40;height:20" fillcolor="red" stroked="f"/></v:group>`);
+  // Host rotation/reflection maps the rect to x=110..130,y=90..130;
+  // only then does group y += x/2. The interior starts at y=145 at x=110.
+  const at = (p: Uint8ClampedArray, x: number, y: number) => [...p.slice((y*200+x)*4,(y*200+x)*4+3)];
+  expect(at(rotated.pixels,120,160)).toEqual([255,0,0]);
+  expect(at(rotated.pixels,120,110)).toEqual([255,255,255]);
+  const picture = await renderVml(`<v:group style="width:160pt;height:160pt" coordsize="160,160">${skew}<v:shape style="left:20;top:20;width:100;height:60" filled="f" stroked="f"><v:imagedata r:id="pic"/></v:shape></v:group>`, 'vertical');
+  // The clip shears, but the horizontal red/blue source boundary stays y=50.
+  expect(at(picture.pixels,35,45)).toEqual([255,0,0]);
+  expect(at(picture.pixels,35,60)).toEqual([0,0,255]);
+  expect(at(picture.pixels,100,45)).toEqual([255,255,255]);
+  expect([...rotated.diagnostics,...picture.diagnostics]).toEqual([]);
+});
+
+
+it('preserves skewed textured arrow contours and their independent single shadow', async () => {
+  const {pixels, diagnostics} = await renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block" filltype="tile" r:id="pic" color2="blue"/><o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0"/><v:shadow on="t" color="lime" offset="0,70pt" obscured="t"/></v:line></v:group>`);
+  expect(diagnostics).toEqual([]);
+  let brushInk = 0;
+  for (let i=0; i<pixels.length; i+=4) brushInk += (255-pixels[i+1]!)/255;
+  expect(brushInk).toBeGreaterThan(250);
+  expect(counter(pixels)(0,0,255)).toBeGreaterThan(0);
+  expect(counter(pixels)(255,0,0)).toBeGreaterThan(0);
+  expect(counter(pixels)(0,255,0)).toBeGreaterThan(100);
 });

@@ -1643,6 +1643,8 @@ export interface BlockLayoutAlgorithms {
 
 /** Effective private VML parser facts, projected before layout acquisition. */
 export interface VmlShapeAcquisitionFacts {
+  /** Cumulative group vector effect in points relative to the leaf origin. */
+  readonly vmlGroupTransform?: readonly [number, number, number, number, number, number];
   readonly vmlSkew?: Readonly<{
     offset: NonNullable<import('../types.js').ShapeRun['vmlShadow']>['offset'];
     origin: readonly [number, number];

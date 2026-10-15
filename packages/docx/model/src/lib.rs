@@ -2169,6 +2169,11 @@ pub struct ShapeRun {
     pub vml_shadow: Option<VmlShadow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vml_skew: Option<VmlSkew>,
+    /// Part 4 §§19.1.2.7/19.2.2.31: cumulative group vector effect,
+    /// in points relative to this leaf's allocation origin. Image data keeps
+    /// its original brush frame. Ancestor effects are composed once per group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_group_transform: Option<[f64; 6]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vml_edge_strokes: Vec<VmlEdgeStroke>,
     /// Part 4 §§19.1.2.10/.11: picture ink is independent of the backing

@@ -1,3 +1,5 @@
+import { resolveVmlGeometryPass } from './vml-geometry-pass.js';
+import { acquireVmlGroupVectors } from './vml-group-vectors.js';
 import { acquireVmlTextContours } from './vml-text-outline.js';
 import { acquireVmlSkew, acquireVmlSkewMatrix } from './vml-skew.js';
 import { acquireVmlConcentricFill } from './vml-concentric-fill.js';
@@ -233,7 +235,7 @@ function planShapeDrawingBase(
           )
         : command;
     const pen = shapeStroke(shape);
-    if (acquiredCommand.imageResourceKey || pen) {
+    if (acquiredCommand.imageResourceKey || pen || shape.vmlSkew || shape.vmlGroupTransform || shape.vmlShadow) {
       const ink = shaped.inkBounds
         ? {
             xPt: shaped.inkBounds.xMinPt,
@@ -298,7 +300,7 @@ function planShapeDrawingBase(
       ...shadowText
     } = acquiredCommand;
     const shadow = shape.vmlShadow;
-    const before: Exclude<ShapeDrawingCommand, {kind: 'noop'}>[] = shadow && shadow.kind !== 'perspective' && shadow.opacity > 0
+    const before: Exclude<ShapeDrawingCommand, {kind: 'noop'}>[] = shadow && !pen && shadow.kind !== 'perspective' && shadow.opacity > 0
       ? (shadow.kind === 'single' ? [[shadow.offset, shadow.color]] as const
         : [[shadow.offset, shadow.color], [shadow.offset2, shadow.color2]] as const).map(([offset, color]) => snapshotPlainData({
           ...shadowText,
@@ -311,6 +313,10 @@ function planShapeDrawingBase(
             f: shadowText.glyphTransform.f + (1 - shadowText.glyphTransform.d) * (offset.yPt + offset.yFraction * bounds.heightPt)
               - shadowText.glyphTransform.b * (offset.xPt + offset.xFraction * bounds.widthPt),
           } } : {}),
+          ...(shadowText.maskBounds ? { maskBounds: { ...shadowText.maskBounds,
+            xPt: shadowText.maskBounds.xPt + offset.xPt + offset.xFraction * bounds.widthPt,
+            yPt: shadowText.maskBounds.yPt + offset.yPt + offset.yFraction * bounds.heightPt,
+          } } : {}),
           fill: shape.fill || !shadow.obscured ? { fillType: 'solid' as const, color } : null, opacity: shadow.opacity,
         }, 'VML text shadow')) : [];
     const diagnostics: Array<Readonly<Omit<LayoutDiagnostic, 'source'>>> = [];
@@ -318,39 +324,68 @@ function planShapeDrawingBase(
     // physical point-space pen. Native strokeText would deform the pen too.
     // Font-service contours keep arbitrary affine fits and the scale-neutral
     // reference font honest, and share ordinary retained stroke machinery.
-    if (pen) {
+    const affinePerspective = shadow?.kind === 'perspective' && shadow.matrix[4] === 0 && shadow.matrix[5] === 0;
+    if (pen || (affinePerspective && shadow.opacity > 0)) {
       const scales = acquiredCommand.pathSlices?.map(s => Math.hypot(s.a, s.b, s.c, s.d))
         ?? [fitShape ? Math.max(bounds.widthPt / sourceBounds.widthPt, bounds.heightPt / sourceBounds.heightPt) : 1];
-      // A zero-extent native line needs an independent glyph/brush frame;
-      // do not divide by its zero host extent and fabricate non-finite paths.
-      if (!text.glyphContours || !shaped.inkBounds || bounds.widthPt === 0 || bounds.heightPt === 0) {
+      if (!text.glyphContours || !shaped.inkBounds) {
         diagnostics.push({ code: 'UNSUPPORTED_FEATURE', severity: 'error',
-          message: 'VML text outline requires native glyph contours and a nonzero host frame' });
+          message: 'VML text decoration requires native glyph contours' });
       } else {
+        // Bound every later affine amplification when choosing native contour
+        // precision. Ancestor skew and shadow scale must not magnify a coarse
+        // source contour beyond the font service's output-point tolerance.
+        const groupScale = shape.vmlGroupTransform
+          ? Math.hypot(...shape.vmlGroupTransform.slice(0, 4)) : 1;
+        const shadowScale = affinePerspective ? Math.hypot(...shadow.matrix.slice(0, 4)) : 1;
         const contours = text.glyphContours({ spans: shaped.spans, fontSizePt,
-          ink: shaped.inkBounds, maximumScale: Math.max(...scales) * (command.glyphTransform
+          ink: shaped.inkBounds, maximumScale: Math.max(...scales) * Math.max(1, groupScale)
+            * Math.max(1, shadowScale) * (command.glyphTransform
             ? Math.hypot(command.glyphTransform.a, command.glyphTransform.b, command.glyphTransform.c, command.glyphTransform.d) : 1), maximumWork: maximumGeometryWork ?? Infinity });
         if (!contours?.length) {
           diagnostics.push({ code: 'UNSUPPORTED_FEATURE', severity: 'error',
             message: 'Native glyph contours are unavailable at the bounded outline precision' });
         } else {
           const fitted = acquireVmlTextContours(contours, acquiredCommand, bounds, maximumGeometryWork);
-          const subpaths = fitted.subpaths;
-          const outline = planShapeDrawingPens({ ...shape, presetGeometry: null, subpaths,
+          const contourShape = { ...shape, presetGeometry: null, subpaths: fitted.subpaths,
             subpathPaint: [], fill: null, vmlPicture: undefined, vmlEdgeStrokes: undefined,
-            vmlConcentricGradient: false,
-            vmlShadow: shadow ? { ...shadow, obscured: true } : undefined,
-          }, bounds, undefined, undefined, undefined, Math.min(maximumGeometryWork ?? Infinity, 1_048_576) - fitted.workUnits, undefined, vmlStrokeResourceKey);
-          if (outline.status !== 'planned') throw new Error('VML text outline acquisition failed');
-          before.push(acquiredCommand);
-          before.push(...(outline.before ?? []));
-          if (outline.command.kind === 'noop') throw new Error('VML text outline produced no command');
-          acquiredCommand = outline.command;
+            // The fitting map already includes the host-local glyph skew.
+            vmlSkew: undefined, vmlConcentricGradient: false, vmlShadow: undefined,
+            headEnd: null, tailEnd: null,
+          };
+          let remaining = Math.min(maximumGeometryWork ?? Infinity, 1_048_576) - fitted.workUnits;
+          if (shadow && (affinePerspective || shadow.kind !== 'perspective')) {
+            // Part 4 §19.1.2.18: shadow matrices act on acquired glyph ink,
+            // including fill-only text. Zero p factors are ordinary affine
+            // geometry; they require no reciprocal-unit compatibility rule.
+            const frame = fitted.bounds;
+            const shadowPlan: DrawingMLShapePaintPlan = {
+              rect: {x: frame.xPt, y: frame.yPt, w: frame.widthPt, h: frame.heightPt},
+              geometry: {kind: 'custom', subpaths: fitted.subpaths},
+              fill: shape.fill ? {fillType: 'solid', color: shadow.color} : null,
+              stroke: pen, transform: {rotationDeg: shape.rotation ?? 0,
+                flipH: shape.flipH ?? false, flipV: shape.flipV ?? false},
+            };
+            const resolvedGeometry = resolveDrawingMLGeometry(shadowPlan, 1, remaining);
+            remaining -= resolvedGeometry.workUnits;
+            const shadows = planVmlShadows(shape, {...shadowPlan, resolvedGeometry}, remaining,
+              {x: bounds.xPt, y: bounds.yPt, w: bounds.widthPt, h: bounds.heightPt});
+            before.push(...shadows);
+            remaining -= shadows.reduce((sum, c) => sum + c.plan.resolvedGeometry.workUnits, 0);
+          }
+          if (pen) {
+            const outline = planShapeDrawingPens(contourShape, fitted.bounds, undefined, undefined, undefined, remaining, undefined, vmlStrokeResourceKey);
+            if (outline.status !== 'planned') throw new Error('VML text outline acquisition failed');
+            before.push(...(outline.before ?? []));
+            before.push(acquiredCommand);
+            if (outline.command.kind === 'noop') throw new Error('VML text outline produced no command');
+            acquiredCommand = outline.command;
+          }
         }
       }
     }
-    if (shadow?.kind === 'perspective') diagnostics.push({ code: 'UNSUPPORTED_FEATURE',
-      severity: 'error', message: 'VML perspective text shadow requires glyph outline fill acquisition' });
+    if (shadow?.kind === 'perspective' && !affinePerspective) diagnostics.push({ code: 'UNSUPPORTED_FEATURE',
+      severity: 'error', message: 'VML projective text shadow requires resolved reciprocal-factor semantics' });
     return Object.freeze({ status: 'planned', command: acquiredCommand, ...(before.length ? { before } : {}),
       ...(diagnostics.length ? { diagnostics } : {}),
     });
@@ -388,7 +423,7 @@ function planShapeDrawingBase(
   let remainingWork = (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits
     - shadows.reduce((sum, command) => sum + (command.plan.resolvedGeometry?.workUnits ?? 0), 0);
   const acquirePass = (pass: DrawingMLShapePaintPlan) => {
-    const resolvedGeometry = resolveDrawingMLGeometry(pass, 1, remainingWork);
+    const resolvedGeometry = resolveVmlGeometryPass(pass, remainingWork);
     remainingWork -= resolvedGeometry.workUnits;
     return { ...pass, resolvedGeometry };
   };
@@ -537,7 +572,7 @@ function planShapeDrawingPens(
     }
     const insetStroke = shape.vmlInsetPen === true;
     const acquire = (plan: DrawingMLShapePaintPlan) => {
-      const resolvedGeometry = resolveDrawingMLGeometry(plan, 1, remaining);
+      const resolvedGeometry = resolveVmlGeometryPass(plan, remaining);
       remaining -= resolvedGeometry.workUnits;
       return { ...plan, resolvedGeometry };
     };
@@ -636,7 +671,7 @@ export function planShapeDrawing(
       const ends = { left: [0, 0, 0, 1], top: [0, 0, 1, 0],
         right: [1, 0, 1, 1], bottom: [0, 1, 1, 1] }[edge.edge];
       const penShape = {
-        ...shape, presetGeometry: null, vmlEdgeStrokes: undefined,
+        ...shape, presetGeometry: null, vmlEdgeStrokes: undefined, vmlGroupTransform: undefined,
         vmlShadow: undefined, vmlPicture: undefined, vmlConcentricGradient: false,
         fill: null, stroke: edge.color, strokeWidth: edge.widthPt,
         strokeDash: edge.dash, strokeCap: edge.cap, strokeJoin: edge.join,
@@ -663,5 +698,7 @@ export function planShapeDrawing(
       command: edgeCommands.at(-1) ?? result.command,
     }, 'VML independent edge pens');
   }
-  return result;
+  return shape.vmlGroupTransform
+    ? acquireVmlGroupVectors(result, shape.vmlGroupTransform, bounds, maximumGeometryWork)
+    : result;
 }

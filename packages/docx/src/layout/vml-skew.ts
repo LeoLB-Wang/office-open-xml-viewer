@@ -1,77 +1,77 @@
+import { composeAffine, inverseMapAffinePoint } from './affine.js';
 import { GeometryWorkBudgetError, resolveDrawingMLGeometry } from '@silurus/ooxml-core';
-import type { DrawingMLShapePaintPlan } from '@silurus/ooxml-core';
+import type { DrawingMLShapePaintPlan, GeometryPath } from '@silurus/ooxml-core';
 import type { DeepReadonly, VmlShapeAcquisitionFacts, Matrix2DData } from './types.js';
-import { projectPath } from './vml-shadow.js';
+import { projectPath } from './vml-project-path.js';
 
-/** Part 4 §19.2.2.31 / MS-OI29500 §2.1.1842: skew acts on vector
- * geometry after the shape's rotation/reflection, around its authored origin.
- * Image data retains its original brush frame; only its vector clip moves.
- * Only the unambiguous affine zero-perspective case is acquired. */
-export function acquireVmlSkew(
-  plan: DrawingMLShapePaintPlan,
-  skew: DeepReadonly<NonNullable<VmlShapeAcquisitionFacts['vmlSkew']>>,
-  maximumWork = Infinity,
-): DrawingMLShapePaintPlan & { resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> } {
-  maximumWork = Math.min(maximumWork, 1_048_576);
-  let work = 0;
-  const charge = () => {
-    if (++work > maximumWork) throw new GeometryWorkBudgetError('VML skew geometry work budget exceeded');
-  };
-  const geometry = plan.resolvedGeometry ?? resolveDrawingMLGeometry(plan, 1, maximumWork);
-  work += geometry.workUnits;
-  if (work > maximumWork) throw new GeometryWorkBudgetError('VML skew source geometry work budget exceeded');
-  const { x, y, w, h } = plan.rect;
-  const matrix = acquireVmlSkewMatrix(plan, skew);
-  // Algebraic identity preserves already acquired arrow retraction and exact
-  // curves. Reflattening/re-resolving a decorated line would retract it twice.
+type Point = readonly [number, number];
+type AcquiredShapePlan = DrawingMLShapePaintPlan & {
+  resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']>;
+};
+
+/** Part 4 §19.2.2.31: transform acquired vectors, including separately
+ * acquired arrow contours. Keep the original image/brush frame and physical
+ * pen. Re-resolving an arrow from a transformed/retracted shaft would change
+ * its tip and discard its skew. No image data is transformed here. */
+export function acquireVmlAffineGeometry(
+  plan: DrawingMLShapePaintPlan, matrix: Matrix2DData, maximumWork = Infinity,
+): AcquiredShapePlan {
   if (matrix.a === 1 && matrix.b === 0 && matrix.c === 0 && matrix.d === 1 && matrix.e === 0 && matrix.f === 0)
-    return { ...plan, resolvedGeometry: geometry };
-  const zeroExtent = w === 0 || h === 0;
-  const outputRect = zeroExtent ? { x: 0, y: 0, w: 1, h: 1 } : plan.rect;
-  const project = (p: readonly [number, number]): readonly [number, number] => {
-    charge();
-    const u = matrix.a * p[0] + matrix.c * p[1] + matrix.e;
-    const v = matrix.b * p[0] + matrix.d * p[1] + matrix.f;
-    if (!zeroExtent) return [(u - x) / w, (v - y) / h];
-    // A horizontal/vertical line has no invertible normalization box. Bake
-    // its complete host frame into an ordinary unit point-space rectangle;
-    // this changes only the geometry coordinate basis, not its allocation.
-    const cx = x + w / 2, cy = y + h / 2, theta = plan.transform.rotationDeg * Math.PI / 180;
-    const dx = (u - cx) * (plan.transform.flipH ? -1 : 1), dy = (v - cy) * (plan.transform.flipV ? -1 : 1);
-    return [cx + Math.cos(theta) * dx - Math.sin(theta) * dy,
-      cy + Math.sin(theta) * dx + Math.cos(theta) * dy];
-  };
-  // Keep nondegenerate shapes' brush rectangles. The bounded curve authority
-  // operates in output points before normalization, preserving its precision.
-  const subpaths = geometry.paths.map(path => projectPath(path.path, p => {
-    const point = project(p);
-    return [point[0] * outputRect.w + outputRect.x, point[1] * outputRect.h + outputRect.y];
-  }, charge).map(command => 'x' in command && 'y' in command ? { ...command,
-    x: (command.x - outputRect.x) / outputRect.w, y: (command.y - outputRect.y) / outputRect.h } : command));
-  const acquired: DrawingMLShapePaintPlan = {
-    ...plan,
-    rect: outputRect,
-    geometry: { kind: 'custom', subpaths, paint: geometry.paths.map(path => ({
-      fillRule: path.fillRule,
-      ...(path.fill === 'none' ? { fill: 'none' as const } : {}),
-      ...(path.stroke ? {} : { stroke: false as const }),
-    })) },
-    transform: zeroExtent ? { rotationDeg: 0, flipH: false, flipV: false } : { ...plan.transform },
-  };
-  const resolvedGeometry = resolveDrawingMLGeometry(acquired, 1, maximumWork - work);
-  return { ...acquired, resolvedGeometry: { ...resolvedGeometry, workUnits: work + resolvedGeometry.workUnits } };
+    return { ...plan, resolvedGeometry: plan.resolvedGeometry ?? resolveDrawingMLGeometry(plan, 1, maximumWork) };
+  return acquireVmlProjectedGeometry(plan, ([x, y]) => [matrix.a * x + matrix.c * y + matrix.e, matrix.b * x + matrix.d * y + matrix.f], maximumWork);
 }
-
+/** Project every retained vector through a single acquired point map. */
+export function acquireVmlProjectedGeometry(
+  plan: DrawingMLShapePaintPlan, effect: (p: Point) => Point, maximumWork = Infinity,
+): AcquiredShapePlan {
+  maximumWork = Math.min(maximumWork, 1_048_576);
+  const geometry = plan.resolvedGeometry ?? resolveDrawingMLGeometry(plan, 1, maximumWork);
+  let work = geometry.workUnits;
+  const charge = (n = 1) => {
+    work += n;
+    if (work > maximumWork)
+      throw new GeometryWorkBudgetError('VML affine geometry work budget exceeded');
+  };
+  const project = ([x, y]: Point): Point => {
+    charge();
+    const dx = plan.rect.x - geometry.originX, dy = plan.rect.y - geometry.originY;
+    const q = effect([x + dx, y + dy]);
+    return [q[0] - dx, q[1] - dy];
+  };
+  const path = (source: GeometryPath, map = project): GeometryPath => {
+    return projectPath(source, map, charge).map(command => {
+      // projectPath supplies only its acquired polygon, in output points.
+      if (command.cmd === 'close') {
+        charge();
+        return { op: 'closePath' as const, args: [] };
+      }
+      if (command.cmd !== 'moveTo' && command.cmd !== 'lineTo')
+        throw new Error('VML projection returned an unacquired curve');
+      charge(3);
+      return { op: command.cmd, args: [command.x, command.y] };
+    });
+  };
+  const paths = geometry.paths.map(p => ({ ...p, path: path(p.path) }));
+  const fillSilhouette = path(geometry.fillSilhouette);
+  const arrows = geometry.arrows.map(arrow => ({ ...arrow, tipX: 0, tipY: 0, angle: 0,
+    geometry: { ...arrow.geometry, path: path(arrow.geometry.path, ([x, y]) => project([
+        arrow.tipX + Math.cos(arrow.angle) * x - Math.sin(arrow.angle) * y,
+        arrow.tipY + Math.sin(arrow.angle) * x + Math.cos(arrow.angle) * y,
+      ])) },
+  }));
+  return { ...plan, resolvedGeometry: { ...geometry, paths, fillSilhouette, arrows, workUnits: work } };
+}
+export function acquireVmlSkew(plan: DrawingMLShapePaintPlan, skew: DeepReadonly<NonNullable<VmlShapeAcquisitionFacts['vmlSkew']>>, maximumWork = Infinity): ReturnType<typeof acquireVmlAffineGeometry> {
+  return acquireVmlAffineGeometry(plan, acquireVmlSkewMatrix(plan, skew), maximumWork);
+}
 /** Conjugate the post-host skew into the retained host's local point frame.
  * Keeping the original host transform preserves image rotation/reflection;
  * §19.2.2.31 excludes only skew from image data, not the host transform. */
-export function acquireVmlSkewMatrix(
-  plan: Pick<DrawingMLShapePaintPlan, 'rect' | 'transform'>,
-  skew: DeepReadonly<NonNullable<VmlShapeAcquisitionFacts['vmlSkew']>>,
-): Matrix2DData {
+export function acquireVmlSkewMatrix(plan: Pick<DrawingMLShapePaintPlan, 'rect' | 'transform'>, skew: DeepReadonly<NonNullable<VmlShapeAcquisitionFacts['vmlSkew']>>): Matrix2DData {
   const { x, y, w, h } = plan.rect;
   const [sxx, sxy, syx, syy, px, py] = skew.matrix;
-  if (px !== 0 || py !== 0) throw new Error('Projective VML skew requires resolved reciprocal-factor semantics');
+  if (px !== 0 || py !== 0)
+    throw new Error('Projective VML skew requires resolved reciprocal-factor semantics');
   const cx = x + w / 2, cy = y + h / 2;
   const ox = cx + w * skew.origin[0], oy = cy + h * skew.origin[1];
   const dx = skew.offset.xPt + skew.offset.xFraction * w;
@@ -88,4 +88,21 @@ export function acquireVmlSkewMatrix(
   };
   const p = project(0, 0), a = project(1, 0), b = project(0, 1);
   return { a: a.x - p.x, b: a.y - p.y, c: b.x - p.x, d: b.y - p.y, e: p.x, f: p.y };
+}
+/** Express an ancestor's page-space vector effect in a retained host frame.
+ * Host rotation/reflection remains the painter's single outer transform. */
+export function conjugateVmlHostMatrix(plan: Pick<DrawingMLShapePaintPlan, 'rect' | 'transform'>, matrix: Matrix2DData): Matrix2DData {
+  const { x, y, w, h } = plan.rect, theta = plan.transform.rotationDeg * Math.PI / 180;
+  const fx = plan.transform.flipH ? -1 : 1, fy = plan.transform.flipV ? -1 : 1;
+  const a = Math.cos(theta) * fx, b = Math.sin(theta) * fx, c = -Math.sin(theta) * fy, d = Math.cos(theta) * fy;
+  const cx = x + w / 2, cy = y + h / 2;
+  const host = { a, b, c, d, e: cx - a * cx - c * cy, f: cy - b * cx - d * cy };
+  const project = (xPt: number, yPt: number) => {
+    const p = inverseMapAffinePoint(host, { xPt, yPt });
+    if (!p)
+      throw new RangeError('Invalid VML host orientation');
+    return p;
+  };
+  const o = project(0, 0), u = project(1, 0), v = project(0, 1);
+  return composeAffine({ a: u.xPt - o.xPt, b: u.yPt - o.yPt, c: v.xPt - o.xPt, d: v.yPt - o.yPt, e: o.xPt, f: o.yPt }, composeAffine(matrix, host));
 }
