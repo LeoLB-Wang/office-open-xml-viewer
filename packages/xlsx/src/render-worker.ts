@@ -57,9 +57,10 @@ import type { ParsedWorkbook, Worksheet } from './types.js';
 import { bindWorksheetPolicy } from './worksheet-policy-context.js';
 import { WorksheetViewProjectionCache } from './worker-protocol.js';
 import { evictWorkerWorksheets } from './internal/worksheet-cache.js';
-import { readXlsxArchiveBootstrap } from './internal/archive-bootstrap.js';
+import { readXlsxArchiveBootstrap, type XlsxArchiveBootstrap } from './internal/archive-bootstrap-source.js';
 import type { RenderWorkerRequest, RenderWorkerResponse } from './worker-protocol.js';
-import { isWorksheetPullCommand, WorksheetPullWorker } from './worksheet-pull-worker.js';
+import { isWorksheetPullCommand, WorksheetPullWorker } from './worksheet-pull-source-worker.js';
+import type { WorkerWorksheetSourceOwner, WorkerWorksheetArchive } from './internal/worker-worksheet-source.js';
 
 // RB6: self-poison + auto-respawn. A trap during parse / per-sheet parse / image
 // read recycles the instance so the next workbook renders on clean linear
@@ -73,6 +74,16 @@ const host = new WasmParserHost<XlsxArchive>(init, {
   // wasm-bindgen singleton). `reinit` forces fresh linear memory after a trap.
   reinit,
 });
+let source: WorkerWorksheetSourceOwner<XlsxArchive> | undefined;
+function executeArchive<T>(operation: (archive: WorkerWorksheetArchive) => T): T {
+  if (source) return source.execute(operation);
+  const archive = host.archive;
+  if (!archive) throw new Error('Workbook not loaded');
+  return host.run(() => operation(archive));
+}
+function sourceUsage(): Uint8Array | undefined {
+  return source ? source.resourceUsage() : host.run(() => host.archive?.resource_usage());
+}
 let cjkFallback: CjkLang = 'jp';
 let workbook: ParsedWorkbook | null = null;
 let archiveBacked = false;
@@ -129,7 +140,7 @@ const rendererModule = import('./renderer.js');
 const orchestratorModule = import('./render-orchestrator.js');
 const delimitedTextModule = import('./delimited-text.js');
 const worksheetPull = new WorksheetPullWorker(
-  () => host.archive,
+  () => source?.cursor() ?? host.archive,
   (sheetIndex, worksheet, measured, resourceUsage) => {
     const previous = sheetCache.get(sheetIndex);
     const previousUsage = sheetCacheUsage.get(sheetIndex);
@@ -158,9 +169,7 @@ const worksheetPull = new WorksheetPullWorker(
     };
   },
   (operation) => {
-    const archive = host.archive;
-    if (!archive) throw new Error('Workbook not loaded');
-    return host.run(() => operation(archive));
+    return executeArchive(operation);
   },
   (rows) => {
     if (workbook) resolveSharedStringRows(rows, workbook.sharedStrings);
@@ -192,9 +201,9 @@ const svgDecodeClient = new WorkerSvgDecodeClient(rawPost);
  *  Mime travels on the element, so the caller supplies it. */
 function getImage(path: string, mimeType: string): Promise<Blob> {
   return rawParts.get(path, mimeType, async () => {
-    const loaded = host.archive;
+    const loaded = source?.cursor() ?? host.archive;
     if (!loaded) throw new Error('Workbook not loaded');
-    const bytes = host.run(() => loaded.extract_image(path));
+    const bytes = executeArchive((archive) => archive.extract_image(path));
     return new Blob([bytes as BlobPart], { type: mimeType });
   });
 }
@@ -203,6 +212,7 @@ self.onmessage = async (e: MessageEvent<
   RenderWorkerRequest | PullSessionCommand<number> | WorkerSvgDecodeResponse
 >) => {
   const req = e.data;
+
   if (isWorkerSvgDecodeResponse(req)) {
     svgDecodeClient.accept(req);
     return;
@@ -236,11 +246,8 @@ self.onmessage = async (e: MessageEvent<
   try {
     if (req.type === 'openSheetSession') {
       if (!archiveBacked) throw new Error('Worksheet is already materialized');
-      await host.ensureReady();
-      if (host.archive) {
-        const retained = host.archive;
-        host.run(() => retained.assert_healthy());
-      }
+      if (!source) await host.ensureReady();
+      if (source?.cursor() ?? host.archive) executeArchive((archive) => archive.assert_healthy());
       await worksheetPull.open(req.sheetIndex, req.sheetName, req);
       await worksheetPull.postOpenedSafely(
         req,
@@ -255,8 +262,8 @@ self.onmessage = async (e: MessageEvent<
       );
       return;
     }
-    // Normalize before any host/reset effect so invalid options leave the
-    // current document untouched.
+    // Normalize before any host/source/reset effect so invalid options leave
+    // the current document (and any source claim) untouched.
     const requestPolicy = req.type === 'parse' || req.type === 'parseDelimitedText'
       ? normalizeXlsxWorksheetPolicy({ xlsxWorksheetLimits: req.worksheetPolicy?.worksheet })
       : undefined;
@@ -264,10 +271,10 @@ self.onmessage = async (e: MessageEvent<
       await worksheetPull.reset();
     }
     const runRequest = async (): Promise<void> => {
-    if (req.type === 'parse' || archiveBacked) await host.ensureReady();
-    if (req.type !== 'parse' && req.type !== 'parseDelimitedText' && host.archive) {
-      const retained = host.archive;
-      host.run(() => retained.assert_healthy());
+    if ((req.type === 'parse' && !req.source)
+      || (req.type !== 'parseDelimitedText' && archiveBacked && !source)) await host.ensureReady();
+    if (req.type !== 'parse' && req.type !== 'parseDelimitedText' && (source?.cursor() ?? host.archive)) {
+      executeArchive((archive) => archive.assert_healthy());
     }
     if (req.type === 'parse' || req.type === 'parseDelimitedText') {
       // A re-parse starts a fresh document: drop any cached sheets / images so
@@ -298,6 +305,8 @@ self.onmessage = async (e: MessageEvent<
       if (requestPolicy) worksheetPolicy = requestPolicy;
       renderers = await loadWorkerRenderers(req.renderers);
       if (req.type === 'parseDelimitedText') {
+        source?.closeModelSource();
+        source = undefined;
         host.disposeArchive();
         archiveBacked = false;
         const { parseDelimitedWorksheet } = await delimitedTextModule;
@@ -324,27 +333,56 @@ self.onmessage = async (e: MessageEvent<
         return;
       }
       archiveBacked = true;
-      const [maxEntry, maxTotal, maxEntries] = resourcePolicyForWasm(req.resourcePolicy);
-      // Construction + `parse()` run under `host.run` so a trap in EITHER poisons
-      // + recycles the instance (and frees the archive). `setArchive` frees any
-      // prior handle first — the re-parse dispose. `parse()` returns UTF-8 JSON
-      // bytes (Result<Vec<u8>, JsValue>); decode + parse the workbook index here
-      // (consumed in-worker, then a light copy is sent to the proxy as an object).
-      const bootstrap = readXlsxArchiveBootstrap(
-        () => host.run(() => {
-          const archive = new XlsxArchive(
-            new Uint8Array(req.data),
-            maxEntry,
-            maxTotal,
-            maxEntries,
-          );
-          host.setArchive(archive);
-          archive.set_worksheet_limits(...xlsxWorksheetPolicyForWasm(worksheetPolicy));
-          return JSON.parse(new TextDecoder().decode(archive.parse())) as ParsedWorkbook;
-        }),
-        () => host.run(() => host.archive!.resource_usage()),
-      );
+      source?.closeModelSource();
+      source = undefined;
+      let bootstrap: XlsxArchiveBootstrap<ParsedWorkbook>;
+      if (req.source) {
+        host.disposeArchive();
+        if (!req.sourceOwnerUrl) throw new TypeError('XLSX source owner URL is missing');
+        const { WorkerWorksheetSourceOwner } = await import(/* @vite-ignore */ req.sourceOwnerUrl) as typeof import('./internal/worker-worksheet-source.js');
+        const owner = new WorkerWorksheetSourceOwner(host);
+        source = owner;
+        // This worker owns the renderer, so it measures the model source's
+        // Normal font with the same computeMdw that sizes the painted grid.
+        const { computeMdw } = await rendererModule;
+        await owner.openModelSource(
+          new Uint8Array(req.data),
+          req.source,
+          (font) => computeMdw(
+            font.family,
+            font.sizePt,
+            undefined,
+            !!req.useGoogleFonts,
+            font.bold ? 700 : 400,
+            font.italic ? 'italic' : 'normal',
+          ),
+          req.sourceTransfer,
+        );
+        bootstrap = readXlsxArchiveBootstrap(
+          () => JSON.parse(new TextDecoder().decode(
+            owner.execute((archive) => archive.parse()),
+          )) as ParsedWorkbook,
+          () => owner.resourceUsage(),
+        );
+      } else {
+        const [maxEntry, maxTotal, maxEntries] = resourcePolicyForWasm(req.resourcePolicy);
+        // Keep construction and parse in the same host.run as the ordinary
+        // OOXML worker on main. Both operations share one trap boundary.
+        bootstrap = readXlsxArchiveBootstrap(
+          () => host.run(() => {
+            const archive = new XlsxArchive(
+              new Uint8Array(req.data), maxEntry, maxTotal, maxEntries,
+            );
+            host.setArchive(archive);
+            archive.set_worksheet_limits(...xlsxWorksheetPolicyForWasm(worksheetPolicy));
+            return JSON.parse(new TextDecoder().decode(archive.parse())) as ParsedWorkbook;
+          }),
+          () => host.run(() => host.archive!.resource_usage()),
+        );
+      }
       workbook = bootstrap.workbook;
+      const maximumDigitWidth = source?.maximumDigitWidth;
+      if (maximumDigitWidth !== undefined) workbook.layoutMetrics = { maximumDigitWidth };
       cjkFallback = xlsxCjkFallback(workbook, cjkFallback);
       startFontLoad(workbook, !!req.useGoogleFonts);
       post({ type: 'parsed', id, workbook, usage: bootstrap.usage });
@@ -410,7 +448,8 @@ self.onmessage = async (e: MessageEvent<
         // viewer's MDW through the render bind: seeding GridGeometry before
         // that bind is ineffective because the worker's FontFaceSet can
         // invalidate it on first use.
-        { ...renderOpts, authoritativeMdw: req.layoutMetrics?.maximumDigitWidth,
+        { ...renderOpts, authoritativeMdw: req.layoutMetrics?.maximumDigitWidth
+          ?? workbook?.layoutMetrics?.maximumDigitWidth,
           officeFontRoutes, googleSubstitutes, fetchImage: getImage, cfDiagnostics },
         svgDecodeClient.decode,
       );
@@ -427,34 +466,37 @@ self.onmessage = async (e: MessageEvent<
       // this arm exists only for protocol parity with worker.ts. Raw bytes are
       // read straight from the retained archive (no mime needed for a byte
       // transfer).
-      const archive = host.archive;
+      const archive = source?.cursor() ?? host.archive;
       if (!archive) throw new Error('Workbook not loaded');
       // wasm-bindgen returns an owned full-span Uint8Array; transfer its
       // standalone buffer directly, matching the parse worker contract.
-      const bytes = host.run(() => archive.extract_image(req.path).buffer as ArrayBuffer);
+      const bytes = executeArchive((current) => source
+        ? source.copyBytes(current.extract_image(req.path))
+        : current.extract_image(req.path).buffer as ArrayBuffer);
       post({ type: 'imageExtracted', id, bytes }, [bytes]);
       return;
     }
     if (req.type === 'resourceUsage') {
-      const archive = host.archive;
+      const archive = source?.cursor() ?? host.archive;
       if (!archive) throw new Error('Workbook not loaded');
-      const usage = host.run(() => decodeOoxmlResourceUsage(archive.resource_usage()));
-      post({ type: 'resourceUsage', id, usage });
+      const bytes = sourceUsage();
+      post({
+        type: 'resourceUsage',
+        id,
+        usage: bytes === undefined ? undefined : decodeOoxmlResourceUsage(bytes),
+      });
       return;
     }
     if (req.type === 'toMarkdown') {
       // Project the retained archive to markdown, straight from the handle the
       // worker already holds (same source as worker.ts's parse-mode arm).
-      const archive = host.archive;
+      const archive = source?.cursor() ?? host.archive;
       if (!archive) throw new Error('Workbook not loaded');
-      const markdown = host.run(() => archive.to_markdown());
+      const markdown = source ? source.toMarkdown() : host.run(() => host.archive!.to_markdown());
       post({ type: 'markdownRendered', id, markdown });
       return;
     }
     };
-    // The provisional sheet has no archive-backed paint dependencies. Render
-    // its first frame while the cursor owns the unacknowledged covering chunk;
-    // the main-thread viewer releases that chunk after receiving the bitmap.
     if (req.type === 'renderViewport' && provisionalSheets.has(req.sheetIndex)) {
       await runRequest();
     } else {
@@ -462,6 +504,9 @@ self.onmessage = async (e: MessageEvent<
     }
   } catch (err) {
     if (req.type === 'openSheetSession') worksheetPull.abandonOpen(req.sessionId);
+    if (req.type === 'parse') {
+      try { source?.closeModelSource(); } catch {}
+    }
     try {
       post({ type: 'error', id, ...serializeWorkerError(err) });
     } catch {

@@ -94,7 +94,7 @@ export async function loadXlsxModelSource(
       metrics.setSourceBytes(buffer.byteLength);
       metrics.checkpoint('container ready');
       const worker = mode === 'worker'
-        ? (await import('../render-worker-source-host.js')).createRenderWorker()
+        ? (await import('../render-worker-host.js')).createRenderWorker()
         : new (await import('../worker-source.ts?worker&inline')).default();
       let workbook: SourceWorkbook | undefined;
       const wiredWorker = sourceWorker(worker, load, opts, (mdw) => { if (workbook) workbook.sourceMdw = mdw; });

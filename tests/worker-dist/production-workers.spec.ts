@@ -2,10 +2,12 @@ import { expect, test } from '@playwright/test';
 
 async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: string) {
   const sourceRequests: string[] = [];
+  const renderWorkers = new Set<string>();
   const sourceBodies: string[] = [];
   const inspectedResponses: Promise<void>[] = [];
   page.context().on('request', (request) => {
     const pathname = new URL(request.url()).pathname;
+    if (/\/assets\/render-worker-(?!host-)[^/]+\.js$/.test(pathname)) renderWorkers.add(pathname);
     if ((pathname.startsWith('/dist/') || pathname.startsWith('/consumer/'))
       && /model-source|source-worker|worker-source|render-worker-source/.test(pathname)) {
       sourceRequests.push(pathname);
@@ -28,6 +30,8 @@ async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: s
       || (await body.getAttribute('data-status')) === 'error';
   }, { timeout: 60_000 }).toBe(true);
   await Promise.all(inspectedResponses);
+  const ordinaryRenderWorkers = [...renderWorkers].sort();
+  expect(ordinaryRenderWorkers, 'one render worker per format').toHaveLength(3);
   expect(sourceRequests, 'ordinary OOXML main/worker loads must not fetch source chunks').toEqual([]);
   expect(sourceBodies, 'ordinary OOXML main/worker loads must not fetch source module bodies').toEqual([]);
   await expect(page.locator('body')).toHaveAttribute('data-ordinary-ready', 'true');
@@ -76,6 +80,8 @@ async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: s
   }
 
   await expect(page.locator('body')).toHaveAttribute('data-model-sources', 'ready');
+  expect([...renderWorkers].sort(), 'model-source loads reuse the ordinary render-worker assets')
+    .toEqual(ordinaryRenderWorkers);
 
   const pptxTextRuns = await page.evaluate(() => (
     window as typeof window & { pptxTextRuns?: Array<Record<string, unknown>> }

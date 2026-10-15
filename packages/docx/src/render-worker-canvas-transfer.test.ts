@@ -52,7 +52,7 @@ vi.mock('./vertical-render-capability.js', async (load) => ({
 }));
 vi.mock('./layout-source-model-adapter.js', () => ({
   layoutSourceModelAdapterFromOwnedModel: () => ({
-    document: {}, source: { fatalParse: null, mathOccurrences: [] },
+    document: {}, source: { fatalParse: null, mathOccurrences: [], blocks: { sources: [] } },
   }),
 }));
 vi.mock('./google-fonts.js', async (load) => ({
@@ -72,6 +72,14 @@ vi.mock('./render-worker-layout.js', () => ({
 vi.mock('./render-worker-metadata.js', () => ({
   projectRenderWorkerLayoutMeta: () => ({ pageCount: 1, pageSizes: [], bookmarkPages: [] }),
   renderWorkerLayoutMeta: () => ({ pageCount: 1, pageSizes: [], bookmarkPages: [] }),
+}));
+vi.mock('./render-worker-progressive.js', () => ({
+  paginateRenderWorkerDocumentProgressively: async (
+    _doc: unknown, _source: unknown, sink: { publish(value: unknown): void },
+  ) => {
+    sink.publish({ pageCount: 1, unchangedPages: 0 });
+    return 1;
+  },
 }));
 vi.mock('./layout/runtime-state.js', async (load) => ({
   ...await load<typeof import('./layout/runtime-state.js')>(),
@@ -126,7 +134,7 @@ class LoopbackWorker implements WorkerLike {
   terminate(): void {}
 }
 
-async function loadWorker(entry: 'render-worker' | 'render-worker-source') {
+async function loadWorker() {
   vi.resetModules();
   const scope = {
     onmessage: null as ((event: MessageEvent) => Promise<void>) | null,
@@ -135,8 +143,7 @@ async function loadWorker(entry: 'render-worker' | 'render-worker-source') {
   const worker = new LoopbackWorker(scope);
   vi.stubGlobal('self', scope);
   vi.stubGlobal('OffscreenCanvas', FakeOffscreenCanvas);
-  if (entry === 'render-worker') await import('./render-worker.js');
-  else await import('./render-worker-source.js');
+  await import('./render-worker.js');
   const dispatch = (data: unknown) => scope.onmessage!({ data } as MessageEvent);
   await dispatch({ type: 'init', wasmUrl: 'x' });
   await dispatch({
@@ -159,9 +166,25 @@ afterEach(() => {
   FakeOffscreenCanvas.created = [];
 });
 
-describe.each(['render-worker', 'render-worker-source'] as const)('DOCX %s bitmap surface', (entry) => {
+describe('DOCX render worker bitmap surface', () => {
+  it('retains ordinary progressive page reuse metadata after source dispatch is shared', async () => {
+    const { worker, dispatch } = await loadWorker();
+    await dispatch({
+      type: 'parse', id: 101, data: new ArrayBuffer(1), defaultCurrentDateMs: 0,
+      resourcePolicy: { maxArchiveEntryBytes: null, maxTotalInflatedBytes: null, maxArchiveEntries: null },
+      progressiveLayout: true,
+    });
+    expect(worker.received).toContainEqual(expect.objectContaining({
+      type: 'layoutPartial', forId: 101,
+      partial: expect.objectContaining({ pageCount: 1, unchangedPages: 0 }),
+    }));
+    expect(worker.received).toContainEqual(expect.objectContaining({
+      type: 'parsedMeta', id: 101, unchangedPages: 1,
+    }));
+  });
+
   it('paints renderPageToBitmap into the contextless 1x1 canvas transferred from the caller', async () => {
-    const { document, worker } = await loadWorker(entry);
+    const { document, worker } = await loadWorker();
 
     const bitmap = await document.renderPageToBitmap(0, { dpr: 1 });
 
@@ -177,7 +200,7 @@ describe.each(['render-worker', 'render-worker-source'] as const)('DOCX %s bitma
   });
 
   it('revokes reading publication when its transferred bitmap target cannot acquire a context', async () => {
-    const { document } = await loadWorker(entry);
+    const { document } = await loadWorker();
     Object.assign(document, { _layoutLifecycle: new ProgressiveLayoutLifecycle(), _layoutViewGeneration: 0,
       _meta: { pageCount: 1, pageSizes: [], bookmarkPages: [], nativeReadingRequested: true, readingNotices: [] } });
     mocks.render.mockImplementation(async (_source, canvas, _page, options) => {
@@ -190,7 +213,7 @@ describe.each(['render-worker', 'render-worker-source'] as const)('DOCX %s bitma
     expect(FakeOffscreenCanvas.created[0]!.height).toBe(1);
   });
   it('keeps a worker-created context failure terminal on the ordinary worker error wire', async () => {
-    const { worker, dispatch } = await loadWorker(entry);
+    const { worker, dispatch } = await loadWorker();
     mocks.render.mockImplementation(async (_source, canvas, _page, options) => {
       acquireDocumentCanvasTargetContext(canvas as OffscreenCanvas,
         (options as { callerOwnedCanvasTarget?: boolean }).callerOwnedCanvasTarget !== false);
@@ -206,7 +229,7 @@ describe.each(['render-worker', 'render-worker-source'] as const)('DOCX %s bitma
     expect(FakeOffscreenCanvas.created[0]!.height).toBe(1);
   });
   it('keeps a worker-local surface for a request that carries no canvas', async () => {
-    const { worker, dispatch } = await loadWorker(entry);
+    const { worker, dispatch } = await loadWorker();
 
     await dispatch({ type: 'renderPage', id: 7, pageIndex: 0, opts: { dpr: 1 } });
 
