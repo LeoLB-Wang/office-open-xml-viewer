@@ -125,7 +125,9 @@ impl Colors {
             .map_err(|_| unsupported("invalid BIFF theme ZIP"))?;
         let mut names = BTreeSet::new();
         let mut total = 0u64;
-        if archive.len() != entries || archive.len() > MAX_ENTRIES {
+        // Preflight excludes ZIP64/split declarations and caps the entry
+        // count before ZIP allocation. Only directory consistency remains.
+        if archive.len() != entries {
             return Err(unsupported("ambiguous BIFF theme ZIP entry table"));
         }
         for i in 0..archive.len() {
@@ -385,6 +387,7 @@ mod tests {
             .iter()
             .map(|(name, xml)| (name.as_str(), xml.clone()))
             .collect();
+        assert_eq!(preflight(&test_zip(&refs[..64])).unwrap(), 64);
         assert!(Colors::package(&test_zip(&refs))
             .err()
             .unwrap()

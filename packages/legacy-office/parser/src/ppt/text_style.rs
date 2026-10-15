@@ -625,8 +625,15 @@ pub(super) fn fonts(children: &[Record<'_>], budget: &mut usize) -> Result<Vec<S
                 .iter()
                 .filter(|r| r.kind == 4023)
             {
-                if entity.version != 0 || entity.payload.len() != 68 || fonts.len() >= 65536 {
+                if entity.version != 0 || entity.payload.len() != 68 {
                     return Err(unsupported("invalid PowerPoint font entity"));
+                }
+                // MS-PPT 2.9.8 bounds the collection by its record envelope;
+                // limiting retained entries to the font-index domain is policy.
+                if fonts.len() >= 65_536 {
+                    return Err(crate::rejection::resource(
+                        "PowerPoint font retention budget exceeded",
+                    ));
                 }
                 let units: Vec<u16> = entity.payload[..64]
                     .as_chunks::<2>()
@@ -1431,6 +1438,27 @@ mod tests {
                 .unwrap_err()
                 .contains("model budget")
         );
+    }
+
+    #[test]
+    fn font_retention_ceiling_is_distinct_from_invalid_font_entities() {
+        use super::super::persist::tests::record;
+        for count in [65_536, 65_537] {
+            let entities = record(0, 4023, &[0; 68]).repeat(count);
+            let env = record(15, 1010, &record(15, 2005, &entities));
+            let children = parse_records(&env, &mut 200_000).unwrap();
+            let result = fonts(&children, &mut 200_000);
+            if count == 65_536 {
+                assert_eq!(result.unwrap().len(), count);
+            } else {
+                assert!(result.unwrap_err().starts_with("LEGACY_RESOURCE_LIMIT:"));
+            }
+        }
+        let env = record(15, 1010, &record(15, 2005, &record(0, 4023, &[0; 67])));
+        let children = parse_records(&env, &mut 100).unwrap();
+        assert!(fonts(&children, &mut 100)
+            .unwrap_err()
+            .starts_with("UNSUPPORTED:"));
     }
 
     #[test]
