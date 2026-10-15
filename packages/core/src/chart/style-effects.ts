@@ -5,6 +5,7 @@ import { hexToRgba, withInheritedPatternScope } from '../shape/paint.js';
 import {
   applyInnerShadow,
   createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
   applyOuterShadow,
   applyReflection,
   applySoftEdge,
@@ -158,8 +159,8 @@ function rasterCost(
   margin: number,
   surfaces: number,
 ): number {
-  const width = Math.max(1, Math.ceil(bbox.w + margin * 2));
-  const height = Math.max(1, Math.ceil(bbox.h + margin * 2));
+  const width = Math.max(1, Math.ceil(bbox.x + bbox.w + margin) - Math.floor(bbox.x - margin));
+  const height = Math.max(1, Math.ceil(bbox.y + bbox.h + margin) - Math.floor(bbox.y - margin));
   const cost = width * height * surfaces;
   return Number.isSafeInteger(cost) ? cost : Number.POSITIVE_INFINITY;
 }
@@ -185,13 +186,15 @@ export function chartEffectRasterWorkUpperBound(
       ) + 2
     : 0;
   const reflectionCost = effects.reflection ? deviceW * deviceH : 0;
+  const coverageBounds = rasterEffectCoverageBounds(bbox, effects, effectScale, deviceW, deviceH);
   return reflectionCost
     + (effects.shadow ? rasterCost(bbox, outerReach, 1) : 0)
     + (effects.softEdge ? rasterCost(bbox, softReach, 3) : 0)
     + (effects.innerShadow ? rasterCost(bbox, innerReach, 2) : 0)
-    // One shared geometric mask plus its transient readback buffer. The mask
-    // is independent of mark color/opacity and retained only for this mark.
-    + (effects.softEdge || effects.innerShadow ? rasterCost(bbox, 2, 2) : 0);
+    // One shared geometric mask plus its transient readback buffer. Charge the
+    // complete effect-source domain (including its one-pixel mask guard), not
+    // just the mark's geometry; outlines and joins may extend past that box.
+    + (effects.softEdge || effects.innerShadow ? rasterCost(coverageBounds, 1, 2) : 0);
 }
 
 function nativeShadow(
@@ -311,7 +314,9 @@ export function paintChartStyleEffects(
   // Marks can be translucent too. Use the same geometric coverage boundary
   // as shapes/pictures rather than treating a colored body as an effect mask.
   const coverage = rasterAllowed && (effects.softEdge || effects.innerShadow)
-    ? createRasterCoveragePaint(devicePaint, transformedBBox) : null;
+    ? createRasterCoveragePaint(devicePaint, rasterEffectCoverageBounds(
+        transformedBBox, effects, effectScale, deviceW, deviceH,
+      )) : null;
 
   let shadowRasterized = false;
   if (rasterAllowed && effects.shadow) {

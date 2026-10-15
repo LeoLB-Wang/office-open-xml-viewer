@@ -50,6 +50,7 @@ import {
   applyOuterShadow,
   applyInnerShadow,
   createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
   applySoftEdge,
   applyReflection,
   renderPresetShape,
@@ -3493,7 +3494,9 @@ function paintWithRasterEffects(
   // and color must never become an effect mask. Convert once and share the
   // dedicated coverage raster across softEdge and innerShdw.
   const coverage = rasterMask && haveAux && (effects.softEdge || effects.innerShadow)
-    ? createRasterCoveragePaint(mask as never, bbox)
+    ? createRasterCoveragePaint(mask as never, rasterEffectCoverageBounds(
+        bbox, effects, effectScale, deviceW, deviceH,
+      ))
     : null;
   const haveMask = !rasterMask || Boolean(coverage);
   let nativeShadowFallback = false;

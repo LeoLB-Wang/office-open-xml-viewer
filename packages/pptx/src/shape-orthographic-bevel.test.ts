@@ -98,6 +98,28 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
   }
   const pixel = (data: Uint8Array, x: number, y: number) => [...data.subarray((y * 400 + x) * 4, (y * 400 + x) * 4 + 3)];
 
+  it('includes the complete mitered outline in the inner-shadow coverage', async () => {
+    const shape: ShapeElement = {
+      ...orthographicBeveledShape(), geometry: 'triangle', scene3d: undefined, sp3d: undefined,
+      stroke: { color: '4472C4', width: 20 * 9525,
+        lineJoin: 'miter', lineCap: 'square' },
+    };
+    const plain = await render(shape);
+    const shadowed = await render({ ...shape,
+      innerShadow: { color: '000000', alpha: .5, blur: 0, dist: 400 * 9525, dir: 0 },
+    });
+    let opaqueStrokePixels = 0;
+    for (let p = 0; p < plain.length; p += 4) {
+      if (plain[p] !== 68 || plain[p + 1] !== 114 || plain[p + 2] !== 196) continue;
+      opaqueStrokePixels++;
+      // The offset is disjoint: every opaque outline pixel, including the
+      // miter outside nominal geometry, receives 50% black.
+      for (const [channel, expected] of [34, 57, 98].entries())
+        expect(Math.abs(shadowed[p + channel] - expected)).toBeLessThanOrEqual(1);
+    }
+    expect(opaqueStrokePixels).toBeGreaterThan(100);
+  });
+
   for (const projected of [false, true]) {
     it(`applies translucent material once (${projected ? 'projected' : 'identity'} camera)`, async () => {
       const shape = projected ? projectedBeveledShape() : orthographicBeveledShape();

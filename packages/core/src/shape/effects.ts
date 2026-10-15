@@ -30,13 +30,16 @@ export { createAuxCanvas };
 
 export type PaintShape = (ctx: AuxContext) => void;
 
-/** Make a dedicated opaque geometric mask from a complete projected raster.
+/** Make a dedicated opaque geometric mask from a complete painted raster.
  * Raster policy: every nonzero-alpha sample belongs to the visible geometry;
  * zero-alpha samples remain holes. Source color and opacity are not coverage.
  * This preserves walls, wire rims, contours and transparent image holes without
  * inventing a second front-face geometry. Subpixel coverage cannot be recovered
  * separately from opacity in an RGBA source, so this is binary raster support,
  * not a claim of exact vector antialiasing or Office mesh fidelity.
+ * `bbox` must cover the consumer's entire source raster, including strokes,
+ * joins/caps and effect padding, rather than just vector geometry. Use
+ * rasterEffectCoverageBounds when the consumer is a cropped edge effect.
  * The bounded mask belongs to this paint call; allocation failure lets callers
  * omit mask-dependent effects while still painting the original body.
  */
@@ -156,6 +159,42 @@ function computeCrop(
   const x1 = Math.min(deviceW, Math.ceil(bbox.x + bbox.w + margin));
   const y1 = Math.min(deviceH, Math.ceil(bbox.y + bbox.h + margin));
   return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+}
+
+function softEdgeMargin(softEdge: SoftEdge, scale: number): number {
+  return Math.ceil(emuToPx(softEdge.radius, scale)) + 2;
+}
+
+function innerShadowMargin(shadow: Shadow, scale: number): number {
+  return Math.ceil(3 * emuToPx(shadow.blur, scale) + Math.abs(emuToPx(shadow.dist, scale))) + 2;
+}
+
+/**
+ * Union of the source domains read by the mask-dependent edge effects.
+ * ECMA-376 §§20.1.8.40/.53 apply to the painted object, including its outline.
+ * A geometry bbox (even expanded by half the line width) need not contain a
+ * miter join, square cap, arrowhead or contour. Capture all raster support in
+ * the consumers' source domains instead of imposing a second, tighter clip.
+ * This also handles callbacks whose actual line style is resolved while painting.
+ *
+ * These are the existing compositor crops, not newly inferred vector bounds:
+ * pixels outside them were already unavailable to the effects. Keep that crop
+ * policy and effect alignment/stretch unchanged; the coverage conversion must
+ * preserve every previously available source pixel. Projected callers retain
+ * their prepared body/cache bounds, including walls, back rims and padding.
+ */
+export function rasterEffectCoverageBounds(
+  bbox: EffectBBox,
+  effects: { softEdge?: SoftEdge | null; innerShadow?: Shadow | null },
+  scale: number,
+  deviceW: number,
+  deviceH: number,
+): EffectBBox {
+  const margin = Math.max(
+    effects.softEdge ? softEdgeMargin(effects.softEdge, scale) : 0,
+    effects.innerShadow ? innerShadowMargin(effects.innerShadow, scale) : 0,
+  );
+  return computeCrop(bbox, margin, deviceW, deviceH);
 }
 
 /** The subset of a 2D affine matrix `setTransform(m)` reads (DOMMatrix-shaped). */
@@ -332,7 +371,7 @@ export function applyInnerShadow(
   // edge) is fully represented within bbox + (|dist| + 3·blur). +2 px guards the
   // fractional-pixel silhouette edge. The step-3 destination-in additionally clips
   // the result to the interior (⊆ bbox), so nothing outside the crop survives.
-  const margin = Math.ceil(3 * blur + Math.abs(dist)) + 2;
+  const margin = innerShadowMargin(shadow, scale);
   const crop = computeCrop(bbox, margin, deviceW, deviceH);
   const aux = createAuxCanvas(crop.w, crop.h);
   if (!aux) return;
@@ -405,7 +444,7 @@ export function applySoftEdge(
   // (edge-clamp bleed), so no soft-edge pixel exists past bbox + radius; the
   // radius/3-σ mask blur (≤3σ = radius extent) can only carve within that band.
   // +2 px covers the fractional silhouette edge. So `radius` is the exact reach.
-  const margin = Math.ceil(radius) + 2;
+  const margin = softEdgeMargin(softEdge, scale);
   const crop = computeCrop(bbox, margin, deviceW, deviceH);
   // bbox expressed in the cropped canvas's local coordinates.
   const bx = bbox.x - crop.x;

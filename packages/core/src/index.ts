@@ -469,6 +469,7 @@ export {
 } from './shape/text-warp';
 export {
   createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
   applyOuterShadow,
   applyInnerShadow,
   applySoftEdge,
