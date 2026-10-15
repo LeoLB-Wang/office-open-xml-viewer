@@ -240,7 +240,9 @@ showing a partial document. They do not execute macros, fields, formulas, action
 or embedded objects. Claimed content outside the supported subset rejects with
 `OoxmlError.code === 'unsupported-content'` (`details.format` names the source
 format); offer conversion for that code. Resource limits, encryption and parser
-crashes keep their own typed errors. The package versions must match exactly; upgrade both together.
+crashes stay distinct from it; some native reader budgets surface as untyped
+errors (see [Experimental legacy Office sources](docs/legacy-office-conversion.md)).
+The package versions must match exactly; upgrade both together.
 No migration is required without the add-on. See the [legacy Office guide](https://ooxml.silurus.dev/legacy-office/)
 for viewer and Node examples, and [Experimental legacy Office sources](docs/legacy-office-conversion.md)
 for the full support boundaries.
