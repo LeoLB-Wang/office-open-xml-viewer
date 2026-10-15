@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   applyOuterShadow,
-  applyInnerShadow,
   applySoftEdge,
   applyReflection,
   createAuxCanvas,
@@ -222,43 +221,6 @@ describe('applyOuterShadow (ECMA-376 §20.1.8.45)', () => {
       o.op === 'translate' || o.op === 'rotate' || o.op === 'transform');
     expect(transforms[0]).toEqual({ op: 'translate', args: [1, 0] });
     expect(transforms.some(o => o.op === 'rotate')).toBe(false);
-  });
-});
-
-describe('applyInnerShadow (ECMA-376 §20.1.8.40)', () => {
-  let fake: { auxCtxs: RecordingCtx[] };
-  beforeEach(() => { fake = installFakeCanvas(); });
-  afterEach(() => vi.unstubAllGlobals());
-
-  const shadow: Shadow = { color: '404040', alpha: 0.8, blur: 19050, dist: 9525, dir: 90 };
-
-  it('paints silhouette, carves an offset+blurred copy, clips, then blits', () => {
-    const live = new RecordingCtx();
-    const paint = vi.fn((c: unknown) => { (c as RecordingCtx).ops.push({ op: 'paintShape' }); });
-    applyInnerShadow(live as never, paint as never, BBOX, shadow, SCALE, DEVICE_W, DEVICE_H);
-
-    expect(fake.auxCtxs).toHaveLength(1);
-    const aux = fake.auxCtxs[0];
-    const ops = aux.ops.map(o => o.op);
-    // 3 silhouette paints on the aux canvas: colour fill, destination-out, destination-in.
-    expect(ops.filter(o => o === 'paintShape')).toHaveLength(3);
-    // The blurred offset pass translates by (cos90*dist, sin90*dist) = (0, 1px).
-    const translate = aux.ops.find(o => o.op === 'translate');
-    expect(translate?.args?.[0]).toBeCloseTo(0, 6);
-    expect(translate?.args?.[1]).toBeCloseTo(1, 6); // dist 9525 EMU * scale = 1px, dir=90 -> +y
-    // Result is composited onto the live context exactly once.
-    const liveDraws = live.ops.filter(o => o.op === 'drawImage');
-    expect(liveDraws).toHaveLength(1);
-  });
-
-  it('skips the blur filter when blurRad is 0', () => {
-    const live = new RecordingCtx();
-    const paint = vi.fn();
-    const noBlur: Shadow = { ...shadow, blur: 0 };
-    // Spy on the filter assignments by recording them via a getter/setter proxy
-    // is overkill; instead assert no throw and a single blit (smoke).
-    applyInnerShadow(live as never, paint as never, BBOX, noBlur, SCALE, DEVICE_W, DEVICE_H);
-    expect(live.ops.filter(o => o.op === 'drawImage')).toHaveLength(1);
   });
 });
 

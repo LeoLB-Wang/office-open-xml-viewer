@@ -8,7 +8,7 @@
  */
 export function rasterBevelWireframe(
   pixels: Uint8ClampedArray,
-  alpha: Uint8ClampedArray,
+  coverage: Uint8ClampedArray,
   distance: Float64Array,
   w: number,
   h: number,
@@ -16,6 +16,8 @@ export function rasterBevelWireframe(
   lineWidth: number,
   offset?: { x: number; y: number },
 ): void {
+  // Geometry and source opacity are separate planes: coverage controls mesh
+  // topology; the original RGBA alpha only attenuates the painted edges.
   const source = pixels.slice();
   const sectors = new Int8Array(w * h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -40,17 +42,17 @@ export function rasterBevelWireframe(
   const seeds = offset ? new Uint8Array(w * h) : undefined;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = y * w + x;
-    if (alpha[i] === 0) continue;
+    if (coverage[i] === 0) continue;
     const d = Math.max(0, distance[i] - .5);
     const outer = Math.max(0, Math.min(1, lineWidth + .5 - d));
     const inner = band > lineWidth ? Math.max(0, lineWidth / 2 + .5 - Math.abs(d - band)) : 0;
-    const crossing = (x + 1 < w && alpha[i + 1] >= 128 && sectors[i] !== sectors[i + 1]) ||
-      (y + 1 < h && alpha[i + w] >= 128 && sectors[i] !== sectors[i + w]);
+    const crossing = (x + 1 < w && coverage[i + 1] > 0 && sectors[i] !== sectors[i + 1]) ||
+      (y + 1 < h && coverage[i + w] > 0 && sectors[i] !== sectors[i + w]);
     const spoke = band > 0 && d <= band && crossing ? 1 : 0;
-    const coverage = Math.max(outer, inner, spoke);
-    if (coverage > 0) {
-      paint(x, y, i, coverage);
-      if (offset) paint(Math.round(x + dx), Math.round(y + dy), i, coverage);
+    const edgeCoverage = Math.max(outer, inner, spoke);
+    if (edgeCoverage > 0) {
+      paint(x, y, i, edgeCoverage);
+      if (offset) paint(Math.round(x + dx), Math.round(y + dy), i, edgeCoverage);
     }
     if (seeds && outer > 0 && crossing) seeds[i] = 1;
   }

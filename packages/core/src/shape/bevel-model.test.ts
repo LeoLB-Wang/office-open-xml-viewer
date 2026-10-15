@@ -2,6 +2,7 @@ import { prepareLighting, rigVector, shadeSurface } from './bevel-lighting';
 import { describe, expect, it } from 'vitest';
 import {
   applyBevelShading,
+  applyExtrusion,
   bevelHeightProfile,
   lightDirFromRig,
   materialClass,
@@ -231,6 +232,27 @@ describe('reference lighting arithmetic and surface visibility', () => {
     expect(pixel(8, 20)).toEqual([80, 100, 140, 255]);
     expect(pixel(12, 20)[3]).toBeGreaterThan(0); // inner profile rim
     expect(pixel(39, 24)).toEqual([80, 100, 140, 255]); // translated back rim
+  });
+
+  it.each([125, 128])('keeps bevel and extrusion geometry at source alpha %i', alpha => {
+    const w = 32, data = new Uint8ClampedArray(w * w * 4);
+    for (let y = 4; y < 24; y++) for (let x = 4; x < 24; x++)
+      data.set([80, 100, 140, alpha], (y * w + x) * 4);
+    const ctx: BevelCtx = {
+      canvas: { width: w, height: w },
+      getImageData: () => ({ data: data.slice(), width: w, height: w }) as ImageData,
+      putImageData: image => { data.set(image.data); },
+    };
+    applyBevelShading(ctx, { widthPx: 4, heightPx: 4, prst: 'angle',
+      material: 'matte', light: { x: 0, y: 0, z: 1 } });
+    const pixel = (x: number, y: number) => [...data.slice((y * w + x) * 4, (y * w + x) * 4 + 4)];
+    // Angle's 45-degree normal gives 80/sqrt(2) at the lip, at either
+    // opacity. Lighting preserves source alpha rather than flattening the lip.
+    expect(pixel(5, 14)).toEqual([57, 71, 99, alpha]);
+    const face = pixel(14, 14);
+    applyExtrusion(ctx, { offsetX: 4, offsetY: 0, rgb: [20, 30, 40] });
+    expect(pixel(14, 14)).toEqual(face); // translucent face still occludes wall
+    expect(pixel(26, 14)).toEqual([20, 30, 40, 255]);
   });
 
   it('bounds wireframe work to a noisy local raster despite an enormous depth', () => {

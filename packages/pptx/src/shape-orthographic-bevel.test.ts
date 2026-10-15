@@ -78,8 +78,8 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
   }, 60_000);
   afterAll(async () => { await browser?.close(); });
 
-  async function render(shape: ShapeElement | PictureElement, height = 400) {
-    const png = await page.evaluate(async ({ shape, height }) => {
+  async function render(shape: ShapeElement | PictureElement, height = 400, sourceAlpha = 1) {
+    const png = await page.evaluate(async ({ shape, height, sourceAlpha }) => {
       const canvas = document.querySelector('canvas') as HTMLCanvasElement;
       const renderer = (globalThis as unknown as { pptxRenderer: typeof import('./renderer') }).pptxRenderer;
       await renderer.renderSlide(canvas,
@@ -88,12 +88,12 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
           const source = document.createElement('canvas');
           source.width = source.height = 96;
           const ctx = source.getContext('2d') as CanvasRenderingContext2D;
-          ctx.fillStyle = '#4472C4';
+          ctx.fillStyle = `rgba(68,114,196,${sourceAlpha})`;
           ctx.fillRect(0, 0, 96, 96);
           return new Promise<Blob>(resolve => source.toBlob(blob => resolve(blob as Blob)));
         } });
       return canvas.toDataURL('image/png').split(',')[1];
-    }, { shape, height });
+    }, { shape, height, sourceAlpha });
     return PNG.sync.read(Buffer.from(png, 'base64')).data;
   }
   const pixel = (data: Uint8Array, x: number, y: number) => [...data.subarray((y * 400 + x) * 4, (y * 400 + x) * 4 + 3)];
@@ -175,6 +175,50 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
         scene3d: shape.scene3d, sp3d: shape.sp3d, shadow: shape.shadow ?? undefined, softEdge: shape.softEdge,
       };
     }
+
+    it(`uses geometry and shadow color independently of body opacity (${adapter})`, async () => {
+      const shape = projectedBeveledShape();
+      shape.geometry = 'rect';
+      shape.sp3d = undefined;
+      shape.fill = { fillType: 'solid', color: '4472C480' };
+      const body = element(shape);
+      if (body.type === 'picture') body.imagePath = 'test/translucent-shadow.png';
+      const plain = await render(body, 400, .5);
+      const invisible = await render({ ...body,
+        innerShadow: { color: 'FF0000', alpha: 0, blur: 0, dist: 200 * 9525, dir: 0 } }, 400, .5);
+      // A fully offset mask exposes the whole shadow, independently of inset
+      // placement. Alpha zero must leave a 50%-opaque body unchanged.
+      expect(pixel(plain, 144, 144)).toEqual([161, 184, 225]);
+      expect(pixel(invisible, 144, 144)).toEqual(pixel(plain, 144, 144));
+      const red = await render({ ...body,
+        innerShadow: { color: 'FF0000', alpha: .5, blur: 0, dist: 200 * 9525, dir: 0 } }, 400, .5);
+      for (const [i, expected] of [208, 92, 112].entries())
+        expect(Math.abs(pixel(red, 144, 144)[i] - expected)).toBeLessThanOrEqual(1);
+      const softened = await render({ ...body, softEdge: { radius: 9525 } }, 400, .5);
+      // Soft edges change the perimeter, not source opacity in the interior.
+      expect(pixel(softened, 144, 144)).toEqual(pixel(plain, 144, 144));
+    });
+
+    it(`keeps translucent wireframe topology across 49% and 50% source opacity (${adapter})`, async () => {
+      const shape = orthographicBeveledShape();
+      shape.geometry = 'rect';
+      shape.scene3d!.camera = { prst: 'obliqueTop' };
+      shape.sp3d = { prstMaterial: 'legacyWireframe', extrusionH: 60 * 9525,
+        bevelT: { w: 127000, h: 127000, prst: 'angle' } };
+      const support: number[][] = [];
+      for (const alpha of [.49, .5]) {
+        shape.fill = { fillType: 'solid', color: `4472C4${Math.round(alpha * 255).toString(16)}` };
+        const body = element(shape);
+        if (body.type === 'picture') body.imagePath = `test/wire-${alpha}.png`;
+        const data = await render(body, 400, alpha);
+        expect(pixel(data, 144, 144)).toEqual([255, 255, 255]);
+        expect(pixel(data, 144, 79)).not.toEqual([255, 255, 255]); // back rim
+        expect(pixel(data, 109, 144)).not.toEqual([255, 255, 255]); // profile rim
+        support.push(Array.from(data).flatMap((value, i) => i % 4 === 0 && value < 250 ? [i] : []));
+      }
+      expect(support[0].length).toBeGreaterThan(100);
+      expect(support[0]).toEqual(support[1]);
+    });
 
     it(`keeps an extruded back face intact with an invisible shadow (${adapter})`, async () => {
       const shape = orthographicBeveledShape();

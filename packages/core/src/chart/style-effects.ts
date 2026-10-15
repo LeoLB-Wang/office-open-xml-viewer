@@ -4,6 +4,7 @@ import { MAX_CANVAS_AREA } from '../canvas/clamp.js';
 import { hexToRgba, withInheritedPatternScope } from '../shape/paint.js';
 import {
   applyInnerShadow,
+  createRasterCoveragePaint,
   applyOuterShadow,
   applyReflection,
   applySoftEdge,
@@ -186,8 +187,11 @@ export function chartEffectRasterWorkUpperBound(
   const reflectionCost = effects.reflection ? deviceW * deviceH : 0;
   return reflectionCost
     + (effects.shadow ? rasterCost(bbox, outerReach, 1) : 0)
-    + (effects.softEdge ? rasterCost(bbox, softReach, 2) : 0)
-    + (effects.innerShadow ? rasterCost(bbox, innerReach, 2) : 0);
+    + (effects.softEdge ? rasterCost(bbox, softReach, 3) : 0)
+    + (effects.innerShadow ? rasterCost(bbox, innerReach, 2) : 0)
+    // One shared geometric mask plus its transient readback buffer. The mask
+    // is independent of mark color/opacity and retained only for this mark.
+    + (effects.softEdge || effects.innerShadow ? rasterCost(bbox, 2, 2) : 0);
 }
 
 function nativeShadow(
@@ -304,6 +308,11 @@ export function paintChartStyleEffects(
     && Number.isSafeInteger(requiredRasterWork)
     && requiredRasterWork <= (budget?.perConsumerMaximum ?? 0);
 
+  // Marks can be translucent too. Use the same geometric coverage boundary
+  // as shapes/pictures rather than treating a colored body as an effect mask.
+  const coverage = rasterAllowed && (effects.softEdge || effects.innerShadow)
+    ? createRasterCoveragePaint(devicePaint, transformedBBox) : null;
+
   let shadowRasterized = false;
   if (rasterAllowed && effects.shadow) {
     ctx.save();
@@ -350,7 +359,7 @@ export function paintChartStyleEffects(
   // attach that native effect to the already-composited soft-edge bitmap, so
   // keep the visible outer effect and omit softEdge for this uncommon combined
   // recipe rather than silently losing the style's shadow.
-  if (!nativeEffect && rasterAllowed && effects.softEdge) {
+  if (!nativeEffect && rasterAllowed && effects.softEdge && coverage) {
       ctx.save();
       resetToDevice();
       applySoftEdge(
@@ -361,6 +370,7 @@ export function paintChartStyleEffects(
         effectScale,
         deviceW,
         deviceH,
+        coverage,
       );
       ctx.restore();
       bodyPainted = true;
@@ -375,12 +385,12 @@ export function paintChartStyleEffects(
     ctx.restore();
   }
 
-  if (rasterAllowed && effects.innerShadow) {
+  if (rasterAllowed && effects.innerShadow && coverage) {
       ctx.save();
       resetToDevice();
       applyInnerShadow(
         ctx as never,
-        devicePaint,
+        coverage,
         transformedBBox,
         effects.innerShadow,
         effectScale,

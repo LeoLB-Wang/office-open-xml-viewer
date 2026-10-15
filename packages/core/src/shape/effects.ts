@@ -1,6 +1,7 @@
 import type { Shadow, SoftEdge, Reflection } from '../types/common';
 import { hexToRgba } from './paint';
 import { createAuxCanvas, type AuxCanvas, type AuxContext } from '../canvas/aux-canvas';
+import { clampCanvasSize } from '../canvas/clamp';
 
 // createAuxCanvas moved to canvas/aux-canvas.ts so the image/ metafile players
 // can share it without an image → shape dependency. Re-exported here to preserve
@@ -28,6 +29,43 @@ export { createAuxCanvas };
  */
 
 export type PaintShape = (ctx: AuxContext) => void;
+
+/** Make a dedicated opaque geometric mask from a complete projected raster.
+ * Raster policy: every nonzero-alpha sample belongs to the visible geometry;
+ * zero-alpha samples remain holes. Source color and opacity are not coverage.
+ * This preserves walls, wire rims, contours and transparent image holes without
+ * inventing a second front-face geometry. Subpixel coverage cannot be recovered
+ * separately from opacity in an RGBA source, so this is binary raster support,
+ * not a claim of exact vector antialiasing or Office mesh fidelity.
+ * The bounded mask belongs to this paint call; allocation failure lets callers
+ * omit mask-dependent effects while still painting the original body.
+ */
+export function createRasterCoveragePaint(
+  paint: PaintShape,
+  bbox: EffectBBox,
+): PaintShape | null {
+  const x = Math.floor(bbox.x) - 1, y = Math.floor(bbox.y) - 1;
+  const w = Math.max(1, Math.ceil(bbox.x + bbox.w) - x + 1);
+  const h = Math.max(1, Math.ceil(bbox.y + bbox.h) - y + 1);
+  if (clampCanvasSize(w, h).clamped) return null;
+  let canvas: AuxCanvas | null;
+  try { canvas = createAuxCanvas(w, h); } catch { return null; }
+  const ctx = canvas ? get2d(canvas) : null;
+  if (!canvas || !ctx) return null;
+  paint(offsetPaintCtx(ctx, { x, y, w, h }));
+  const image = ctx.getImageData(0, 0, w, h);
+  for (let i = 0; i < image.data.length; i += 4) {
+    image.data[i] = image.data[i + 1] = image.data[i + 2] = 0;
+    image.data[i + 3] = image.data[i + 3] > 0 ? 255 : 0;
+  }
+  ctx.putImageData(image, 0, 0);
+  return target => {
+    target.save();
+    target.setTransform({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 } as DOMMatrix);
+    target.drawImage(canvas as CanvasImageSource, x, y);
+    target.restore();
+  };
+}
 
 /** Bounding box of the shape in device pixels (post-scale). */
 export interface EffectBBox {
@@ -300,30 +338,27 @@ export function applyInnerShadow(
   if (!aux) return;
   const cReal = get2d(aux);
   if (!cReal) return;
-  const c = offsetPaintCtx(cReal, crop);
+  const maskAux = createAuxCanvas(crop.w, crop.h);
+  const mc = maskAux ? get2d(maskAux) : null;
+  if (!maskAux || !mc) return;
+  // Paint geometry once. Subsequent offset/blur operations act on this raster,
+  // so a callback restoring its absolute transform cannot erase the offset.
+  paintShape(offsetPaintCtx(mc, crop));
 
-  // 1. Silhouette in the shadow colour.
-  c.save();
-  c.fillStyle = hexToRgba(shadow.color, shadow.alpha);
-  paintShape(c);
-  c.restore();
+  // CT_InnerShadowEffect owns its color (ECMA-376 §20.1.8.40), regardless
+  // of whether the mask callback fills a path or blits a geometric raster.
+  cReal.drawImage(maskAux as CanvasImageSource, 0, 0);
+  cReal.globalCompositeOperation = 'source-in';
+  cReal.fillStyle = hexToRgba(shadow.color, shadow.alpha);
+  cReal.fillRect(0, 0, crop.w, crop.h);
 
-  // 2. Carve out the offset + blurred copy; the leftover is the inner shadow.
-  c.save();
-  c.globalCompositeOperation = 'destination-out';
-  c.filter = blur > 0 ? `blur(${blur}px)` : 'none';
-  c.translate(dx, dy);
-  c.fillStyle = '#000';
-  paintShape(c);
-  c.restore();
-
-  // 3. Clip the surviving shadow to the shape interior.
-  c.save();
-  c.globalCompositeOperation = 'destination-in';
-  c.filter = 'none';
-  c.fillStyle = '#000';
-  paintShape(c);
-  c.restore();
+  // Carve with an offset/blurred mask, then clip to the unshifted interior.
+  cReal.globalCompositeOperation = 'destination-out';
+  cReal.filter = blur > 0 ? `blur(${blur}px)` : 'none';
+  cReal.drawImage(maskAux as CanvasImageSource, dx, dy);
+  cReal.globalCompositeOperation = 'destination-in';
+  cReal.filter = 'none';
+  cReal.drawImage(maskAux as CanvasImageSource, 0, 0);
 
   // 4. Composite over the live shape at the crop origin.
   liveCtx.save();
@@ -339,14 +374,15 @@ export function applyInnerShadow(
  *
  * Masking a hard-clipped image with a feathered silhouette would feather only
  * inward and leave a hard outer step (the image has no pixels outside the rect).
- * Instead this helper builds an OPAQUE colour layer that extends past the
- * geometry via an edge-clamp stretch, then replaces its alpha with the blurred
+ * Instead this helper extends the colour layer (with its source opacity) past
+ * the geometry via an edge-clamp stretch, then clips it to the blurred
  * silhouette — yielding a clean, symmetric Gaussian falloff. The blur std-dev is
  * `rad/3` (the soft-edge `rad` spans ~3σ), matching PowerPoint's rasterised
  * falloff.
  *
- * `paintMask` paints a flat opaque silhouette (filled path, no stroke). When
- * omitted, `paintShape` is reused (correct only for unstroked shapes).
+ * `paintMask` paints opaque geometric coverage, including any painted edges
+ * and holes, independently of source opacity. When omitted, `paintShape` is
+ * reused (correct only for an opaque body).
  */
 export function applySoftEdge(
   liveCtx: AuxContext,
@@ -408,21 +444,26 @@ export function applySoftEdge(
     //    transform itself). Blurred in step (c) into the alpha ramp.
     mc.fillStyle = '#000';
     mask(mc);
-    // b. Build an OPAQUE colour layer that extends past the geometry: draw the
+    // b. Extend the colour layer past the geometry: draw the
     //    image's bbox stretched outward by `radius` (edge-clamp → border colours
     //    bleed out), then the sharp image on top to keep the interior crisp.
     //    Source/dest rects are in the cropped canvas's local space (bx,by).
-    //    Because the layer is opaque across the whole feather band, step (c)'s
-    //    destination-in yields EXACTLY the blurred-silhouette alpha — a clean,
-    //    symmetric Gaussian falloff (PowerPoint's soft edge), not a hard outer
-    //    step (image-only) nor a doubly-faded halo (blurred-image bleed).
+    //    Step (c) multiplies this source opacity by the blurred geometric
+    //    coverage, giving the existing symmetric falloff without treating
+    //    material opacity as a second geometric mask.
     cc.drawImage(
       aux as CanvasImageSource,
       bx, by, bbox.w, bbox.h,
       bx - radius, by - radius, bbox.w + radius * 2, bbox.h + radius * 2,
     );
+    // Replace the stretched layer beneath the actual geometry before drawing
+    // the sharp source. Source-over twice would raise a translucent interior's
+    // opacity, contrary to §20.1.8.53 (the fill is not affected).
+    cc.globalCompositeOperation = 'destination-out';
+    cc.drawImage(maskAux as CanvasImageSource, 0, 0);
+    cc.globalCompositeOperation = 'source-over';
     cc.drawImage(aux as CanvasImageSource, 0, 0);
-    // c. Replace alpha with the blurred silhouette → symmetric feather. The
+    // c. Attenuate source alpha by the blurred coverage → symmetric feather. The
     //    soft-edge `rad` is a blur radius spanning ~3σ (the kernel extent), so
     //    the Gaussian std-dev — which is what CSS blur() takes — is rad/3. This
     //    matches PowerPoint's rasterised falloff (measured σ ≈ rad/3).

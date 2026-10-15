@@ -468,6 +468,7 @@ export {
   type Polyline,
 } from './shape/text-warp';
 export {
+  createRasterCoveragePaint,
   applyOuterShadow,
   applyInnerShadow,
   applySoftEdge,

@@ -199,7 +199,7 @@ export function gaussianBlur(
  * whose alpha is below `threshold` (i.e. the boundary of the silhouette). The
  * region OUTSIDE the image bounds is also treated as below-threshold, so a
  * silhouette that runs to the canvas edge still gets a finite edge distance
- * (its bevel lip is drawn along that clipped edge). Pixels at or below threshold
+ * (its bevel lip is drawn along that clipped edge). Pixels below threshold
  * get distance 0. Returns a W·H Float64Array.
  */
 export function distanceToEdge(
@@ -279,14 +279,16 @@ export function computeBevelNormals(
     bandMask = new Uint8Array(w * h),
     bandWeight = new Float32Array(w * h);
   if (w <= 0 || h <= 0) return { normals, bandMask, bandWeight };
-  const dist = distanceToEdge(alpha, w, h);
+  // RGBA silhouettes encode opacity as well as raster coverage. Geometry is
+  // their nonzero support, not a 50% material-opacity contour.
+  const dist = distanceToEdge(alpha, w, h, 1);
   const C =
     bandPx > 0 ? gaussianBlur(dist, w, h, Math.max(1, bandPx * 0.25)) : dist;
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       normals[i * 3 + 2] = 1;
-      if ((alpha[i] ?? 0) < 128 || bandPx <= 0 || heightPx <= 0) continue;
+      if ((alpha[i] ?? 0) === 0 || bandPx <= 0 || heightPx <= 0) continue;
       const d = Math.max(0, dist[i] - 0.5);
       if (d >= bandPx) continue;
       bandMask[i] = 1;
@@ -455,16 +457,19 @@ export function applyBevelShading(
   if (w <= 0 || h <= 0) return;
   const img = ctx.getImageData(rx, ry, w, h),
     px = img.data;
-  const alpha = new Uint8ClampedArray(w * h);
-  for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
+  const coverage = new Uint8ClampedArray(w * h);
+  for (let i = 0; i < w * h; i++) coverage[i] = px[i * 4 + 3] > 0 ? 255 : 0;
+  // Keep geometric support independent of source opacity. Both the distance
+  // field and wire crossing predicates use nonzero support; the painter alone
+  // multiplies edge coverage by the original source alpha.
   if (input.material === 'legacyWireframe') {
-    rasterBevelWireframe(px, alpha, distanceToEdge(alpha, w, h), w, h,
+    rasterBevelWireframe(px, coverage, distanceToEdge(coverage, w, h), w, h,
       input.widthPx, input.wireframeLinePx ?? 1, input.wireframeDepth);
     ctx.putImageData(img, rx, ry);
     return;
   }
   const { normals } = computeBevelNormals(
-    alpha, w, h, input.widthPx, input.prst, input.heightPx,
+    coverage, w, h, input.widthPx, input.prst, input.heightPx,
   );
   const params = prepareLighting(input.material, input.light),
     out = new Float64Array(4);
@@ -548,7 +553,8 @@ export function applyExtrusion(
 
   const img = ctx.getImageData(rx, ry, w, h);
   const px = img.data;
-  // Source alpha snapshot (the front face silhouette), region-local.
+  // Source alpha snapshot, region-local. Nonzero support defines the front
+  // silhouette even below 50% opacity; source translucency is not a wall hole.
   const srcA = new Uint8ClampedArray(w * h);
   for (let i = 0; i < w * h; i++) srcA[i] = px[i * 4 + 3];
 
@@ -557,7 +563,7 @@ export function applyExtrusion(
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      if (srcA[i] >= 128) continue; // covered by the front face — wall hidden.
+      if (srcA[i] > 0) continue; // covered by the front face — wall hidden.
       // Walk back toward the front face along the depth vector; if any sample
       // along the sweep lands on the front silhouette, this pixel is side wall.
       // Coords are region-local (the walk stays in-region — see the note above).
@@ -567,7 +573,7 @@ export function applyExtrusion(
         const sx = Math.round(x - dx * t);
         const sy = Math.round(y - dy * t);
         if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
-        if (srcA[sy * w + sx] >= 128) {
+        if (srcA[sy * w + sx] > 0) {
           onWall = true;
           break;
         }

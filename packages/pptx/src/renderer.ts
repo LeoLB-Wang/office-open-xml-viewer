@@ -49,6 +49,7 @@ import {
   tintMathRaster,
   applyOuterShadow,
   applyInnerShadow,
+  createRasterCoveragePaint,
   applySoftEdge,
   applyReflection,
   renderPresetShape,
@@ -3473,7 +3474,7 @@ function paintWithRasterEffects(
   effectScale: number,
   liveTransform: EffectTransform,
   hasInterior = true,
-  paintInnerMask: EffectPaint = paintMask,
+  rasterMask = false,
 ): void {
   const deviceW = (ctx.canvas as { width: number }).width || 0;
   const deviceH = (ctx.canvas as { height: number }).height || 0;
@@ -3488,10 +3489,13 @@ function paintWithRasterEffects(
     applyLiveTransform(target);
     withInheritedPatternScope(ctx, target, () => paintMask(target));
   };
-  const innerMask = (target: CanvasRenderingContext2D) => {
-    applyLiveTransform(target);
-    withInheritedPatternScope(ctx, target, () => paintInnerMask(target));
-  };
+  // Projected bodies supply the complete geometry, but their RGBA opacity
+  // and color must never become an effect mask. Convert once and share the
+  // dedicated coverage raster across softEdge and innerShdw.
+  const coverage = rasterMask && haveAux && (effects.softEdge || effects.innerShadow)
+    ? createRasterCoveragePaint(mask as never, bbox)
+    : null;
+  const haveMask = !rasterMask || Boolean(coverage);
   let nativeShadowFallback = false;
   if (effects.shadow && haveAux) {
     ctx.save();
@@ -3520,7 +3524,7 @@ function paintWithRasterEffects(
   if (nativeShadowFallback) applyShadow(ctx, effects.shadow ?? null, scale);
   else if (effects.glow) applyGlow(ctx, effects.glow, scale);
 
-  if (effects.softEdge && haveAux) {
+  if (effects.softEdge && haveAux && haveMask) {
     ctx.save();
     ctx.setTransform(identity);
     applySoftEdge(
@@ -3531,7 +3535,7 @@ function paintWithRasterEffects(
       effectScale,
       deviceW,
       deviceH,
-      mask as never,
+      (coverage ?? mask) as never,
     );
     ctx.restore();
   } else {
@@ -3539,12 +3543,12 @@ function paintWithRasterEffects(
   }
   if (nativeShadowFallback || effects.glow) clearShadow(ctx);
 
-  if (effects.innerShadow && hasInterior && haveAux) {
+  if (effects.innerShadow && hasInterior && haveAux && haveMask) {
     ctx.save();
     ctx.setTransform(identity);
     applyInnerShadow(
       ctx,
-      innerMask as never,
+      (coverage ?? mask) as never,
       bbox,
       effects.innerShadow,
       effectScale,
@@ -3781,6 +3785,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         scale * devScale,
         liveTransform,
         Boolean(el.fill),
+        true,
       );
       if (projectionSucceeded) {
         paintProjectedText(ctx);
@@ -4242,7 +4247,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     effScale,
     liveTransform,
     Boolean(fillStyle) || hasPreparedImageFill,
-    (target) => paintShapeBody(target, '#000'),
+    true,
   );
 
   // Render text inside the rotation context so text follows shape rotation
@@ -6898,8 +6903,8 @@ function paintResolvedPicture(
       paintImageAt(target, x, y, w, h);
     };
 
-    // Flat pictures retain their opaque clip mask for innerShdw / softEdge.
-    // Projected pictures instead reuse the complete body below, as shapes do.
+    // Flat unbeveled pictures retain their opaque clip mask. Rasterized 3-D
+    // bodies supply full mesh geometry to the dedicated coverage pass below.
     const paintMaskAt = (
       target: CanvasRenderingContext2D,
       color: string,
@@ -6977,13 +6982,13 @@ function paintResolvedPicture(
         })
       : paintImage;
     // ECMA-376 §20.1.5.12 includes bevels, extrusion and contour in the 3-D
-    // shape; §20.1.8.53 softens its edges. In this planar compositor, the
-    // projected body's alpha is the visible geometry, including wireframe
-    // holes/rims, walls, borders and transparent blip areas. Reuse that same
-    // paint/cache for every projected effect mask, rather than projecting a
-    // second filled front face that can erase walls or fill wireframe holes.
+    // shape. The shared effects dispatcher derives a dedicated opaque coverage
+    // mask from the complete projected raster, preserving walls and mesh holes.
+    // Its source color/opacity remain exclusively in the body; innerShdw owns
+    // its own color, and softEdge must preserve interior fill opacity (§20.1.8).
     // Bounds/padding already come from the body's shared projectedSurface.
-    const effectMask = scene3d ? effectBody : rawMask;
+    const rasterMask = Boolean(scene3d) || bevels.length > 0;
+    const effectMask = rasterMask ? effectBody : rawMask;
     // The caller paints this prepared picture in the slide pattern scope,
     // including transparent blip areas and any authored rotation or flip.
     paintWithRasterEffects(
@@ -6996,6 +7001,8 @@ function paintResolvedPicture(
       scale,
       effScale,
       liveTransform,
+      true,
+      rasterMask,
     );
 
     ctx.restore();
