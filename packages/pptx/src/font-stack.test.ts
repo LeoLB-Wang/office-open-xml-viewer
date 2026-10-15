@@ -295,6 +295,12 @@ describe('buildFont — style encoded in a face name', () => {
     expect(buildFont(false, false, 24, 'Yu Gothic', rc)).toMatch(/^24px /);
   });
 
+  it('keeps the named bold weight when the catalog face has no OS/2 table', () => {
+    const rc = { themeMajorFont: null, themeMinorFont: null, dpr: 1 };
+    // Courier-Bold's real catalog profile has a synthetic weight of 400.
+    expect(buildFont(false, false, 24, 'Courier-Bold', rc)).toMatch(/^700 24px /);
+  });
+
   it('lets an explicit bold run override a named Medium face', () => {
     const font = buildFont(true, false, 48, 'Franklin Gothic Medium', {
       themeMajorFont: null,

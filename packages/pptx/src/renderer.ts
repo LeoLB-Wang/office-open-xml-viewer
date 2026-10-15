@@ -1065,7 +1065,10 @@ function hyperlinkKey(t: HyperlinkTarget | undefined): string {
 function namedFaceWeight(family: string): number | null {
   const fallback = standardNamedFaceWeight(family);
   if (fallback === null) return null;
-  const profiles = findReferenceFontMetrics(family);
+  // Recorded OS/2 metrics establish that weight came from usWeightClass.
+  // Without that table the generator stores a synthetic 400 (e.g. Courier-Bold),
+  // which must not override the standard weight encoded in the face name.
+  const profiles = findReferenceFontMetrics(family).filter((p) => p.win != null);
   const weight = profiles[0]?.weight;
   return weight !== undefined && profiles.every((p) => p.weight === weight) ? weight : fallback;
 }

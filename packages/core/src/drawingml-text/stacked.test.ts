@@ -141,6 +141,12 @@ describe('stacked face and character tables', () => {
     expect(stackedFaceBox('Gabriola', false, false)).toEqual({ ascent: (2800 + 2867) / 4096, descent: 1296 / 4096 });
   });
 
+  it('does not shrink the typo box for a negative lineGap', () => {
+    // Tamil Sangam MN sets USE_TYPO_METRICS with sTypoLineGap = -210.
+    expect(stackedFaceBox('Tamil Sangam MN', false, false))
+      .toEqual({ ascent: 1550 / 2048, descent: 717 / 2048 });
+  });
+
   it('turns only the measured set sideways and knows which faces have vertical glyphs', () => {
     const cp = (c: string) => c.codePointAt(0) as number;
     for (const c of '(（「、ー…∥') expect(stackedSidewaysCharacter(cp(c)), c).toBe(true);

@@ -6,7 +6,8 @@ import { findReferenceFontMetrics } from '../fonts/reference-font-metrics.js';
  * "one letter on top of another"). The standard defines no cell metrics.
  * Library policy: use 7/6 × the font-table face box × size for every face:
  * usWinAscent + usWinDescent, or sTypoAscender − sTypoDescender +
- * sTypoLineGap under USE_TYPO_METRICS (OpenType OS/2.fsSelection bit 7).
+ * max(0, sTypoLineGap) under USE_TYPO_METRICS (OpenType OS/2.fsSelection bit 7).
+ * Library policy ignores negative line gaps rather than shrinking the face box.
  *
  * Evidence boundary: issue #1626 Mac PowerPoint 16.x PDF controls (12–48 pt,
  * regular/bold) supported this factor for 58 of 63 measured faces. Yu Gothic,
