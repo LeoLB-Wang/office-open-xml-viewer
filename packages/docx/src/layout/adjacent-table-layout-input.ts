@@ -142,14 +142,6 @@ class SymbolDag {
   }
 }
 
-let lastSymbolNodeCountForTest = 0;
-
-/** Test-only diagnostic. This module is internal and is not re-exported from the
- * package root, so the counter cannot become public API. */
-export function adjacentTableSymbolNodeCountForTest(): number {
-  return lastSymbolNodeCountForTest;
-}
-
 function boundary(position: ExactLengthKey, sym = 0): GroupBoundary {
   return Object.freeze({ position, sym, identity: `${position}|${sym}` });
 }
@@ -512,8 +504,6 @@ export function combineAdjacentTableLayoutInputs(
       cells: Object.freeze(cells),
     });
   });
-
-  lastSymbolNodeCountForTest = dag.nodes.length;
 
   return Object.freeze({
     kind: 'adjacent-table-group-grid',

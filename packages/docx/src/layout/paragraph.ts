@@ -36,6 +36,7 @@ import type {
 } from '../line-layout.js';
 import {
   effectiveCharacterSpacingPt,
+  lineBoxHeight,
   getDefaultFontSize,
   segLetterSpacingPx,
   widthBalanceSpaceAdjustmentForTextPt,
@@ -1138,6 +1139,10 @@ function retainPhysicalLines(fragments: readonly LineLayout[], physicalIds: read
       const { wrapBounds: _wrapBounds, ...physical } = first;
       lines.push({
         ...physical,
+        ...(first.gridAfterLeadingPt === undefined ? {} : {
+          gridAfterLeadingPt: group.reduce((leading, fragment) =>
+            Math.min(leading, fragment.gridAfterLeadingPt ?? 0), first.gridAfterLeadingPt),
+        }),
         range: { start: first.range.start, end: group.at(-1)!.range.end },
         bounds: unionLayoutRects(group.map(fragment => fragment.bounds))!,
         placements: group.flatMap(fragment => fragment.placements),
@@ -2451,6 +2456,15 @@ function planMeasuredLines(
   /** Owner section's counter-turn for upright inline graphics. */
   resourceOrientation?: import('./types.js').UprightResourceOrientation,
 ): readonly LineLayout[] {
+  // WORD_GRID_LINE_CONTENT_FIT_ADMISSION covers plain captions only. Decide
+  // authored paragraph eligibility before continuation/keep-next slicing removes
+  // border edges. Include CT_PBdr's between/bar rules even when no edge is painted in
+  // this slice. The shared admission predicate separately whitelists retained
+  // plain text paint, including run-level formatting, on each terminal line.
+  const allowsGridLeadingOverhang = !paragraph.shading
+    && !Object.values(paragraph.borders ?? {}).some(Boolean)
+    && !Object.values(paragraph.typographyInput?.borders ?? {}).some(Boolean)
+    && !paragraph.tabStops?.some(stop => stop.alignment === 'bar');
   let sourceOffset = 0;
   const consumedByRun = new Map<number, number>();
   const sequenceOwners = new Map<NonNullable<LayoutTextSeg['sourceTextSequence']>, number>();
@@ -2699,14 +2713,33 @@ function planMeasuredLines(
         segments,
       },
     });
+    // §17.3.1.33 / §17.18.48: authored line spacing belongs to the line's
+    // own box. Only the extra leading supplied by §17.6.5 grid allocation
+    // may overhang at admission; atLeast minima and auto multiples stay charged.
+    // Reuse the allocator without a grid (no shaping or text remeasurement).
+    // Centering splits grid-only excess equally; the visible-content bottom
+    // also bounds the allowance when a separate baseline policy applies.
+    const ownHeightPt = context.lineGrid.active ? lineBoxHeight(
+      context.lineSpacing, raw.ascent, raw.descent, 1, undefined, context.hasRuby,
+      raw.intendedSingle, raw.eastAsian, raw.gridCountSingle, undefined,
+      raw.uniformPositionAuto, raw.inlinePictureTextSingle, raw.latinGridCountSingle,
+    ) : measuredLine.advancePt;
+    const retained = context.lineGrid.active ? {
+      ...planned,
+      gridAfterLeadingPt: allowsGridLeadingOverhang ? Math.max(0, Math.min(
+        (measuredLine.advancePt - ownHeightPt) / 2,
+        measuredLine.topYPt + measuredLine.advancePt
+          - baselinePt - (raw.visibleDescent ?? raw.descent),
+      )) : 0,
+    } : planned;
     return raw.availWidth !== undefined && (raw.availWidth < availableWidthPt || (raw.xOffset ?? 0) !== 0)
-      ? { ...planned, wrapBounds: {
+      ? { ...retained, wrapBounds: {
           xPt: paragraphXPt + (raw.xOffset ?? 0) + (lineIndex === 0 ? Math.min(0, context.firstIndentPt) : 0),
           yPt: measuredLine.topYPt,
           widthPt: raw.availWidth - (lineIndex === 0 ? Math.min(0, context.firstIndentPt) : 0),
           heightPt: measuredLine.advancePt,
         } }
-      : planned;
+      : retained;
   }), measured.lines.map((line, index) => line.layout.physicalLineIndex ?? index));
 }
 

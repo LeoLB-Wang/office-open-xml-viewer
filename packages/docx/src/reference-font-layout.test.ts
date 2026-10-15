@@ -842,7 +842,7 @@ describe('native reference font vertical layout', () => {
   });
 
   it('keeps the Word-observed Calibri normal line until an atLeast floor exceeds it', () => {
-    const metric = referenceFontLineMetrics('Calibri', 400, 'normal', 'other');
+    const metric = referenceFontLineMetrics('Calibri', 400, 'normal');
     expect(metric).toBeDefined();
     const natural = 11 * metric!.lineHeightRatio;
     const minimum = (twips: number) => lineBoxHeight(

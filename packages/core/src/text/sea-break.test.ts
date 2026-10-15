@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import {
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+let {
   containsSeaScript,
   fitSeaWordPrefix,
   graphemeClusterOffsets,
@@ -7,15 +7,28 @@ import {
   isGraphemeFillText,
   isSeaGraphemeExtend,
   isSeaScriptCodePoint,
-  resetSeaSegmenterForTest,
   seaMixedBreakOffsets,
   seaTransitionOffsets,
   seaWordBreakOffsets,
-  setSeaWordSegmenterForTest,
-} from './sea-break.js';
+} = await import('./sea-break.js');
 import { DEFAULT_KINSOKU_RULES } from './kinsoku/rules.js';
 
-afterEach(() => resetSeaSegmenterForTest());
+beforeEach(async () => {
+  vi.resetModules();
+  ({ containsSeaScript, fitSeaWordPrefix, graphemeClusterOffsets, isDictionarySeaText,
+    isGraphemeFillText, isSeaGraphemeExtend, isSeaScriptCodePoint, seaMixedBreakOffsets,
+    seaTransitionOffsets, seaWordBreakOffsets } = await import('./sea-break.js'));
+});
+afterEach(() => vi.restoreAllMocks());
+
+function mockWords(segment: (span: string) => Iterable<{ index: number; isWordLike?: boolean }>): void {
+  const Native = Intl.Segmenter;
+  vi.spyOn(Intl, 'Segmenter').mockImplementation(function (locale, options) {
+    return options?.granularity === 'word'
+      ? { segment } as Intl.Segmenter
+      : new Native(locale, options);
+  });
+}
 
 describe('isSeaScriptCodePoint', () => {
   const cases: [number, boolean][] = [
@@ -229,14 +242,14 @@ describe('seaWordBreakOffsets — grapheme-fill (Myanmar / Tibetan, #961)', () =
   });
 });
 
-describe('seaWordBreakOffsets — graceful fallback + filtering (injected segmenter)', () => {
+describe('seaWordBreakOffsets — graceful fallback + filtering (mocked Intl.Segmenter)', () => {
   it('returns [] when the segmenter is unavailable', () => {
-    setSeaWordSegmenterForTest(null);
+    vi.spyOn(Intl, 'Segmenter').mockImplementation(function () { throw new Error('unavailable'); });
     expect(seaWordBreakOffsets('ภาษาไทยเป็นภาษา')).toEqual([]);
   });
 
   it('returns [] when segmentation throws', () => {
-    setSeaWordSegmenterForTest(() => {
+    mockWords(() => {
       throw new Error('boom');
     });
     expect(seaWordBreakOffsets('ภาษาไทยเป็นภาษา')).toEqual([]);
@@ -245,7 +258,7 @@ describe('seaWordBreakOffsets — graceful fallback + filtering (injected segmen
   it('excludes non-word (punctuation) segment starts, keeps word starts', () => {
     // Fake: split the span into fixed segments; one is punctuation (isWordLike:false).
     // span "AAAA.BBBB" (all treated as one SEA span by the test text below).
-    setSeaWordSegmenterForTest((span) => {
+    mockWords(() => {
       // segment boundaries at 0 (word), 4 (punct '.'), 5 (word)
       return [
         { index: 0, isWordLike: true },

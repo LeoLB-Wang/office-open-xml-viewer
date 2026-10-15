@@ -337,9 +337,6 @@ describe('stable documentation boundaries', () => {
     expect(bundleSizePage).toContain('ChartEx');
     expect(bundleSizePage.match(/<th>TIFF image codec<\/th>/g)).toHaveLength(1);
     expect(bundleSizePage).toContain('<td>22.2 KiB</td><td>6.7 KiB</td>');
-    expect(bundleSizePage).not.toContain('3.9 KiB');
-    expect(bundleSizePage).not.toContain('7.3 KiB');
-    expect(bundleSizePage).not.toContain('3.1 KiB');
     expect(productionPage).toContain('A small TIFF reuse');
     expect(productionPage).toContain('it is not a');
     expect(productionPage).toContain('general-purpose TIFF library');

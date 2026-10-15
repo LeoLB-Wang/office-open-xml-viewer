@@ -34,7 +34,7 @@ export function previewErrorMessage(error: unknown): string {
       case 'encrypted': return 'Enter the password to preview this file.';
       case 'invalid-password': return 'The password is incorrect.';
       case 'unsupported-encryption': return 'This encryption method is not supported.';
-      case 'legacy-binary-format': return 'Convert this file to .docx, .xlsx or .pptx first.';
+      case 'legacy-binary-format': return 'This .doc, .xls or .ppt file has no matching legacy source. Enable @silurus/ooxml-legacy-office or convert it to .docx, .xlsx or .pptx.';
       case 'not-ooxml': return 'This is not a supported Office Open XML file.';
     }
   }
@@ -134,7 +134,7 @@ try {
         <table class="error-table action-table">
           <thead><tr><th>Check</th><th>What it means</th><th>Recommended application response</th></tr></thead>
           <tbody>
-            <tr><td><a href="#ooxml-error"><code>OoxmlError</code></a></td><td>The container is encrypted, legacy or not OOXML.</td><td>Ask for a password, request conversion, or reject the file according to <code>error.code</code>.</td></tr>
+            <tr><td><a href="#ooxml-error"><code>OoxmlError</code></a></td><td>The container is encrypted, legacy or not OOXML.</td><td>Ask for a password, enable the experimental legacy add-on or request conversion, or reject the file according to <code>error.code</code>.</td></tr>
             <tr><td><a href="#ooxml-resource-limit-error"><code>OoxmlResourceLimitError</code></a></td><td>A measured package or format resource crossed a limit.</td><td>Show “too large or complex to preview.” Only suggest changing configuration when <code>configurable</code> is <code>true</code>.</td></tr>
             <tr><td><a href="#decoded-image-limit-error"><code>OoxmlDecodedImageLimitError</code></a></td><td>Decoded raster demand crossed the configured aggregate budget or a hard decode safety ceiling.</td><td>For an aggregate crossing, lower the display scale or adjust <code>imageResources</code>; for a hard source crossing, explain that the image is too large to preview.</td></tr>
             <tr><td><a href="#tiff-decode-error"><code>TiffDecodeError</code></a></td><td>A configured TIFF codec received malformed input, an unsupported class, or failed during bitmap handoff.</td><td>Explain that the document contains a TIFF image that cannot be previewed.</td></tr>
@@ -162,7 +162,7 @@ try {
         <div><code>encrypted</code><span>No password was supplied.</span><strong>Ask for a password and retry.</strong></div>
         <div><code>invalid-password</code><span>The supplied password did not decrypt the file.</span><strong>Ask the user to check it and retry.</strong></div>
         <div><code>unsupported-encryption</code><span>The file uses an encryption scheme the library cannot decrypt.</span><strong>Request an unencrypted or supported copy.</strong></div>
-        <div><code>legacy-binary-format</code><span>The input is <code>.doc</code>, <code>.xls</code> or <code>.ppt</code>, not OOXML.</span><strong>Request conversion to the corresponding modern format.</strong></div>
+        <div><code>legacy-binary-format</code><span>The input is <code>.doc</code>, <code>.xls</code> or <code>.ppt</code> and no matching legacy source claimed it.</span><strong>Enable <code>@silurus/ooxml-legacy-office</code> for that format or request conversion to DOCX, XLSX or PPTX.</strong></div>
         <div><code>not-ooxml</code><span>The bytes are not a recognized OOXML package: not a readable ZIP (including empty input), a ZIP without <code>[Content_Types].xml</code>, or a package without the main document part.</span><strong>Reject the file as unsupported or invalid.</strong></div>
       </div>
     </section>
@@ -215,6 +215,21 @@ try {
       <p>This code means the library recognized a WebAssembly trap and discarded the affected parser instance. It does not mean “out of memory.”</p>
       <p>At the current WebAssembly boundary, Rust panic, allocation failure, stack overflow and explicit <code>unreachable</code> can all reach JavaScript as the same <code>WebAssembly.RuntimeError</code>. The runtime exposes the trap only after the original Rust cause has been erased, so the library cannot reliably reconstruct which event occurred.</p>
       <p class="note">Show a generic “could not process this file” result. Preserve the original error for diagnostics, do not repeatedly retry the same file automatically, and do not report the failure as OOM without independent evidence from the host environment.</p>
+    </section>
+
+    <section id="legacy-source-errors" class="error-section error-detail">
+      <p class="error-kicker">Experimental legacy input</p>
+      <h2>When a legacy source is configured</h2>
+      <p>After a source claims a file, unsupported binary content rejects the load instead of
+        producing a partial document. These reader failures currently have no dedicated typed
+        error code and use the generic fallback in the message helper above. Retain the original
+        diagnostic, offer conversion and do not branch on its message. There is no retry through
+        another source or the OOXML parser.</p>
+      <p>A source that does not claim the input leaves it on the ordinary OOXML path, including
+        its typed container and encryption errors. The source input-size guard throws a
+        <code>RangeError</code>. A stale viewer/add-on runtime fails before input loading with
+        <code>companion-runtime-mismatch</code>; install exactly matching package versions.</p>
+      <p><a href="/legacy-office">Configure the experimental legacy Office add-on →</a></p>
     </section>
 
     <section id="untyped-errors" class="error-section error-detail">

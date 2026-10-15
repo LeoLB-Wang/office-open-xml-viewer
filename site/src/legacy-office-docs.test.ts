@@ -1,0 +1,44 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import { announcements } from './lib/announcements';
+import { sitemapPaths } from './pages/sitemap.xml';
+
+const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+
+describe('experimental legacy Office add-on guidance', () => {
+  it('publishes an opt-in guide without promoting legacy formats into the main navigation', () => {
+    const page = source('./pages/legacy-office.astro');
+    expect(page).toContain('canonicalPath="/legacy-office/"');
+    expect(sitemapPaths).toContain('/legacy-office/');
+    for (const path of ['./components/SiteFooter.astro', './components/Capabilities.astro', './pages/production.astro']) {
+      expect(source(path)).toContain('href="/legacy-office"');
+    }
+    expect(source('./components/Nav.astro')).not.toContain('/legacy-office');
+    for (const [entry, factory, viewer] of [
+      ['doc', 'legacyDocSource', 'DocxViewer'],
+      ['xls', 'legacyXlsSource', 'XlsxViewer'],
+      ['ppt', 'legacyPptSource', 'PptxViewer'],
+    ]) {
+      expect(page).toContain(`@silurus/ooxml-legacy-office/${entry}`);
+      expect(page).toContain(`modelSources: [${factory}()]`);
+      expect(page).toContain(viewer);
+    }
+    for (const contract of ['experimental', 'versions must match', 'openPptxPresentation', 'session.close()', 'legacy-binary-format', 'no dedicated typed', 'Markdown', 'WASM', 'moduleUrl', 'wasmUrl']) {
+      expect(page).toContain(contract);
+    }
+    expect(source('./pages/bundle-size.astro')).toContain('Optional add-on package');
+    expect(source('../../README.md')).toContain('https://ooxml.silurus.dev/legacy-office/');
+  });
+
+  it('announces the optional subset with an explicit migration boundary and no invented release version', () => {
+    const announcement = announcements.find(({ slug }) => slug === 'experimental-legacy-office');
+    expect(announcement).toMatchObject({ label: 'Upcoming release', date: '2026-10-15' });
+    expect(announcement?.version).toBeUndefined();
+    expect(announcement?.sections[0].kind).toBe('summary');
+    const text = JSON.stringify(announcement);
+    for (const phrase of ['experimental', '@silurus/ooxml-legacy-office', 'modelSources', 'No migration is required', 'versions must match', 'reject', 'OOXML viewer']) {
+      expect(text).toContain(phrase);
+    }
+    expect(text).not.toMatch(/\b(?:KiB|MiB|gzip)\b|\d+%/);
+  });
+});

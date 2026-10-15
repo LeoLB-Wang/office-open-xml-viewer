@@ -37,6 +37,7 @@ import type {
 import { containsHanScript } from '@silurus/ooxml-core/internal/script-preload-accumulator';
 import type { TextBoxAcquisitionInput } from './textbox-input.js';
 import type { AnchorAcquisitionInput } from './anchor-input.js';
+import type { InternalParagraphTypographyWire } from './typography-input.js';
 
 /** The subset of a measured text segment needed to resolve its effective size. */
 export interface EffectiveFontSegment {
@@ -243,6 +244,7 @@ export interface ComplexFieldBoundaryInput {
 }
 
 export type ParagraphAcquisitionInput = DeepReadonly<Omit<DocParagraph, 'runs'>> & Readonly<{
+  typographyInput?: Readonly<InternalParagraphTypographyWire>;
   nativeReadingNumberingWordBreaking?: Readonly<NativeReadingWordBreaking>;
   runs: readonly ParagraphAcquisitionRun[];
   complexFieldBoundaries?: readonly ComplexFieldBoundaryInput[];

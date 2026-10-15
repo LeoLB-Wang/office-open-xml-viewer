@@ -177,6 +177,7 @@ import { drawEaVertRun } from './vertical-text.js';
 import { renderStackedText, type StackedParagraphInput } from './stacked-text.js';
 import {
   COMPLEX_SCRIPT_DEFAULT_FACES, complexScriptDefaultFace, eastAsianDefaultFaces,
+  isEastAsianSlotSymbol,
 } from './east-asian-default.js';
 import {
   breakDrawingMlText,
@@ -1055,25 +1056,25 @@ function hyperlinkKey(t: HyperlinkTarget | undefined): string {
 }
 
 /**
- * Preserve a weight encoded in a specific Office face name when that face is
- * unavailable and the canvas falls through to a generic/substitute family.
- * PowerPoint themes commonly name faces such as "Franklin Gothic Medium" with
- * no separate `b` attribute; treating the missing face as weight 400 makes the
- * fallback visibly lighter than the authored face.
+ * Map weight words in a face name to the OpenType OS/2.usWeightClass name
+ * classes: https://learn.microsoft.com/en-us/typography/opentype/spec/os2#usweightclass
+ * This name-based substitution policy does not read catalog weights: a named
+ * weight can be a separate RIBBI family whose regular face is recorded as 400
+ * (e.g. Franklin Gothic Medium), which loses the design weight on substitution.
+ * Names without a weight word keep the run's regular/bold selection; explicit
+ * run bold takes precedence in buildFont. Never tune for a substitute's stroke.
  */
 function namedFaceWeight(family: string): number | null {
   const name = family.toLowerCase();
-  if (/\b(thin|hairline)\b/.test(name)) return 100;
+  if (/\bthin\b/.test(name)) return 100;
   if (/\b(extra[- ]?light|ultra[- ]?light)\b/.test(name)) return 200;
   if (/\blight\b/.test(name)) return 300;
   if (/\b(black|heavy)\b/.test(name)) return 900;
   if (/\b(extra[- ]?bold|ultra[- ]?bold)\b/.test(name)) return 800;
   if (/\b(semi[- ]?bold|demi[- ]?bold)\b/.test(name)) return 600;
   if (/\bbold\b/.test(name)) return 700;
-  // Office face names such as Franklin Gothic Medium refer to a distinct,
-  // visibly heavier cut. Libre Franklin 600 is the closest web substitute;
-  // 500 makes both the glyphs and their authored reflections too thin.
-  if (/\bmedium\b/.test(name)) return 600;
+  if (/\bmedium\b/.test(name)) return 500;
+  if (/\b(normal|regular)\b/.test(name)) return 400;
   return null;
 }
 
@@ -1755,13 +1756,17 @@ export function paragraphInputRuns(
       emitted = true;
       const ch = String.fromCodePoint(cluster.codePointAt(0) ?? 0);
       let glyph = cluster;
-      const eaGlyph = isCjkBreakChar(ch.codePointAt(0) ?? 0);
-      const csGlyph = isComplexScriptCodePoint(ch.codePointAt(0) ?? 0)
-        || INDIC_CS_GLYPH_RE.test(ch);
+      const cp = ch.codePointAt(0) ?? 0;
+      // An East Asian-slot symbol resolves its stack from its own cluster, so
+      // the run's other scripts never pick its fallback face.
+      const eaSymbol = !isCjkBreakChar(cp) && !!run.fontFamilyEa && isEastAsianSlotSymbol(cp, run.lang);
+      const eaGlyph = eaSymbol || isCjkBreakChar(cp);
+      const csGlyph = isComplexScriptCodePoint(cp) || INDIC_CS_GLYPH_RE.test(ch);
       const csFace = csGlyph ? familyCs ?? complexScriptDefaultFace(ch) : family;
-      let font = eaGlyph ? eaFont : csGlyph ? csFontFor(csFace, cluster) : stackFontFor(
-        family, cluster, hasNamedFontFamily(run.fontFamily ?? para.defFontFamily),
-      );
+      let font = eaSymbol ? stackFontFor(familyEa, cluster, true)
+        : eaGlyph ? eaFont : csGlyph ? csFontFor(csFace, cluster) : stackFontFor(
+          family, cluster, hasNamedFontFamily(run.fontFamily ?? para.defFontFamily),
+        );
       let face = eaGlyph ? familyEa : csFace;
       let share = lineMetricFor(face, bold, italic, rc);
       if (/[\uf020-\uf0ff]/u.test(ch) && (familySym != null || isSymbolFontFamily(family))) {
@@ -1827,15 +1832,17 @@ export function paragraphInputRuns(
  * curly quote next to ideographs in one run and split over two runs. Each
  * two-run case breaks like its one-run twin. Under ja-JP, an opening quote
  * never ends a line and a closing quote never starts one, even at the seam.
- * Under en-US, neither rule applies to the quotes. Our curly quotes paint in
- * the Latin slot, so they sit behind a slot seam in both languages; the
- * horizontal input adapter keeps that seam even when the Latin and East Asian
- * faces resolve to one font, so the language alone decides it. Limits: only
+ * Under en-US, neither rule applies to the quotes. Under en-US our curly
+ * quotes paint in the Latin slot; under ja/ko/zh with a resolved East Asian
+ * face they paint in the East Asian slot (isEastAsianSlotSymbol). The
+ * horizontal input adapter keeps a seam in both measured languages even when
+ * the quote and the ideograph share one font, so the language alone decides
+ * it. Limits: only
  * the observed curly-quote/ideograph seams where both runs are Japanese join;
  * other punctuation keeps its old boundary. Retraction never crosses another
- * seam unless that seam meets this same rule. Other East Asian languages,
- * mixed-language seams, and runs without lang keep the seam boundary, as C08
- * observed. Vertical (stacked) text and XLSX shapes have no such controls and
+ * seam unless that seam meets this same rule. Mixed-language seams and runs
+ * without lang keep the seam boundary, as C08 observed; a ko/zh quote that
+ * shares the ideographs' East Asian face has no seam and keeps in-run kinsoku. Vertical (stacked) text and XLSX shapes have no such controls and
  * are not wired.
  */
 const JAPANESE_LANG_RE = /^ja(?:[-_]|$)/i;

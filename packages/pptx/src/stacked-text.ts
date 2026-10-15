@@ -26,7 +26,6 @@
 import {
   layoutStackedText,
   STACKED_CELL_FACTOR,
-  stackedCellBoxOverride,
   stackedFaceBox,
   stackedSidewaysCharacter,
   stackedVerticalGlyph,
@@ -132,7 +131,7 @@ function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
       boxes.set(style, box);
     }
     const family = style.faceFamily ?? '';
-    const cellEm = stackedCellBoxOverride(family) ?? box.ascent + box.descent;
+    const cellEm = box.ascent + box.descent;
     const cell = STACKED_CELL_FACTOR * cellEm * style.sizePx;
     // The run's latin face also sizes the column (MS Mincho glyphs of a run
     // whose latin face is Arial sit in an Arial-thick column, wordartvert
@@ -141,7 +140,7 @@ function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
     const latinBox = style.lineMetricLatin?.glyph
       ?? stackedFaceBox(latinFamily, /\bbold\b/.test(style.font), /\bitalic\b/.test(style.font));
     const latinEm = latinFamily === family ? cellEm
-      : stackedCellBoxOverride(latinFamily) ?? (latinBox ? latinBox.ascent + latinBox.descent : cellEm);
+      : latinBox ? latinBox.ascent + latinBox.descent : cellEm;
     const thickness = Math.max(cell, STACKED_CELL_FACTOR * latinEm * style.sizePx);
     const spc = style.letterSpacingPx ?? 0;
     const out: Measured<T>[] = [];
