@@ -1056,14 +1056,20 @@ export class PptxPresentation {
    * requests it only holds a privately named face until destroy. An embedded
    * regular Calibri covers the tuple, so nothing is started for it. A face the
    * application loads before that render still wins: the first consumer
-   * re-checks coverage and discards the speculative route.
+   * re-checks coverage and discards the speculative route. Nothing starts while
+   * an application face already covers the tuple.
    */
   private _prefetchThemeOfficeRoute(bootstrap: PresentationBootstrap): void {
     const fontSet = typeof document !== 'undefined' ? document.fonts : null;
     const isCalibri = (family: string | null | undefined) => family?.trim().toLowerCase() === 'calibri';
     if (!fontSet || ![bootstrap.majorFont, bootstrap.minorFont].some(isCalibri)
       || bootstrap.embeddedFonts.some((font) => isCalibri(font.fontName) && font.style === 'regular')) return;
-    void this._officeRoutesForRequests([{ family: 'Calibri', weight: 400, style: 'normal' }], fontSet)
+    const request = { family: 'Calibri', weight: 400, style: 'normal' } as const;
+    // Only an uncovered tuple is prefetched, so the cached load always holds
+    // the routes an uncovered render needs; coverage gained later is re-checked
+    // by the first consumer.
+    if (officeFontRequestDeclared(fontSet, request)) return;
+    void this._officeRoutesForRequests([request], fontSet)
       .catch(() => undefined);
     // Set after the call: its synchronous part has created the cached load.
     this._themeRoutePrefetch = { fontSet, key: 'calibri:400:normal' };

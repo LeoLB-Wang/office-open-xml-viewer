@@ -59,6 +59,18 @@ describe('PptxPresentation theme Calibri route prefetch', () => {
     await vi.waitFor(() => expect(core.unloadOfficeFontFallbacks).toHaveBeenCalledWith([{ tag: 'prefetch' }]));
   });
 
+  it('starts nothing while an application face covers the tuple, so a later uncovered render loads fresh', async () => {
+    const fonts = {} as FontFaceSet;
+    core.loadOfficeFontFallbacks.mockResolvedValue(route('fresh'));
+    const p = presentation(fonts);
+    core.officeFontRequestDeclared.mockReturnValue(true);
+    p._prefetchThemeOfficeRoute(bootstrap());
+    expect(core.loadOfficeFontFallbacks).not.toHaveBeenCalled();
+    core.officeFontRequestDeclared.mockReturnValue(false);
+    await expect(p._officeRoutesForRequests([REGULAR], fonts)).resolves.toEqual({ calibri: { tag: 'fresh' } });
+    expect(core.loadOfficeFontFallbacks).toHaveBeenCalledTimes(1);
+  });
+
   it('starts nothing for an embedded regular Calibri but still for an embedded bold-only one', () => {
     const fonts = {} as FontFaceSet;
     core.loadOfficeFontFallbacks.mockResolvedValue(route('prefetch'));
