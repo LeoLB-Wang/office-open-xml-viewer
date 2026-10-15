@@ -32,6 +32,7 @@ import { asBullet } from './types';
 import {
   usesPathShade,
   trackPaintPath,
+  measurePaintBounds,
   currentStrokeBounds,
   resolveArrowPaint,
   renderChart,
@@ -3735,12 +3736,18 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         },
         padded
           ? { bevels, backDepthCss, extrusion: extrusion ?? undefined, edgePadCss, preservePatternFrame }
-          : { preservePatternFrame },
+          : { preservePatternFrame, measureOverflow: true },
       );
     const paintProjectedBody = (target: CanvasRenderingContext2D): boolean =>
       paintProjectedElement(target, localBodyEl, true);
-    const paintProjectedText = (target: CanvasRenderingContext2D): boolean =>
-      !el.textBody || paintProjectedElement(target, localTextEl, false, projectedTextHasPattern);
+    const paintProjectedText = (target: CanvasRenderingContext2D): void => {
+      if (!el.textBody || paintProjectedElement(target, localTextEl, false, projectedTextHasPattern)) return;
+      // Match the body allocation/horizon fallback: retain readable flat text.
+      target.save();
+      target.translate(x, y);
+      renderShape(target, localTextEl, scale, themeDefaultColor, slideNumber, rc);
+      target.restore();
+    };
     const hasRasterEffects = Boolean(
       el.shadow || el.innerShadow || el.glow || el.softEdge || el.reflection,
     );
@@ -6124,6 +6131,9 @@ function buildExtrusion(
  * then fall back to painting directly.
  */
 interface Project3dOpts {
+  /** Preserve overflow of the separate, unshaded text pass. Body material
+   * and effect rasters keep their established domains. */
+  measureOverflow?: boolean;
   /** Extrusion-base depth of the prepared bottom surface, in CSS px. */
   backDepthCss?: number;
   /** Text front faces retain the slide pattern frame before camera projection. */
@@ -6163,6 +6173,7 @@ function patternFrameToLocalRaster(
   padDev: number,
   x: number,
   y: number,
+  padYDev = padDev,
 ) {
   const det = tf.a * tf.d - tf.b * tf.c;
   if (Math.abs(det) <= 1e-12) return undefined;
@@ -6176,7 +6187,7 @@ function patternFrameToLocalRaster(
     a: devScale * ia, b: devScale * ib,
     c: devScale * ic, d: devScale * id,
     e: padDev + devScale * (ie - x),
-    f: padDev + devScale * (iff - y),
+    f: padYDev + devScale * (iff - y),
   };
 }
 
@@ -6203,27 +6214,57 @@ function projectScene3dPaint(
   // homography. The camera is defined for the authored w×h face, so it must not
   // be recomputed from the padded raster size. Degenerate extrapolation → pad 0.
   const backDepth = opts.backDepthCss ?? 0;
-  const { corners: quadCorners, backFacing, padDev, padCss } =
+  const { face, corners: paddedCorners, backFacing, padDev } =
     projectedSurface(camera, w, h, backDepth, opts.edgePadCss, devScale);
-
-  const ow = Math.max(1, Math.ceil(w * devScale) + 2 * padDev);
-  const oh = Math.max(1, Math.ceil(h * devScale) + 2 * padDev);
+  let quadCorners = paddedCorners;
+  let originX = padDev, originY = padDev;
+  let ow = Math.max(1, Math.ceil(w * devScale) + 2 * padDev);
+  let oh = Math.max(1, Math.ceil(h * devScale) + 2 * padDev);
+  if (opts.measureOverflow) {
+    // ECMA-376 §21.1.2.1.1 bodyPr defaults horzOverflow/vertOverflow to
+    // overflow; §21.1.2.1.2 noAutofit does not scale text into its box.
+    // Measure actual paint in the local authored frame, including insets,
+    // vertical/stacked text and glyph overhangs. The camera still belongs to
+    // w×h: growing that face would change its centre, lens and text placement.
+    const ink = measurePaintBounds(target, octx => paintBody(octx, 0, 0, w, h));
+    if (ink) {
+      // Independent axis bounds keep a long, thin text run O(ink area), rather
+      // than allocating a square with its longest overflow as four-side padding.
+      // One device pixel encloses raster AA; integer origins preserve the grid.
+      const x0 = Math.min(-padDev, Math.floor(ink.x * devScale) - 1);
+      const y0 = Math.min(-padDev, Math.floor(ink.y * devScale) - 1);
+      const x1 = Math.max(ow - padDev, Math.ceil((ink.x + ink.w) * devScale) + 1);
+      const y1 = Math.max(oh - padDev, Math.ceil((ink.y + ink.h) * devScale) + 1);
+      const expanded = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        .map(([px, py]) => projectQuadPoint(face, px / devScale / w, py / devScale / h));
+      // An authored degenerate face has no drawable homography, as in
+      // drawProjected itself. Otherwise a null extrapolation crosses the
+      // projection horizon: retain the flat fallback, not an unbounded warp.
+      if (expanded.some(point => !point)) return projectQuadPoint(face, .5, .5) === null;
+      quadCorners = expanded as [Vec2, Vec2, Vec2, Vec2];
+      originX = -x0; originY = -y0;
+      ow = x1 - x0; oh = y1 - y0;
+    }
+  }
+  if (opts.measureOverflow && (!Number.isFinite(ow * oh)
+    || ow > MAX_CANVAS_DIMENSION || oh > MAX_CANVAS_DIMENSION
+    || ow * oh > MAX_CANVAS_AREA)) return false;
   const aux = createAuxCanvas(ow, oh);
   if (!aux) return false;
   const octx = aux.getContext('2d') as CanvasRenderingContext2D | null;
   if (!octx) return false;
 
-  // Paint the body into the offscreen with the origin at (pad,pad); device px.
+  // Paint in authored local coordinates; only the raster origin is displaced.
   octx.save();
   octx.scale(devScale, devScale);
-  octx.translate(padCss, padCss);
+  octx.translate(originX / devScale, originY / devScale);
   // PowerPoint PDF rasterises projected pattern text as a front-face image
   // before the camera warp. Its 8 pt tile stays in the slide frame: moving an
   // otherwise identical dnDiag text shape by 4 pt changes the embedded image's
   // colour phase, while camera rotation and extrusion retain that phase. Map
   // the live slide root into this padded local raster before painting.
   if (opts.preservePatternFrame) {
-    const sourceToAux = patternFrameToLocalRaster(tf, devScale, padDev, x, y);
+    const sourceToAux = patternFrameToLocalRaster(tf, devScale, originX, x, y, originY);
     withInheritedPatternScope(target, octx, () => paintBody(octx, 0, 0, w, h), undefined, sourceToAux);
   } else {
     paintBody(octx, 0, 0, w, h);
@@ -6231,7 +6272,7 @@ function projectScene3dPaint(
   octx.restore();
 
   // The body silhouette occupies the offscreen's inner box (device px):
-  // [padDev, padDev + w·devScale] on each axis (the a:ln border, painted inside
+  // originX/Y + [0, w/h·devScale] (the a:ln border, painted inside
   // paintBody, extends ±half-line-width past it; the pad reserves that room).
   // Restricting the bevel/extrusion distance-transform + sweep to this box grown
   // by the effect's reach (perf: A3) skips the transparent pad border. Equivalent
@@ -6242,8 +6283,8 @@ function projectScene3dPaint(
   const bodyDevW = Math.ceil(w * devScale);
   const bodyDevH = Math.ceil(h * devScale);
   const regionFor = (reachPx: number): BevelRegion => ({
-    x: padDev - reachPx,
-    y: padDev - reachPx,
+    x: originX - reachPx,
+    y: originY - reachPx,
     w: bodyDevW + 2 * reachPx,
     h: bodyDevH + 2 * reachPx,
   });
@@ -6285,7 +6326,7 @@ function projectScene3dPaint(
   if (opts.paintEdges) {
     octx.save();
     octx.scale(devScale, devScale);
-    octx.translate(padCss, padCss);
+    octx.translate(originX / devScale, originY / devScale);
     opts.paintEdges(octx, 0, 0, w, h);
     octx.restore();
   }

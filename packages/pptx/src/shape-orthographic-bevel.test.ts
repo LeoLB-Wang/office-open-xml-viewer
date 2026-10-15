@@ -62,9 +62,14 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
     const result = await build({
       configFile: false, logLevel: 'error',
       define: { __OOXML_MODEL_SOURCES__: 'true' },
+      plugins: [{ name: 'text-projection-test', resolveId: id => id === '/__text-projection-test.ts' ? id : null,
+        load: id => id === '/__text-projection-test.ts' ?
+          `export * from ${JSON.stringify(new URL('./renderer.ts', import.meta.url).pathname)};
+           export { computeScene3dQuad } from ${JSON.stringify(new URL('../../core/src/shape/scene3d-camera.ts', import.meta.url).pathname)};
+           export { drawProjected, projectQuadPoint } from ${JSON.stringify(new URL('../../core/src/shape/scene3d-draw.ts', import.meta.url).pathname)};` : null }],
       // Preserve core module initialization in this isolated renderer bundle.
       build: { write: false, minify: false, rolldownOptions: { treeshake: false },
-        lib: { entry: new URL('./renderer.ts', import.meta.url).pathname,
+        lib: { entry: '/__text-projection-test.ts',
           formats: ['iife'], name: 'pptxRenderer' } },
     });
     const outputs = Array.isArray(result) ? result : [result];
@@ -157,6 +162,88 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
     expect(redPixels(plain).length).toBeGreaterThan(50);
     expect(redPixels(plain)).toEqual(redPixels(shadow));
   });
+
+  for (const mode of ['horz', 'insets', 'vert', 'vert270', 'eaVert', 'wordArtVert', 'rotation', 'perspective'] as const) {
+    it(`preserves overflowing projected text (${mode})`, async () => {
+      const shape = projectedBeveledShape();
+      shape.geometry = 'rect';
+      shape.fill = null;
+      shape.x = shape.y = 152 * 9525;
+      shape.rotation = mode === 'rotation' ? 25 : 0;
+      shape.scene3d!.camera = mode === 'perspective'
+        ? { prst: 'perspectiveFront', rot: { lat: 15, lon: 30, rev: 0 } }
+        : { prst: 'orthographicFront', rot: { lat: 0, lon: 30, rev: 0 } };
+      shape.sp3d = { prstMaterial: 'matte', extrusionH: 80 * 9525,
+        bevelT: { w: 127000, h: 127000, prst: 'angle' } };
+      shape.textBody = {
+        verticalAnchor: 'ctr', defaultFontSize: 32, defaultBold: false, defaultItalic: false,
+        lIns: mode === 'insets' ? -24 * 9525 : 0, rIns: 0,
+        tIns: mode === 'insets' ? 32 * 9525 : 0, bIns: 0,
+        wrap: 'none', vert: ['insets', 'rotation', 'perspective'].includes(mode) ? 'horz' : mode, autoFit: 'none',
+        paragraphs: [{ alignment: 'ctr', marL: 0, marR: 0, indent: 0,
+          spaceBefore: null, spaceAfter: null, spaceLine: null, lvl: 0,
+          bullet: { type: 'none' }, defFontSize: 32, defColor: 'FF0000',
+          defBold: false, defItalic: false, defFontFamily: 'Arial', tabStops: [], eaLnBrk: true,
+          runs: [{ type: 'text', text: mode === 'eaVert' ? '漢MMMM漢' : 'MMMMMMMM', bold: false, italic: false, underline: false,
+            strikethrough: false, fontSize: 32, color: 'FF0000', fontFamily: 'Arial' }] }],
+      };
+      const expected = await page.evaluate(async shape => {
+        const renderer = (globalThis as unknown as { pptxRenderer: typeof import('./renderer') & typeof import('../../core/src/shape/scene3d-draw') & typeof import('../../core/src/shape/scene3d-camera') }).pptxRenderer;
+        const source = document.createElement('canvas');
+        // Paint all flat text on a full slide before projection, independently
+        // of the production text-raster sizing. The affine case uses analytic
+        // corners; perspective reuses only the authored camera homography.
+        await renderer.renderSlide(source, { index: 0, slideNumber: 1, background: null,
+          elements: [{ ...shape, rotation: 0, fill: null, stroke: null, scene3d: undefined, sp3d: undefined }] },
+          400 * 9525, 400 * 9525, { width: 400, dpr: 1 });
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 400;
+        const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 400, 400);
+        ctx.translate(200, 200);
+        ctx.rotate(shape.rotation * Math.PI / 180);
+        ctx.translate(-200, -200);
+        const left = 200 - 200 * Math.cos(Math.PI / 6);
+        const right = 200 + 200 * Math.cos(Math.PI / 6);
+        let corners = [{ x: left, y: 0 }, { x: right, y: 0 }, { x: right, y: 400 }, { x: left, y: 400 }];
+        if (shape.scene3d?.camera.prst === 'perspectiveFront') {
+          const face = renderer.computeScene3dQuad(shape.scene3d.camera, 96, 96).corners;
+          corners = [[0, 0], [400, 0], [400, 400], [0, 400]].map(([x, y]) => {
+            const point = renderer.projectQuadPoint(face, (x - 152) / 96, (y - 152) / 96) as { x: number; y: number };
+            return { x: point.x + 152, y: point.y + 152 };
+          });
+        }
+        renderer.drawProjected(source, ctx, 400, 400,
+          corners as Parameters<typeof renderer.drawProjected>[4]);
+        return canvas.toDataURL('image/png').split(',')[1];
+      }, shape);
+      const reference = PNG.sync.read(Buffer.from(expected, 'base64')).data;
+      const ink = (data: Uint8Array) => {
+        let count = 0, left = 400, right = 0, top = 400, bottom = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] < 240 || data[i + 1] > 100 || data[i + 2] > 100) continue;
+          const x = i / 4 % 400, y = Math.floor(i / 4 / 400);
+          count++; left = Math.min(left, x); right = Math.max(right, x);
+          top = Math.min(top, y); bottom = Math.max(bottom, y);
+        }
+        return { count, bounds: [left, right, top, bottom] };
+      };
+      const wanted = ink(reference);
+      expect(wanted.count).toBeGreaterThan(500);
+      for (const effects of [{}, { shadow: { color: '000000', alpha: 0, blur: 0, dist: 0, dir: 0 } }]) {
+        const actual = ink(await render({ ...shape, ...effects }));
+        expect(actual.count).toBeGreaterThan(wanted.count * .9);
+        expect(actual.count).toBeLessThan(wanted.count * 1.1);
+        actual.bounds.forEach((value, i) => expect(Math.abs(value - wanted.bounds[i])).toBeLessThanOrEqual(2));
+      }
+      if (mode === 'horz') {
+        // Ordinary filled faces exercise the same overflow contract. Count
+        // only bounds here: blue beneath the text changes edge-pixel RGB.
+        const filled = ink(await render({ ...shape, fill: { fillType: 'solid', color: '4472C4' } }));
+        filled.bounds.forEach((value, i) => expect(Math.abs(value - wanted.bounds[i])).toBeLessThanOrEqual(2));
+      }
+    });
+  }
 
   it('projects a 100 by 1000 shape under a one-degree perspective tilt', async () => {
     const shape = orthographicBeveledShape();
