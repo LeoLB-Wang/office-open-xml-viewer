@@ -49,7 +49,7 @@ export function duotoneCacheKey(
 const DUOTONE_CACHE_NAMESPACE = 'duotone';
 
 /**
- * Decode a raster/metafile blip at `imagePath` and, when `duotone` is set,
+ * Decode a raster, metafile or SVG blip at `imagePath` and, when `duotone` is set,
  * recolour it along the `clr1`→`clr2` luminance ramp (§20.1.8.23), returning a
  * drawable source cached per document then by `duotoneCacheKey`.
  *
@@ -60,8 +60,9 @@ const DUOTONE_CACHE_NAMESPACE = 'duotone';
  * memoized here.
  *
  * The recolour needs a readable pixel grid, so it only applies to a decoded
- * raster/metafile bitmap; a `null` base (an unsupported metafile — true EMF /
- * geometry-less WMF) propagates as `null` and the draw site skips it. When the
+ * bitmap (SVG requires `opts.svgDecoder`); a `null` base (an unsupported
+ * metafile — true EMF / geometry-less WMF) propagates as `null` and the draw
+ * site skips it. When the
  * offscreen pixel pipeline is unavailable, {@link applyDuotone} returns the base
  * unchanged, so the picture still draws (just without the recolour).
  *
@@ -95,10 +96,14 @@ export async function getCachedDuotoneBitmapByPath(
         ),
       }
     : requestedBitmapOpts;
-  // DrawingML effects consume the authored source pixels. Keep display targets
-  // off the base decode and resample only while baking the transformed output;
-  // an over-budget native effect grid is rejected rather than approximated.
-  const sourceBitmapOpts = duotone
+  // For DrawingML pixel effects (§20.1.8.23), keep authored raster pixels
+  // until display resampling. SVG has no authored pixel grid: retain the
+  // full-source display/crop coverage target so its decoder can preserve the
+  // intrinsic aspect ratio. The resolved base grid keys each effect separately.
+  // This sampling choice and the effect-base ceiling are library policy;
+  // §20.1.8.23 defines the pixel transform, not vector sampling resolution.
+  // Both paths reject an over-budget effect base rather than approximating it.
+  const sourceBitmapOpts = duotone && mimeType !== 'image/svg+xml'
     ? { ...bitmapOpts, targetWidthPx: undefined, targetHeightPx: undefined }
     : bitmapOpts;
   // An over-long effect list is rejected before anything is fetched or

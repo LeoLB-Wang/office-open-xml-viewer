@@ -1100,6 +1100,33 @@ describe('render-orchestrator image decode (lazy bytes)', () => {
     dropBitmapCacheByPath(fetchImage);
   });
 
+  it.each([false, true])('rejects oversized SVG effect bases (cached: %s) without closing borrowed hits', async (warmCache) => {
+    const base = { width: 3000, height: 3000, close: vi.fn() } as unknown as ImageBitmap;
+    const svgDecoder = vi.fn(async () => base);
+    const fetchImage = vi.fn(async () => new Blob(['<svg/>'], { type: 'image/svg+xml' }));
+    const offscreenFactory = vi.fn(() => { throw new Error('effect surface must not be allocated'); });
+    if (warmCache) {
+      await getCachedBitmapByPath('xl/media/large.svg', 'image/svg+xml', fetchImage, { svgDecoder });
+    }
+    await expect(decodeImageSource(
+      'xl/media/large.svg', 'image/svg+xml', undefined, fetchImage,
+      0, 0, null, { clr1: '000000', clr2: 'FF0000' }, offscreenFactory,
+      true, undefined, undefined, svgDecoder,
+    )).rejects.toMatchObject({
+      code: 'ooxml-decoded-image-limit', metric: 'image-pixels',
+      limit: 8_388_608, observed: 9_000_000,
+    });
+    expect(offscreenFactory).not.toHaveBeenCalled();
+    expect(base.close).toHaveBeenCalledTimes(warmCache ? 0 : 1);
+    if (warmCache) {
+      expect(await getCachedBitmapByPath('xl/media/large.svg', 'image/svg+xml', fetchImage, { svgDecoder })).toBe(base);
+    }
+    dropBitmapCacheByPath(fetchImage);
+    await flush();
+    expect(base.close).toHaveBeenCalledOnce();
+    expect(svgDecoder).toHaveBeenCalledOnce();
+  });
+
   it('fails closed for a chart duotone when pixel readback is unavailable', async () => {
     const bitmap = new FakeBitmap('image/png');
     vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap));
