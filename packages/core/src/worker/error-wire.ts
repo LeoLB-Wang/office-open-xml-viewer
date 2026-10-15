@@ -225,10 +225,15 @@ function detailsForWire(
   return isResourceLimitDetails(candidate) ? candidate : undefined;
 }
 
-function resourceLimitMessage(details: OoxmlResourceLimitErrorDetails): string {
+/** Library quota diagnostics identify the resource and stage: the associated
+ * part alone does not distinguish a part-size limit from a model-size limit. */
+export function resourceLimitMessage(details: {
+  readonly stage: OoxmlErrorStage;
+  readonly violation: Pick<OoxmlResourceViolation, 'part' | 'resource' | 'metric' | 'observed' | 'limit'>;
+}): string {
   const violation = details.violation;
   const location = violation.part ? ` for ${violation.part}` : '';
-  return `OOXML resource limit exceeded${location}: ${violation.metric} ${violation.observed} > ${violation.limit}`;
+  return `OOXML resource limit exceeded${location} (${violation.resource}, ${details.stage}): ${violation.metric} ${violation.observed} > ${violation.limit}`;
 }
 
 /** Parse only an exact Rust resource-limit envelope, never a wrapped substring. */
