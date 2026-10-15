@@ -437,7 +437,8 @@ impl GovernorState {
         };
         let error = format!(
             "OOXML_RESOURCE_LIMIT:{}",
-            serde_json::to_string(&envelope).expect("resource-limit details serialize")
+            crate::json_measurement::serialize_json_string(&envelope)
+                .expect("resource-limit details serialize")
         );
         self.first_error = Some(error.clone());
         error

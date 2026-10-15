@@ -26,6 +26,7 @@ import type { NumberingMarkerShapeInput, WritingMode } from './layout/types.js';
 import { wordEmptyMarkMinimumStartWidthPx } from './layout/compatibility.js';
 import {
   WORD_NUMBERING_MARKER_FIRST_LINE_UNION,
+  WORD_INLINE_OBJECT_GRID_LINE_ALLOCATION,
   wordJustifiedInterwordCompressionApplies,
 } from './layout/line-compatibility.js';
 import { LayoutInvariantError } from './layout/diagnostics.js';
@@ -122,7 +123,7 @@ function paragraphGrid(context: ParagraphLayoutContext): DocGridCtx {
   };
 }
 
-/** Preserve the renderer's paragraph-wide ruby/docGrid height calculation. */
+/** Allocate a line advance to whole cells of the active document grid. */
 function snapParagraphLineToGrid(heightPt: number, grid: DocGridCtx): number {
   if (!isGridLineRule(grid)) return heightPt;
   const pitchPt = grid.linePitchPt!;
@@ -349,7 +350,7 @@ export function measureParagraph(
         ? specifiedTextLineMetrics(line, context, paragraph, environment.compatibilityMode,
             environment.verticalPageFrame === true, environment.paragraphMarkShapeInput)
         : null;
-      const advancePt = specified ? specified.advancePt : markerRaisesBox
+      let advancePt = specified ? specified.advancePt : markerRaisesBox
         ? markerNaturalPt + textSinglePt * ((context.lineSpacing?.value ?? 1) - 1)
         : context.hasRuby
         ? uniformRubyAdvancePt
@@ -370,6 +371,21 @@ export function measureParagraph(
             line.inlinePictureTextSingle,
             line.latinGridCountSingle,
           );
+      // §20.4.2.8: wp:inline objects affect their line's height like glyphs.
+      // §17.6.5 / §17.3.1.32 govern grid participation and the exact override.
+      // WORD_INLINE_OBJECT_GRID_LINE_ALLOCATION reuses text grid allocation
+      // and the existing centered baseline for pictures/charts/shapes;
+      // retain the separate atLeast path and floating-anchor origin rules.
+      void WORD_INLINE_OBJECT_GRID_LINE_ALLOCATION;
+      if (context.lineGrid.active
+        && (context.lineSpacing == null || context.lineSpacing.rule === 'auto')
+        // Only an object supplying the line's ascent owns this allocation.
+        // A small object beside taller text must retain that text's grid policy.
+        && line.ascent + line.descent >= line.intendedSingle
+        && line.segments.some((segment) => 'imagePath' in segment && !segment.anchor
+          && segment.heightPt >= line.ascent)) {
+        advancePt = snapParagraphLineToGrid(advancePt, grid);
+      }
       allocations.push({ layout: line, advancePt });
     }
     return { allocations, uniformRubyAdvancePt };

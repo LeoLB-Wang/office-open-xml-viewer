@@ -10,6 +10,8 @@ pub(super) struct Properties {
     /// ECMA-376 Part 1 17.15.3.1 adjustLineHeightInTable, the inverse of
     /// MS-DOC 2.7.13 Copts.fDontAdjustLineHeightInTable.
     pub adjust_line_height_in_table: bool,
+    /// MS-DOC §2.7.13 Copts.b, mapped to ECMA-376 Part 4 §14.8.3.38.
+    pub split_pg_break_and_para_mark: Option<bool>,
     /// MS-DOC 2.7.13 Copts.fDontUseHTMLParagraphAutoSpacing, mapped to
     /// ECMA-376 Part 4 14.8.3.15. None when the DOP predates Dop2000.
     pub do_not_use_html_paragraph_auto_spacing: Option<bool>,
@@ -120,6 +122,11 @@ pub(super) fn read(
     } else {
         true
     };
+    let split_pg_break_and_para_mark = if owns_copts {
+        Some(u32_at(dop, 512)? & (1 << 27) != 0)
+    } else {
+        None
+    };
     // Copts bit C (bit2), immediately before the independent table-grid bit.
     // Older/absent DOPs have no acquired fact; the existing shared consumer
     // retains its default rather than inventing an authored compatibility flag.
@@ -157,6 +164,7 @@ pub(super) fn read(
         even_and_odd_headers: dop[0] & 1 != 0,
         notes,
         adjust_line_height_in_table,
+        split_pg_break_and_para_mark,
         do_not_use_html_paragraph_auto_spacing,
         balance_single_byte_double_byte_width,
         character_spacing_control,
