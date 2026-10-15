@@ -98,6 +98,8 @@ describe('worker error wire', () => {
     'image-dimension',
     'image-pixels',
     'active-decoded-bytes',
+    'metafile-record-points',
+    'metafile-record-polygons',
   ] satisfies OoxmlDecodedImageLimitMetric[])(
     'preserves the %s decoded-image quota error across the worker boundary',
     (metric) => {

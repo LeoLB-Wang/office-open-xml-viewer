@@ -382,6 +382,8 @@ const DECODED_IMAGE_LIMIT_METRICS = {
   'image-effect-count': true,
   'image-effect-work': true,
   'metafile-path-commands': true,
+  'metafile-record-points': true,
+  'metafile-record-polygons': true,
 } satisfies Record<OoxmlDecodedImageLimitMetric, true>;
 
 function isDecodedImageLimitMetric(value: unknown): value is OoxmlDecodedImageLimitMetric {

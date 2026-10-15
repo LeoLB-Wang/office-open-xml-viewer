@@ -1162,6 +1162,77 @@ describe('playEmf — picture frame mapping + path clip', () => {
     expect(m.calls.filter((call) => call.op === 'stroke')).toHaveLength(0);
   });
 
+  it.each([EMR.POLYGON16, EMR.POLYBEZIERTO16, EMR.POLYPOLYGON16])('charges only appendable geometry for malformed record %i in a full path bracket', (type) => {
+    const m = makeRecordingCtx();
+    const file = concat(
+      emfHeader(),
+      record(EMR.SELECTOBJECT, (w) => w.u32(0x80000000)), // WHITE_BRUSH
+      record(EMR.BEGINPATH, () => {}),
+      record(43, (w) => w.i32(0).i32(0).i32(20).i32(20)), // RECTANGLE: five commands
+      record(type, (w) => w.i32(0).i32(0).i32(20).i32(20)), // missing count header
+      record(type, (w) => {
+        w.i32(0).i32(0).i32(20).i32(20);
+        if (type === EMR.POLYPOLYGON16) w.u32(2).u32(3).u32(1).u32(2).i16(0).i16(0);
+        else if (type === EMR.POLYBEZIERTO16) w.u32(3).i16(0).i16(0).i16(1).i16(1);
+        else w.u32(2); // declares two points, supplies none
+      }),
+      record(EMR.ENDPATH, () => {}),
+      record(EMR.FILLPATH, (w) => w.i32(0).i32(0).i32(20).i32(20)),
+      record(EMR.EOF, () => {}),
+    );
+    const playWithLimits = playEmf as (
+      bytes: Uint8Array, ctx: CanvasRenderingContext2D, width: number, height: number,
+      limits: { maxPathCommands: number },
+    ) => boolean;
+    expect(playWithLimits(file, m.ctx, 100, 100, { maxPathCommands: 5 })).toBe(true);
+    expect(m.calls.filter((call) => call.op === 'fill')).toHaveLength(1);
+    expect(m.calls.filter((call) => call.op === 'closePath')).toHaveLength(1);
+  });
+
+  it.each([2, 3, 4, 5, 6, 85, 86, 87, 88, 89])(
+    'rejects proven per-record point crossings for record %i, while tolerating truncated counts',
+    (type) => {
+      const count = 0x100001;
+      const header = record(type, (w) => w.i32(0).i32(0).i32(20).i32(20).u32(count));
+      const selection = record(EMR.SELECTOBJECT, (w) => w.u32(0x80000007)); // BLACK_PEN
+      expect(() => playEmf(concat(emfHeader(), selection, header), makeRecordingCtx().ctx, 100, 100)).not.toThrow();
+      // Typed arrays avoid constructing a million-point JS fixture or mock call log.
+      const full = new Uint8Array(header.length + count * (type >= 85 ? 4 : 8));
+      full.set(header);
+      new DataView(full.buffer).setUint32(4, full.length, true);
+      expect(() => playEmf(concat(emfHeader(), selection, full), makeRecordingCtx().ctx, 100, 100))
+        .toThrow(expect.objectContaining({
+          code: 'ooxml-decoded-image-limit', metric: 'metafile-record-points',
+          limit: 0x100000, observed: count,
+        }));
+    },
+  );
+
+  it.each([7, 8, 90, 91])('rejects proven multi-poly ceilings for record %i only after validating its payload', (type) => {
+    for (const exceeded of ['points', 'polygons'] as const) {
+      const polygons = exceeded === 'polygons' ? 0x10001 : 1;
+      const points = exceeded === 'points' ? 0x200001 : polygons * 2;
+      const prefix = record(type, (w) => w.i32(0).i32(0).i32(20).i32(20).u32(polygons).u32(points));
+      const full = new Uint8Array(prefix.length + polygons * 4 + points * (type >= 90 ? 4 : 8));
+      full.set(prefix);
+      const view = new DataView(full.buffer);
+      view.setUint32(4, full.length, true);
+      for (let i = 0; i < polygons; i++) view.setUint32(prefix.length + i * 4, polygons === 1 ? points : 2, true);
+      const wrap = (data: Uint8Array) => concat(emfHeader(), data, record(EMR.EOF, () => {}));
+      const truncated = full.slice(0, prefix.length + polygons * 4);
+      new DataView(truncated.buffer).setUint32(4, truncated.length, true);
+      expect(() => playEmf(wrap(truncated), makeRecordingCtx().ctx, 100, 100)).not.toThrow();
+      expect(() => playEmf(wrap(full), makeRecordingCtx().ctx, 100, 100)).toThrow(expect.objectContaining({
+        code: 'ooxml-decoded-image-limit', metric: `metafile-record-${exceeded}`,
+        limit: exceeded === 'points' ? 0x200000 : 0x10000,
+        observed: exceeded === 'points' ? points : polygons,
+      }));
+      // A fully supplied but inconsistent count table is malformed, not a crossing.
+      view.setUint32(prefix.length, 0, true);
+      expect(() => playEmf(wrap(full), makeRecordingCtx().ctx, 100, 100)).not.toThrow();
+    }
+  });
+
   it('rejects a poly-polygon whose per-polygon counts exceed its declared total', () => {
     const file = concat(
       emfHeader(0, 0, 100, 100),

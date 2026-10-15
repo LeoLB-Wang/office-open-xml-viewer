@@ -866,13 +866,27 @@ type PointReader = (c: EmfCursor) => [number, number];
 const readPoint16: PointReader = (c) => [c.i16(), c.i16()];
 const readPoint32: PointReader = (c) => [c.i32(), c.i32()];
 
+// Existing per-record work/allocation ceilings are library policy, not MS-EMF
+// count restrictions. An oversized declaration is only proof when its complete
+// point array is present; otherwise keep the old malformed-record fallback.
+const MAX_EMF_RECORD_POINTS = 0x100000;
+const MAX_EMF_POLYPOLY_POINTS = 0x200000;
+const MAX_EMF_RECORD_POLYGONS = 0x10000;
+
+function admitRecordPoints(c: EmfCursor, count: number, rp: PointReader): boolean {
+  if (count <= MAX_EMF_RECORD_POINTS) return true;
+  if (readablePointCount(c, count, rp) !== count) return false;
+  throw new OoxmlDecodedImageLimitError('metafile-record-points', MAX_EMF_RECORD_POINTS, count);
+}
+
 // ── poly drawing ────────────────────────────────────────────────────────────
 
 /** EMR_POLYLINE(16): open path stroked with the current pen. */
 function strokePolyline(s: PlayState, c: EmfCursor, rp: PointReader): void {
+  if (c.remaining < 20) return; // incomplete bounds/count header is malformed
   c.skip(16); // RECTL rclBounds — drawing uses world transform, not bounds
   const count = c.u32();
-  if (count < 2 || count > 0x100000) return;
+  if (count < 2 || !admitRecordPoints(c, count, rp)) return;
   if (!s.inPath && (!s.curPen || s.curPen.stroke == null)) {
     // still drop current position to the last point for ...TO continuity callers
     return;
@@ -883,8 +897,7 @@ function strokePolyline(s: PlayState, c: EmfCursor, rp: PointReader): void {
   if (!s.inPath) ctx.beginPath();
   let lx = 0;
   let ly = 0;
-  for (let i = 0; i < count; i++) {
-    if (c.remaining < 4) break;
+  for (let i = 0, readable = readablePointCount(c, count, rp); i < readable; i++) {
     const [xl, yl] = rp(c);
     const [px, py] = toPx(s, xl, yl);
     if (appendPath) {
@@ -907,9 +920,10 @@ function strokePolyline(s: PlayState, c: EmfCursor, rp: PointReader): void {
 /** EMR_POLYLINETO(16): like POLYLINE but the implicit first point is the
  *  current position; updates current position. */
 function strokePolylineTo(s: PlayState, c: EmfCursor, rp: PointReader): void {
+  if (c.remaining < 20) return; // incomplete bounds/count header is malformed
   c.skip(16);
   const count = c.u32();
-  if (count < 1 || count > 0x100000) return;
+  if (count < 1 || !admitRecordPoints(c, count, rp)) return;
   const { ctx } = s;
   const draw = s.inPath || (s.curPen != null && s.curPen.stroke != null);
   const appendPath = !s.inPath || reservePathCommands(s, readablePointCount(c, count, rp));
@@ -920,8 +934,7 @@ function strokePolylineTo(s: PlayState, c: EmfCursor, rp: PointReader): void {
       ctx.moveTo(px0, py0);
     }
   }
-  for (let i = 0; i < count; i++) {
-    if (c.remaining < 4) break;
+  for (let i = 0, readable = readablePointCount(c, count, rp); i < readable; i++) {
     const [xl, yl] = rp(c);
     if (draw && appendPath) {
       const [px, py] = toPx(s, xl, yl);
@@ -940,16 +953,18 @@ function strokePolylineTo(s: PlayState, c: EmfCursor, rp: PointReader): void {
 
 /** EMR_POLYGON(16): closed path filled (brush) + stroked (pen). */
 function fillStrokePolygon(s: PlayState, c: EmfCursor, rp: PointReader): void {
+  if (c.remaining < 20) return; // incomplete bounds/count header is malformed
   c.skip(16);
   const count = c.u32();
-  if (count < 2 || count > 0x100000) return;
+  if (count < 2 || !admitRecordPoints(c, count, rp)) return;
   const { ctx } = s;
   const sink = geometrySink(s);
-  const appendPath = reservePathCommands(s, readablePointCount(c, count, rp) + 1);
+  const readableCount = readablePointCount(c, count, rp);
+  // No first point means no figure and no closePath command to retain.
+  const appendPath = reservePathCommands(s, readableCount > 0 ? readableCount + 1 : 0);
   if (!s.inPath) ctx.beginPath();
   let started = false;
-  for (let i = 0; i < count; i++) {
-    if (c.remaining < 4) break;
+  for (let i = 0, readable = readablePointCount(c, count, rp); i < readable; i++) {
     const [xl, yl] = rp(c);
     const [px, py] = toPx(s, xl, yl);
     if (!started) {
@@ -981,11 +996,15 @@ function strokePolyBezier(
   rp: PointReader,
   isTo: boolean,
 ): void {
+  if (c.remaining < 20) return; // incomplete bounds/count header is malformed
   c.skip(16);
   const count = c.u32();
-  if (count < 1 || count > 0x100000) return;
+  if (count < 1 || !admitRecordPoints(c, count, rp)) return;
   const readableCount = readablePointCount(c, count, rp);
-  const appendPath = !s.inPath || reservePathCommands(s, readableCount);
+  const startPoints = isTo ? 0 : 1;
+  const commands = readableCount < startPoints + 3
+    ? 0 : startPoints + Math.floor((readableCount - startPoints) / 3);
+  const appendPath = !s.inPath || reservePathCommands(s, commands);
   if (s.inPath && !appendPath) {
     for (let i = 0; i < readableCount; i++) {
       const [xl, yl] = rp(c);
@@ -995,8 +1014,7 @@ function strokePolyBezier(
     return;
   }
   const pts: Array<[number, number]> = [];
-  for (let i = 0; i < count; i++) {
-    if (c.remaining < 4) break;
+  for (let i = 0, readable = readablePointCount(c, count, rp); i < readable; i++) {
     pts.push(rp(c));
   }
   if (pts.length < (isTo ? 3 : 4)) {
@@ -1046,36 +1064,55 @@ function fillStrokePolyPoly(
   rp: PointReader,
   isPolygon: boolean,
 ): void {
+  if (c.remaining < 24) return; // incomplete bounds/count header is malformed
   c.skip(16); // RECTL rclBounds
   const numPolys = c.u32();
   const totalPoints = c.u32();
-  if (numPolys <= 0 || numPolys > 0x10000) return;
-  if (totalPoints <= 0 || totalPoints > 0x200000) return;
-  const counts: number[] = [];
+  if (numPolys <= 0 || totalPoints <= 0 || numPolys > Math.floor(c.remaining / 4)) return;
+  const countsStart = c.pos;
   let countedPoints = 0;
   for (let i = 0; i < numPolys; i++) {
-    if (c.remaining < 4) return;
-    const count = c.u32();
-    countedPoints += count;
-    if (!Number.isSafeInteger(countedPoints) || countedPoints > 0x200000) return;
-    counts.push(count);
+    countedPoints += c.u32();
+    if (countedPoints > totalPoints) return; // inconsistent, with arithmetic bounded by u32 totals
   }
   if (countedPoints !== totalPoints) return;
+  const readableCount = readablePointCount(c, totalPoints, rp);
+  if (numPolys > MAX_EMF_RECORD_POLYGONS || totalPoints > MAX_EMF_POLYPOLY_POINTS) {
+    // Validate both count tables and actual payload before classifying a
+    // resource crossing; never allocate an oversized counts/points array.
+    if (readableCount !== totalPoints) return;
+    if (numPolys > MAX_EMF_RECORD_POLYGONS) {
+      throw new OoxmlDecodedImageLimitError('metafile-record-polygons', MAX_EMF_RECORD_POLYGONS, numPolys);
+    }
+    throw new OoxmlDecodedImageLimitError('metafile-record-points', MAX_EMF_POLYPOLY_POINTS, totalPoints);
+  }
+  const pointsStart = c.pos;
+  c.pos = countsStart;
+  const counts: number[] = [];
+  let remainingPoints = readableCount;
+  let commands = 0;
+  for (let i = 0; i < numPolys; i++) {
+    const count = c.u32();
+    const readable = Math.min(count, remainingPoints);
+    remainingPoints -= readable;
+    counts.push(count);
+    // Counts below two are skipped. A truncated nonempty polygon retains its
+    // readable prefix and closing command, but an empty one appends nothing.
+    if (count >= 2 && readable > 0) commands += readable + (isPolygon ? 1 : 0);
+  }
+  c.pos = pointsStart;
   const { ctx } = s;
-  const appendPath = reservePathCommands(
-    s,
-    readablePointCount(c, totalPoints, rp) + (isPolygon ? numPolys : 0),
-  );
+  const appendPath = reservePathCommands(s, commands);
   const sink = geometrySink(s);
   if (!s.inPath) ctx.beginPath(); // in a path bracket: accumulate in the DC path
   let any = false;
   for (const cnt of counts) {
-    if (cnt < 2) {
-      for (let i = 0; i < cnt && c.remaining >= 4; i++) rp(c);
+    const readable = readablePointCount(c, cnt, rp);
+    if (cnt < 2 || readable === 0) {
+      for (let i = 0; i < readable; i++) rp(c);
       continue;
     }
-    for (let i = 0; i < cnt; i++) {
-      if (c.remaining < 4) break;
+    for (let i = 0; i < readable; i++) {
       const [xl, yl] = rp(c);
       if (appendPath) {
         const [px, py] = toPx(s, xl, yl);

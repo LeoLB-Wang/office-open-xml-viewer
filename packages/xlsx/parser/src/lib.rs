@@ -4285,6 +4285,9 @@ impl XlsxArchive {
             .begin_operation("parse")
             .map_err(|error| JsValue::from_str(&error))?;
         let result = (|| -> Result<Vec<u8>, String> {
+            // Scope every shared-part parse as well as serialization: optional
+            // part fallback cannot clear a proven depth/resource crossing.
+            let _resource_scope = self.archive.operation()?.resource_scope()?;
             let styles = if let Some(shared) = &self.shared {
                 // A sheet cursor may have initialized only the lightweight style
                 // projection. Parse the full style model only when the caller
