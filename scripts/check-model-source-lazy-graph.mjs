@@ -30,7 +30,7 @@ export const SOURCE_DISPATCH = new Map([
   ['packages/node/src/pptx-model-source.ts', ['acquirePptxInput']],
   ...['docx', 'xlsx', 'pptx'].flatMap((format) => [
     [`packages/${format}/src/worker-source.ts`, ['self.onmessage']],
-    [`packages/${format}/src/render-worker-source.ts`,
+    [`packages/${format}/src/render-worker.ts`,
       format === 'pptx' ? ['executeArchiveFromNew'] : ['self.onmessage']],
   ]),
 ]);
@@ -267,7 +267,7 @@ export function checkBuiltBundles(dist = 'dist', { packages = false, disabledDis
   }
   let ordinaryWorkers = 0;
   for (const file of readdirSync(join(dist, 'assets')).filter((name) => /^render-worker-.*\.js$/.test(name))) {
-    if (!file.startsWith('render-worker-source-')) ordinaryWorkers++;
+    ordinaryWorkers++;
     assertNoSourceRuntime(readFileSync(join(dist, 'assets', file), 'utf8'), file);
   }
   if (ordinaryWorkers !== 3) {
@@ -310,7 +310,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     'packages/pptx/src/internal/presentation-model-source.ts',
     ...['docx', 'xlsx', 'pptx'].flatMap((format) => [
       `packages/${format}/src/worker-source.ts`,
-      `packages/${format}/src/render-worker-source.ts`,
     ]),
   ];
   assertEagerSourceEntries([

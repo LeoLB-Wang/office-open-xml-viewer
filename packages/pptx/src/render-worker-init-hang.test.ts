@@ -129,11 +129,10 @@ function installSelf(): FakeSelf {
   return fake;
 }
 
-async function loadRenderWorker(variant: 'source' | 'default' = 'source'): Promise<FakeSelf> {
+async function loadRenderWorker(): Promise<FakeSelf> {
   const fake = installSelf();
   vi.resetModules();
-  if (variant === 'source') await import('./render-worker-source.js');
-  else await import('./render-worker.js');
+  await import('./render-worker.js');
   return fake;
 }
 
@@ -356,7 +355,7 @@ describe('Google subset readiness in progressive render owners', () => {
       @font-face { font-family: Carlito; src: url(b.woff2); unicode-range: U+0042; }
       @font-face { font-family: Carlito; src: url(a.woff2); unicode-range: U+0041; }
     ` })));
-    const fake = await loadRenderWorker(variant);
+    const fake = await loadRenderWorker();
     fake.fonts = { add: (f: FontFace) => faces.push(f as unknown as typeof faces[number]), delete: () => true } as unknown as FontFaceSet;
     fake.onmessage?.({ data: { kind: 'init', wasmUrl: 'x' } } as MessageEvent);
     fake.onmessage?.({ data: { kind: 'parse', id: 71, buffer: new ArrayBuffer(4), resourcePolicy, useGoogleFonts: true, progressiveLayout: true,
@@ -398,7 +397,7 @@ describe('Google subset readiness in progressive render owners', () => {
       @font-face { font-family: Carlito; src: url(b.woff2); unicode-range: U+0042; }
       @font-face { font-family: Carlito; src: url(a.woff2); unicode-range: U+0041; }
     ` })));
-    const fake = await loadRenderWorker(variant);
+    const fake = await loadRenderWorker();
     fake.fonts = { add: (f: FontFace) => faces.push(f as unknown as typeof faces[number]), delete: () => true } as unknown as FontFaceSet;
     const send = (data: unknown) => fake.onmessage?.({ data } as MessageEvent);
     send({ kind: 'init', wasmUrl: 'x' });

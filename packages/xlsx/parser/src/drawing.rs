@@ -126,6 +126,7 @@ fn selected_anchor_content<'a, 'input>(
 /// Parse `<xdr:twoCellAnchor>` and `<xdr:oneCellAnchor>` pictures from a drawing
 /// XML and resolve embedded pictures into data URLs. `drawing_path` is the OPC
 /// source part.
+#[cfg(test)]
 pub(crate) fn parse_drawing_anchors(
     drawing_xml: &str,
     drawing_rels: &HashMap<String, String>,
@@ -138,6 +139,17 @@ pub(crate) fn parse_drawing_anchors(
     let Ok(doc) = parse_guarded(drawing_xml) else {
         return Vec::new();
     };
+    parse_drawing_doc_anchors(&doc, drawing_rels, drawing_path, archive, theme_colors)
+}
+
+/// [`parse_drawing_anchors`] over an already parsed drawing part.
+fn parse_drawing_doc_anchors(
+    doc: &roxmltree::Document<'_>,
+    drawing_rels: &HashMap<String, String>,
+    drawing_path: &str,
+    archive: &mut crate::XlsxZip,
+    theme_colors: &[String],
+) -> Vec<ImageAnchor> {
     let mut anchors: Vec<ImageAnchor> = Vec::new();
 
     for anchor in doc.descendants() {
@@ -1656,6 +1668,7 @@ pub(crate) fn collect_shapes(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_shape_anchors(
     drawing_xml: &str,
     theme_colors: &[String],
@@ -1665,6 +1678,16 @@ pub(crate) fn parse_shape_anchors(
     let Ok(doc) = parse_guarded(drawing_xml) else {
         return Vec::new();
     };
+    parse_shape_doc_anchors(&doc, theme_colors, theme_format_scheme, rid_urls)
+}
+
+/// [`parse_shape_anchors`] over an already parsed drawing part.
+fn parse_shape_doc_anchors(
+    doc: &roxmltree::Document<'_>,
+    theme_colors: &[String],
+    theme_format_scheme: &ThemeFormatScheme,
+    rid_urls: &HashMap<String, String>,
+) -> Vec<ShapeAnchor> {
     let mut anchors: Vec<ShapeAnchor> = Vec::new();
 
     for anchor in doc.descendants() {
@@ -1910,45 +1933,24 @@ pub(crate) fn parse_shape_anchors(
 
 pub(crate) fn load_sheet_shape_groups(
     archive: &mut crate::XlsxZip,
-    sheet_path: &str,
+    drawings: &[ParsedSheetDrawing<'_>],
     theme_colors: &[String],
     theme_format_scheme: &ThemeFormatScheme,
 ) -> Vec<ShapeAnchor> {
-    let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
-        return Vec::new();
-    };
-    let sheet_rels_path = format!("xl/{}/_rels/{}.rels", sheet_dir, sheet_file);
-    let Ok(sheet_rels_xml) = read_zip_string(archive, &sheet_rels_path) else {
-        return Vec::new();
-    };
-    let Ok(rels_doc) = parse_guarded(&sheet_rels_xml) else {
-        return Vec::new();
-    };
-    let mut drawing_targets: Vec<String> = Vec::new();
-    for rel in rels_doc
-        .root_element()
-        .children()
-        .filter(|n| n.is_element())
-    {
-        if rel.attribute("Type").unwrap_or("").ends_with("/drawing") {
-            if let Some(t) = rel.attribute("Target") {
-                drawing_targets.push(t.to_string());
-            }
-        }
-    }
     let mut all: Vec<ShapeAnchor> = Vec::new();
-    for target in drawing_targets {
-        let drawing_path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
-        let Ok(drawing_xml) = read_zip_string(archive, &drawing_path) else {
+    for drawing in drawings {
+        if !drawing.read {
             continue;
-        };
-        let rid_urls = build_drawing_rid_urls(archive, &drawing_path);
-        all.extend(parse_shape_anchors(
-            &drawing_xml,
-            theme_colors,
-            theme_format_scheme,
-            &rid_urls,
-        ));
+        }
+        let rid_urls = build_drawing_rid_urls(archive, drawing.path);
+        if let Some(doc) = &drawing.doc {
+            all.extend(parse_shape_doc_anchors(
+                doc,
+                theme_colors,
+                theme_format_scheme,
+                &rid_urls,
+            ));
+        }
     }
     all
 }
@@ -2002,11 +2004,90 @@ pub(crate) fn build_drawing_rid_urls(
 /// its drawing(s), and return all image anchors found.
 pub(crate) fn load_sheet_images(
     archive: &mut crate::XlsxZip,
-    sheet_path: &str, // e.g. "worksheets/sheet1.xml"
+    drawings: &[ParsedSheetDrawing<'_>],
     // Positional clrScheme palette, for resolving a picture's `<a:duotone>`
     // effect colours (§20.1.8.23) via the shared DrawingML colour grammar.
     theme_colors: &[String],
 ) -> Vec<ImageAnchor> {
+    let mut all_anchors: Vec<ImageAnchor> = Vec::new();
+    for drawing in drawings {
+        if !drawing.read {
+            continue;
+        }
+        // Drawing rels:  xl/drawings/_rels/drawing1.xml.rels
+        let Some((drawing_dir, drawing_file)) = drawing.path.rsplit_once('/') else {
+            continue;
+        };
+        let drawing_rels_path = format!("{}/_rels/{}.rels", drawing_dir, drawing_file);
+        let drawing_rels = read_zip_string(archive, &drawing_rels_path)
+            .ok()
+            .map(|xml| parse_rels_map(&xml))
+            .unwrap_or_default();
+
+        if let Some(doc) = &drawing.doc {
+            let mut anchors =
+                parse_drawing_doc_anchors(doc, &drawing_rels, drawing.path, archive, theme_colors);
+            all_anchors.append(&mut anchors);
+        }
+    }
+    all_anchors
+}
+
+/// One relationship's drawing, parsed once and borrowed by all three loaders.
+pub(crate) struct ParsedSheetDrawing<'a> {
+    pub(crate) path: &'a str,
+    /// Whether the part was read. A loader skips an unread part.
+    pub(crate) read: bool,
+    /// `None` when the part was unread or is not well-formed XML.
+    pub(crate) doc: Option<roxmltree::Document<'a>>,
+}
+
+impl<'a> ParsedSheetDrawing<'a> {
+    fn new(path: &'a str, xml: Option<&'a str>) -> Self {
+        let doc = xml.and_then(|xml| parse_guarded(xml).ok());
+        #[cfg(test)]
+        if doc.is_some() {
+            drawing_lifetime_tests::record_parse();
+        }
+        Self {
+            path,
+            read: xml.is_some(),
+            doc,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ParsedSheetDrawing<'_> {
+    fn drop(&mut self) {
+        if self.doc.is_some() {
+            drawing_lifetime_tests::record_drop();
+        }
+    }
+}
+
+/// Visit `/drawing` relationships in order, sharing one read and DOM parse
+/// between the picture, chart and shape loaders for each relationship.
+///
+/// Library resource policy: release the XML and DOM before reading the next
+/// target, including repeated targets. ZIP inflation accounting counts distinct
+/// entries, so it cannot bound copies retained per relationship. Only owned
+/// loader output may outlive the callback; never cache drawing XML or DOMs.
+pub(crate) fn for_each_sheet_drawing(
+    archive: &mut crate::XlsxZip,
+    sheet_path: &str,
+    mut visit: impl FnMut(&mut crate::XlsxZip, &ParsedSheetDrawing<'_>),
+) {
+    for path in sheet_drawing_paths(archive, sheet_path) {
+        let xml = read_zip_string(archive, &path).ok();
+        let drawing = ParsedSheetDrawing::new(&path, xml.as_deref());
+        visit(archive, &drawing);
+    }
+}
+
+/// Collect only paths, preserving relationship order and duplicate targets
+/// (ECMA-376 Part 2, CT_Relationships / CT_Relationship@Target).
+fn sheet_drawing_paths(archive: &mut crate::XlsxZip, sheet_path: &str) -> Vec<String> {
     // sheet rels path:  xl/worksheets/_rels/sheet1.xml.rels
     let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
         return Vec::new();
@@ -2015,8 +2096,6 @@ pub(crate) fn load_sheet_images(
     let Ok(sheet_rels_xml) = read_zip_string(archive, &sheet_rels_path) else {
         return Vec::new();
     };
-
-    // Find all drawing relationships
     let Ok(rels_doc) = parse_guarded(&sheet_rels_xml) else {
         return Vec::new();
     };
@@ -2026,45 +2105,105 @@ pub(crate) fn load_sheet_images(
         .children()
         .filter(|n| n.is_element())
     {
-        let rel_type = rel.attribute("Type").unwrap_or("");
-        if rel_type.ends_with("/drawing") {
+        if rel.attribute("Type").unwrap_or("").ends_with("/drawing") {
             if let Some(t) = rel.attribute("Target") {
                 drawing_targets.push(t.to_string());
             }
         }
     }
-    if drawing_targets.is_empty() {
-        return Vec::new();
+    drawing_targets
+        .into_iter()
+        .map(|target| {
+            // sheet_dir is "worksheets", target typically "../drawings/drawing1.xml"
+            // → "xl/drawings/drawing1.xml"
+            resolve_zip_path(&format!("xl/{sheet_path}"), &target)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod drawing_lifetime_tests {
+    use std::{cell::Cell, io::Write};
+
+    // Track the actual parsed-drawing owners, rather than callback entry/exit:
+    // collecting DOMs before invoking a per-drawing callback must fail too.
+    thread_local! {
+        static COUNTS: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
     }
 
-    let mut all_anchors: Vec<ImageAnchor> = Vec::new();
-    for target in drawing_targets {
-        // sheet_dir is "worksheets", target typically "../drawings/drawing1.xml"
-        // base dir for the drawing = "xl/worksheets/sheet1.xml" + "../drawings" → "xl/drawings/drawing1.xml"
-        let drawing_path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
-        let Ok(drawing_xml) = read_zip_string(archive, &drawing_path) else {
-            continue;
-        };
-        // Drawing rels:  xl/drawings/_rels/drawing1.xml.rels
-        let Some((drawing_dir, drawing_file)) = drawing_path.rsplit_once('/') else {
-            continue;
-        };
-        let drawing_rels_path = format!("{}/_rels/{}.rels", drawing_dir, drawing_file);
-        let drawing_rels = read_zip_string(archive, &drawing_rels_path)
-            .ok()
-            .map(|xml| parse_rels_map(&xml))
-            .unwrap_or_default();
+    pub(super) fn record_parse() {
+        COUNTS.with(|counts| {
+            let (live, peak, parsed) = counts.get();
+            counts.set((live + 1, peak.max(live + 1), parsed + 1));
+        });
+    }
 
-        let mut anchors = parse_drawing_anchors(
-            &drawing_xml,
-            &drawing_rels,
-            &drawing_path,
-            archive,
-            theme_colors,
+    pub(super) fn record_drop() {
+        COUNTS.with(|counts| {
+            let (live, peak, parsed) = counts.get();
+            counts.set((live - 1, peak, parsed));
+        });
+    }
+
+    fn workbook(relationships: usize) -> Vec<u8> {
+        let rels = (0..relationships)
+            .map(|i| format!(r#"<Relationship Id="r{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>"#))
+            .collect::<String>();
+        let rels = format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>"#
         );
-        all_anchors.append(&mut anchors);
+        let drawing = format!(
+            r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"><!--{}--></xdr:wsDr>"#,
+            "x".repeat(16 * 1024)
+        );
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, body) in [
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rSheet"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rSheet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#,
+            ),
+            ("xl/worksheets/_rels/sheet1.xml.rels", &rels),
+            ("xl/drawings/drawing1.xml", &drawing),
+        ] {
+            writer
+                .start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body.as_bytes()).unwrap();
+        }
+        crate::write_test_content_types(&mut writer);
+        writer.finish().unwrap().into_inner()
     }
-    all_anchors
+
+    #[test]
+    fn repeated_drawing_target_keeps_only_one_dom_live_per_finalization() {
+        let expected = crate::parse_sheet_native(&workbook(1), 0, "Sheet1").unwrap();
+        let data = workbook(96);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&data)).unwrap();
+        let distinct_bytes: u64 = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().size())
+            .sum();
+        // Repeat relationships must remain legal within a distinct-entry ZIP
+        // budget. Bound the lifetime, without changing inflation accounting.
+        let mut archive =
+            crate::open_workbook_package(data, None, Some(distinct_bytes), None).unwrap();
+        COUNTS.with(|counts| counts.set((0, 0, 0)));
+        let actual = crate::parse_sheet_native_in(&mut archive, 0, "Sheet1").unwrap();
+        assert_eq!(actual, expected, "empty drawings preserve exact JSON");
+        COUNTS.with(|counts| {
+            let (live, peak, parsed) = counts.get();
+            assert_eq!(live, 0, "no drawing DOM survives finalization");
+            assert_eq!(parsed, 96, "parse once per relationship, without caching");
+            assert_eq!(peak, 1, "release each drawing before parsing the next");
+        });
+    }
 }
 
 /// The two-cell `<from>`/`<to>` marker rect of an OLE-object anchor, in the same
