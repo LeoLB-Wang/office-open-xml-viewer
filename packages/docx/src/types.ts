@@ -947,6 +947,8 @@ export interface ShapeRun {
    *  `null` preserves omitted named guides so the preset engine can use the
    *  geometry's default for that index. */
   adjValues?: Array<number | null>;
+  /** Part 4 §§19.1.2.10/.11: image above the backing fill, below the outline. */
+  vmlPicture?: Pick<ImageRun, 'imagePath' | 'mimeType' | 'srcRect' | 'colorReplaceFrom' | 'duotone'>;
   fill: ShapeFill | null;
   stroke: string | null;
   strokeWidth?: number;

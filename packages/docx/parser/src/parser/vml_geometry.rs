@@ -721,6 +721,9 @@ pub(super) fn shadow(
 /// ink. Unknown extensions and paint modes not acquired by this adapter must
 /// reach the existing incomplete-story mechanism, never vanish inside a leaf.
 pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltree::Node>) -> bool {
+    if vml_image::incomplete(shape, definition) {
+        return true;
+    }
     let effective = |name| {
         vml_direct_child(shape, name).or_else(|| definition.and_then(|n| vml_direct_child(n, name)))
     };
@@ -816,6 +819,14 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
                 "croptop",
                 "cropright",
                 "cropbottom",
+                "grayscale",
+                "chromakey",
+                // Effective numeric defaults and unavailable image filters
+                // are handled together by vml_image::incomplete above.
+                "gain",
+                "gamma",
+                "blacklevel",
+                "bilevel",
             ][..],
         ),
     ] {
@@ -831,8 +842,11 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
                                 | ("blacklevel", "0" | "0.0" | "0f")
                                 | ("grayscale" | "bilevel", "f" | "false" | "0")
                         )
-                        && vml_decoration_attr(shape, definition, element, a.name())
-                            == Some(a.value())
+                        && (if element == "imagedata" {
+                            vml_image::property(shape, definition, a.name())
+                        } else {
+                            vml_decoration_attr(shape, definition, element, a.name())
+                        }) == Some(a.value())
                 }) || node.children().any(|n| n.is_element())
                 {
                     return true;

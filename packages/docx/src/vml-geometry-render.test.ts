@@ -5,6 +5,8 @@ import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import init, { DocxArchive } from './wasm/docx_parser.js';
 import { storeZip } from './conformance/generate.js';
 import { normalizeInternalDocumentModel } from './parser-model.js';
+import { layoutDocument } from './document-layout.js';
+import { createLayoutServices } from './layout-runtime.js';
 import { renderDocumentToCanvas } from './renderer.js';
 
 const encode = (s: string) => new TextEncoder().encode(s);
@@ -14,11 +16,11 @@ beforeAll(async () => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-async function renderVml(content: string, monochrome = false) {
+async function renderVml(content: string, monochrome: boolean | 'transparent' = false) {
   const source = new Canvas(20, 10);
-  source.getContext('2d').fillStyle = monochrome ? '#000000' : '#ff0000';
-  source.getContext('2d').fillRect(0, 0, 10, 10);
-  source.getContext('2d').fillStyle = monochrome ? '#ffffff' : '#0000ff';
+  source.getContext('2d').fillStyle = monochrome === true ? '#000000' : '#ff0000';
+  if (monochrome !== 'transparent') source.getContext('2d').fillRect(0, 0, 10, 10);
+  source.getContext('2d').fillStyle = monochrome === true ? '#ffffff' : '#0000ff';
   source.getContext('2d').fillRect(10, 0, 10, 10);
   const png = new Uint8Array(source.toBufferSync('png'));
   vi.stubGlobal('OffscreenCanvas', Canvas);
@@ -43,7 +45,10 @@ ${content}</w:pict></w:r></w:p><w:sectPr><w:pgSz w:w="4000" w:h="4000"/><w:pgMar
     onDiagnostic: d => diagnostics.push(d),
   });
   const pixels = canvas.getContext('2d').getImageData(0, 0, 200, 200).data;
-  return { pixels, diagnostics, model };
+  const layout = layoutDocument(model, createLayoutServices(model, {
+    measureContext: canvas.getContext('2d') as unknown as CanvasRenderingContext2D,
+  }));
+  return { pixels, diagnostics: [...layout.diagnostics, ...diagnostics], model };
 }
 
 function counter(pixels: Uint8ClampedArray) {
@@ -60,7 +65,7 @@ it('paints custom and inherited paths, primitives, cropped pixels and leaf shado
         <v:shapetype id="triangle" coordsize="100,100" adj="100" path="m0,0l@0,0,0,100xe"><v:formulas><v:f eqn="val #0"/></v:formulas></v:shapetype>
         <v:shape type="#triangle" style="width:40;height:40" fillcolor="#ff00ff" stroked="f"/>
         <v:image src="media/two.png" style="left:50;width:40;height:40" cropleft="50%"/>
-        <v:shape style="left:95;width:30;height:40" stroked="f"><v:imagedata r:id="pic" cropleft="32768f"/><v:shadow on="t" color="#ffa500" offset="4pt,4pt"/></v:shape>
+        <v:shape style="left:95;width:30;height:40" stroked="f" filled="f"><v:imagedata r:id="pic" cropleft="32768f"/><v:shadow on="t" color="#ffa500" offset="4pt,4pt" obscured="t"/></v:shape>
         <v:rect style="top:50;width:20;height:20" fillcolor="yellow" stroked="f"><v:shadow on="t" color="lime" offset="10pt,10pt"/></v:rect>
         <v:polyline points="50,60 60,80 70,60" filled="f" strokecolor="#800080" strokeweight="3pt"/>
         <v:curve from="80,60" control1="80,80" control2="100,80" to="100,60" filled="f" strokecolor="#008080" strokeweight="3pt"/>
@@ -172,4 +177,67 @@ it('keeps a window-aligned frame brush upright through host rotation and reflect
   const transformed = await renderVml(`<v:rect style="width:80pt;height:80pt;rotation:90;flip:x" stroked="f">${fill}</v:rect>`, true);
   expect(transformed.pixels).toEqual(ordinary.pixels);
   expect([...ordinary.diagnostics, ...transformed.diagnostics]).toEqual([]);
+});
+
+
+it('keeps direct, inherited gradient and image backing brushes behind transparent pictures', async () => {
+  const { pixels, diagnostics } = await renderVml(`<v:group style="width:150pt;height:100pt" coordsize="150,100">
+    <v:shapetype id="gradient"><v:fill type="gradient" color="yellow" color2="lime" angle="90"/></v:shapetype>
+    <v:shape style="left:5;top:5;width:40;height:40" fillcolor="lime" strokecolor="magenta" strokeweight="4pt"><v:imagedata r:id="pic"/></v:shape>
+    <v:shape type="#gradient" style="left:55;top:5;width:40;height:40" stroked="f"><v:imagedata r:id="pic"/></v:shape>
+    <v:shape style="left:105;top:5;width:40;height:40" stroked="f"><v:fill type="tile" r:id="pic" size="20pt,20pt"/><v:imagedata r:id="pic" cropright="50%"/></v:shape>
+  </v:group>`, 'transparent');
+  const count = counter(pixels);
+  expect(count(0, 255, 0)).toBeGreaterThan(500);
+  expect(count(255, 0, 255)).toBeGreaterThan(100);
+  expect(count(0, 0, 255)).toBeGreaterThan(1000);
+  // Only the third picture occupies this region. Its source crop is entirely
+  // transparent; blue here must come from the independently acquired tile.
+  let tiledBlue = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if ((i / 4) % 200 >= 100 && pixels[i] === 0 && pixels[i + 1] === 0 && pixels[i + 2] === 255) tiledBlue++;
+  }
+  expect(tiledBlue).toBeGreaterThan(500);
+  let gradient = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i] > 0 && pixels[i] < 255 && pixels[i + 1] === 255 && pixels[i + 2] === 0) gradient++;
+  }
+  expect(gradient).toBeGreaterThan(500);
+  expect(diagnostics).toEqual([]);
+});
+
+it('cascades each picture property across metadata-only and partial imagedata overrides', async () => {
+  const expected = await renderVml(`<v:group style="width:80pt;height:80pt" coordsize="80,80"><v:shape style="width:80;height:80" stroked="f"><v:imagedata r:id="pic" cropleft="50%"/></v:shape></v:group>`);
+  for (const override of ['title="metadata"', 'r:id="pic"', 'croptop="0"']) {
+    const inherited = await renderVml(`<v:group style="width:80pt;height:80pt" coordsize="80,80"><v:shapetype id="picture"><v:imagedata r:id="pic" cropleft="50%"/></v:shapetype><v:shape type="#picture" style="width:80;height:80" stroked="f"><v:imagedata ${override}/></v:shape></v:group>`);
+    expect(inherited.pixels, override).toEqual(expected.pixels);
+    expect(inherited.diagnostics, override).toEqual([]);
+  }
+  expect(counter(expected.pixels)(255, 0, 0)).toBe(0);
+  expect(counter(expected.pixels)(0, 0, 255)).toBeGreaterThan(5000);
+});
+
+it('applies effective host and child grayscale/chromakey and discloses unavailable host image effects', async () => {
+  for (const picture of [
+    '<v:image src="media/two.png" grayscale="t" style="width:80;height:80" stroked="f"/>',
+    '<v:shape style="width:80;height:80" stroked="f"><v:imagedata r:id="pic" grayscale="t"/></v:shape>',
+    '<v:shapetype id="gray"><v:imagedata r:id="pic" grayscale="t"/></v:shapetype><v:shape type="#gray" style="width:80;height:80" stroked="f"><v:imagedata title="metadata"/></v:shape>',
+  ]) {
+    const { pixels, diagnostics } = await renderVml(`<v:group style="width:80pt;height:80pt" coordsize="80,80">${picture}</v:group>`);
+    expect(counter(pixels)(255, 0, 0)).toBe(0);
+    expect(counter(pixels)(0, 0, 255)).toBe(0);
+    let gray = 0;
+    for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 0 && pixels[i] < 255 && pixels[i] === pixels[i + 1] && pixels[i] === pixels[i + 2]) gray++;
+    expect(gray).toBeGreaterThan(5000);
+    expect(diagnostics).toEqual([]);
+  }
+  const keyed = await renderVml(`<v:group style="width:80pt;height:80pt" coordsize="80,80"><v:image src="media/two.png" chromakey="red" fillcolor="lime" style="width:80;height:80" stroked="f"/></v:group>`);
+  expect(counter(keyed.pixels)(255, 0, 0)).toBe(0);
+  expect(counter(keyed.pixels)(0, 255, 0)).toBeGreaterThan(2500);
+  expect(keyed.diagnostics).toEqual([]);
+  for (const attribute of ['gamma="2"', 'gain="2"', 'blacklevel=".2"', 'bilevel="t"']) {
+    const unavailable = await renderVml(`<v:group style="width:80pt;height:80pt" coordsize="80,80"><v:image src="media/two.png" ${attribute} style="width:80;height:80" stroked="f"/></v:group>`);
+    expect(unavailable.diagnostics.length, attribute).toBeGreaterThan(0);
+    expect(counter(unavailable.pixels)(255, 0, 0), attribute).toBeGreaterThan(2500);
+  }
 });

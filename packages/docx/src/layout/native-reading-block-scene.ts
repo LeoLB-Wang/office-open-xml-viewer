@@ -85,7 +85,7 @@ export function acquireNativeReadingBlockScene(
       || child.widthPt < 0 || child.heightPt < 0 || typeof child.flipH !== 'boolean' || typeof child.flipV !== 'boolean') fail('geometry', 'invalid resolved child frame');
     if (run.type !== 'shape') fail('resource', `member ${index} requires ${run.type} acquisition and decoded-resource bounds`);
     if (run.textBoxInput || run.textBlocks?.length || run.textPath || run.vmlTextPathInput) fail('owned-text', `member ${index} requires complete story/glyph ink acquisition`);
-    if (run.fill?.fillType === 'image') fail('resource', `member ${index} has an image fill`);
+    if (run.vmlPicture || run.fill?.fillType === 'image') fail('resource', `member ${index} has an image fill`);
     // Charge the input before the shared planner clones it, not after painting.
     work += 1 + (run.adjValues?.length ?? 0) + (run.strokeCustomDash?.length ?? 0);
     for (const path of run.subpaths) { work += path.length + 1; if (work + resolvedWork + commands.length >= maximumWork) fail('budget', 'shape source allowance exceeded'); }

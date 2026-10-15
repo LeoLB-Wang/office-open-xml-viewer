@@ -98,7 +98,9 @@ describe('inline groups through DOCX parse and render', () => {
       onTextRun: (run) => runs.push(run),
     });
 
-    expect(paint.events).toEqual(['rgba(0,0,255,1)', 'image', 'rgba(0,255,0,1)']);
+    expect(paint.events).toEqual(kind === 'VML'
+      ? ['rgba(0,0,255,1)', 'rgba(255,255,255,1)', 'image', 'rgba(0,255,0,1)']
+      : ['rgba(0,0,255,1)', 'image', 'rgba(0,255,0,1)']);
     const before = paint.fillText.find((run) => run.text === 'BEFORE');
     const after = paint.fillText.find((run) => run.text === 'AFTER');
     const beforeRun = runs.find((run) => run.text === 'BEFORE');

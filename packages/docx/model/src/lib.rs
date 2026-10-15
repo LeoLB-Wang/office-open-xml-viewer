@@ -2140,6 +2140,11 @@ pub struct ShapeRun {
     /// Part 4 §19.1.2.18 shadow acquired independently of its source brush.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vml_shadow: Option<VmlShadow>,
+    /// Part 4 §§19.1.2.10/.11: picture ink is independent of the backing
+    /// fill and outline on the implied rectangle. Only resource/effect facts
+    /// from this image are consumed; placement belongs to the host shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_picture: Option<Box<ImageRun>>,
     /// normalized [0,1] custom path commands (one or more sub-paths). Empty
     /// when `preset_geometry` is set; the renderer chooses between
     /// buildCustomPath (custGeom) and buildShapePath (prstGeom).

@@ -53,6 +53,7 @@ mod vml_fill;
 mod vml_geometry;
 #[path = "parser/vml_group.rs"]
 mod vml_group;
+mod vml_image;
 
 const DEFAULT_FONT_SIZE: f64 = 10.0; // pt fallback
 
@@ -12188,17 +12189,24 @@ fn parse_vml_shape(
         .find(|attr| attr.name() == "spt")
         .or_else(|| shape_type.and_then(|node| node.attributes().find(|attr| attr.name() == "spt")))
         .and_then(|attr| attr.value().parse::<u16>().ok());
-    let mut preset_geometry = match shape.tag_name().name() {
-        "line" => Some("line".to_string()),
-        "rect" => Some("rect".to_string()),
-        "roundrect" => Some("roundRect".to_string()),
-        "oval" => Some("ellipse".to_string()),
-        _ => spt
-            .and_then(vml_shape_type_preset)
-            .map(str::to_string)
-            .or_else(|| spt.is_none().then(|| "rect".into())),
+    // Part 4 §§19.1.2.10/.11: picture decorations use the implied
+    // rectangle, independent of an unavailable or custom host path.
+    let is_picture = vml_image::present(shape, shape_type);
+    let mut preset_geometry = if is_picture {
+        Some("rect".into())
+    } else {
+        match shape.tag_name().name() {
+            "line" => Some("line".to_string()),
+            "rect" => Some("rect".to_string()),
+            "roundrect" => Some("roundRect".to_string()),
+            "oval" => Some("ellipse".to_string()),
+            _ => spt
+                .and_then(vml_shape_type_preset)
+                .map(str::to_string)
+                .or_else(|| spt.is_none().then(|| "rect".into())),
+        }
     };
-    let primitive = if matches!(shape.tag_name().name(), "curve" | "polyline") {
+    let primitive = if !is_picture && matches!(shape.tag_name().name(), "curve" | "polyline") {
         Some(vml_geometry::primitive(shape)?)
     } else {
         None
@@ -12209,7 +12217,7 @@ fn parse_vml_shape(
             preset == "line" || preset.contains("connector")
         });
 
-    let line_points = if shape.tag_name().name() == "line" {
+    let line_points = if !is_picture && shape.tag_name().name() == "line" {
         match (
             shape.attribute("from").and_then(parse_vml_point_pt),
             shape.attribute("to").and_then(parse_vml_point_pt),
@@ -12249,11 +12257,11 @@ fn parse_vml_shape(
             paths: geometry.paths.clone(),
             paint: geometry.paint.clone(),
         })
-    } else if shape.tag_name().name() == "arc" {
+    } else if !is_picture && shape.tag_name().name() == "arc" {
         let acquired = vml_geometry::arc(shape);
         geometry_unavailable = acquired.is_none();
         acquired
-    } else if vml_geometry::path_source(shape, shape_type).is_some() {
+    } else if !is_picture && vml_geometry::path_source(shape, shape_type).is_some() {
         let acquired = vml_geometry::acquire(
             shape,
             shape_type,
@@ -13375,6 +13383,8 @@ fn vml_image_relationship<'a>(node: roxmltree::Node<'a, '_>) -> Option<&'a str> 
         .or_else(|| node.attribute((relationships::STRICT, "id")))
         .or_else(|| node.attribute((relationships::TRANSITIONAL, "pict")))
         .or_else(|| node.attribute((relationships::STRICT, "pict")))
+        .or_else(|| node.attribute((relationships::TRANSITIONAL, "href")))
+        .or_else(|| node.attribute((relationships::STRICT, "href")))
         .or_else(|| {
             node.attributes()
                 .find(|a| a.name() == "relid")

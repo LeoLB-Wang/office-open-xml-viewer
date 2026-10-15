@@ -10,7 +10,7 @@ import type {
 } from '../types.js';
 import type { ImageMetadataRecord, MathOccurrence, PictureBulletSizeResolver } from './resources.js';
 import type { BodyAcquisitionInputProjections } from './acquisition-input-projections.js';
-import { chartResourceKey, imageResourceKey } from './source-key.js';
+import { chartResourceKey, imageResourceKey, vmlPictureResourceKey } from './source-key.js';
 import {
   createPaintResourceRegistry,
 } from './paint-resources.js';
@@ -69,8 +69,8 @@ function collectDescriptorCandidates(
     widthPt: number,
     heightPt: number,
     run: ImageDescriptorOptions = {},
+    resourceKey = imageResourceKey(source, partPath),
   ): void => {
-    const resourceKey = imageResourceKey(source, partPath);
     imageCandidates.push(imageCandidate(kind, resourceKey, partPath, run));
     imageMetadata.push({ resourceKey, mimeType, widthPt, heightPt });
   };
@@ -106,6 +106,12 @@ function collectDescriptorCandidates(
           ...(shape.fill.vml === undefined ? {} : { vmlFill: shape.fill.vml }),
         },
       );
+    }
+    if (shape.vmlPicture) {
+      const picture = shape.vmlPicture;
+      addImage('image', source, picture.imagePath, picture.mimeType,
+        shape.widthPt, shape.heightPt, picture,
+        vmlPictureResourceKey(source, picture.imagePath));
     }
     const storyInstance = `${source.story}:${source.storyInstance}:${source.path.join('.')}`;
     if (shape.textBoxContent !== undefined) {

@@ -62,6 +62,12 @@ export function imageResourceKey(source: SourceRef, partPath: string): string {
   return `image:${sourceKey(source)}:${encodeURIComponent(partPath)}`;
 }
 
+/** A picture and its backing image brush may reference the same part while
+ * carrying different crops/effects, so they own distinct retained resources. */
+export function vmlPictureResourceKey(source: SourceRef, partPath: string): string {
+  return `vml-picture:${sourceKey(source)}:${encodeURIComponent(partPath)}`;
+}
+
 export function mathResourceKey(source: SourceRef, localName: string): string {
   return `math:${sourceKey(source)}:${encodeURIComponent(localName)}`;
 }

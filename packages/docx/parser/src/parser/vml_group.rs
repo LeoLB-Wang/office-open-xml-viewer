@@ -279,8 +279,6 @@ fn acquire_leaf<'a, 'input>(
         .attribute("type")
         .and_then(|id| shape_types.get(id.trim_start_matches('#')))
         .copied();
-    let imagedata = vml_direct_child(child, "imagedata")
-        .or_else(|| shape_type.and_then(|n| vml_direct_child(n, "imagedata")));
     if vml_geometry::incomplete_leaf(child, shape_type) {
         unsupported(diagnostics);
     }
@@ -296,114 +294,49 @@ fn acquire_leaf<'a, 'input>(
         flip_v: false,
     });
     let physical_scale = (unit.width, unit.height);
-    let mut run = if let Some(image) =
-        imagedata.or_else(|| child.has_tag_name((VML, "image")).then_some(child))
-    {
-        let (Some(path), Some(width), Some(height)) = (
-            vml_image_source(image, media_map),
-            vml_css_length_pt(style, "width"),
-            vml_css_length_pt(style, "height"),
-        ) else {
+    let Some(mut shape) = parse_vml_shape(
+        style_map,
+        num_map,
+        child,
+        shape_type,
+        theme,
+        media_map,
+        chart_map,
+        rel_map,
+        physical_scale,
+        depth,
+    ) else {
+        unsupported(diagnostics);
+        return None;
+    };
+    if vml_image::present(child, shape_type) {
+        let Some(picture) = vml_image::acquire(child, shape_type, media_map) else {
             unsupported(diagnostics);
             return None;
         };
-        if vml_geometry::incomplete_leaf(child, shape_type)
-            || vml_geometry::shadow(child, shape_type).is_some()
-            || (resolve_vml_stroke(child, shape_type).color.is_some()
-                && vml_geometry::path_attr(child, shape_type, "strokeok")
-                    .and_then(parse_vml_true_false)
-                    != Some(false))
-        {
-            let Some(mut shape) = parse_vml_shape(
-                style_map,
-                num_map,
-                child,
-                shape_type,
-                theme,
-                media_map,
-                chart_map,
-                rel_map,
-                physical_scale,
-                depth,
-            ) else {
-                unsupported(diagnostics);
-                return None;
-            };
-            // Part 4 §19.1.2.11 gives imagedata an implied rectangle;
-            // the image and its outline do not use the host's path.
-            shape.preset_geometry = Some("rect".into());
-            shape.subpaths.clear();
-            shape.subpath_paint.clear();
-            shape.fill = Some(ShapeFill::Image {
-                vml: None,
-                mime_type: mime_from_ext(&path).into(),
-                image_path: path,
-                svg_image_path: None,
-                src_rect: vml_image_crop(image),
-                fill_rect: None,
-                tile: None,
-                alpha: None,
-                duotone: None,
-            });
-            DocRun::Shape(Box::new(shape))
-        } else {
-            DocRun::Image(Box::new(vml_image_run(child, path, width, height, image)))
-        }
-    } else {
-        let Some(shape) = parse_vml_shape(
-            style_map,
-            num_map,
-            child,
-            shape_type,
-            theme,
-            media_map,
-            chart_map,
-            rel_map,
-            physical_scale,
-            depth,
-        ) else {
-            unsupported(diagnostics);
-            return None;
-        };
-        DocRun::Shape(Box::new(shape))
-    };
-    let (x, y, width, height, rotation, flip_h, flip_v) = match &mut run {
-        DocRun::Image(image) => {
-            if within_group {
-                image.anchor = true;
-                image.anchor_acquisition = None;
-                image.anchor_x_relative_from = Some("column".into());
-                image.anchor_y_relative_from = Some("paragraph".into());
-            }
-            (
-                &mut image.anchor_x_pt,
-                &mut image.anchor_y_pt,
-                &mut image.width_pt,
-                &mut image.height_pt,
-                &mut image.rotation,
-                &mut image.flip_h,
-                &mut image.flip_v,
-            )
-        }
-        DocRun::Shape(shape) => {
-            if within_group {
-                shape.anchor_acquisition = None;
-                shape.anchor_x_relative_from = Some("column".into());
-                shape.anchor_y_relative_from = Some("paragraph".into());
-            }
-            shape.z_order = z_order;
-            (
-                &mut shape.anchor_x_pt,
-                &mut shape.anchor_y_pt,
-                &mut shape.width_pt,
-                &mut shape.height_pt,
-                &mut shape.rotation,
-                &mut shape.flip_h,
-                &mut shape.flip_v,
-            )
-        }
-        _ => unreachable!(),
-    };
+        // Part 4 §§19.1.2.10/.11: imagedata has an implied rectangle.
+        // Preserve the host fill behind image transparency and its outline
+        // above the image. A picture does not use the host's custom path.
+        // Preserve the former ImageRun's inline ownership when a standalone
+        // picture gains a backing brush; group placement belongs to its wrapper.
+        shape.inline = !within_group && !picture.anchor;
+        shape.vml_picture = Some(Box::new(picture));
+    }
+    if within_group {
+        shape.anchor_acquisition = None;
+        shape.anchor_x_relative_from = Some("column".into());
+        shape.anchor_y_relative_from = Some("paragraph".into());
+    }
+    shape.z_order = z_order;
+    let (x, y, width, height, rotation, flip_h, flip_v) = (
+        &mut shape.anchor_x_pt,
+        &mut shape.anchor_y_pt,
+        &mut shape.width_pt,
+        &mut shape.height_pt,
+        &mut shape.rotation,
+        &mut shape.flip_h,
+        &mut shape.flip_v,
+    );
     if within_group && !matches!(child.tag_name().name(), "line" | "curve" | "polyline") {
         *x = vml_css_length_pt(style, "left").unwrap_or(0.0);
         *y = vml_css_length_pt(style, "top").unwrap_or(0.0);
@@ -439,7 +372,7 @@ fn acquire_leaf<'a, 'input>(
     *rotation = rect.rotation_degrees;
     *flip_h = rect.flip_h;
     *flip_v = rect.flip_v;
-    Some(run)
+    Some(DocRun::Shape(Box::new(shape)))
 }
 
 #[cfg(test)]
@@ -561,6 +494,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(runs.len(), 5);
+        assert!(
+            matches!(&runs[4], DocRun::Shape(picture) if picture.inline && picture.vml_picture.is_some())
+        );
         assert!(diagnostics.is_empty());
     }
 
@@ -685,13 +621,13 @@ mod tests {
         let DocRun::Shape(crop) = &children(&group)[6] else {
             panic!("crop")
         };
-        let Some(ShapeFill::Image {
-            src_rect: Some(crop),
-            ..
-        }) = &crop.fill
-        else {
-            panic!("image crop")
-        };
+        let crop = crop
+            .vml_picture
+            .as_ref()
+            .unwrap()
+            .src_rect
+            .as_ref()
+            .unwrap();
         assert_eq!((crop.l, crop.t), (0.5, 0.25));
         assert!(!group
             .text_box_content

@@ -21,7 +21,7 @@ export type ShapeDrawingPlanResult =
   | Readonly<{
       status: 'planned';
       command: ShapeDrawingCommand;
-      before?: readonly Extract<DrawingPaintCommand, { kind: 'drawingml-shape' | 'watermark-text' }>[];
+      before?: readonly Extract<DrawingPaintCommand, { kind: 'drawingml-shape' | 'drawingml-image-fill' | 'watermark-text' }>[];
       diagnostics?: readonly Readonly<Omit<LayoutDiagnostic, 'source'>>[];
     }>
   | Readonly<{
@@ -100,6 +100,7 @@ export function planShapeDrawing(
   textPath?: Readonly<VmlTextPathAcquisitionInput>,
   imageFillResourceKey?: string,
   maximumGeometryWork?: number,
+  vmlPictureResourceKey?: string,
 ): ShapeDrawingPlanResult {
   const parserControlled = textPath !== undefined && (
     textPath.textPathOk !== undefined
@@ -258,6 +259,40 @@ export function planShapeDrawing(
   };
   const retainedPlan = { ...plan, resolvedGeometry: resolveDrawingMLGeometry(plan, 1, maximumGeometryWork) };
   const shadows = planVmlShadows(shape, retainedPlan, (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits);
+  if (shape.vmlPicture) {
+    if (!vmlPictureResourceKey) throw new Error('VML picture requires a retained image resource key');
+    // Part 4 §§19.1.2.10/.11: shadow, backing brush, picture, outline.
+    // Each pass binds geometry to its own fill/stroke contract during
+    // acquisition. Paint only replays the retained commands.
+    let remainingWork = (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits
+      - shadows.reduce((sum, command) => sum + (command.plan.resolvedGeometry?.workUnits ?? 0), 0);
+    const acquirePass = (pass: DrawingMLShapePaintPlan) => {
+      const resolvedGeometry = resolveDrawingMLGeometry(pass, 1, remainingWork);
+      remainingWork -= resolvedGeometry.workUnits;
+      return { ...pass, resolvedGeometry };
+    };
+    const backingPlan = acquirePass({ ...plan, stroke: null });
+    const before: NonNullable<Extract<ShapeDrawingPlanResult, { status: 'planned' }>['before']>[number][] = [...shadows];
+    if (shape.fill?.fillType === 'image') {
+      if (!imageFillResourceKey) throw new Error('VML backing brush requires a retained image resource key');
+      before.push({ kind: 'drawingml-image-fill', plan: backingPlan,
+        resourceKey: imageFillResourceKey,
+        ...(shape.fill.vml?.alignShape === false ? {
+          imageRotationDeg: -(shape.rotation ?? 0), imageFlipH: shape.flipH ?? false, imageFlipV: shape.flipV ?? false,
+        } : {}),
+      });
+    } else if (shape.fill) {
+      before.push({ kind: 'drawingml-shape', plan: backingPlan,
+        ...(shape.fillOpacity == null ? {} : { opacity: Math.max(0, Math.min(1, shape.fillOpacity)) }),
+      });
+    }
+    return Object.freeze({ status: 'planned',
+      before: snapshotPlainData(before, 'VML picture backing commands'),
+      command: snapshotPlainData({ kind: 'drawingml-image-fill' as const,
+        plan: acquirePass({ ...plan, fill: null }), resourceKey: vmlPictureResourceKey,
+      }, 'VML picture and outline command'),
+    });
+  }
   if (shape.fill?.fillType === 'image') {
     if (shape.fill.tile !== undefined) {
       return Object.freeze({

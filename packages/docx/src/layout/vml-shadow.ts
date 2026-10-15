@@ -62,7 +62,7 @@ export function planVmlShadows(
     const dx = offset.xPt + offset.xFraction * w, dy = offset.yPt + offset.yFraction * h;
     let shadowPlan: DrawingMLShapePaintPlan = {
       ...plan, rect: { x: x + dx, y: y + dy, w, h },
-      fill: !shadow.obscured || shape.fill ? { fillType: 'solid', color } : null,
+      fill: !shadow.obscured || shape.fill || shape.vmlPicture ? { fillType: 'solid', color } : null,
       stroke: plan.stroke ? { ...plan.stroke, color, fill: undefined } : null,
       resolvedGeometry: undefined,
     };

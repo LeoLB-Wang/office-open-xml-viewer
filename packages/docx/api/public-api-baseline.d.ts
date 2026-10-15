@@ -2401,6 +2401,7 @@ export interface ShapeRun {
     }>;
     presetGeometry?: string | null;
     adjValues?: Array<number | null>;
+    vmlPicture?: Pick<ImageRun, 'imagePath' | 'mimeType' | 'srcRect' | 'colorReplaceFrom' | 'duotone'>;
     fill: ShapeFill | null;
     stroke: string | null;
     strokeWidth?: number;
