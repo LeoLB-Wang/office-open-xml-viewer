@@ -6898,9 +6898,8 @@ function paintResolvedPicture(
       paintImageAt(target, x, y, w, h);
     };
 
-    // Flat opaque silhouette of the clipped picture rectangle, used as the mask
-    // for innerShdw / softEdge. Falls back to the bounding rect when the picture
-    // is a plain rectangle (no clip path).
+    // Flat pictures retain their opaque clip mask for innerShdw / softEdge.
+    // Projected pictures instead reuse the complete body below, as shapes do.
     const paintMaskAt = (
       target: CanvasRenderingContext2D,
       color: string,
@@ -6914,17 +6913,6 @@ function paintResolvedPicture(
       target.fillStyle = color;
       target.fillRect(ox, oy, ow, oh);
       target.restore();
-    };
-
-    const paintMask = (target: CanvasRenderingContext2D, color: string): void => {
-      if (scene3d) {
-        const ok = projectScene3dPaint(target, scene3d.camera, x, y, w, h, (octx, ox, oy, ow, oh) =>
-          paintMaskAt(octx, color, ox, oy, ow, oh),
-          { backDepthCss },
-        );
-        if (ok) return;
-      }
-      paintMaskAt(target, color, x, y, w, h);
     };
 
     // ── effectLst (§19.3.1.37 routes p:pic's spPr through CT_ShapeProperties,
@@ -6981,19 +6969,21 @@ function paintResolvedPicture(
     const hasRasterEffects = Boolean(
       el.shadow || el.innerShadow || el.glow || el.softEdge || el.reflection,
     );
-    const rawMask: EffectPaint = (target) => paintMask(target, '#000');
+    const rawMask: EffectPaint = (target) => paintMaskAt(target, '#000', x, y, w, h);
     const effectBody = scene3d && hasRasterEffects
       ? cacheDevicePaint(paintImage, liveTransform, projectedGeometry.bbox, {
           w: (ctx.canvas as { width: number }).width || 0,
           h: (ctx.canvas as { height: number }).height || 0,
         })
       : paintImage;
-    const effectMask = scene3d && hasRasterEffects
-      ? cacheDevicePaint(rawMask, liveTransform, projectedGeometry.bbox, {
-          w: (ctx.canvas as { width: number }).width || 0,
-          h: (ctx.canvas as { height: number }).height || 0,
-        })
-      : rawMask;
+    // ECMA-376 §20.1.5.12 includes bevels, extrusion and contour in the 3-D
+    // shape; §20.1.8.53 softens its edges. In this planar compositor, the
+    // projected body's alpha is the visible geometry, including wireframe
+    // holes/rims, walls, borders and transparent blip areas. Reuse that same
+    // paint/cache for every projected effect mask, rather than projecting a
+    // second filled front face that can erase walls or fill wireframe holes.
+    // Bounds/padding already come from the body's shared projectedSurface.
+    const effectMask = scene3d ? effectBody : rawMask;
     // The caller paints this prepared picture in the slide pattern scope,
     // including transparent blip areas and any authored rotation or flip.
     paintWithRasterEffects(

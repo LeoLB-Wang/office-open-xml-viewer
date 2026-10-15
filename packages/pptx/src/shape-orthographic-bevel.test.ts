@@ -212,6 +212,27 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
         expect(pixel(deep, 144, 79)).not.toEqual([255, 255, 255]);
         expect(pixel(flat, 144, 79)).toEqual([255, 255, 255]);
       });
+
+      it(`softens the complete oblique ${wireframe ? 'wireframe' : 'solid'} geometry (${adapter})`, async () => {
+        const shape = orthographicBeveledShape();
+        shape.geometry = 'rect';
+        shape.scene3d!.camera = { prst: 'obliqueTop' };
+        shape.sp3d = { prstMaterial: wireframe ? 'legacyWireframe' : 'matte', extrusionH: 60 * 9525 };
+        const plain = await render(element(shape));
+        const softened = await render(element({ ...shape, softEdge: { radius: 9525 } }));
+        // The 18 px extrusion lies above the front face's y=96 boundary.
+        // A face-only mask erases the wall interior and displaced wire rim.
+        if (wireframe) {
+          expect(pixel(plain, 144, 79)).not.toEqual([255, 255, 255]);
+          expect(pixel(softened, 144, 79)).not.toEqual([255, 255, 255]);
+          expect(pixel(softened, 144, 144)).toEqual([255, 255, 255]);
+        } else {
+          for (const y of [85, 90]) {
+            expect(pixel(plain, 144, y)).toEqual([64, 64, 64]);
+            expect(pixel(softened, 144, y)).toEqual(pixel(plain, 144, y));
+          }
+        }
+      });
     }
   }
 
