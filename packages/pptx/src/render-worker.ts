@@ -214,6 +214,10 @@ async function openPresentation(request: Extract<RenderWorkerRequest, { kind: 'p
   // decoding can overlap the sequential slide preflight without sharing cursor
   // ownership. First paint still waits for `fontsLoaded` below.
   const embeddedFontsLoaded = loadEmbeddedFonts(bootstrap.embeddedFonts, getFontBytes);
+  // A direct archive read can fail before sequential slide preflight completes.
+  // Keep its original rejection for fontsLoaded/ensureFonts without an unhandled
+  // rejection while that independent work is still running.
+  void embeddedFontsLoaded.catch(() => undefined);
   cjkFallback = request.cjkFallback;
   googleSubstitutes = request.useGoogleFonts === true;
   // Optional Google subset loading is library policy keyed to the slide model

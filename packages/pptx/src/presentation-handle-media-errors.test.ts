@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPresentationHandle, type PresentOptions } from './presentation-handle';
-import { OoxmlResourceLimitError } from '@silurus/ooxml-core';
+import { OoxmlDecodedImageLimitError, OoxmlResourceLimitError } from '@silurus/ooxml-core';
 import type { MediaElement } from './types';
 
 type Listener = (event: Event) => void;
@@ -191,9 +191,10 @@ describe('presentation media failure reporting', () => {
     handle.destroy();
   });
 
-  it('preserves the typed archive failure when extracting interactive media', async () => {
+  it.each(['archive', 'decoded'])('preserves the typed %s limit failure when extracting interactive media', async kind => {
     installDom();
-    const error = new OoxmlResourceLimitError('archive limit', {
+    const error = kind === 'decoded' ? new OoxmlDecodedImageLimitError('active-decoded-bytes', 1, 2)
+      : new OoxmlResourceLimitError('archive limit', {
       stage: 'decompression', violation: {
         format: 'pptx', operation: 'extract-media', resource: 'archive-entry',
         metric: 'actual-inflated-bytes', part: 'ppt/media/clip.mp3',
