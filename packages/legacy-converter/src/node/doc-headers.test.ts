@@ -52,9 +52,12 @@ it('direct rejects locked page fields instead of showing their stored result', a
   await expect(load(buildDocFixture({ text: 'Body\r', headers: ['', '', '', footerFields, '', ''], lockedHeaderFields: true }))).rejects.toThrow(new Error('UNSUPPORTED:Word evaluated field with edited, locked or private result is not supported'));
 });
 
-it.skipIf(!skia)('renders first/even/odd header variants and evaluated page fields per page', async () => {
+it.skipIf(!skia).each([false, true])('renders page stories after terminal page breaks (split mark: %s)', async (splitPgBreakAndParaMark) => {
   const footer = 'Page \u0013PAGE\u001499\u0015 of \u0013NUMPAGES\u001499\u0015\r';
-  const source = buildDocFixture({ text: 'One\fTwo\fThree\r',
+  // Both a text-bearing terminal break and a break-only paragraph move their
+  // marks under Part 4 14.8.3.38. Neither introduces a new section or changes
+  // the first/even/default page-story selection (MS-DOC 2.3.3, 2.8.22).
+  const source = buildDocFixture({ text: 'One\f\rTwo\r\f\rThree\r', splitPgBreakAndParaMark,
     headers: ['EVEN\r', 'ODD\r', footer, footer, 'FIRST\r', footer],
     facingPages: true, defaultTabTwips: 720,
     sectionProperties: concat(little16(0x300a), new Uint8Array([1])),
@@ -62,11 +65,18 @@ it.skipIf(!skia)('renders first/even/odd header variants and evaluated page fiel
   const session = await openDocxDocument(source, { factory: skiaFactory(), currentDate: 0, modelSources: [testDocSource()] });
   try {
     expect(session.pageCount).toBe(3);
+    const bodyTops: number[] = [];
     for (let page = 0; page < 3; page++) {
       const runs: { text: string; y: number }[] = [];
       await session.renderPage(page, { dpr: 1, onTextRun: run => runs.push(run) });
       expect(runs.filter(r => r.y < 96).map(r => r.text).join('')).toBe(['FIRST', 'EVEN', 'ODD'][page]);
       expect(runs.filter(r => r.y > 900).map(r => r.text).join('')).toBe(`Page ${page + 1} of 3`);
+      bodyTops.push(runs.find(r => r.text === ['One', 'Two', 'Three'][page])!.y);
+    }
+    // The moved mark consumes body space while the stories remain painted.
+    for (const top of bodyTops.slice(1)) {
+      if (splitPgBreakAndParaMark) expect(top).toBeGreaterThan(bodyTops[0]!);
+      else expect(top).toBe(bodyTops[0]);
     }
   } finally { await session.close(); }
 });

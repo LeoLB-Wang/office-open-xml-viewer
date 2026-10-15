@@ -29,6 +29,7 @@ pub(super) fn project(
     budget: &mut ModelBudget,
     body: &mut Vec<BodyElement>,
     ending_kind: Option<&str>,
+    split_pg_break_and_para_mark: bool,
     table_sequence: &mut usize,
 ) -> Result<(), String> {
     let paragraph_count = paragraphs.len();
@@ -554,12 +555,21 @@ pub(super) fn project(
                                 same_paragraph_as_previous: None,
                             },
                         )?;
+                        // ECMA-376 Part 4 §14.8.3.38, via Copts.b: the mark
+                        // survives as an ordinary empty paragraph. A section
+                        // transition that subsumes the page break stays intact.
+                        if split_pg_break_and_para_mark {
+                            paragraph.runs.clear();
+                            retain_field_revisions(&mut paragraph, budget)?;
+                            budget.normalized_paragraph(&paragraph)?;
+                            budget.push(&mut blocks.0, Block::Paragraph(Box::new(paragraph)))?;
+                        }
                     }
                 }
                 [DocRun::Break {
                     break_type: BreakType::Column,
                 }] => budget.push(&mut blocks.0, Block::ColumnBreak)?,
-                _ => visit_para_on_page_breaks(paragraph, |piece| {
+                _ => visit_para_on_page_breaks(paragraph, split_pg_break_and_para_mark, |piece| {
                     let element = match piece {
                         ParaPiece::Para(mut paragraph) => {
                             retain_field_revisions(&mut paragraph, budget)?;
@@ -1064,6 +1074,7 @@ fn textbox_content(
         budget,
         &mut body,
         None,
+        false,
         table_sequence,
     )?;
     // List counters shared between textboxes and the main story, and breaks
@@ -1825,6 +1836,7 @@ mod tests {
                 &mut budget,
                 &mut body,
                 None,
+                false,
                 &mut table_sequence,
             )?;
 

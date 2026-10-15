@@ -337,6 +337,7 @@ pub(super) fn project(
             budget,
             &mut content,
             None,
+            false, // Page-story breaks do not advance body pages.
             table_sequence,
         )?;
         let id = (index + 1).to_string();
