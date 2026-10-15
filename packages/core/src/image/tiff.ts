@@ -14,6 +14,7 @@ import {
   OoxmlDecodedImageLimitError,
 } from './pixel-budget.js';
 import { aspectPreservingRasterTarget } from './raster-target.js';
+import { TiffBitReader } from './tiff-bit-reader.js';
 import {
   isTiff,
   TiffDecodeError,
@@ -493,6 +494,8 @@ function parseTiff(bytes: Uint8Array): ParsedTiff | null {
   // Validate every declared range before reserving the target RGBA surface.
   // In particular, validate the full declared count, not merely the bytes the
   // supported decoder happens to consume.
+  // Classic TIFF offsets/counts can be unsigned LONGs: their sum can exceed 2^32.
+  // Keep range and row-byte arithmetic as numbers, never 32-bit coercions.
   for (let strip = 0; strip < stripCount; strip++) {
     const offset = stripOffsets.at(strip);
     const byteCount = stripByteCounts.at(strip);
@@ -589,7 +592,8 @@ function unassociate(channel: number, alpha: number): number {
  * Decoded source pixels [firstX, endX) of one row. The samples of pixel x start
  * at `bytes[rowOffset + spanBytes(layout, x)]` (1-bit: bit 7 - (x & 7) of
  * `bytes[rowOffset + (x >> 3)]`), so `rowOffset` may be negative for a span
- * that begins inside the row.
+ * that begins inside the row. Pixel x is bounded by MAX_RASTER_SOURCE_DIMENSION
+ * (2^27), so its bitwise indexing is safe; strip bit positions have no such bound.
  */
 interface SourceSpan {
   bytes: Uint8Array;
@@ -1021,9 +1025,7 @@ class TiffLzwDecoder {
   private readonly pending = new Uint8Array(LZW_TABLE_SIZE);
   private pendingStart = 0;
   private pendingEnd = 0;
-  private byteOffset = 0;
-  private byteLength = 0;
-  private bitOffset = 0;
+  private readonly reader: TiffBitReader;
   private codeWidth = LZW_MIN_CODE_WIDTH;
   private nextCode = LZW_FIRST_STRING_CODE;
   private previousCode = -1;
@@ -1031,9 +1033,10 @@ class TiffLzwDecoder {
   private work = 0;
 
   constructor(
-    private readonly bytes: Uint8Array,
+    bytes: Uint8Array,
     private readonly workLimit: number,
   ) {
+    this.reader = new TiffBitReader(bytes, 0, 0, 'TIFF LZW data is truncated');
     for (let code = 0; code < 256; code++) {
       this.suffix[code] = code;
       this.first[code] = code;
@@ -1042,9 +1045,7 @@ class TiffLzwDecoder {
   }
 
   beginStrip(byteOffset: number, byteLength: number): void {
-    this.byteOffset = byteOffset;
-    this.byteLength = byteLength;
-    this.bitOffset = 0;
+    this.reader.beginStrip(byteOffset, byteLength);
     this.pendingStart = 0;
     this.pendingEnd = 0;
     this.ended = false;
@@ -1087,17 +1088,8 @@ class TiffLzwDecoder {
   }
 
   private readCode(): number {
-    if (this.bitOffset + this.codeWidth > this.byteLength * 8) {
-      fail('TIFF LZW data is truncated');
-    }
+    const code = this.reader.readBits(this.codeWidth);
     this.chargeWork(1);
-    let code = 0;
-    for (let bit = 0; bit < this.codeWidth; bit++) {
-      const offset = this.bitOffset + bit;
-      code = (code << 1)
-        | ((this.bytes[this.byteOffset + (offset >> 3)] >> (7 - (offset & 7))) & 1);
-    }
-    this.bitOffset += this.codeWidth;
     return code;
   }
 
@@ -1151,28 +1143,6 @@ class TiffLzwDecoder {
     }
     this.pendingStart = 0;
     this.pendingEnd = length;
-  }
-}
-
-class StripBitReader {
-  private bitOffset = 0;
-
-  constructor(
-    private readonly bytes: Uint8Array,
-    private readonly byteOffset: number,
-    private readonly byteLength: number,
-  ) {}
-
-  readBit(): number {
-    if (this.bitOffset >= this.byteLength * 8) {
-      fail('CCITT Group 4 data is truncated');
-    }
-    const bit = (
-      this.bytes[this.byteOffset + (this.bitOffset >> 3)]
-      >> (7 - (this.bitOffset & 7))
-    ) & 1;
-    this.bitOffset++;
-    return bit;
   }
 }
 
@@ -1265,7 +1235,7 @@ const MODE_TABLE = new Map<number, TwoDimensionalMode>([
   [(1 << 7) | 0b0000011, 3],
 ]);
 
-function decodeMode(reader: StripBitReader): TwoDimensionalMode {
+function decodeMode(reader: TiffBitReader): TwoDimensionalMode {
   let code = 0;
   for (let length = 1; length <= 7; length++) {
     code = (code << 1) | reader.readBit();
@@ -1275,7 +1245,7 @@ function decodeMode(reader: StripBitReader): TwoDimensionalMode {
   fail('Invalid or unsupported CCITT Group 4 two-dimensional mode');
 }
 
-function decodeRun(reader: StripBitReader, black: boolean, maximum: number): number {
+function decodeRun(reader: TiffBitReader, black: boolean, maximum: number): number {
   const table = black ? BLACK_TABLE : WHITE_TABLE;
   let total = 0;
   const maximumCodes = Math.ceil(maximum / 64) + 64;
@@ -1366,7 +1336,7 @@ function referenceChanges(
 }
 
 function decodeGroup4Row(
-  reader: StripBitReader,
+  reader: TiffBitReader,
   reference: readonly number[],
   coding: Group4Row,
   width: number,
@@ -1517,10 +1487,11 @@ function decodeGroup4(
     reference[0] = parsed.width;
     const firstRow = strip * parsed.rowsPerStrip;
     const rowCount = Math.min(parsed.rowsPerStrip, parsed.height - firstRow);
-    const reader = new StripBitReader(
+    const reader = new TiffBitReader(
       parsed.directory.reader.bytes,
       parsed.stripOffsets.at(strip),
       parsed.stripByteCounts.at(strip),
+      'CCITT Group 4 data is truncated',
     );
     for (let row = 0; row < rowCount; row++) {
       const sourceY = firstRow + row;
