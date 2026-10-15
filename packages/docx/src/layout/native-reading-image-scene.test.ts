@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import type { DocxDocumentModel } from '../types.js';
 import { projectDocumentSnapshotResources } from './production-paint-resources.js';
 import { paintDrawingLayout } from '../paint/canvas-drawing.js';

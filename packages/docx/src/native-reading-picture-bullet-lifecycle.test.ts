@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deserializeWorkerError, serializeWorkerError } from '@silurus/ooxml-core/worker';
 import { ProgressiveLayoutLifecycle } from '@silurus/ooxml-core/internal/progressive-layout-lifecycle';

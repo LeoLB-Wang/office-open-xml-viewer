@@ -1,9 +1,6 @@
-import { imagePaintProjection } from '@silurus/ooxml-core';
 import type { ImagePaintProjection } from '@silurus/ooxml-core';
 import type { ImagePaintResourceDescriptor, LayoutRect, NativeReadingImagePlan } from './types.js';
-import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './plain-data.js';
-import { composeAffine } from './affine.js';
-import { transformRect } from './coordinate-space.js';
+import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 
 /** Source acquisition owns the authoritative plain-data seal. Paint consumes
  * this cloneable projection, never imports the layout brand or collects bounds.
@@ -13,7 +10,7 @@ import { transformRect } from './coordinate-space.js';
 export function acquireNativeReadingImagePlan(
   descriptor: ImagePaintResourceDescriptor, width: number, height: number,
 ): NativeReadingImagePlan {
-  if (!isDeepFrozenPlainDataRoot(descriptor)) throw new Error('Native image plan requires an internally sealed descriptor');
+  if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor)) throw new Error('Native image plan requires an internally sealed descriptor');
   if (descriptor.kind !== 'image' || descriptor.svgImagePath !== undefined
     || descriptor.colorReplaceFrom !== undefined || descriptor.duotone !== undefined) {
     throw new Error('Native image substitution/color effects require their decoded-owner proof');
@@ -25,8 +22,8 @@ export function acquireNativeReadingImagePlan(
     rotation: descriptor.rotation ?? null, flipH: descriptor.flipH ?? null,
     flipV: descriptor.flipV ?? null, alpha: descriptor.alpha ?? null,
   };
-  const projection = imagePaintProjection(width, height, source.srcRect, descriptor);
-  return snapshotPlainData({ source, projection }, 'native reading image plan');
+  const projection = nativeReadingOwners.imagePaintProjection(width, height, source.srcRect, descriptor);
+  return nativeReadingOwners.snapshotPlainData({ source, projection }, 'native reading image plan');
 }
 
 function sameProjection(actual: ImagePaintProjection, expected: ImagePaintProjection): boolean {
@@ -55,7 +52,7 @@ export function assertNativeReadingImagePlan(plan: NativeReadingImagePlan, rect:
   const transform = { ...(source.rotation === null ? {} : { rotation: source.rotation }),
     ...(source.flipH === null ? {} : { flipH: source.flipH }), ...(source.flipV === null ? {} : { flipV: source.flipV }),
     ...(source.alpha === null ? {} : { alpha: source.alpha }) };
-  const expected = imagePaintProjection(rect.widthPt, rect.heightPt, source.srcRect, transform);
+  const expected = nativeReadingOwners.imagePaintProjection(rect.widthPt, rect.heightPt, source.srcRect, transform);
   if (!sameProjection(projection, expected)) throw new Error('Native image retained projection mismatch');
 }
 
@@ -67,9 +64,9 @@ export function nativeReadingImageFrame(plan: NativeReadingImagePlan, rect: Layo
   const p = plan.projection;
   if (!p.transformed) return { ...rect };
   const c = Math.cos(p.rotationRad), s = Math.sin(p.rotationRad);
-  const transform = composeAffine({ a: 1, b: 0, c: 0, d: 1, e: rect.xPt + p.centerX, f: rect.yPt + p.centerY },
-    composeAffine({ a: c, b: s, c: -s, d: c, e: 0, f: 0 }, { a: p.scaleX, b: 0, c: 0, d: p.scaleY, e: 0, f: 0 }));
-  const result = transformRect(transform, { xPt: p.destination.x, yPt: p.destination.y, widthPt: p.width, heightPt: p.height });
+  const transform = nativeReadingOwners.composeAffine({ a: 1, b: 0, c: 0, d: 1, e: rect.xPt + p.centerX, f: rect.yPt + p.centerY },
+    nativeReadingOwners.composeAffine({ a: c, b: s, c: -s, d: c, e: 0, f: 0 }, { a: p.scaleX, b: 0, c: 0, d: p.scaleY, e: 0, f: 0 }));
+  const result = nativeReadingOwners.transformRect(transform, { xPt: p.destination.x, yPt: p.destination.y, widthPt: p.width, heightPt: p.height });
   if (!Object.values(result).every(Number.isFinite)) throw new Error('Native image allocation overflow');
   return result;
 }

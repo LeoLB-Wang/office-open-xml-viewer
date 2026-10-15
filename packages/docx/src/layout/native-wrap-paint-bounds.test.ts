@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { describe, expect, it } from 'vitest';
 import { resolveDrawingMLGeometry, type DrawingMLShapePaintPlan } from '@silurus/ooxml-core';
 import type { DrawingLayout } from './types.js';

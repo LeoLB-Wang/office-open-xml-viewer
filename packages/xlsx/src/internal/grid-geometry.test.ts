@@ -124,11 +124,20 @@ describe('GridGeometry', () => {
     expect(GridGeometry.forWorksheet(ws, 8).col.sizeOf(2)).toBe(colWidthToPx(8.43, 8));
   });
 
-  it('uses the specification pixel width for implicit base columns outside Mac Excel', () => {
+  it('rounds implicit base columns up to 8 px outside Mac Excel', () => {
     vi.stubGlobal('navigator', { platform: 'Win32', maxTouchPoints: 0 });
     const ws = worksheet();
-    ws.baseColWidth = 10;
-    expect(GridGeometry.forWorksheet(ws, 8).col.sizeOf(3)).toBe(85);
+    // Windows Excel at MDW 7 shows 61/75/89 px as 64/80/96 px.
+    for (const [base, px] of [[8, 64], [10, 80], [12, 96]] as const) {
+      ws.baseColWidth = base;
+      GridGeometry.invalidate(ws);
+      expect(GridGeometry.forWorksheet(ws, 7).col.sizeOf(3)).toBe(px);
+    }
+    // An authored defaultColWidth is a stored width and is not rounded.
+    ws.baseColWidth = undefined;
+    ws.defaultColWidth = 10.7109375;
+    GridGeometry.invalidate(ws);
+    expect(GridGeometry.forWorksheet(ws, 7).col.sizeOf(3)).toBe(75);
   });
   it('keeps offsets finite when a malformed default size reaches the geometry boundary', () => {
     const axis = new GridAxisGeometry({ 1: 10 }, Number.NaN, (value) => value, 10);

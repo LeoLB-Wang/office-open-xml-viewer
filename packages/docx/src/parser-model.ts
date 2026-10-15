@@ -1,5 +1,5 @@
-import { acquireNativeReadingWordBreaking } from './native-reading-word-breaking.js';
-import { acquireNativeReadingPictureBullet, type NativeReadingPictureBulletWire } from './native-reading-picture-bullet.js';
+import { readingHooks } from './internal/reading-hooks.js';
+import type { NativeReadingPictureBulletWire } from './native-reading-picture-bullet.js';
 import { resolveAutomaticParagraphMarginsPt } from './layout/paragraph-spacing.js';
 import type {
   NativeNoteSeparatorsInput,
@@ -1646,7 +1646,7 @@ export function paragraphAcquisitionInput(
       : { hyperlinkAnchor: boundary.hyperlinkAnchor }),
   }));
   const numbering = semanticParagraph.numbering as (InternalNumberingInfo) | null;
-  const nativeReadingPictureBullet = acquireNativeReadingPictureBullet(numbering);
+  const nativeReadingPictureBullet = readingHooks.pictureBullet(numbering);
   const canonicalNumbering = numbering == null ? null : (({
     fontFacts: _privateNumberingFontFacts,
     __nativeReadingPictureBullet: _privatePictureBulletSource,
@@ -1788,7 +1788,7 @@ export function paragraphAcquisitionInput(
       } = run as typeof run & InternalNoBreakHyphenWire & {
         __typographyAcquisition?: InternalRunTypographyWire;
       };
-      const nativeReadingWordBreaking = acquireNativeReadingWordBreaking(nativeReadingWordBreakingWire);
+      const nativeReadingWordBreaking = readingHooks.wordBreaking(nativeReadingWordBreakingWire);
       const noBreakRanges = run.type === 'text'
         ? noBreakHyphenOffsets
           ?.filter((end) => Number.isInteger(end) && end > 0 && end <= run.text.length)
@@ -1806,7 +1806,7 @@ export function paragraphAcquisitionInput(
     }
     return Object.freeze(structuredClone(run)) as ParagraphAcquisitionRun;
   });
-  const markerReading = acquireNativeReadingWordBreaking(
+  const markerReading = readingHooks.wordBreaking(
     (paragraph.numbering as (typeof paragraph.numbering & InternalNoBreakHyphenWire))?.__nativeReadingWordBreaking,
   );
   const { __nativeReadingWordBreaking: _markerReadingWire, ...retainedNumbering } =

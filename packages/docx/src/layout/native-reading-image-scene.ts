@@ -2,8 +2,7 @@ import type { ParagraphAcquisitionInput } from './text.js';
 import type { ImagePaintResourceDescriptor, PaintResourceRegistry, SourceRef } from './types.js';
 import type { NativeReadingBlockScene } from './native-reading-block-scene.js';
 import { NativeReadingSceneError } from './native-reading-block-scene.js';
-import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './plain-data.js';
-import { imageResourceKey } from './source-key.js';
+import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 import { acquireNativeReadingImagePlan, nativeReadingImageFrame } from './native-reading-image-frame.js';
 
 /** Complete standalone native image scene. The registry owns the exact source
@@ -18,7 +17,7 @@ export function acquireNativeReadingImageBlockScene(
 ): NativeReadingBlockScene {
   const fail = (blocker: NativeReadingSceneError['blocker'], message: string): never => { throw new NativeReadingSceneError(blocker, message); };
   if (!Number.isSafeInteger(maximumRuns) || maximumRuns < 1 || paragraph.runs.length > maximumRuns) return fail('budget', 'image run allowance exceeded');
-  if (!isDeepFrozenPlainDataRoot(paragraph)) return fail('source-ownership', 'image paragraph must be internally sealed');
+  if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(paragraph)) return fail('source-ownership', 'image paragraph must be internally sealed');
   let hosts = 0, memberIndex = -1;
   for (let index = 0; index < paragraph.runs.length; index++) {
     const run = paragraph.runs[index];
@@ -38,11 +37,11 @@ export function acquireNativeReadingImageBlockScene(
   if (input.extent.widthStatus !== 'valid' || input.extent.heightStatus !== 'valid' || width === null || height === null
     || width <= 0 || height <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) return fail('geometry', 'invalid image allocation');
   const imageSource = { ...source, path: [...source.path, memberIndex] };
-  const key = imageResourceKey(imageSource, run.imagePath);
+  const key = nativeReadingOwners.imageResourceKey(imageSource, run.imagePath);
   let descriptor: ImagePaintResourceDescriptor;
   try { descriptor = registry.resolve(key, 'image') as ImagePaintResourceDescriptor; }
   catch { return fail('resource', 'image descriptor is unavailable for its source key'); }
-  if (!isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image' || descriptor.resourceKey !== key
+  if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image' || descriptor.resourceKey !== key
     || descriptor.partPath !== run.imagePath || descriptor.mimeType !== run.mimeType) return fail('resource', 'image descriptor ownership mismatch');
   if (run.svgImagePath != null || descriptor.svgImagePath !== undefined || run.duotone != null || descriptor.duotone !== undefined || run.colorReplaceFrom != null || descriptor.colorReplaceFrom !== undefined) return fail('resource', 'image substitution/color effects require their decoded-owner proof');
   for (const field of ['rotation', 'flipH', 'flipV', 'alpha'] as const) if (descriptor[field] !== run[field]) return fail('resource', `image ${field} descriptor mismatch`);
@@ -54,7 +53,7 @@ export function acquireNativeReadingImageBlockScene(
     nativeImagePlan = acquireNativeReadingImagePlan(descriptor, width, height);
     bounds = nativeReadingImageFrame(nativeImagePlan, rect);
   } catch (error) { return fail('geometry', error instanceof Error ? error.message : 'image projection failed'); }
-  return snapshotPlainData({ occurrenceId, authoredWrap: input.wrap.kind, memberRunIndices: [memberIndex], childSourceIds: [],
+  return nativeReadingOwners.snapshotPlainData({ occurrenceId, authoredWrap: input.wrap.kind, memberRunIndices: [memberIndex], childSourceIds: [],
     drawing: { kind: 'drawing' as const, id, source: imageSource, flowDomainId,
       flowBounds: bounds, inkBounds: bounds, advancePt: bounds.heightPt, ordinaryFlow: true,
       commands: [{ kind: 'resource' as const, resourceKind: 'image' as const, resourceKey: key, rect, nativeImagePlan }],

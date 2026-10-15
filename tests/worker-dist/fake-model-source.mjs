@@ -43,8 +43,24 @@ export async function openModelSource(bytes, config) {
     });
     await docxReady;
     const archive = new DocxArchive(bytes);
+    const wrapper = delegate(archive, config.minimal ? DOCX_REQUIRED : [...DOCX_REQUIRED, ...DOCX_OPTIONAL]);
+    if (config.readingWordBreaking) {
+      wrapper.pull_document_chunk = (...args) => {
+        const chunk = JSON.parse(new TextDecoder().decode(archive.pull_document_chunk(...args)));
+        const mark = (value) => {
+          if (!value || typeof value !== 'object') return;
+          if (value.type === 'text') value.__nativeReadingWordBreaking = { rawHres: 0, rawChHres: 1 };
+          for (const child of Object.values(value)) {
+            if (Array.isArray(child)) child.forEach(mark);
+            else if (child && typeof child === 'object') mark(child);
+          }
+        };
+        mark(chunk);
+        return new TextEncoder().encode(JSON.stringify(chunk));
+      };
+    }
     return {
-      archive: delegate(archive, config.minimal ? DOCX_REQUIRED : [...DOCX_REQUIRED, ...DOCX_OPTIONAL]),
+      archive: wrapper,
       viewDefaults: config.showTrackedChanges === true ? { showTrackedChanges: true } : {},
       close: () => archive.free(),
     };
