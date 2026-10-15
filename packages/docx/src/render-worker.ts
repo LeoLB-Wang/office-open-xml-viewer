@@ -90,11 +90,14 @@ let sourceOwner: WorkerDocumentSourceOwner<DocxArchive> | undefined;
 function executeArchive<T>(operation: (archive: WorkerDocumentArchive) => T): T {
   if (sourceOwner) return sourceOwner.execute(operation);
   const archive = host.archive;
-  if (!archive) throw new Error('Document not loaded');
+  if (!archive) throw new Error('No docx loaded');
   return host.run(() => operation(archive));
 }
 function sourceUsage(): Uint8Array | undefined {
-  return sourceOwner ? sourceOwner.resourceUsage() : host.run(() => host.archive?.resource_usage());
+  if (sourceOwner) return sourceOwner.resourceUsage();
+  const archive = host.archive;
+  if (!archive) throw new Error('No docx loaded');
+  return host.run(() => archive.resource_usage());
 }
 const documentPull = new DocumentPullWorker(
   () => sourceOwner?.cursor() ?? host.archive,
@@ -186,6 +189,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
   }
   const id = req.id;
   let requestedGeneration: number | undefined;
+  let publishedPages = false;
   try {
     if (req.type === 'parse' ? !req.source : !sourceOwner) await host.ensureReady();
     if (req.type !== 'parse' && (sourceOwner?.cursor() ?? host.archive)) {
@@ -412,6 +416,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
               ...(req.source ? { showTrackedChanges } : {}),
               partial: review ? { ...publication, review } : publication,
             });
+            publishedPages ||= publication.pageCount > 0;
             review = undefined;
           },
           progress: (committedPages) => {
@@ -534,13 +539,15 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       return;
     }
   } catch (err) {
-    // Non-parse pagination probes may still abort silently. A superseded parse
-    // receives a terminal response for its old correlation id, but generation
-    // checks above prevent it from publishing or closing the newer source.
-    if (err instanceof PaginationAbortError && requestedGeneration === undefined) return;
-    if (requestedGeneration !== undefined && requestedGeneration === parseGeneration) {
-      // Cleanup must not replace the parse failure or suppress its terminal
-      // response. A stale parse never touches the newer generation's owner.
+    // Ordinary progressive loads have always suppressed cancellation. Model
+    // sources still receive their terminal response to release source claims;
+    // generation checks prevent stale loads from closing the newer owner.
+    if (err instanceof PaginationAbortError && (req.type !== 'parse' || !req.source)) return;
+    if (requestedGeneration !== undefined && requestedGeneration === parseGeneration && !publishedPages) {
+      // A published prefix remains paintable after a late pagination failure:
+      // retain its layout, archive and registered fonts until replacement or
+      // worker disposal. Only an unpublished failure can release these here.
+      // Cleanup must not replace the parse failure or its terminal response.
       try { sourceOwner?.closeModelSource(); } catch {}
       releaseRetainedFonts();
       doc = null;

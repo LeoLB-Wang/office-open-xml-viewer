@@ -13,7 +13,7 @@ async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: s
       sourceRequests.push(pathname);
     }
   });
-  page.context().on('response', (response) => {
+  const inspectOrdinaryResponse = (response: import('@playwright/test').Response) => {
     const pathname = new URL(response.url()).pathname;
     // The consumer fixture embeds a protocol marker in its test source, so
     // inspect the published dist bodies, where a marker means runtime code.
@@ -22,13 +22,17 @@ async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: s
       if (body.includes('ooxml-model-source-module/v1')
         || body.includes('model source view default')) sourceBodies.push(pathname);
     }));
-  });
+  };
+  page.context().on('response', inspectOrdinaryResponse);
   await page.goto(`${url}${url.includes('?') ? '&' : '?'}pause-sources`);
   await expect.poll(async () => {
     const body = page.locator('body');
     return (await body.getAttribute('data-ordinary-ready')) === 'true'
       || (await body.getAttribute('data-status')) === 'error';
   }, { timeout: 60_000 }).toBe(true);
+  // Body inspection belongs to the ordinary-load audit. Later source stages
+  // terminate short-lived workers, whose response bodies may then be unreadable.
+  page.context().off('response', inspectOrdinaryResponse);
   await Promise.all(inspectedResponses);
   const ordinaryRenderWorkers = [...renderWorkers].sort();
   expect(ordinaryRenderWorkers, 'one render worker per format').toHaveLength(3);
