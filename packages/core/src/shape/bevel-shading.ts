@@ -7,10 +7,11 @@
  * Control audit: 6,051 Windows PowerPoint front-view rectangle/ellipse controls,
  * all 12 profiles, 27 rigs and 15 material names (wireframe uses raster geometry),
  * eight directions, five fill colors and explicit single/combined light rotations.
- * Sampled RGB mean error improves 59.83→37.96, max 242→238; profile/rotation/
- * repeat maxima worsen. This is a closer reference model, not an Office match.
- * Literal curve coordinates/visibility and the rotation convention remain
- * unresolved alongside Fresnel/compositing; large residuals are not raster AA.
+ * Large Office residuals remain, particularly at profile rims and with Fresnel
+ * materials. This reference model is not a complete Office pixel match.
+ * Literal curve coordinates/visibility and Fresnel/compositing remain
+ * unresolved; large residuals are not raster AA. The light rotation convention
+ * is checked separately against single-axis and combined Office controls.
  * Arbitrary backgrounds, camera-rotated lighting and back/mesh visibility are
  * not established by these controls. No per-case fit or scalar gain is used.
  */

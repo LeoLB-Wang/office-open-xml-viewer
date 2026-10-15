@@ -6042,9 +6042,9 @@ export function buildBevelInputs(
   if (!sp3d) return [];
   const rig = lightRig?.rig ?? 'threePt';
   const dir = lightRig?.dir ?? 't';
-  // §20.1.5.9/§20.1.5.11: the lightRig's `<a:rot>` (rev = in-plane revolution about
-  // the view axis) rotates the key-light azimuth. lat/lon are a documented SPEC GAP
-  // in lightDirFromRig (no calibration sample exercises them).
+  // ECMA §§20.1.5.9/.11 and MS-OI29500 §2.1.1274(b): preserve explicit
+  // zero rot as an override of dir. Core rotates the entire rig (including
+  // flat-face illumination), with revolution about the tilted rig axis.
   const light = lightDirFromRig(rig, dir, lightRig?.rot);
   const material = materialClass(prstMaterial);
   const emuToDev = scale * devScale;

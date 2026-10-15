@@ -101,6 +101,37 @@ describe('documented DrawingML bevel model', () => {
       render('matte', 'morning', 't', { lat: 0, lon: 0, rev: 15 }),
     );
   });
+  it('composes the rig rotation about its tilted central axis', () => {
+    const base = lightDirFromRig('threePt', 't');
+    const turned = lightDirFromRig('threePt', 't', {
+      lat: 90, lon: 90, rev: 90,
+    });
+    // Ry(90) Rx(90) Rz(90): (x,y,z) -> (x,-z,y).
+    expect(turned.x).toBeCloseTo(base.x, 10);
+    expect(turned.y).toBeCloseTo(-base.z, 10);
+    expect(turned.z).toBeCloseTo(base.y, 10);
+  });
+  it('rotates every light when shading the face, including side and back lighting', () => {
+    const center = (20 * 40 + 20) * 4;
+    const face = (lat: number, lon: number, rev = 0) =>
+      render('matte', 'threePt', 't', { lat, lon, rev })[center + 2];
+    // Independent Lambert sums of the documented threePt lights: latitude
+    // +90 exposes the fill/rim, longitude +90 exposes the key/rim; -90 exposes
+    // only the weak fill. No Office pixel constants or fitted gains.
+    expect(face(90, 0)).toBe(138);
+    expect(face(0, 90)).toBe(82);
+    expect(face(0, 270)).toBe(17);
+    expect(face(180, 0)).toBe(109);
+    expect(face(0, 0, 90)).toBe(face(0, 0));
+  });
+  it('honors explicit zero over dir while retaining the omitted-rotation direction', () => {
+    const zero = { lat: 0, lon: 0, rev: 0 };
+    const explicit = render('matte', 'threePt', 't', zero);
+    expect(render('matte', 'threePt', 'r', zero)).toEqual(explicit);
+    expect(render('matte', 'threePt', 'br', zero)).toEqual(explicit);
+    expect(render('matte', 'threePt', 'r')).not.toEqual(explicit);
+    expect(render('matte', 'threePt', 't')).toEqual(explicit);
+  });
   it('shades the flat face and retains colored rig and material responses', () => {
     const center = (20 * 40 + 20) * 4;
     expect([...render().slice(center, center + 3)]).not.toEqual([80, 100, 140]);

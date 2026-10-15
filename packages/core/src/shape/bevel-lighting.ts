@@ -116,12 +116,19 @@ const DIRECTIONS: Readonly<Record<string, number>> = {
 };
 /** MS-OI29500 §2.1.1274: M=[0,-1,0;-1,0,0;0,0,1] maps
  * the tabulated light-travel vectors into scene space. Negate for surface-to-
- * light vectors in the bitmap convention (+Y down). The reference implementation
- * uses Rz(rev) Rx(-lat) Ry(-lon); ECMA §20.1.5.11 names the sphere coordinates
- * but does not settle this bitmap shader's complete transform convention. The
- * explicit-rotation controls retain large mismatches; do not claim this Euler
- * convention is an established Office compatibility rule. Explicit rot replaces
- * dir, even when all angles are zero. No direction is added to authored rev.
+ * light vectors in the bitmap convention (+Y down, +Z toward the viewer).
+ * ECMA §20.1.5.11 describes revolution about the latitude/longitude axis,
+ * without a numeric matrix. In this basis our rig-to-scene transform applies
+ * local Rz(rev), then Rx(lat), then Ry(lon) to the entire mapped rig.
+ * This is the inverse of the scene camera's world-to-view rotation, rather
+ * than the same transform with only its revolution sign reversed.
+ * Office evidence: front-view matte threePt rectangle controls at single-axis
+ * 0/90/180/270 degrees, rev=90, (30,60,45), (90,90,90), and dir=t/r/br support
+ * the signs/order (face and rim). This does not establish pixel fidelity for
+ * other materials, profiles, cameras or arbitrary rotation combinations.
+ * MS-OI29500 §2.1.1274(b): explicit rot replaces dir, including all-zero rot.
+ * Omitted rot with dir=t is identity too; explicit zero differs from omitted
+ * rot for non-top directions, not from the top direction's identity.
  * Keep the whole rig on the returned structural Vec3 so existing callers of
  * lightDirFromRig → BevelInput preserve light identity without a signature change.
  */
@@ -150,12 +157,12 @@ export function rigVector(
     const ax = dy / m,
       ay = dx / m,
       az = -dz / m;
-    const bx = cy * ax - sy * az,
-      bz = sy * ax + cy * az;
-    const by = cx * ay + sx * bz,
-      z = -sx * ay + cx * bz;
-    const x = cz * bx - sz * by,
-      y = sz * bx + cz * by;
+    const bx = cz * ax - sz * ay,
+      by = sz * ax + cz * ay;
+    const y = cx * by - sx * az,
+      bz = sx * by + cx * az;
+    const x = cy * bx + sy * bz,
+      z = -sy * bx + cy * bz;
     const hm = Math.hypot(x, y, z + 1) || 1;
     return {
       x,
