@@ -1,3 +1,4 @@
+import { decodeSvgBlobOnMainThread } from '@silurus/ooxml-core/worker';
 import type { CjkLang } from '@silurus/ooxml-core';
 import {
   defaultDpr,
@@ -261,7 +262,7 @@ function anchorMayIntersectViewport(
  *  because the renderer's crop math needs the decoded bitmap's native pixel grid
  *  (an SVG element has none).
  *
- *  All three decode paths go through the SAME per-`fetchImage` core caches that
+ *  All decode paths go through the SAME per-`fetchImage` core caches that
  *  docx and pptx use (issue #781), so xlsx no longer keeps its own owned bitmap
  *  map:
  *   - raster/metafile (+ any `<a:duotone>` recolour, §20.1.8.23) →
@@ -274,6 +275,8 @@ function anchorMayIntersectViewport(
  *   - SVG vector original → `getCachedSvgImageByPath` (decodes to an
  *     `HTMLImageElement`, because `createImageBitmap` cannot rasterize SVG in
  *     every browser).
+ *   - SVG-only picture with duotone → bounded host/worker SVG rasterization,
+ *     followed by the shared bitmap duotone cache and pixel transform.
  *  Bytes are fetched lazily by zip path through `fetchImage` (twin of
  *  pptx/docx's `fetchImage`) instead of being inlined as base64; the decoded
  *  bitmaps are owned by those shared caches (LRU-bounded, closed on eviction and
@@ -299,9 +302,6 @@ export async function decodeImageSource(
   plannedPixelLimit?: number,
 ): Promise<CanvasImageSource | null> {
   const dataIsSvg = mimeType === 'image/svg+xml';
-  // SVG pixels are not exposed to the shared bitmap effect pipeline. Without
-  // a raster twin, drawing the original SVG would silently discard duotone.
-  if (dataIsSvg && duotone) return null;
   // A cropped metafile must rasterize at its FULL picture frame, not the visible
   // sub-rect, so the fractional crop lands correctly; raster blips and uncropped
   // metafiles pass the box through unchanged. The shared base cache retains
@@ -315,6 +315,13 @@ export async function decodeImageSource(
       offscreenFactory,
       failClosedOnDuotoneFailure,
       tiff,
+      // ECMA-376 §20.1.8.23 applies to picture pixels regardless of source
+      // encoding. SVG-only blips first acquire a readable raster via the same
+      // host decoder used by workers, then share the raster effect cache,
+      // pixel budgets and teardown. A raster twin still owns effects when present.
+      svgDecoder: dataIsSvg
+        ? svgDecoder ?? (typeof Image !== 'undefined' ? decodeSvgBlobOnMainThread : undefined)
+        : undefined,
       ...(target ?? {}),
       ...(plannedPixelLimit ? { maxRetainedPixels: plannedPixelLimit } : {}),
     });
@@ -325,9 +332,7 @@ export async function decodeImageSource(
     // No crop: prefer the vector original; fall back to the raster on decode
     // failure (or, when `imagePath` is itself the SVG, the SVG decoder again).
     // A cropped picture skips this branch so the crop math (below, in the
-    // renderer) runs on the raster bitmap's native pixel dimensions. §20.1.8.23
-    // duotone applies only to the raster fallback — an SVG vector original has no
-    // readable pixel grid (matches docx/pptx).
+    // renderer) runs on the raster bitmap's native pixel dimensions.
     try {
       return await getCachedSvgImageByPath(blip.svgImagePath, fetchImage, {
         ...target,
@@ -347,6 +352,7 @@ export async function decodeImageSource(
         : decodeRaster();
     }
   }
+  if (dataIsSvg && duotone) return decodeRaster();
   if (dataIsSvg) {
     // svg-only picture with no separate `svgImagePath` field (defensive): the
     // raster decoder (createImageBitmap) can't rasterize SVG.
@@ -695,8 +701,8 @@ export async function prefetchImages(
       try {
         // The §20.1.8.23 duotone recolour is applied inside the shared decode
         // (getCachedDuotoneBitmapByPath) and cached under a colour-suffixed key,
-        // so the per-frame draw stays synchronous. Only raster/bitmap sources are
-        // recoloured — an SVG element (vector blip) has no readable pixel grid.
+        // so the per-frame draw stays synchronous. SVG-only sources are
+        // rasterized before entering that same pixel transform.
         const src = await decodeImageSource(
           ref.imagePath,
           ref.mimeType,

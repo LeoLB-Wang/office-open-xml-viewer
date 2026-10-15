@@ -12,18 +12,6 @@ export interface ReferenceFontLineMetrics {
   readonly eastAsianLineHeightRatio?: undefined;
 }
 
-export type ReferenceFontPlatform = 'macos' | 'other';
-
-// Browser and Node rendering must make the same requested source choice on the
-// same host. Node runtimes without the optional global Navigator still expose
-// process.platform; do not silently select the Office reference on macOS.
-const runtimeReferenceFontPlatform: ReferenceFontPlatform =
-  typeof navigator !== 'undefined'
-    ? (/Mac/u.test(navigator.platform) ? 'macos' : 'other')
-    : (globalThis as { process?: { platform?: string } }).process?.platform === 'darwin'
-      ? 'macos'
-      : 'other';
-
 const projectedProfiles = new WeakMap<object, ReferenceFontLineMetrics | null>();
 
 // Layout asks for the same few (family, weight, style) tuples for every text
@@ -34,20 +22,20 @@ const preferredProfilesMemo = new Map<string, readonly ReferenceFontMetricProfil
 const NO_PROFILES = Object.freeze([]) as readonly ReferenceFontMetricProfile[];
 
 /** One source-choice authority for both vertical and xAvg projections. A
- * populated but ambiguous preferred group must never fall through to Office. */
+ * populated but ambiguous preferred group must never fall through to a
+ * lower priority source. */
 function preferredProfiles(
   family: string | null | undefined,
   weight: number,
   style: 'normal' | 'italic',
-  platform: ReferenceFontPlatform,
 ): readonly ReferenceFontMetricProfile[] {
   if (!family?.trim()) return NO_PROFILES;
-  const key = `${platform}|${weight}|${style}|${family}`;
+  const key = `${weight}|${style}|${family}`;
   const retained = preferredProfilesMemo.get(key);
   if (retained !== undefined) return retained;
-  const sourceGroups = platform === 'macos'
-    ? [['macos-system', 'macos-supplemental'], ['office-mac'], ['published-open-font']] as const
-    : [['office-mac'], ['macos-system', 'macos-supplemental'], ['published-open-font']] as const;
+  const sourceGroups = [
+    ['office-mac'], ['macos-system', 'macos-supplemental'], ['published-open-font'],
+  ] as const;
   let result = NO_PROFILES;
   for (const sources of sourceGroups) {
     const profiles = sources.flatMap((source) =>
@@ -120,12 +108,14 @@ function identicalProjection(
  * installed face. It remains separate from resource identity, cmap coverage,
  * shaping, width measurement, and paint routing.
  *
- * The checked-in catalog contains a snapshot of one Word-for-Mac font bundle,
- * macOS system and Supplemental fonts, and independently verified published open-font
- * profiles; it is not a catalog of every Office release or host. macOS
- * metadata has priority on macOS; other environments prefer Office.
- * This is a requested reference policy, not detection of the installed face
- * or evidence that another Office version shares the same metric tables.
+ * Library policy uses Windows Office as the layout reference, independent of
+ * the browser or Node host OS. Both vertical and xAvg lookups prefer Office
+ * metadata, then macOS system/Supplemental, then published open-font profiles.
+ * The catalog's `office-mac` source is a snapshot of Office-for-Mac bundled
+ * faces (see scripts/generate-font-reference-metrics.py), not a verified
+ * Windows catalog. Preferring it is reference policy, not evidence that every
+ * Windows Office release has identical tables. The catalog cannot prove the
+ * installed/painted face.
  * The secondary and open-font catalogs are considered only when the tuple is
  * absent from preferred sources. A source group is admitted only when every matching
  * profile projects to identical vertical values; an ambiguous family therefore
@@ -135,9 +125,8 @@ export function referenceFontLineMetrics(
   family: string | null | undefined,
   weight = 400,
   style: 'normal' | 'italic' = 'normal',
-  platform: ReferenceFontPlatform = runtimeReferenceFontPlatform,
 ): ReferenceFontLineMetrics | undefined {
-  return identicalProjection(preferredProfiles(family, weight, style, platform));
+  return identicalProjection(preferredProfiles(family, weight, style));
 }
 
 /** Metadata-only OS/2 average width for a native face selected by Canvas.
@@ -147,9 +136,8 @@ export function referenceFontAverageWidthRatio(
   family: string | null | undefined,
   weight = 400,
   style: 'normal' | 'italic' = 'normal',
-  platform: ReferenceFontPlatform = runtimeReferenceFontPlatform,
 ): number | undefined {
-  const ratios = preferredProfiles(family, weight, style, platform).map((profile) =>
+  const ratios = preferredProfiles(family, weight, style).map((profile) =>
     profile.xAvgCharWidth != null && profile.xAvgCharWidth > 0
       ? profile.xAvgCharWidth / profile.unitsPerEm
       : undefined);

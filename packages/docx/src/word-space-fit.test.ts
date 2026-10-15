@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   mixedSpaceSummaryWork,
   setMixedSpaceSummaryAssertions,
-} from './line-breaker/mixed-space-fit.js';
+} from './test-support/mixed-space-fit.test-support.js';
 import {
   BAND_DEFICIT_PT, FONTS, VARIANTS, advancePt, layoutStubParagraph, stubMeasurements, type Variant,
 } from './test-support/word-space-fit.test-support.js';
@@ -516,4 +516,9 @@ describe('WORD_COMPRESSED_SPACE_LINE_FIT outside its measured inputs', () => {
     expect(lines.length).toBeGreaterThan(1);
     expect(lines.every((line) => line.every((segment) => segment.compression === 0))).toBe(true);
   });
+});
+
+vi.mock('./line-breaker/mixed-space-fit.js', async (importOriginal) => {
+  const { instrumentMixedSpace } = await import('./test-support/mixed-space-fit.test-support.js');
+  return instrumentMixedSpace(await importOriginal<typeof import('./line-breaker/mixed-space-fit.js')>());
 });

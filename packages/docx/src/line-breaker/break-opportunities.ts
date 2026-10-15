@@ -37,7 +37,6 @@ import { buildFont } from './font-routes.js';
 import {
   mixedCandidateMayShrink,
   mixedLineHasVisibleText,
-  noteMixedSpaceWork,
   type MixedSpaceCandidate,
 } from './mixed-space-fit.js';
 import {
@@ -922,7 +921,6 @@ function mixedSeamCandidate(
     }
     if (take > 0) {
       const piece = characters.slice(0, take).join('');
-      noteMixedSpaceWork(piece.length);
       pieces.push({ segment: follower, text: piece });
       const visible = piece.replace(/ +$/u, '');
       if (visible.length > 0) width += strAdvance(follower, visible);
@@ -1352,7 +1350,6 @@ function splitCjkOverflow(context: BreakOpportunityIteratorContext, frame: TextF
     const characters = [...s.text];
     const admitted = (count: number): boolean => {
       const candidate = characters.slice(0, count).join('');
-      noteMixedSpaceWork(candidate.length);
       return !candidate.endsWith(' ') && context.mixedSpaceRequirement(
         mixedSeamCandidate(context, s, candidate, strAdvance(s, candidate)),
       ) !== undefined;

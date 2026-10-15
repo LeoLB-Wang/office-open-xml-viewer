@@ -84,6 +84,30 @@ describe('worker error wire', () => {
     }
   });
 
+  it('preserves XLSX chart format ceilings with their hard parsing semantics', () => {
+    for (const [resource, metric] of [
+      ['chart-style-formats', 'entries'],
+      ['chart-custom-number-formats', 'entries'],
+      ['chart-number-format-bytes', 'bytes'],
+    ]) {
+      const details = {
+        stage: 'parsing',
+        violation: { format: 'xlsx', operation: 'parse', resource,
+          part: 'xl/styles.xml', metric, limit: 1, observed: 2,
+          configurable: false, usage: USAGE },
+      };
+      const message = () => new Error(`OOXML_RESOURCE_LIMIT:${JSON.stringify({ code: 'ooxml-resource-limit', details })}`);
+      const restored = deserializeWorkerError(structuredClone(serializeWorkerError(message())));
+      expect(restored).toBeInstanceOf(OoxmlResourceLimitError);
+      expect((restored as OoxmlResourceLimitError).details).toEqual(details);
+      details.stage = 'serialization';
+      expect(parseResourceLimitError(message())).toBeUndefined();
+      details.stage = 'parsing';
+      details.violation.configurable = true;
+      expect(parseResourceLimitError(message())).toBeUndefined();
+    }
+  });
+
   it('survives worker serialization and structured clone as a real typed error', () => {
     const wire = structuredClone(serializeWorkerError(new Error(rustError)));
     const error = deserializeWorkerError(wire);

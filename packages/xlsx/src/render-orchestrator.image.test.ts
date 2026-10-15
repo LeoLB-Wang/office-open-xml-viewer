@@ -1052,7 +1052,7 @@ describe('render-orchestrator image decode (lazy bytes)', () => {
     expect(fetchImage).toHaveBeenCalledWith('xl/media/image1.png', 'image/png');
   });
 
-  it('uses the raster twin for duotone and fails closed for SVG-only duotone', async () => {
+  it('uses the raster twin for duotone when available', async () => {
     const bitmap = new FakeBitmap('image/png');
     vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap));
     const fetchImage = vi.fn(async (_path: string, mime: string) => new Blob(['X'], { type: mime }));
@@ -1064,13 +1064,68 @@ describe('render-orchestrator image decode (lazy bytes)', () => {
     );
     expect(fetchImage).not.toHaveBeenCalledWith('xl/media/image1.svg', expect.anything());
     expect(fetchImage).toHaveBeenCalledWith('xl/media/image1.png', 'image/png');
+  });
 
-    fetchImage.mockClear();
-    await expect(decodeImageSource(
+  it.each(['worker', 'window'])('rasterizes SVG-only duotone in %s, recolours once and releases the derivative', async (environment) => {
+    const base = new FakeBitmap('svg');
+    const recoloured = { width: 1, height: 1, close: vi.fn() };
+    const svgDecoder = vi.fn(async () => base as unknown as ImageBitmap);
+    if (environment === 'window') {
+      vi.stubGlobal('Image', class {
+        naturalWidth = 1;
+        naturalHeight = 1;
+        onload?: () => void;
+        set src(_value: string) { this.onload?.(); }
+      });
+      vi.stubGlobal('OffscreenCanvas', class {
+        getContext() { return { drawImage() {} }; }
+        transferToImageBitmap() { return base; }
+      });
+    }
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => recoloured));
+    const fetchImage = vi.fn(async () => new Blob(['<svg/>'], { type: 'image/svg+xml' }));
+    const record: { out?: Uint8ClampedArray } = {};
+    const decode = () => decodeImageSource(
       'xl/media/image-only.svg', 'image/svg+xml', undefined, fetchImage,
-      0, 0, null, duo,
-    )).resolves.toBeNull();
-    expect(fetchImage).not.toHaveBeenCalled();
+      72, 72, { l: 0.1, t: 0, r: 0, b: 0 }, { clr1: '000000', clr2: 'FF0000' },
+      recordingFactory(record), true, undefined, undefined,
+      environment === 'worker' ? svgDecoder : undefined,
+    );
+    expect(await decode()).toBe(recoloured);
+    expect(await decode()).toBe(recoloured);
+    expect(svgDecoder).toHaveBeenCalledTimes(environment === 'worker' ? 1 : 0);
+    expect(record.out).toEqual(new Uint8ClampedArray([246, 0, 0, 255]));
+    dropDuotoneBitmapCache(fetchImage);
+    await flush();
+    expect(recoloured.close).toHaveBeenCalledOnce();
+    dropBitmapCacheByPath(fetchImage);
+  });
+
+  it.each([false, true])('rejects oversized SVG effect bases (cached: %s) without closing borrowed hits', async (warmCache) => {
+    const base = { width: 3000, height: 3000, close: vi.fn() } as unknown as ImageBitmap;
+    const svgDecoder = vi.fn(async () => base);
+    const fetchImage = vi.fn(async () => new Blob(['<svg/>'], { type: 'image/svg+xml' }));
+    const offscreenFactory = vi.fn(() => { throw new Error('effect surface must not be allocated'); });
+    if (warmCache) {
+      await getCachedBitmapByPath('xl/media/large.svg', 'image/svg+xml', fetchImage, { svgDecoder });
+    }
+    await expect(decodeImageSource(
+      'xl/media/large.svg', 'image/svg+xml', undefined, fetchImage,
+      0, 0, null, { clr1: '000000', clr2: 'FF0000' }, offscreenFactory,
+      true, undefined, undefined, svgDecoder,
+    )).rejects.toMatchObject({
+      code: 'ooxml-decoded-image-limit', metric: 'image-pixels',
+      limit: 8_388_608, observed: 9_000_000,
+    });
+    expect(offscreenFactory).not.toHaveBeenCalled();
+    expect(base.close).toHaveBeenCalledTimes(warmCache ? 0 : 1);
+    if (warmCache) {
+      expect(await getCachedBitmapByPath('xl/media/large.svg', 'image/svg+xml', fetchImage, { svgDecoder })).toBe(base);
+    }
+    dropBitmapCacheByPath(fetchImage);
+    await flush();
+    expect(base.close).toHaveBeenCalledOnce();
+    expect(svgDecoder).toHaveBeenCalledOnce();
   });
 
   it('fails closed for a chart duotone when pixel readback is unavailable', async () => {
