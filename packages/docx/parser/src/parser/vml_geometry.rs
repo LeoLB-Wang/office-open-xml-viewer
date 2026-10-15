@@ -560,7 +560,7 @@ pub(super) fn primitive(shape: roxmltree::Node) -> Option<(Geometry, (f64, f64, 
         if a.len() < 4 || a.len() % 2 != 0 {
             return None;
         }
-        a.chunks_exact(2).map(|p| (p[0], p[1])).collect()
+        a.as_chunks::<2>().0.iter().map(|&[x, y]| (x, y)).collect()
     };
     let x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
     let y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
