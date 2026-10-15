@@ -184,7 +184,9 @@ export interface Worksheet {
    *  `defaultFontSize` when absent. */
   normalFontSize?: number;
   /** Workbook theme major Jpan face (`<a:majorFont><a:font script="Jpan">`).
-   *  Retained as metadata; cell layout uses the authored font name on every OS. */
+   *  Used for scheme-marked cells when the workbook's load-time viewer language
+   *  starts with 'ja', a proxy for Excel's unencoded UI/editing language on any
+   *  OS. Re-open the workbook to apply a viewer language change. */
   themeJapaneseMajorFont?: string;
   /** Workbook theme minor Jpan face; see `themeJapaneseMajorFont`. */
   themeJapaneseMinorFont?: string;
