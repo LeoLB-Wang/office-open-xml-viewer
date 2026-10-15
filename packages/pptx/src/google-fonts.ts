@@ -6,11 +6,10 @@ import {
   GOOGLE_FONT_SUBSTITUTES,
   SCRIPT_GOOGLE_FONTS,
   type FontPreloadEntry,
-  type TextBody,
   type OfficeFontFallbackRequest,
 } from '@silurus/ooxml-core';
 import { ScriptPreloadAccumulator } from '@silurus/ooxml-core/internal/script-preload-accumulator';
-import type { Presentation, Slide, SlideElement } from './types';
+import type { Presentation, Slide, SlideElement, TextBody } from './types';
 
 /** Theme-referenced typefaces commonly used by PPTX templates. Keys are
  *  lower-cased family names.
@@ -49,6 +48,7 @@ function* fontElements(elements: readonly SlideElement[]): Generator<SlideElemen
 /** Yield every painted text string in a text body (paragraph runs). */
 function* textBodyRuns(body: TextBody | null | undefined): Generator<string> {
   for (const p of body?.paragraphs ?? []) {
+    for (const fallback of p.mathFallbacks ?? []) yield fallback.text;
     for (const r of p.runs) {
       if (r.type === 'text') yield r.text;
       if (r.type === 'math' && r.fallbackText) yield r.fallbackText;

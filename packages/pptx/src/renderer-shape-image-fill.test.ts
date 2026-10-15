@@ -8,7 +8,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@silurus/ooxml-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@silurus/ooxml-core')>();
-  return { ...actual, getCachedDuotoneBitmapByPath: mocks.decode };
+  return { ...actual, getCachedDuotoneBitmapByPath: mocks.decode,
+    rasterizeMathSvg: async () => ({ source: mocks.image, widthPx: 1, heightPx: 1 }),
+    tintMathRaster: () => mocks.image };
 });
 
 import { paintPreparedShapeImageFill, renderSlide } from './renderer.js';
@@ -328,6 +330,36 @@ function equationTable(body: unknown, mathFallback?: unknown) {
     rotation: 0, flipH: false, flipV: false, cols: [914_400],
     rows: [{ height: 914_400, cells: [{ textBody: body, gridSpan: 1, rowSpan: 1 }] }], mathFallback };
 }
+
+it.each(['all', 'first', 'last', 'none'])(
+  'replaces an inline equation branch exactly once after %s conversion failures', async (failure) => {
+    const live = shape('', 0, true);
+    const paragraph = live.textBody!.paragraphs[0];
+    const equations = ['x', 'y'].map(text => ({ type: 'math',
+      nodes: [{ kind: 'run', text, style: 'roman' }], display: false, fontSize: 18 }));
+    const body = { ...live.textBody!, paragraphs: [{ ...paragraph,
+      runs: [{ ...paragraph.runs[0], text: 'before' }, ...equations,
+        { ...paragraph.runs[0], text: 'after' }],
+      mathFallbacks: [{ start: 1, end: 3, text: 'inner preview' },
+        { start: 1, end: 3, text: 'complete preview' }],
+    }] };
+    const slide = { index: 0, slideNumber: 1, background: null,
+      elements: [{ ...live, fill: null, stroke: null, textBody: body }] } as unknown as Slide;
+    const original = JSON.stringify(slide);
+    const recording = recordingCanvas();
+    await renderSlide(recording.canvas, slide, 9_144_000, 6_858_000, { width: 960, dpr: 1,
+      math: { loadMathJax: async () => {}, mathMLToSvg: async xml => {
+        if (failure === 'all' || (failure === 'first' && xml.includes('>x<'))
+          || (failure === 'last' && xml.includes('>y<'))) throw new Error('conversion');
+        return { svg: '', widthEm: 1, ascentEm: 1, descentEm: 0 };
+      } },
+    });
+    const painted = recording.calls.filter(([name]) => name === 'fillText').map(([, text]) => text);
+    expect(painted).toEqual(failure === 'none' ? ['before', 'after'] : ['before', 'complete preview', 'after']);
+    expect(recording.calls.filter(([name]) => name === 'drawImage')).toHaveLength(failure === 'none' ? 2 : 0);
+    expect(JSON.stringify(slide)).toBe(original);
+  },
+);
 
 it.each(['table', 'mixed'])('selects a complete %s equation Choice after a table-cell conversion failure', async (kind) => {
   mocks.decode.mockClear();

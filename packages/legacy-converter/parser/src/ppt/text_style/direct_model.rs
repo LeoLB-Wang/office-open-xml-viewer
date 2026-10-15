@@ -564,6 +564,7 @@ fn model_paragraph(
     )?));
     let empty = !runs.iter().any(|run| matches!(run, TextRun::Text(_)));
     Ok(ModelParagraph {
+        math_fallbacks: Vec::new(),
         alignment: alignment.to_owned(),
         mar_l,
         mar_r: 0,

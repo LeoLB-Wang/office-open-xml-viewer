@@ -1814,6 +1814,7 @@ pub(crate) fn push_math_runs(
     font_size: Option<f64>,
     theme: &HashMap<String, String>,
     runs: &mut Vec<TextRun>,
+    fallbacks: &mut Vec<InlineEquationFallback>,
 ) {
     match node.tag_name().name() {
         "oMath" => {
@@ -1846,16 +1847,19 @@ pub(crate) fn push_math_runs(
             }
         }
         "AlternateContent" => {
-            // §9.3 — take the understood Choice's live equation, else the Fallback
-            // (which for math is a raster this walker ignores).
+            // Part 3 §§9.3–9.4 selects complete alternatives. Keep one preview
+            // beside the entire emitted range: a Choice may hold several a14:m
+            // children and each oMathPara may itself emit several equations.
             if let Some(sel) = ooxml_common::mce::select_alternate_content(
                 node,
                 &crate::shape::pptx_understands_ns,
             ) {
+                let start = runs.len();
                 for c in sel.children().filter(|n| n.is_element()) {
-                    let first = runs.len();
-                    push_math_runs(c, font_size, theme, runs);
-                    let fallback_text = child(node, "Fallback")
+                    push_math_runs(c, font_size, theme, runs, fallbacks);
+                }
+                if sel.tag_name().name() == "Choice" && runs.len() > start {
+                    let text = child(node, "Fallback")
                         .map(|fallback| {
                             fallback
                                 .descendants()
@@ -1863,13 +1867,13 @@ pub(crate) fn push_math_runs(
                                 .filter_map(|n| n.text())
                                 .collect::<String>()
                         })
-                        .filter(|text| !text.is_empty());
-                    if let Some(TextRun::Math {
-                        fallback_text: retained,
-                        ..
-                    }) = runs.get_mut(first)
-                    {
-                        *retained = fallback_text;
+                        .unwrap_or_default();
+                    if !text.is_empty() {
+                        fallbacks.push(InlineEquationFallback {
+                            start,
+                            end: runs.len(),
+                            text,
+                        });
                     }
                 }
             }
@@ -1877,7 +1881,7 @@ pub(crate) fn push_math_runs(
         // a14:m wrapper (local name "m") holds an m:oMathPara.
         "m" => {
             for c in node.children().filter(|n| n.is_element()) {
-                push_math_runs(c, font_size, theme, runs);
+                push_math_runs(c, font_size, theme, runs, fallbacks);
             }
         }
         _ => {}
@@ -2065,6 +2069,7 @@ pub(crate) fn parse_paragraph(
         finalize_latin_face(defaults.font_family.as_deref(), theme, defaults.language());
 
     let mut runs = Vec::new();
+    let mut math_fallbacks = Vec::new();
     for node in p_node.children().filter(|n| n.is_element()) {
         match node.tag_name().name() {
             "r" => {
@@ -2106,7 +2111,7 @@ pub(crate) fn parse_paragraph(
             // math as a bare `a14:m` (local name "m") directly under `a:p`, and
             // also inside `mc:AlternateContent`; both reach push_math_runs.
             "oMath" | "oMathPara" | "AlternateContent" | "m" => {
-                push_math_runs(node, def_font_size, theme, &mut runs);
+                push_math_runs(node, def_font_size, theme, &mut runs, &mut math_fallbacks);
             }
             // ECMA-376 §21.1.2.2.7: a:fld has the same rPr/t content as a:r.
             // Resolve its formatting through the run cascade so defRPr and
@@ -2177,6 +2182,7 @@ pub(crate) fn parse_paragraph(
         ea_ln_brk,
         font_algn,
         runs,
+        math_fallbacks,
         end_run_properties,
     }
 }

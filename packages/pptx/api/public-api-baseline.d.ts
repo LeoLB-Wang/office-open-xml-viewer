@@ -1417,6 +1417,11 @@ export interface OpenedModelSource<TArchive> {
 }
 export function openExternalHyperlink(url: string, allowed?: readonly string[], win?: Pick<Window, 'open'> | undefined): boolean;
 export interface Paragraph extends Paragraph__emitterCollision1 {
+    mathFallbacks?: {
+        start: number;
+        end: number;
+        text: string;
+    }[];
     eaLnBrk: boolean;
     fontAlgn?: 't' | 'ctr' | 'b';
     defTabSz?: number;

@@ -252,3 +252,12 @@ it.each(['shape', 'table'])('preloads override defaults and %s equation preview 
   expect(pptxSlideOfficeFontRequests(slide, 'Parent Heading', 'Parent Body'))
     .toEqual([{ family: 'Calibri', weight: 700, style: 'normal' }]);
 });
+
+it('preloads script fonts present only in an inline equation branch preview', () => {
+  const slide = { elements: [{ type: 'shape', textBody: { paragraphs: [{ runs: [],
+    mathFallbacks: [{ start: 0, end: 2, text: '漢字かな' }],
+  }] } }] } as unknown as Slide;
+  const fonts = new PptxFontPreloadAccumulator('Calibri', 'Calibri');
+  fonts.addSlide(slide);
+  expect(fonts.names()).toContain('Noto Sans JP');
+});

@@ -7407,7 +7407,8 @@ mod tests {
             .unwrap();
         let theme = HashMap::new();
         let mut runs = Vec::new();
-        push_math_runs(ac, Some(18.0), &theme, &mut runs);
+        let mut fallbacks = Vec::new();
+        push_math_runs(ac, Some(18.0), &theme, &mut runs, &mut fallbacks);
         assert_eq!(runs.len(), 1, "exactly one math run, fallback ignored");
         match &runs[0] {
             TextRun::Math {
@@ -7419,12 +7420,77 @@ mod tests {
                 assert!(*display, "oMathPara → display math");
                 assert_eq!(*font_size, Some(18.0));
                 assert_eq!(nodes_to_text(nodes), "x");
-                let TextRun::Math { fallback_text, .. } = &runs[0] else {
-                    unreachable!()
-                };
-                assert_eq!(fallback_text.as_deref(), Some("fallback"));
+                assert_eq!(fallbacks.len(), 1);
+                assert_eq!((fallbacks[0].start, fallbacks[0].end), (0, 1));
+                assert_eq!(fallbacks[0].text, "fallback");
             }
             other => panic!("expected math run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_math_retains_one_fallback_for_the_complete_choice_range() {
+        let equation = "<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>";
+        for (choice, expected_previews) in [
+            (
+                format!("<a14:m>{equation}</a14:m><a14:m>{equation}</a14:m>"),
+                vec!["complete preview"],
+            ),
+            (
+                format!("<a14:m><m:oMathPara>{equation}{equation}</m:oMathPara></a14:m>"),
+                vec!["complete preview"],
+            ),
+            (
+                format!(
+                    r#"<mc:AlternateContent><mc:Choice Requires="a14"><a14:m>{equation}{equation}</a14:m></mc:Choice>
+              <mc:Fallback><r><t>inner preview</t></r></mc:Fallback></mc:AlternateContent>"#
+                ),
+                vec!["inner preview", "complete preview"],
+            ),
+        ] {
+            let xml = format!(
+                r#"<mc:AlternateContent
+                xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"
+                xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+                <mc:Choice Requires="a14">{choice}</mc:Choice>
+                <mc:Fallback><r><t>complete preview</t></r></mc:Fallback>
+                </mc:AlternateContent>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let mut runs = Vec::new();
+            let mut fallbacks = Vec::new();
+            // A preceding run makes the retained range paragraph-relative.
+            push_math_runs(
+                doc.descendants().find(|n| n.has_tag_name("oMath")).unwrap(),
+                None,
+                &HashMap::new(),
+                &mut runs,
+                &mut fallbacks,
+            );
+            push_math_runs(
+                doc.root_element(),
+                None,
+                &HashMap::new(),
+                &mut runs,
+                &mut fallbacks,
+            );
+            assert_eq!(runs.len(), 3);
+            assert_eq!(
+                fallbacks
+                    .iter()
+                    .map(|f| f.text.as_str())
+                    .collect::<Vec<_>>(),
+                expected_previews
+            );
+            assert!(fallbacks.iter().all(|f| (f.start, f.end) == (1, 3)));
+            assert!(runs.iter().all(|run| matches!(
+                run,
+                TextRun::Math {
+                    fallback_text: None,
+                    ..
+                }
+            )));
         }
     }
 
@@ -7446,7 +7512,7 @@ mod tests {
         let doc = roxmltree::Document::parse(xml).unwrap();
         let theme = HashMap::new();
         let mut runs = Vec::new();
-        push_math_runs(doc.root_element(), None, &theme, &mut runs);
+        push_math_runs(doc.root_element(), None, &theme, &mut runs, &mut Vec::new());
         assert_eq!(runs.len(), 1);
         match &runs[0] {
             TextRun::Math {

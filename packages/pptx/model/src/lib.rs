@@ -1147,6 +1147,20 @@ pub struct TabStop {
     pub algn: String,
 }
 
+/// Inline MCE recovery retains one alternative for the complete selected run
+/// range [start, end), not one copy per equation (ECMA-376 Part 3 §§9.3–9.4).
+/// Requires-based selection is normative; conversion-failure recovery is library
+/// policy. Only the authored fallback's plain text is retained here.
+/// Nested alternatives are emitted inner first, so equal ranges end with the
+/// outermost alternative.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineEquationFallback {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Paragraph {
@@ -1215,6 +1229,8 @@ pub struct Paragraph {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_algn: Option<String>,
     pub runs: Vec<TextRun>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub math_fallbacks: Vec<InlineEquationFallback>,
     /// Formatting at the insertion point after the last character.  It is
     /// never merged into existing a:r/a:fld runs (ECMA-376 §21.1.2.2.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1251,7 +1267,8 @@ pub enum TextRun {
     /// for `m:oMathPara` (block) math, false for inline `m:oMath`.
     #[serde(rename_all = "camelCase")]
     Math {
-        /// Text in an inline mc:Fallback, retained until rendering succeeds.
+        /// Legacy per-equation preview; newly parsed inline MCE alternatives use
+        /// Paragraph.math_fallbacks to preserve the complete branch boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fallback_text: Option<String>,
         nodes: Vec<MathNode>,

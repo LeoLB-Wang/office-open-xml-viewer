@@ -73,6 +73,11 @@ export type Bullet = CoreBullet | BlipBullet;
  * variant narrow `bullet` with {@link asBullet} / a `type === 'blip'` check.
  */
 export interface Paragraph extends CoreParagraph {
+  /** Inline MCE alternatives for complete selected run ranges [start, end).
+   * Part 3 §§9.3–9.4 selects a whole branch. Library recovery substitutes its
+   * authored plain-text preview once if any equation in that range fails.
+   * Nested alternatives are ordered inner first, including equal ranges. */
+  mathFallbacks?: { start: number; end: number; text: string }[];
   /**
    * `<a:pPr eaLnBrk>` (ECMA-376 §21.1.2.2.7, xsd:boolean, default true). When
    * true, East Asian text may break at character boundaries (kinsoku rules);

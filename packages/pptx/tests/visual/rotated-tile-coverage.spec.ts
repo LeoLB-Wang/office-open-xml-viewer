@@ -4,8 +4,7 @@ test('nonrotating tiles cover the complete non-square shape with rotation and re
   await page.route('**/tile-probe.html', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html>' }));
   await page.goto('/tile-probe.html');
   const results = await page.evaluate(async () => {
-    const modulePath = '/src/renderer.ts';
-    const { paintPreparedShapeImageFill } = await import(/* @vite-ignore */ modulePath) as typeof import('../../src/renderer.js');
+    const { paintPreparedShapeImageFill } = await import('/src/renderer.ts') as typeof import('../../src/renderer.js');
     const tile = new OffscreenCanvas(4, 2);
     const tileCtx = tile.getContext('2d')!;
     tileCtx.fillStyle = '#FF0000';

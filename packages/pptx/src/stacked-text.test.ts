@@ -340,10 +340,11 @@ it.each(['wordArtVert', 'wordArtVertRtl'])('draws one marker per paragraph acros
   expect(calls.find(c => c.text === 'A')?.y).toBeGreaterThan(calls.find(c => c.text === '3.')!.y);
 });
 
-it.each(['horz', 'wordArtVert', 'wordArtVertRtl'])('uses retained equation fallback text in %s', async (vert) => {
+it.each(['horz', 'wordArtVert', 'wordArtVertRtl'])('replaces a complete inline equation branch in %s', async (vert) => {
   const b = body('', vert);
-  b.paragraphs[0].runs = [{ type: 'math', nodes: [{ kind: 'run', text: 'x', style: 'roman' }], display: false,
-    fontSize: 18, fallbackText: 'authored preview' }];
+  b.paragraphs[0].runs = ['x', 'y'].map(text => ({ type: 'math',
+    nodes: [{ kind: 'run', text, style: 'roman' }], display: false, fontSize: 18 }));
+  b.paragraphs[0].mathFallbacks = [{ start: 0, end: 2, text: 'authored preview' }];
   await prepareSlideMath({ elements: [{ type: 'shape', textBody: b }] } as unknown as import('./types.js').Slide,
     { loadMathJax: async () => {}, mathMLToSvg: async () => { throw new Error('conversion'); } });
   const { ctx, calls } = mockCtx();

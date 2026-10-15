@@ -472,6 +472,7 @@ fn default_paragraph() -> Paragraph {
         ea_ln_brk: true,
         font_algn: None,
         runs: Vec::new(),
+        math_fallbacks: Vec::new(),
         end_run_properties: None,
     }
 }

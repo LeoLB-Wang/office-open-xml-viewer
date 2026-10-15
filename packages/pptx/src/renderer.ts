@@ -857,7 +857,7 @@ export async function prepareSlideMath(slide: Slide, math: MathRenderer): Promis
  * preview. This is library failure policy, not a substitute Office equation. */
 function paintEquation(ctx: CanvasRenderingContext2D, style: LayoutSegment, x: number, y: number) {
   const equation = style.math!;
-  const render = mathRenders.get(equation.nodes);
+  const render = equation.unavailable ? undefined : mathRenders.get(equation.nodes);
   const height = equation.ascent + equation.descent;
   if (!(equation.width > 0 && height > 0)) return;
   if (render) ctx.drawImage(tintedMathImage(render, style.color), x, y, equation.width, height);
@@ -1690,7 +1690,35 @@ export function paragraphInputRuns(
   // The line-metric mark of every a:br, keyed by its input index (see
   // `followingMark` in layoutParagraph).
   const breakMarks = new Map<number, LayoutSegment>();
+  // Runtime recovery is library policy; Part 3 §§9.3–9.4 defines a complete
+  // MCE alternative, never a per-equation preview. Prefix counts make nested
+  // branch failure checks linear. The outermost failed range wins (the parser
+  // emits inner alternatives first, including equal ranges), suppressing
+  // even successfully converted Choice equations, without rewriting the model
+  // or shifting the source run IDs of surrounding text. Both horizontal and
+  // stacked layout consume this same projection.
+  let previews: Map<number, { end: number; text: string }> | undefined;
+  if (para.mathFallbacks?.length) {
+    previews = new Map();
+    const failures = [0];
+    for (const run of para.runs) {
+      failures.push(failures[failures.length - 1]
+        + (run.type === 'math' && failedMath.has(run.nodes) ? 1 : 0));
+    }
+    for (const fallback of para.mathFallbacks) {
+      const { start, end } = fallback;
+      if (Number.isInteger(start) && Number.isInteger(end) && start >= 0
+        && end <= para.runs.length && end > start && para.runs[start].type === 'math'
+        && failures[end] > failures[start] && end >= (previews.get(start)?.end ?? start)) {
+        previews.set(start, fallback);
+      }
+    }
+  }
+  let previewEnd = 0;
   for (const [sourceRunId, run] of para.runs.entries()) {
+    if (sourceRunId < previewEnd) continue;
+    const preview = previews?.get(sourceRunId);
+    if (preview) previewEnd = preview.end;
     if (run.type !== 'text') seam = null;
     if (run.type === 'break') {
       const sizePx = run.fontSize != null
@@ -1718,11 +1746,11 @@ export function paragraphInputRuns(
       continue;
     }
     if (run.type === 'math') {
-      const render = mathRenders.get(run.nodes);
+      const render = preview ? undefined : mathRenders.get(run.nodes);
       const emPx = run.fontSize != null
         ? run.fontSize * PT_TO_EMU * scale * fontScale : defaultFontSizePx;
-      const unavailable = !render && failedMath.has(run.nodes);
-      const fallbackText = unavailable ? run.fallbackText : undefined;
+      const unavailable = !!preview || (!render && failedMath.has(run.nodes));
+      const fallbackText = preview?.text ?? (unavailable ? run.fallbackText : undefined);
       if (measureCtx) measureCtx.font = `${emPx}px sans-serif`;
       const width = render ? render.widthEm * emPx : unavailable
         ? measureCtx?.measureText(fallbackText ?? 'Equation unavailable').width ?? 0 : 0;
