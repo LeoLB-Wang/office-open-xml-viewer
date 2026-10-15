@@ -144,6 +144,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify companion version lockstep
+        run: pnpm check:versions
+
       # ast-grep lint runs on source only (no WASM needed) — fail fast.
       - name: ast-grep rule tests
         run: pnpm lint:test
@@ -211,6 +214,17 @@ jobs:
           pnpm check:legacy-wasm-exports
           pnpm check:public-type-exports
           pnpm check:public-api:built
+          pnpm check:no-inline-wasm
+
+      - name: Install Playwright Chrome (only if missing)
+        timeout-minutes: 5
+        run: |
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            pnpm exec playwright install chrome --with-deps
+          fi
+
+      - name: Verify both packed packages in Node and Vite
+        run: pnpm test:packed-packages
 
   # Rendering smoke: boots Storybook, drives the Layouts stories in a real
   # Chrome, and asserts every canvas receives ink. The only CI job that
@@ -302,10 +316,10 @@ jobs:
 
       - name: Published render-worker smoke
         run: |
-          # This job validates runtime assets, not declarations. Declaration
-          # compatibility has its own clean-build job; avoiding a second
-          # rolldown-plugin-dts invocation also keeps this browser job focused.
+          # Root declarations have their own clean-build job. Build the
+          # companion too: the browser fixture uses its emitted source modules.
           pnpm build:runtime
+          pnpm build:legacy
           pnpm check:model-source-lazy-graph
           pnpm check:model-source-lazy-runtime
           pnpm check:production-render-workers
