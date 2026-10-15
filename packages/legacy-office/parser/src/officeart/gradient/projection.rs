@@ -54,7 +54,7 @@ pub(crate) struct Requirements {
 fn charge(budget: &mut usize, amount: usize, message: &str) -> Result<(), String> {
     *budget = budget
         .checked_sub(amount)
-        .ok_or_else(|| unsupported(message))?;
+        .ok_or_else(|| crate::rejection::resource(message))?;
     Ok(())
 }
 
@@ -538,7 +538,8 @@ mod tests {
                 &mut scratch.clone(),
                 &mut retained.clone()
             )
-            .is_err());
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
         }
         let (mut work, mut scratch, mut retained) = needs;
         assert!(project(

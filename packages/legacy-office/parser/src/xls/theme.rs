@@ -137,7 +137,7 @@ impl Colors {
             }
             total = total
                 .checked_add(entry.size())
-                .ok_or_else(|| unsupported("BIFF theme size overflow"))?;
+                .ok_or_else(|| crate::rejection::resource("BIFF theme size overflow"))?;
             if total > MAX_EXPANDED_BYTES || entry.size() > MAX_PART_BYTES as u64 {
                 return Err(crate::rejection::resource(
                     "BIFF theme ZIP retention budget exceeded",
@@ -304,10 +304,13 @@ fn normalize(source: &str, target: &str) -> Result<String, String> {
 }
 
 fn preflight(bytes: &[u8]) -> Result<usize, String> {
-    if bytes.len() < 22 || bytes.len() > MAX_ZIP_BYTES {
+    if bytes.len() > MAX_ZIP_BYTES {
         return Err(crate::rejection::resource(
             "BIFF theme ZIP byte budget exceeded",
         ));
+    }
+    if bytes.len() < 22 {
+        return Err(unsupported("truncated BIFF theme ZIP"));
     }
     // Bound entry-table allocation before invoking the ZIP reader. ZIP64,
     // split archives and trailing data are outside this small embedded subset.
@@ -319,10 +322,14 @@ fn preflight(bytes: &[u8]) -> Result<usize, String> {
         })
         .ok_or_else(|| unsupported("missing BIFF theme ZIP directory"))?;
     let count = usize::from(u16_at(bytes, end + 10)?);
+    if count > MAX_ENTRIES {
+        return Err(crate::rejection::resource(
+            "BIFF theme ZIP entry budget exceeded",
+        ));
+    }
     if u16_at(bytes, end + 4)? != 0
         || u16_at(bytes, end + 6)? != 0
         || usize::from(u16_at(bytes, end + 8)?) != count
-        || count > MAX_ENTRIES
         || u32_at(bytes, end + 12)? as u64 + u32_at(bytes, end + 16)? as u64 != end as u64
     {
         return Err(unsupported("unsupported BIFF theme ZIP directory"));
@@ -367,6 +374,25 @@ mod tests {
         data[..2].copy_from_slice(&0x0896u16.to_le_bytes());
         data.extend_from_slice(package);
         data
+    }
+
+    #[test]
+    fn entry_count_budget_is_distinct_from_invalid_directory_syntax() {
+        let parts: Vec<_> = (0..=MAX_ENTRIES)
+            .map(|i| (format!("{i}.xml"), "<x/>".to_owned()))
+            .collect();
+        let refs: Vec<_> = parts
+            .iter()
+            .map(|(name, xml)| (name.as_str(), xml.clone()))
+            .collect();
+        assert!(Colors::package(&test_zip(&refs))
+            .err()
+            .unwrap()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+        assert!(Colors::package(b"bad")
+            .err()
+            .unwrap()
+            .starts_with("UNSUPPORTED:"));
     }
 
     #[test]

@@ -244,14 +244,16 @@ pub(in crate::ppt) fn paragraphs_with_axes(
 }
 
 fn charge(budget: &mut usize, message: &str) -> Result<(), String> {
-    *budget = budget.checked_sub(1).ok_or_else(|| unsupported(message))?;
+    *budget = budget
+        .checked_sub(1)
+        .ok_or_else(|| crate::rejection::resource(message))?;
     Ok(())
 }
 
 fn charge_units(budget: &mut usize, units: usize, message: &str) -> Result<(), String> {
     *budget = budget
         .checked_sub(units)
-        .ok_or_else(|| unsupported(message))?;
+        .ok_or_else(|| crate::rejection::resource(message))?;
     Ok(())
 }
 
@@ -989,6 +991,13 @@ mod tests {
     }
 
     #[test]
+    fn direct_text_work_quota_keeps_resource_classification() {
+        assert!(paragraphs("A", &[], Context::default(), &mut 0, &mut 100)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+    }
+
+    #[test]
     fn uniform_text_storage_tracks_runs_not_character_count() {
         let text = "A".repeat(2048);
         let length = u32::try_from(text.len() + 1).unwrap();
@@ -1013,7 +1022,7 @@ mod tests {
         assert!(
             paragraphs(&text, &style, context, &mut 10_000, &mut (required - 1))
                 .unwrap_err()
-                .contains("model budget")
+                .starts_with("LEGACY_RESOURCE_LIMIT:")
         );
     }
 

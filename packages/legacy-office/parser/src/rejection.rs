@@ -7,6 +7,7 @@ pub(crate) fn unsupported(message: impl Into<String>) -> String {
     let message = message.into();
     if message.starts_with("LEGACY_RESOURCE_LIMIT:")
         || message.starts_with("LEGACY_UNSUPPORTED_ENCRYPTION:")
+        || message.starts_with("OOXML_RESOURCE_LIMIT:")
     {
         message
     } else {
@@ -36,6 +37,8 @@ mod tests {
         );
         let quota = resource("retained model budget");
         assert_eq!(unsupported(unsupported(quota.clone())), quota);
+        let measured = "OOXML_RESOURCE_LIMIT:{\"code\":\"ooxml-resource-limit\"}";
+        assert_eq!(unsupported(unsupported(measured)), measured);
         let encrypted = encryption("encrypted input");
         assert_eq!(unsupported(unsupported(encrypted.clone())), encrypted);
     }

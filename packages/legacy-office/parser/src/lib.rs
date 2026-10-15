@@ -106,7 +106,7 @@ pub fn inspect_ppt_direct(data: &[u8]) -> Result<PptDirectInspection, String> {
     if data.len() > 256 * 1024 * 1024 {
         return Err("LEGACY_RESOURCE_LIMIT:PPT inspection source byte budget exceeded".into());
     }
-    let cfb = cfb::CompoundFile::open(data).map_err(|e| format!("UNSUPPORTED:{e}"))?;
+    let cfb = cfb::CompoundFile::open(data).map_err(crate::rejection::unsupported)?;
     Ok(PptDirectInspection {
         inner: ppt::direct_session::DirectSession::new(&cfb)?,
     })
@@ -117,5 +117,5 @@ fn inspection_source(data: &[u8]) -> Result<cfb::CompoundFile<'_>, String> {
     if data.len() > 256 * 1024 * 1024 {
         return Err("LEGACY_RESOURCE_LIMIT:XLS inspection source byte budget exceeded".into());
     }
-    cfb::CompoundFile::open(data).map_err(|e| format!("UNSUPPORTED:{e}"))
+    cfb::CompoundFile::open(data).map_err(crate::rejection::unsupported)
 }

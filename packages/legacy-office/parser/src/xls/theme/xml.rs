@@ -68,8 +68,14 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Node, String> {
         }
         match event {
             Event::Start(element) => {
-                if stack.len() >= 32 || (stack.is_empty() && root.is_some()) {
-                    return Err(unsupported("BIFF theme XML depth or root violation"));
+                // Implementation tree ceiling, independent of XML well-formedness.
+                if stack.len() >= 32 {
+                    return Err(crate::rejection::resource(
+                        "BIFF theme XML depth budget exceeded",
+                    ));
+                }
+                if stack.is_empty() && root.is_some() {
+                    return Err(unsupported("BIFF theme XML root violation"));
                 }
                 let uri = match ns {
                     ResolveResult::Bound(n) => {
@@ -183,7 +189,12 @@ mod tests {
     }
     #[test]
     fn bounds_depth_attributes_and_event_fanout() {
-        assert!(parse(format!("{}{}", "<x>".repeat(33), "</x>".repeat(33)).as_bytes()).is_err());
+        assert!(
+            parse(format!("{}{}", "<x>".repeat(33), "</x>".repeat(33)).as_bytes())
+                .err()
+                .unwrap()
+                .starts_with("LEGACY_RESOURCE_LIMIT:")
+        );
         assert!(parse(
             format!(
                 "<x {}/>",

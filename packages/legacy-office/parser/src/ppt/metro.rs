@@ -31,8 +31,9 @@
 //!   alternative, with the binary's transform, identifier and characters;
 //!   a binary freeform keeps its outline, and a placeholder inherits locally
 //!   omitted shape properties from the binary projection;
-//! - anything else fails closed as unsupported: an oversized, over-budget,
-//!   ambiguous or unreadable package or theme, a part that is not a shape or
+//! - resource and encryption failures keep their own classifications;
+//! - representational failures reject as unsupported: an ambiguous or
+//!   unreadable package or theme, a part that is not a shape or
 //!   connector, unverified relationship references, and a compared attribute that the
 //!   two forms state in ways this reader cannot equate. Placeholder shape
 //!   properties omitted locally inherit from the binary projection; their
@@ -89,7 +90,7 @@ pub(in crate::ppt) enum Theme {
         /// matrix once when checking explicit line/effect references.
         format_scheme: std::cell::OnceCell<ooxml_common::theme::ThemeFormatScheme>,
     },
-    /// Malformed, oversized or ambiguous: no alternative XML on this
+    /// Malformed or ambiguous: no alternative XML on this
     /// master's slides can be resolved.
     Unreadable,
 }
@@ -135,88 +136,130 @@ pub(in crate::ppt) fn master_theme(
     let Some(theme) = themes.next() else {
         return Ok(None);
     };
-    let mut budget_exceeded = false;
-    let mut readable = || -> Option<Theme> {
+    let unreadable = || unsupported("unreadable PowerPoint round-trip theme");
+    let mut readable = || -> Result<Theme, String> {
         if themes.next().is_some() {
-            return None;
+            return Err(unreadable());
         }
         let mut maps = records.iter().filter(|r| r.kind == 0x040f);
         let clr_map = match (maps.next(), maps.next()) {
             (Some(map), None) => {
-                if super::charge_text(decoded_budget, map.payload.len()).is_err() {
-                    budget_exceeded = true;
-                    return None;
-                }
-                Some(std::str::from_utf8(map.payload).ok()?.to_owned())
+                super::charge_text(decoded_budget, map.payload.len())?;
+                Some(
+                    std::str::from_utf8(map.payload)
+                        .map_err(|_| unreadable())?
+                        .to_owned(),
+                )
             }
             (None, None) => None,
-            _ => return None,
+            _ => return Err(unreadable()),
         };
-        Some(Theme::Readable {
-            theme_xml: theme_part(theme.payload, decoded_budget, &mut budget_exceeded)?,
+        Ok(Theme::Readable {
+            theme_xml: theme_part(theme.payload, decoded_budget)?,
             clr_map,
             format_scheme: std::cell::OnceCell::new(),
         })
     };
-    let theme = readable().unwrap_or(Theme::Unreadable);
-    if budget_exceeded {
-        return Err(crate::rejection::resource(
-            "PowerPoint theme decoded byte budget exceeded",
-        ));
+    // Only representational failures can be deferred to the shape's theme
+    // agreement gate. Never erase a resource or encryption failure here.
+    match readable() {
+        Ok(theme) => Ok(Some(theme)),
+        Err(error) if error.starts_with("UNSUPPORTED:") => Ok(Some(Theme::Unreadable)),
+        Err(error) => Err(error),
     }
-    Ok(Some(theme))
 }
 
-fn theme_part(
-    package: &[u8],
-    decoded_budget: &mut usize,
-    budget_exceeded: &mut bool,
-) -> Option<String> {
-    use std::io::Read;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(package)).ok()?;
-    if archive.len() > MAX_THEME_ENTRIES {
-        return None;
+/// Inspect raw metadata before opening: passwordless ZIP access rejects
+/// encrypted entries before it can return a ZipFile. These embedded-part
+/// ceilings are implementation resource policy, not representational limits.
+fn open_part<'a, R: std::io::Read + std::io::Seek>(
+    archive: &'a mut zip::ZipArchive<R>,
+    name: &str,
+    maximum: u64,
+) -> Result<zip::read::ZipFile<'a>, String> {
+    let unreadable = || unsupported("unreadable PowerPoint embedded part");
+    let index = crate::opc_part::entry_index(archive, name).ok_or_else(unreadable)?;
+    {
+        let entry = archive.by_index_raw(index).map_err(|_| unreadable())?;
+        if entry.encrypted() {
+            return Err(crate::rejection::encryption(
+                "encrypted PowerPoint embedded ZIP entry",
+            ));
+        }
+        if entry.size() > maximum {
+            return Err(crate::rejection::resource(
+                "PowerPoint embedded part byte budget exceeded",
+            ));
+        }
     }
-    let mut read = |name: &str| -> Option<String> {
-        let index = crate::opc_part::entry_index(&archive, name)?;
-        let entry = archive.by_index(index).ok()?;
-        if entry.size() > MAX_THEME_BYTES || entry.encrypted() {
-            return None;
+    archive.by_index(index).map_err(|_| unreadable())
+}
+
+fn theme_part(package: &[u8], decoded_budget: &mut usize) -> Result<String, String> {
+    use std::io::Read;
+    let unreadable = || unsupported("unreadable PowerPoint round-trip theme");
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(package)).map_err(|_| unreadable())?;
+    if archive.len() > MAX_THEME_ENTRIES {
+        return Err(crate::rejection::resource(
+            "PowerPoint theme ZIP entry budget exceeded",
+        ));
+    }
+    // Even an entry not selected by the relationships must retain its
+    // encryption classification, matching the alternative-shape preflight.
+    for index in 0..archive.len() {
+        let entry = archive.by_index_raw(index).map_err(|_| unreadable())?;
+        if entry.encrypted() {
+            return Err(crate::rejection::encryption(
+                "encrypted PowerPoint theme ZIP entry",
+            ));
         }
-        // Charge every inflated theme/relationship part before allocation.
-        // All main masters share this budget; per-entry ZIP limits alone do
-        // not bound retained themes from a highly compressed presentation.
-        let declared_bytes = usize::try_from(entry.size()).ok()?;
-        if super::charge_text(decoded_budget, declared_bytes).is_err() {
-            *budget_exceeded = true;
-            return None;
+        if entry.size() > MAX_THEME_BYTES {
+            return Err(crate::rejection::resource(
+                "PowerPoint theme part byte budget exceeded",
+            ));
         }
+    }
+    let mut read = |name: &str| -> Result<String, String> {
+        let entry = open_part(&mut archive, name, MAX_THEME_BYTES)?;
+        // Charge every inflated part before allocation. All main masters
+        // share this budget; per-entry limits alone do not bound retention.
+        let declared_bytes = usize::try_from(entry.size()).map_err(|_| {
+            crate::rejection::resource("PowerPoint theme size exceeds this platform")
+        })?;
+        super::charge_text(decoded_budget, declared_bytes)?;
         let mut text = String::new();
         entry
             .take(declared_bytes as u64 + 1)
             .read_to_string(&mut text)
-            .ok()?;
-        // ZIP metadata is untrusted. Never retain actual inflated bytes in
-        // excess of the declared, precharged size (including forged sizes).
-        (text.len() == declared_bytes).then_some(text)
+            .map_err(|_| unreadable())?;
+        // Forged ZIP lengths are malformed, independently of resource policy.
+        if text.len() != declared_bytes {
+            return Err(unreadable());
+        }
+        Ok(text)
     };
     // Follow the package relationships: root -> theme manager -> theme.
-    let target = |rels: &str, source: &str, kind: &str| -> Option<String> {
-        let doc = roxmltree::Document::parse(rels).ok()?;
+    let target = |rels: &str, source: &str, kind: &str| -> Result<String, String> {
+        let doc = parse_xml(rels)?;
         let mut found = doc.root_element().children().filter(|n| {
             n.is_element()
                 && n.tag_name().name() == "Relationship"
                 && n.attribute("Type").is_some_and(|t| t.ends_with(kind))
         });
-        let first = found.next()?;
+        let first = found.next().ok_or_else(unreadable)?;
         if first
             .attribute("TargetMode")
             .is_some_and(|mode| mode != "Internal")
             || found.next().is_some()
         {
-            return None;
+            return Err(unreadable());
         }
-        ooxml_common::rels::resolve_part_name(source, first.attribute("Target")?)
+        ooxml_common::rels::resolve_part_name(
+            source,
+            first.attribute("Target").ok_or_else(unreadable)?,
+        )
+        .ok_or_else(unreadable)
     };
     let manager = target(&read("_rels/.rels")?, "", "/officeDocument")?;
     let (dir, name) = manager.rsplit_once('/').unwrap_or(("", &manager));
@@ -227,10 +270,22 @@ fn theme_part(
     };
     let theme = target(&read(&rels)?, &manager, "/theme")?;
     let xml = read(&theme)?;
-    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let doc = parse_xml(&xml)?;
     let root = doc.root_element();
-    (root.tag_name().name() == "theme" && ooxml_common::ns::is_a_ns(root.tag_name().namespace()))
-        .then_some(xml)
+    if root.tag_name().name() != "theme" || !ooxml_common::ns::is_a_ns(root.tag_name().namespace())
+    {
+        return Err(unreadable());
+    }
+    Ok(xml)
+}
+
+fn parse_xml(xml: &str) -> Result<roxmltree::Document<'_>, String> {
+    ooxml_common::depth::parse_guarded(xml).map_err(|error| match error {
+        ooxml_common::depth::GuardedParseError::TooDeep => {
+            crate::rejection::resource("PowerPoint embedded XML depth budget exceeded")
+        }
+        _ => unsupported("unreadable PowerPoint embedded XML"),
+    })
 }
 
 /// What the binary shape records, for comparison with its alternative.
@@ -321,17 +376,13 @@ fn alternative_part(blob: &[u8]) -> Result<Option<(String, String)>, String> {
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML package");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
-    let index = crate::opc_part::entry_index(&archive, "_rels/.rels").ok_or_else(unreadable)?;
-    let entry = archive.by_index(index).map_err(|_| unreadable())?;
-    if entry.size() > MAX_PART_BYTES || entry.encrypted() {
-        return Err(unreadable());
-    }
+    let entry = open_part(&mut archive, "_rels/.rels", MAX_PART_BYTES)?;
     let mut rels = String::new();
     entry
         .take(MAX_PART_BYTES + 1)
         .read_to_string(&mut rels)
         .map_err(|_| unreadable())?;
-    let doc = roxmltree::Document::parse(&rels).map_err(|_| unreadable())?;
+    let doc = parse_xml(&rels)?;
     let mut found = None;
     for node in doc.root_element().children().filter(|n| n.is_element()) {
         if node.tag_name().name() != "Relationship" {
@@ -370,18 +421,16 @@ fn read_blob_reference_part<R: std::io::Read + std::io::Seek>(
 ) -> Result<String, String> {
     use std::io::Read;
     let unreadable = || unverifiable("relationship");
-    let index = crate::opc_part::entry_index(archive, name).ok_or_else(unreadable)?;
-    let entry = archive.by_index(index).map_err(|_| unreadable())?;
-    if entry.size() > MAX_PART_BYTES || entry.encrypted() {
-        return Err(unreadable());
-    }
+    let entry = open_part(archive, name, MAX_PART_BYTES)?;
     let mut text = String::new();
     entry
         .take(MAX_PART_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(|_| unreadable())?;
     if text.len() as u64 > MAX_PART_BYTES {
-        return Err(unreadable());
+        return Err(crate::rejection::resource(
+            "PowerPoint embedded part byte budget exceeded",
+        ));
     }
     Ok(text)
 }
@@ -396,10 +445,12 @@ fn validate_blob_references(blob: &[u8], part: &str) -> Result<(), String> {
     // with a huge number of tiny entries. Ordinary Office shape blobs are
     // much smaller; this limit makes the passive check bounded.
     if archive.len() > 128 {
-        return Err(unreadable());
+        return Err(crate::rejection::resource(
+            "PowerPoint alternative ZIP entry budget exceeded",
+        ));
     }
     let xml = read_blob_reference_part(&mut archive, part)?;
-    let doc = ooxml_common::depth::parse_guarded(&xml).map_err(|_| unreadable())?;
+    let doc = parse_xml(&xml)?;
     let ids: BTreeSet<&str> = doc
         .descendants()
         .flat_map(|node| node.attributes())
@@ -413,7 +464,7 @@ fn validate_blob_references(blob: &[u8], part: &str) -> Result<(), String> {
     }
     let rels_path = ooxml_common::rels::relationship_part_path(part);
     let rels = read_blob_reference_part(&mut archive, &rels_path)?;
-    let rels = ooxml_common::depth::parse_guarded(&rels).map_err(|_| unreadable())?;
+    let rels = parse_xml(&rels)?;
     let root = rels.root_element();
     if root.tag_name().name() != "Relationships"
         || root.tag_name().namespace()
@@ -468,7 +519,7 @@ fn sole_blob_image(blob: &[u8], part: &str, image_path: &str) -> Result<Vec<u8>,
     let unreadable = || unverifiable("relationship");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
     let xml = read_blob_reference_part(&mut archive, part)?;
-    let doc = ooxml_common::depth::parse_guarded(&xml).map_err(|_| unreadable())?;
+    let doc = parse_xml(&xml)?;
     let refs: Vec<_> = doc
         .descendants()
         .flat_map(|node| node.attributes().map(move |attribute| (node, attribute)))
@@ -480,7 +531,7 @@ fn sole_blob_image(blob: &[u8], part: &str, image_path: &str) -> Result<Vec<u8>,
     let id = refs[0].1.value();
     let rels_path = ooxml_common::rels::relationship_part_path(part);
     let rels = read_blob_reference_part(&mut archive, &rels_path)?;
-    let rels = ooxml_common::depth::parse_guarded(&rels).map_err(|_| unreadable())?;
+    let rels = parse_xml(&rels)?;
     let mut matching = rels.descendants().filter(|node| {
         node.is_element()
             && node.tag_name().name() == "Relationship"
@@ -505,18 +556,16 @@ fn sole_blob_image(blob: &[u8], part: &str, image_path: &str) -> Result<Vec<u8>,
     if target != image_path {
         return Err(unreadable());
     }
-    let index = crate::opc_part::entry_index(&archive, &target).ok_or_else(unreadable)?;
-    let entry = archive.by_index(index).map_err(|_| unreadable())?;
-    if entry.size() > MAX_PART_BYTES || entry.encrypted() {
-        return Err(unreadable());
-    }
+    let entry = open_part(&mut archive, &target, MAX_PART_BYTES)?;
     let mut bytes = Vec::new();
     entry
         .take(MAX_PART_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| unreadable())?;
     if bytes.len() as u64 > MAX_PART_BYTES {
-        return Err(unreadable());
+        return Err(crate::rejection::resource(
+            "PowerPoint embedded part byte budget exceeded",
+        ));
     }
     Ok(bytes)
 }
@@ -530,7 +579,7 @@ fn blob_hyperlinks_only(blob: &[u8], part: &str) -> Result<bool, String> {
     let unreadable = || unverifiable("relationship");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
     let xml = read_blob_reference_part(&mut archive, part)?;
-    let doc = ooxml_common::depth::parse_guarded(&xml).map_err(|_| unreadable())?;
+    let doc = parse_xml(&xml)?;
     let mut ids = BTreeSet::new();
     for node in doc.descendants() {
         for attr in node
@@ -548,7 +597,7 @@ fn blob_hyperlinks_only(blob: &[u8], part: &str) -> Result<bool, String> {
     }
     let rels_path = ooxml_common::rels::relationship_part_path(part);
     let rels = read_blob_reference_part(&mut archive, &rels_path)?;
-    let rels = ooxml_common::depth::parse_guarded(&rels).map_err(|_| unreadable())?;
+    let rels = parse_xml(&rels)?;
     Ok(ids.iter().all(|id| {
         rels.descendants()
             .filter(|n| {
@@ -583,7 +632,7 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
     let unreadable = || unverifiable("relationship");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
     let xml = read_blob_reference_part(&mut archive, part)?;
-    let doc = ooxml_common::depth::parse_guarded(&xml).map_err(|_| unreadable())?;
+    let doc = parse_xml(&xml)?;
     let mut ids = Vec::new();
     for node in doc.descendants() {
         for attr in node
@@ -606,7 +655,7 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
     }
     let rels_path = ooxml_common::rels::relationship_part_path(part);
     let rels = read_blob_reference_part(&mut archive, &rels_path)?;
-    let rels = ooxml_common::depth::parse_guarded(&rels).map_err(|_| unreadable())?;
+    let rels = parse_xml(&rels)?;
     let mut images = BTreeMap::new();
     for id in ids {
         let mut matches = rels.descendants().filter(|n| {
@@ -643,11 +692,7 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
             Some("jpg" | "jpeg") => "jpg",
             _ => return Err(unreadable()),
         };
-        let index = crate::opc_part::entry_index(&archive, &path).ok_or_else(unreadable)?;
-        let entry = archive.by_index(index).map_err(|_| unreadable())?;
-        if entry.size() > MAX_PART_BYTES || entry.encrypted() {
-            return Err(unreadable());
-        }
+        let entry = open_part(&mut archive, &path, MAX_PART_BYTES)?;
         let mut bytes = Vec::new();
         entry
             .take(MAX_PART_BYTES + 1)
@@ -658,7 +703,12 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
             "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
             _ => bytes.starts_with(&[0xff, 0xd8, 0xff]),
         };
-        if !signature || bytes.len() as u64 > MAX_PART_BYTES {
+        if bytes.len() as u64 > MAX_PART_BYTES {
+            return Err(crate::rejection::resource(
+                "PowerPoint embedded part byte budget exceeded",
+            ));
+        }
+        if !signature {
             return Err(unreadable());
         }
         images.insert(path, (extension, bytes));
@@ -676,8 +726,8 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
 /// pixels map to the XML foreground and black to the background. Decode only
 /// a single bounded GIF image; other encodings remain unverifiable.
 #[cfg(any(test, feature = "direct-ppt"))]
-fn binary_pattern_cells(bytes: &[u8]) -> Option<[u8; 8]> {
-    if bytes.len() > 4096 || bytes.len() < 26 || !matches!(&bytes[..6], b"GIF87a" | b"GIF89a") {
+fn pattern_image(bytes: &[u8]) -> Option<PatternImage> {
+    if bytes.len() < 26 || !matches!(&bytes[..6], b"GIF87a" | b"GIF89a") {
         return None;
     }
     let word = |at: usize| -> Option<u16> {
@@ -755,95 +805,141 @@ fn binary_pattern_cells(bytes: &[u8]) -> Option<[u8; 8]> {
                     data.extend_from_slice(bytes.get(at..at + size)?);
                     at += size;
                 }
-                pixels = Some(decode_pattern_lzw(&data, min_code)?);
+                pixels = Some((data, min_code));
             }
             0x3b => break,
             _ => return None,
         }
     }
-    let pixels = pixels?;
-    let mut rows = [0u8; 8];
-    for y in 0..8 {
-        for x in 0..8 {
-            let index = pixels[y * 10 + x];
-            if transparent == Some(index) {
-                return None;
-            }
-            let color = palette.get(usize::from(index) * 3..usize::from(index) * 3 + 3)?;
-            match color {
-                [255, 255, 255] => rows[y] |= 0x80 >> x,
-                [0, 0, 0] => {}
-                _ => return None,
+    let (data, min_code) = pixels?;
+    Some(PatternImage {
+        data,
+        min_code,
+        palette,
+        transparent,
+    })
+}
+
+#[cfg(any(test, feature = "direct-ppt"))]
+struct PatternImage {
+    data: Vec<u8>,
+    min_code: u8,
+    palette: Vec<u8>,
+    transparent: Option<u8>,
+}
+
+#[cfg(any(test, feature = "direct-ppt"))]
+fn binary_pattern_cells(bytes: &[u8]) -> Result<Option<[u8; 8]>, String> {
+    // Decoder admission policy, independent of the 10x10 pattern subset.
+    if bytes.len() > 4096 {
+        return Err(crate::rejection::resource(
+            "PowerPoint pattern GIF byte budget exceeded",
+        ));
+    }
+    let Some(PatternImage {
+        data,
+        min_code,
+        palette,
+        transparent,
+    }) = pattern_image(bytes)
+    else {
+        return Ok(None);
+    };
+    let Some(pixels) = decode_pattern_lzw(&data, min_code)? else {
+        return Ok(None);
+    };
+    Ok((|| {
+        let mut rows = [0u8; 8];
+        for y in 0..8 {
+            for x in 0..8 {
+                let index = pixels[y * 10 + x];
+                if transparent == Some(index) {
+                    return None;
+                }
+                let color = palette.get(usize::from(index) * 3..usize::from(index) * 3 + 3)?;
+                match color {
+                    [255, 255, 255] => rows[y] |= 0x80 >> x,
+                    [0, 0, 0] => {}
+                    _ => return None,
+                }
             }
         }
-    }
-    Some(rows)
+        Some(rows)
+    })())
 }
 
 /// GIF LZW streams are little-endian bit packed. The 10x10 admission bound
 /// caps both output and dictionary work, independent of compressed input.
 #[cfg(any(test, feature = "direct-ppt"))]
-fn decode_pattern_lzw(data: &[u8], min_code: u8) -> Option<Vec<u8>> {
-    let clear = 1usize << min_code;
-    let end = clear + 1;
-    let initial = || {
-        let mut table: Vec<Vec<u8>> = (0..clear).map(|value| vec![value as u8]).collect();
-        table.extend([Vec::new(), Vec::new()]);
-        table
-    };
-    let mut table = initial();
-    let mut width = usize::from(min_code) + 1;
-    let mut bit = 0usize;
-    let mut previous: Option<Vec<u8>> = None;
-    let mut output = Vec::with_capacity(100);
-    for _ in 0..512 {
-        if bit + width > data.len() * 8 {
-            return None;
-        }
-        let mut code = 0usize;
-        for shift in 0..width {
-            let position = bit + shift;
-            code |= usize::from((data[position / 8] >> (position % 8)) & 1) << shift;
-        }
-        bit += width;
-        if code == clear {
-            table = initial();
-            width = usize::from(min_code) + 1;
-            previous = None;
-            continue;
-        }
-        if code == end {
-            return (output.len() == 100).then_some(output);
-        }
-        let entry = if code < table.len() && !table[code].is_empty() {
-            table[code].clone()
-        } else if code == table.len() {
-            let mut entry = previous.clone()?;
-            entry.push(*entry.first()?);
-            entry
-        } else {
-            return None;
+fn decode_pattern_lzw(data: &[u8], min_code: u8) -> Result<Option<Vec<u8>>, String> {
+    (|| -> Option<Result<Vec<u8>, String>> {
+        let clear = 1usize << min_code;
+        let end = clear + 1;
+        let initial = || {
+            let mut table: Vec<Vec<u8>> = (0..clear).map(|value| vec![value as u8]).collect();
+            table.extend([Vec::new(), Vec::new()]);
+            table
         };
-        if output.len().checked_add(entry.len())? > 100 {
-            return None;
-        }
-        output.extend_from_slice(&entry);
-        if let Some(mut prev) = previous {
-            if table.len() < 4096 {
-                prev.push(*entry.first()?);
-                table.push(prev);
-                if table.len() == 1 << width && width < 12 {
-                    width += 1;
+        let mut table = initial();
+        let mut width = usize::from(min_code) + 1;
+        let mut bit = 0usize;
+        let mut previous: Option<Vec<u8>> = None;
+        let mut output = Vec::with_capacity(100);
+        for _ in 0..512 {
+            if bit + width > data.len() * 8 {
+                return None;
+            }
+            let mut code = 0usize;
+            for shift in 0..width {
+                let position = bit + shift;
+                code |= usize::from((data[position / 8] >> (position % 8)) & 1) << shift;
+            }
+            bit += width;
+            if code == clear {
+                table = initial();
+                width = usize::from(min_code) + 1;
+                previous = None;
+                continue;
+            }
+            if code == end {
+                return (output.len() == 100).then_some(Ok(output));
+            }
+            let entry = if code < table.len() && !table[code].is_empty() {
+                table[code].clone()
+            } else if code == table.len() {
+                let mut entry = previous.clone()?;
+                entry.push(*entry.first()?);
+                entry
+            } else {
+                return None;
+            };
+            if output.len().checked_add(entry.len())? > 100 {
+                return None;
+            }
+            output.extend_from_slice(&entry);
+            if let Some(mut prev) = previous {
+                if table.len() < 4096 {
+                    prev.push(*entry.first()?);
+                    table.push(prev);
+                    if table.len() == 1 << width && width < 12 {
+                        width += 1;
+                    }
                 }
             }
+            previous = Some(entry);
         }
-        previous = Some(entry);
-    }
-    None
+        Some(Err(crate::rejection::resource(
+            "PowerPoint pattern LZW work budget exceeded",
+        )))
+    })()
+    .transpose()
 }
 
 #[cfg(any(test, feature = "direct-ppt"))]
-fn same_binary_pattern(binary: &BinaryShape<'_>, alternative: &ShapeElement) -> Option<Verdict> {
+fn same_binary_pattern(
+    binary: &BinaryShape<'_>,
+    alternative: &ShapeElement,
+) -> Result<Option<Verdict>, String> {
     use pptx_model::Fill;
     let (
         Some(Fill::Image {
@@ -853,19 +949,25 @@ fn same_binary_pattern(binary: &BinaryShape<'_>, alternative: &ShapeElement) -> 
         Some(Fill::Pattern { fg, bg, preset }),
     ) = (&binary.element.fill, &alternative.fill)
     else {
-        return None;
+        return Ok(None);
     };
     let expected = match preset.as_str() {
         "pct30" => [0xaa, 0x44, 0xaa, 0x11, 0xaa, 0x44, 0xaa, 0x11],
         "ltUpDiag" => [0x11, 0x22, 0x44, 0x88, 0x11, 0x22, 0x44, 0x88],
-        _ => return Some(Verdict::Unverifiable("fill")),
+        _ => return Ok(Some(Verdict::Unverifiable("fill"))),
     };
-    let Some(cells) = binary.image_bytes.as_deref().and_then(binary_pattern_cells) else {
-        return Some(Verdict::Unverifiable("fill"));
+    let cells = binary
+        .image_bytes
+        .as_deref()
+        .map(binary_pattern_cells)
+        .transpose()?
+        .flatten();
+    let Some(cells) = cells else {
+        return Ok(Some(Verdict::Unverifiable("fill")));
     };
     // MS-ODRAW binary pattern BLIP: black is clr1/background; white is
     // clr2/foreground. The XML pattern preset names the same 8x8 cells.
-    Some(
+    Ok(Some(
         if cells == expected
             && same_color(&colors.clr1, bg) == Some(true)
             && same_color(&colors.clr2, fg) == Some(true)
@@ -874,7 +976,7 @@ fn same_binary_pattern(binary: &BinaryShape<'_>, alternative: &ShapeElement) -> 
         } else {
             Verdict::Differs("pattern fill")
         },
-    )
+    ))
 }
 
 /// Resolve the alternative shape XML of a binary shape: `Ok(Some)` adopts
@@ -921,7 +1023,7 @@ pub(in crate::ppt) fn adopt(
     // The modern parser can tolerate an absent/malformed style matrix. An
     // optional binary alternative has a stronger contract: its theme facts
     // must be readable before claiming equivalence with the binary shape.
-    let theme_doc = roxmltree::Document::parse(theme_xml).map_err(|_| unverifiable("theme"))?;
+    let theme_doc = parse_xml(theme_xml)?;
     let theme_root = theme_doc.root_element();
     if theme_root.tag_name().name() != "theme"
         || !ooxml_common::ns::is_a_ns(theme_root.tag_name().namespace())
@@ -937,11 +1039,8 @@ pub(in crate::ppt) fn adopt(
         MAX_PACKAGE_BYTES,
     );
     let parsed = parsed
-        .map_err(|error| {
-            unsupported(format!(
-                "unreadable PowerPoint alternative shape XML: {error}"
-            ))
-        })?
+        // Keep measured modern-parser resource envelopes byte-for-byte.
+        .map_err(unsupported)?
         .ok_or_else(|| unverifiable("part"))?;
     // PowerPoint 16 controls retain XML-only picture crop edits when the
     // relationship-backed image bytes equal the binary BLIP, and switch to
@@ -995,7 +1094,7 @@ pub(in crate::ppt) fn adopt(
         None
     };
     let mut shape = parsed.element;
-    let pattern_comparison = same_binary_pattern(binary, &shape);
+    let pattern_comparison = same_binary_pattern(binary, &shape)?;
     // PowerPoint 16 controls with a binary OfficeArt freeform and an XML
     // preset (frame and trapezoid, including visibly matching outlines)
     // retain the binary outline when the XML preset alone changes. An XML
@@ -1006,7 +1105,11 @@ pub(in crate::ppt) fn adopt(
         binary.element.geometry == "custGeom" && shape.geometry != "custGeom";
     let substituted = {
         let mut candidate = shape.clone();
-        substitute_text_bounded(&mut candidate, binary.text, model_budget).map(|()| candidate)
+        match substitute_text_bounded(&mut candidate, binary.text, model_budget) {
+            Ok(()) => Ok(candidate),
+            Err(SubstitutionError::Comparison(verdict)) => Err(verdict),
+            Err(SubstitutionError::Resource(error)) => return Err(error),
+        }
     };
     // A local placeholder override is ambiguous when it disagrees: XML-only
     // geometry/fill edits render from the alternative, whereas binary-only
@@ -1200,20 +1303,18 @@ fn placeholder_locals(blob: &[u8], part: &str, theme: &Theme) -> Result<Placehol
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML placeholder");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
-    let index = crate::opc_part::entry_index(&archive, part).ok_or_else(unreadable)?;
-    let entry = archive.by_index(index).map_err(|_| unreadable())?;
-    if entry.size() > MAX_PART_BYTES || entry.encrypted() {
-        return Err(unreadable());
-    }
+    let entry = open_part(&mut archive, part, MAX_PART_BYTES)?;
     let mut xml = String::new();
     entry
         .take(MAX_PART_BYTES + 1)
         .read_to_string(&mut xml)
         .map_err(|_| unreadable())?;
     if xml.len() as u64 > MAX_PART_BYTES {
-        return Err(unreadable());
+        return Err(crate::rejection::resource(
+            "PowerPoint embedded part byte budget exceeded",
+        ));
     }
-    let doc = roxmltree::Document::parse(&xml).map_err(|_| unreadable())?;
+    let doc = parse_xml(&xml)?;
     let sp_pr = doc.root_element().children().find(|n| {
         n.is_element() && n.tag_name().name() == "spPr" && is_p_ns(n.tag_name().namespace())
     });
@@ -1316,6 +1417,11 @@ fn inflated_size(blob: &[u8]) -> Result<usize, String> {
     let mut total = 0u64;
     for index in 0..archive.len() {
         let entry = archive.by_index_raw(index).map_err(|_| unreadable())?;
+        if entry.encrypted() {
+            return Err(crate::rejection::encryption(
+                "encrypted PowerPoint alternative ZIP entry",
+            ));
+        }
         if entry.size() > MAX_PART_BYTES {
             return Err(oversized());
         }
@@ -1938,29 +2044,47 @@ fn same_run_formatting(
 /// characters to compare.
 #[cfg(any(test, feature = "direct-ppt"))]
 #[cfg(test)]
-fn substitute_text(shape: &mut ShapeElement, text: Option<&str>) -> Result<(), Verdict> {
+fn substitute_text(shape: &mut ShapeElement, text: Option<&str>) -> Result<(), SubstitutionError> {
     let mut budget = usize::MAX;
     substitute_text_bounded(shape, text, &mut budget)
+}
+
+// A resource failure is not an attribute-comparison verdict: it must abort
+// even when another attribute differs and would keep the binary projection.
+#[derive(Debug, PartialEq)]
+enum SubstitutionError {
+    Comparison(Verdict),
+    Resource(String),
+}
+impl From<Verdict> for SubstitutionError {
+    fn from(verdict: Verdict) -> Self {
+        Self::Comparison(verdict)
+    }
+}
+impl From<String> for SubstitutionError {
+    fn from(error: String) -> Self {
+        Self::Resource(error)
+    }
 }
 
 fn substitute_text_bounded(
     shape: &mut ShapeElement,
     text: Option<&str>,
     model_budget: &mut usize,
-) -> Result<(), Verdict> {
+) -> Result<(), SubstitutionError> {
     const DIFFERS: Verdict = Verdict::Differs("text structure");
     let Some(body) = shape.text_body.as_mut() else {
         return if text.is_none_or(str::is_empty) {
             Ok(())
         } else {
-            Err(DIFFERS)
+            Err(DIFFERS.into())
         };
     };
     let text = text.unwrap_or("");
     let paragraphs: Vec<&str> = text.split('\r').collect();
     if paragraphs.len() != body.paragraphs.len() {
         // A body without text still has one empty paragraph in both forms.
-        return Err(DIFFERS);
+        return Err(DIFFERS.into());
     }
     for (paragraph, source) in body.paragraphs.iter_mut().zip(paragraphs) {
         // Reserve scratch against the same cumulative model budget before
@@ -1968,10 +2092,12 @@ fn substitute_text_bounded(
         let unit_count = source.encode_utf16().count();
         let scratch = unit_count
             .checked_mul(std::mem::size_of::<u16>())
-            .ok_or(Verdict::Unverifiable("text model budget"))?;
-        *model_budget = model_budget
-            .checked_sub(scratch)
-            .ok_or(Verdict::Unverifiable("text model budget"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("PowerPoint text substitution model budget exceeded")
+            })?;
+        *model_budget = model_budget.checked_sub(scratch).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint text substitution model budget exceeded")
+        })?;
         let mut units: Vec<u16> = source.encode_utf16().collect();
         let mut at = 0usize;
         let mut runs = Vec::new();
@@ -1987,7 +2113,7 @@ fn substitute_text_bounded(
                     if slice.iter().any(|&u| matches!(u, 0x0a | 0x2028))
                         || (data.field_type.is_some() && slice.contains(&0x0b))
                     {
-                        return Err(Verdict::Unverifiable("line break"));
+                        return Err(Verdict::Unverifiable("line break").into());
                     }
                     // This character came from inside the alternative's a:t,
                     // not from an authored a:br. Keep its enclosing run and
@@ -1996,37 +2122,38 @@ fn substitute_text_bounded(
                     // from that run; inventing a:br nodes loses this
                     // ownership and changes final insertion-line formatting.
                     // No endParaRPr or binary/XML style precedence is inferred.
-                    let owned = slice
-                        .len()
-                        .checked_mul(3)
-                        .ok_or(Verdict::Unverifiable("text model budget"))?;
-                    *model_budget = model_budget
-                        .checked_sub(owned)
-                        .ok_or(Verdict::Unverifiable("text model budget"))?;
+                    let owned = slice.len().checked_mul(3).ok_or_else(|| {
+                        crate::rejection::resource(
+                            "PowerPoint text substitution model budget exceeded",
+                        )
+                    })?;
+                    *model_budget = model_budget.checked_sub(owned).ok_or_else(|| {
+                        crate::rejection::resource(
+                            "PowerPoint text substitution model budget exceeded",
+                        )
+                    })?;
                     for unit in slice.iter_mut() {
                         if *unit == 0x0b {
                             *unit = 0x0a;
                         }
                     }
                     data.text = String::from_utf16(slice).map_err(|_| DIFFERS)?;
-                    text_style::direct_model::reserve_run_slot(&mut runs, model_budget)
-                        .map_err(|_| Verdict::Unverifiable("text model budget"))?;
+                    text_style::direct_model::reserve_run_slot(&mut runs, model_budget)?;
                     runs.push(TextRun::Text(data));
                 }
                 line_break @ TextRun::Break { .. } => {
                     if !matches!(units.get(at), Some(0x0b | 0x0a | 0x2028)) {
-                        return Err(DIFFERS);
+                        return Err(DIFFERS.into());
                     }
                     at += 1;
-                    text_style::direct_model::reserve_run_slot(&mut runs, model_budget)
-                        .map_err(|_| Verdict::Unverifiable("text model budget"))?;
+                    text_style::direct_model::reserve_run_slot(&mut runs, model_budget)?;
                     runs.push(line_break);
                 }
-                TextRun::Math { .. } => return Err(Verdict::Unverifiable("equation")),
+                TextRun::Math { .. } => return Err(Verdict::Unverifiable("equation").into()),
             }
         }
         if at != units.len() {
-            return Err(DIFFERS);
+            return Err(DIFFERS.into());
         }
         paragraph.runs = runs;
     }
@@ -2456,20 +2583,23 @@ mod tests {
             substitute_text_bounded(
                 &mut admitted,
                 Some("A\u{b}A\u{b}A\u{b}A\u{b}A\u{b}"),
-                &mut budget,
+                &mut budget
             ),
             Ok(())
         );
         assert_eq!(budget, 0);
         assert_eq!(texts(&admitted), [vec!["A\nA\nA\nA\nA\n"]]);
-        assert_eq!(
-            substitute_text_bounded(
-                &mut alternative,
+        for available in [0, 10 * 2, required - 1] {
+            let mut rejected = alternative.clone();
+            let Err(SubstitutionError::Resource(error)) = substitute_text_bounded(
+                &mut rejected,
                 Some("A\u{b}A\u{b}A\u{b}A\u{b}A\u{b}"),
-                &mut (required - 1),
-            ),
-            Err(Verdict::Unverifiable("text model budget"))
-        );
+                &mut available.clone(),
+            ) else {
+                panic!("substitution quota must remain a resource failure")
+            };
+            assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
+        }
     }
 
     #[test]
@@ -2530,7 +2660,9 @@ mod tests {
         ] {
             assert_eq!(
                 substitute_text(&mut alternative.clone(), Some(text)),
-                Err(Verdict::Differs("text structure")),
+                Err(SubstitutionError::Comparison(Verdict::Differs(
+                    "text structure"
+                ))),
                 "{text:?}"
             );
         }
@@ -2579,6 +2711,22 @@ mod tests {
     }
 
     #[test]
+    fn pattern_decoder_ceilings_keep_resource_classification() {
+        assert!(binary_pattern_cells(&vec![0; 4097])
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+        // 513 clear codes, width fixed at 3 bits; resets produce no pixels.
+        let mut data = vec![0; (513 * 3_usize).div_ceil(8)];
+        for code in 0..513 {
+            let bit = code * 3 + 2;
+            data[bit / 8] |= 1 << (bit % 8);
+        }
+        assert!(decode_pattern_lzw(&data, 2)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+    }
+
+    #[test]
     fn binary_pattern_cells_match_measured_drawingml_presets() {
         // A synthetic single-frame GIF: clear before every literal keeps its
         // LZW code width at three bits, independent of dictionary growth.
@@ -2609,14 +2757,17 @@ mod tests {
         }
         let pct30 = [0xaa, 0x44, 0xaa, 0x11, 0xaa, 0x44, 0xaa, 0x11];
         let diagonal = [0x11, 0x22, 0x44, 0x88, 0x11, 0x22, 0x44, 0x88];
-        assert_eq!(binary_pattern_cells(&gif(pct30)), Some(pct30));
-        assert_eq!(binary_pattern_cells(&gif(diagonal)), Some(diagonal));
+        assert_eq!(binary_pattern_cells(&gif(pct30)).unwrap(), Some(pct30));
+        assert_eq!(
+            binary_pattern_cells(&gif(diagonal)).unwrap(),
+            Some(diagonal)
+        );
         let mut changed = pct30;
         changed[0] ^= 1;
-        assert_ne!(binary_pattern_cells(&gif(changed)), Some(pct30));
+        assert_ne!(binary_pattern_cells(&gif(changed)).unwrap(), Some(pct30));
         let mut truncated = gif(pct30);
         truncated.truncate(32);
-        assert!(binary_pattern_cells(&truncated).is_none());
+        assert!(binary_pattern_cells(&truncated).unwrap().is_none());
     }
 
     #[test]
@@ -2632,7 +2783,9 @@ mod tests {
         // Other break characters inside a run have no observed form.
         assert_eq!(
             substitute_text(&mut alternative.clone(), Some("AB\u{2028}\u{b}CDEF")),
-            Err(Verdict::Unverifiable("line break"))
+            Err(SubstitutionError::Comparison(Verdict::Unverifiable(
+                "line break"
+            )))
         );
     }
 
@@ -2871,6 +3024,186 @@ mod tests {
 
         const AMPLE: (usize, usize, usize) = (usize::MAX, usize::MAX, usize::MAX);
 
+        fn error<T>(result: Result<T, String>, prefix: &str) {
+            let error = result.err().expect("expected rejection");
+            assert!(error.starts_with(prefix), "{error}");
+        }
+
+        // Flag both ZIP headers: passwordless by_index must fail, but the raw
+        // metadata still identifies encryption before any content is opened.
+        fn encrypted_entry(mut bytes: Vec<u8>, name: &str) -> Vec<u8> {
+            for (signature, flag, length, header) in
+                [(b"PK\x03\x04", 6, 26, 30), (b"PK\x01\x02", 8, 28, 46)]
+            {
+                let offset = bytes
+                    .windows(4)
+                    .enumerate()
+                    .find_map(|(at, sig)| {
+                        (sig == signature
+                            && bytes.get(at + header..at + header + name.len())
+                                == Some(name.as_bytes())
+                            && bytes.get(at + length..at + length + 2)
+                                == Some(&(name.len() as u16).to_le_bytes()))
+                        .then_some(at)
+                    })
+                    .unwrap();
+                bytes[offset + flag] |= 1;
+            }
+            bytes
+        }
+
+        #[test]
+        fn standalone_resource_envelope_survives_adoption() {
+            // 200,001 DOM units, below the embedded byte ceilings.
+            let xml = SHAPE_XML.replace("</p:sp>", &format!("{}</p:sp>", "<x/>".repeat(200_000)));
+            error(
+                run_adopt(&element("FF0000"), &blob(&xml), &theme(), AMPLE).0,
+                "OOXML_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn standalone_depth_and_context_complexity_remain_resource_failures() {
+            let deep = format!("{}{}", "<x>".repeat(257), "</x>".repeat(257));
+            error(
+                run_adopt(&element("FF0000"), &blob(&deep), &theme(), AMPLE).0,
+                "OOXML_RESOURCE_LIMIT:",
+            );
+            for color_map in [false, true] {
+                let mut context = theme();
+                let Theme::Readable {
+                    theme_xml, clr_map, ..
+                } = &mut context
+                else {
+                    unreachable!()
+                };
+                if color_map {
+                    *clr_map = Some(format!("<a:clrMap xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">{}</a:clrMap>", "<x/>".repeat(200_000)));
+                } else {
+                    *theme_xml = theme_xml.replace(
+                        "</a:theme>",
+                        &format!("{}</a:theme>", "<x/>".repeat(200_000)),
+                    );
+                }
+                error(
+                    run_adopt(&element("FF0000"), &blob(SHAPE_XML), &context, AMPLE).0,
+                    "OOXML_RESOURCE_LIMIT:",
+                );
+            }
+        }
+
+        #[test]
+        fn substitution_quota_is_not_overruled_by_an_attribute_disagreement() {
+            let xml = SHAPE_XML.replace("</p:sp>", "<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>_</a:t></a:r></a:p></p:txBody></p:sp>");
+            let mut binary_element = element("0000FF"); // differs from XML red
+            binary_element.text_body = body(&[&[run("A")]]);
+            let leaf = pptx_model::Transform {
+                cx: binary_element.width,
+                cy: binary_element.height,
+                ..Default::default()
+            };
+            let mut binary = binary(&binary_element, &leaf);
+            binary.text = Some("A");
+            error(
+                adopt(
+                    &binary,
+                    &blob(&xml),
+                    &theme(),
+                    &mut super::media::SpanStore::new(vec![]),
+                    &mut AMPLE.0.clone(),
+                    &mut AMPLE.1.clone(),
+                    &mut 0,
+                ),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn encrypted_shape_and_relationship_entries_keep_encryption_classification() {
+            for name in ["_rels/.rels", "drs/shapexml.xml", "drs/downrev.xml"] {
+                let bytes = encrypted_entry(blob(SHAPE_XML), name);
+                error(
+                    run_adopt(&element("FF0000"), &bytes, &theme(), AMPLE).0,
+                    "LEGACY_UNSUPPORTED_ENCRYPTION:",
+                );
+            }
+        }
+
+        #[test]
+        fn passive_reference_readers_preserve_depth_bytes_entries_and_encryption() {
+            let too_deep = format!("{}{}", "<x>".repeat(257), "</x>".repeat(257));
+            error(
+                validate_blob_references(&package(&[("shape.xml", &too_deep)], &[]), "shape.xml"),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            let oversized = "x".repeat(MAX_PART_BYTES as usize + 1);
+            let bytes = package(&[("shape.xml", &oversized)], &[]);
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+            error(
+                read_blob_reference_part(&mut archive, "shape.xml"),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            let encrypted = encrypted_entry(package(&[("shape.xml", "<x/>")], &[]), "shape.xml");
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&encrypted)).unwrap();
+            error(
+                read_blob_reference_part(&mut archive, "shape.xml"),
+                "LEGACY_UNSUPPORTED_ENCRYPTION:",
+            );
+            let parts: Vec<_> = (0..128)
+                .map(|i| (format!("{i}.xml"), "<x/>".to_owned()))
+                .collect();
+            let refs: Vec<_> = parts
+                .iter()
+                .map(|(name, xml)| (name.as_str(), xml.as_str()))
+                .collect();
+            error(
+                validate_blob_references(&package(&refs, &[]), "0.xml"),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn theme_limits_and_encryption_are_not_unreadable_subset_verdicts() {
+            let xml = crate::ppt::theme();
+            let rels = r#"<Relationships><Relationship Type="x/theme" Target="theme.xml"/></Relationships>"#;
+            let make = |xml: &str| {
+                package(
+                    &[("_rels/manager.xml.rels", rels), ("theme.xml", xml)],
+                    &[("officeDocument", "manager.xml")],
+                )
+            };
+            let read = |bytes: &[u8]| {
+                let mut budget = usize::MAX;
+                master_theme(
+                    &[Record {
+                        version: 0,
+                        instance: 0,
+                        kind: 0x040e,
+                        payload: bytes,
+                    }],
+                    &mut budget,
+                )
+            };
+            for name in ["_rels/.rels", "_rels/manager.xml.rels", "theme.xml"] {
+                error(
+                    read(&encrypted_entry(make(&xml), name)),
+                    "LEGACY_UNSUPPORTED_ENCRYPTION:",
+                );
+            }
+            error(
+                read(&make(&"x".repeat(MAX_THEME_BYTES as usize + 1))),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            let parts: Vec<_> = (0..MAX_THEME_ENTRIES)
+                .map(|i| (format!("{i}.xml"), "<x/>".to_owned()))
+                .collect();
+            let refs: Vec<_> = parts
+                .iter()
+                .map(|(name, xml)| (name.as_str(), xml.as_str()))
+                .collect();
+            error(read(&package(&refs, &[])), "LEGACY_RESOURCE_LIMIT:");
+        }
+
         #[test]
         fn ordinary_alternative_requires_readable_and_resolved_theme_styles() {
             let styled = SHAPE_XML.replace("</p:sp>", r#"<p:style><a:lnRef idx="999"><a:srgbClr val="FF0000"/></a:lnRef></p:style></p:sp>"#);
@@ -2971,7 +3304,10 @@ mod tests {
                 master_theme(&[record], &mut budget).unwrap(),
                 Some(Theme::Readable { .. })
             ));
-            assert!(master_theme(&[record], &mut budget).is_err());
+            error(
+                master_theme(&[record], &mut budget),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
         }
 
         #[test]

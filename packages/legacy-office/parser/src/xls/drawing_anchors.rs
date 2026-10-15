@@ -156,7 +156,12 @@ fn workbook_with_policy(
             let index = records
                 .binary_search_by_key(&sheet.offset, |r| r.offset)
                 .map_err(|_| unsupported("BIFF sheet offset is not a record boundary"))?;
-            if index <= globals_end || starts.len() >= MAX_OBJECTS {
+            if starts.len() >= MAX_OBJECTS {
+                return Err(crate::rejection::resource(
+                    "BIFF drawing sheet count budget exceeded",
+                ));
+            }
+            if index <= globals_end {
                 return Err(unsupported("invalid BIFF drawing sheet range"));
             }
             let tab = starts.len();
@@ -224,7 +229,7 @@ fn assemble<'a>(
         if record.kind == BOF {
             depth += 1;
             if depth > MAX_DEPTH {
-                return Err(unsupported("BIFF substream depth exceeded"));
+                return Err(crate::rejection::resource("BIFF substream depth exceeded"));
             }
             if depth == 1 && u16_at(record.data, 2)? == 0x0020 {
                 chart_start = last_object.map(|client| (client, base + offset));
@@ -632,7 +637,9 @@ fn read_group_members<'a>(
     members: &mut Vec<GroupMember>,
 ) -> Result<(), String> {
     if groups.len() > MAX_DEPTH {
-        return Err(unsupported("BIFF drawing group depth exceeded"));
+        return Err(crate::rejection::resource(
+            "BIFF drawing group depth exceeded",
+        ));
     }
     let checked = |rect: [i32; 4]| -> Result<[i32; 4], String> {
         let [left, top, right, bottom] = rect;
@@ -791,7 +798,9 @@ fn walk_with_policy(
     let mut order = 0u64;
     while let Some((mut at, end, depth, group, mut first, mut excluded)) = stack.pop() {
         if depth > MAX_DEPTH {
-            return Err(unsupported("BIFF drawing group depth exceeded"));
+            return Err(crate::rejection::resource(
+                "BIFF drawing group depth exceeded",
+            ));
         }
         while at < end {
             let (record, next) = record_with_end(&drawing.bytes[..end], at, work, "XLS drawing")?;

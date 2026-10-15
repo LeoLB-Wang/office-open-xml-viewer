@@ -197,11 +197,37 @@ fn bounds_fragments_substreams_and_retained_work() {
     assert!(run(&overlong).is_err());
     let mut nested = data.clone();
     nested.splice(1..1, (0..=MAX_DEPTH).map(|_| (BOF, vec![0, 6, 0x20, 0])));
-    assert!(run(&nested).is_err());
+    assert!(run(&nested)
+        .err()
+        .unwrap()
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
     let mut drawing = assemble(&records, 0, &mut 100, &mut remaining)
         .unwrap()
         .unwrap();
     assert!(walk(&mut drawing, 0, &mut 1, &mut Vec::new()).is_err());
+    let groups = vec![
+        GroupFrame {
+            anchor: None,
+            rect: [0, 0, 1, 1],
+            rotation: 0,
+            flip_h: false,
+            flip_v: false
+        };
+        MAX_DEPTH + 1
+    ];
+    assert!(read_group_members(
+        &mut drawing,
+        0,
+        0,
+        &groups,
+        &mut 100,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+        &mut 0,
+        &mut vec![]
+    )
+    .unwrap_err()
+    .starts_with("LEGACY_RESOURCE_LIMIT:"));
 }
 
 #[test]
@@ -246,7 +272,9 @@ fn traverses_only_owned_groups_in_order_and_bounds_the_stack() {
         (0xec, art(0xf002, 15, &body)),
         (EOF, vec![])
     ])
-    .is_err());
+    .err()
+    .unwrap()
+    .starts_with("LEGACY_RESOURCE_LIMIT:"));
 }
 
 #[test]
@@ -556,4 +584,42 @@ fn strict_walk_keeps_group_rotation_and_rejects_unanchored_members() {
     assert!(walk_as(&group_fixture(&[], 0xa00), Policy::Strict)
         .unwrap_err()
         .contains("child anchor"));
+}
+
+#[test]
+fn workbook_sheet_count_ceiling_is_resource_policy() {
+    let count = MAX_OBJECTS + 1;
+    let names: Vec<_> = (0..count)
+        .map(|i| {
+            [
+                (count as u32 + 2 + i as u32).to_le_bytes().as_slice(),
+                &[0, 0, 1, 0, b'A'],
+            ]
+            .concat()
+        })
+        .collect();
+    let mut records = vec![Record {
+        kind: BOF,
+        offset: 0,
+        data: &[0, 6, 5, 0],
+    }];
+    records.extend(names.iter().enumerate().map(|(i, data)| Record {
+        kind: BOUNDSHEET8,
+        offset: i + 1,
+        data,
+    }));
+    records.push(Record {
+        kind: EOF,
+        offset: count + 1,
+        data: &[],
+    });
+    records.extend((0..count).map(|i| Record {
+        kind: BOF,
+        offset: count + 2 + i,
+        data: &[],
+    }));
+    assert!(workbook(&records)
+        .err()
+        .unwrap()
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
 }

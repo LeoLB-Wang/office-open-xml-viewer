@@ -232,3 +232,11 @@ describe('XLS extended theme colors', () => {
     expect(model.fonts.map(font => font.color)).toEqual(fonts);
   });
 });
+
+it('keeps the embedded theme XML depth ceiling distinct from unsupported content', async () => {
+  const packageBytes = buildStoredZip({
+    '_rels/.rels': '<x>'.repeat(33) + '</x>'.repeat(33),
+  });
+  await expect(styles(fixture([prop(FONT, themed(1))], { themeRecords: [rec(0x896, concat(frt(0x896), little32(0), packageBytes))] })))
+    .rejects.toMatchObject({ message: 'LEGACY_RESOURCE_LIMIT:BIFF theme XML depth budget exceeded' });
+});

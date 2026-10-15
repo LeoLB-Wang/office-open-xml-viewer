@@ -399,7 +399,9 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
             id::BOF => return Err(unsupported("nested BIFF substream inside a chart")),
             id::BEGIN => {
                 if stack.len() >= MAX_DEPTH {
-                    return Err(unsupported("chart record nesting depth exceeded"));
+                    return Err(crate::rejection::resource(
+                        "chart record nesting depth exceeded",
+                    ));
                 }
                 let owner = pending.take().unwrap_or(Owner::Other);
                 let mut block = Block::new(owner);
@@ -745,7 +747,11 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
                 let point = u16_at(record.data, 0)?;
                 let series = u16_at(record.data, 2)?;
                 if usize::from(point) >= MAX_POINTS || usize::from(series) >= MAX_SERIES {
-                    return Err(unsupported("chart data cache index out of range"));
+                    // These caps also bound retained series/cache entries above;
+                    // crossing them is resource policy, not an unknown BIFF type.
+                    return Err(crate::rejection::resource(
+                        "chart data cache index budget exceeded",
+                    ));
                 }
                 let value = match record.kind {
                     id::NUMBER => Some(Cached::Number(f64_at(record.data, 6)?)),

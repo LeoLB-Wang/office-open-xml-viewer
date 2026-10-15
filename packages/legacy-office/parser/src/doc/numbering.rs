@@ -84,12 +84,13 @@ impl Level<'_> {
     ) -> Result<ooxml_common::numbering::NumberingTemplate, String> {
         use ooxml_common::numbering::{NumberingTemplate, TemplatePart};
         let placeholders: Vec<(u8, u8)> = self.placeholders.iter().flatten().copied().collect();
-        if current_level > 8
-            || placeholders.len() > 9
-            || !self.text.len().is_multiple_of(2)
-            || self.text.len() / 2 > ooxml_common::numbering::MAX_MARKER_BYTES
-        {
+        if current_level > 8 || placeholders.len() > 9 || !self.text.len().is_multiple_of(2) {
             return Err(unsupported("invalid Word numbering template"));
+        }
+        if self.text.len() / 2 > ooxml_common::numbering::MAX_MARKER_BYTES {
+            return Err(crate::rejection::resource(
+                "Word numbering template byte budget exceeded",
+            ));
         }
         let units = self.text.len() / 2;
         let mut previous = 0;
@@ -141,8 +142,12 @@ impl Level<'_> {
                     .map_err(|_| unsupported("invalid Word numbering text Unicode"))?,
             ));
         }
-        NumberingTemplate::new(parts)
-            .map_err(|error| format!("UNSUPPORTED: invalid Word numbering template: {error:?}"))
+        NumberingTemplate::new(parts).map_err(|error| match error {
+            ooxml_common::numbering::CounterError::OutputTooLarge => {
+                crate::rejection::resource("Word numbering template byte budget exceeded")
+            }
+            _ => unsupported("invalid Word numbering template"),
+        })
     }
 }
 

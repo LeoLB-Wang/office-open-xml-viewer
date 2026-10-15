@@ -221,7 +221,9 @@ fn contains_record(
     budget: &mut usize,
 ) -> Result<bool, String> {
     if depth > MAX_DEPTH {
-        return Err(unsupported("PowerPoint record nesting is too deep"));
+        return Err(crate::rejection::resource(
+            "PowerPoint record nesting is too deep",
+        ));
     }
     for record in parse_records(bytes, budget)? {
         if record.kind == expected {
@@ -639,5 +641,17 @@ mod tests {
         assert!(parse_records(&[0, 0, 0, 0, 0, 0, 0, 0, 1], &mut budget).is_err());
         let mut budget = MAX_RECORDS;
         assert!(parse_records(&[0; 9], &mut budget).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod depth_policy_tests {
+    use super::*;
+    #[test]
+    fn record_depth_ceiling_is_resource_policy() {
+        assert_eq!(contains_record(&[], 1, MAX_DEPTH, &mut 100), Ok(false));
+        assert!(contains_record(&[], 1, MAX_DEPTH + 1, &mut 100)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 }
