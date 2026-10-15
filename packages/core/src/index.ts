@@ -319,8 +319,7 @@ export {
   type ChartImageLookup,
 } from './chart/image-fill';
 // Shared WMF (Windows Metafile) player.
-// The docx-specific cosmetic window/device-frame suppression is gated behind
-// `suppressBoundaryFrame` (default off = spec-clean).
+// WMF clipping follows the playback device context.
 export {
   isWmf,
   isEmf,

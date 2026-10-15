@@ -117,7 +117,6 @@ function applyIncompleteMetafilePolicy(
 export interface DecodeRasterOptions {
   widthPt?: number;
   heightPt?: number;
-  suppressBoundaryFrame?: boolean;
   tiff?: TiffRenderer;
   targetWidthPx?: number;
   targetHeightPx?: number;
@@ -214,7 +213,6 @@ export async function decodeRasterOrMetafileWithInspection(
   const {
     widthPt = 0,
     heightPt = 0,
-    suppressBoundaryFrame = false,
     tiff,
     targetWidthPx,
     targetHeightPx,
@@ -230,7 +228,7 @@ export async function decodeRasterOrMetafileWithInspection(
     const { w, h } = wmfRasterTarget(widthPt, heightPt);
     let unsupported: readonly string[] = [];
     const bitmap = await renderWmfToBitmap(
-      new Uint8Array(await data.arrayBuffer()), w, h, suppressBoundaryFrame,
+      new Uint8Array(await data.arrayBuffer()), w, h,
       (records) => { unsupported = records; },
     );
     return enforceDecodedBitmapBudget(
