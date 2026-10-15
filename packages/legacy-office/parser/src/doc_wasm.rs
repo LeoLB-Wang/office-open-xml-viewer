@@ -29,7 +29,9 @@ impl LegacyDocDocument {
     ) -> Result<Self, JsValue> {
         console_error_panic_hook::set_once();
         if data.len() > MAX_DIRECT_DOC_SOURCE_BYTES {
-            return Err(error("UNSUPPORTED:DOC direct source byte budget exceeded"));
+            return Err(error(
+                "LEGACY_RESOURCE_LIMIT:DOC direct source byte budget exceeded",
+            ));
         }
         let maximum = max_model_bytes
             .map(|n| n as usize)
@@ -39,10 +41,11 @@ impl LegacyDocDocument {
         }
         if maximum > MAX_DIRECT_DOC_MODEL_BYTES {
             return Err(error(
-                "UNSUPPORTED:DOC direct model byte budget exceeds policy",
+                "LEGACY_RESOURCE_LIMIT:DOC direct model byte budget exceeds policy",
             ));
         }
-        let cfb = CompoundFile::open(&data).map_err(|e| error(&format!("UNSUPPORTED:{e}")))?;
+        let cfb =
+            CompoundFile::open(&data).map_err(|e| error(&crate::rejection::unsupported(e)))?;
         let stored_size_for_reading = stored_picture_bullets_for_reading.unwrap_or(false);
         let result = doc::direct_model_with_policies(
             &cfb,

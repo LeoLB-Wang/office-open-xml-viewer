@@ -77,7 +77,12 @@ fn resolve_slide_list(
                     return Err(unsupported("invalid PowerPoint SlidePersistAtom"));
                 }
                 let id = u32_at(item.payload, 0)?;
-                if !seen.insert(id) || slides.len() >= MAX_SLIDES {
+                if slides.len() >= MAX_SLIDES {
+                    return Err(crate::rejection::resource(
+                        "PowerPoint slide reference count budget exceeded",
+                    ));
+                }
+                if !seen.insert(id) {
                     return Err(unsupported(
                         "duplicate or excessive PowerPoint slide references",
                     ));
@@ -103,7 +108,9 @@ fn resolve_slide_list(
                     .last_mut()
                     .ok_or_else(|| unsupported("orphan PowerPoint outline text"))?;
                 if slide.outline.len() >= MAX_TEXT_BLOCKS_PER_SLIDE {
-                    return Err(unsupported("too many PowerPoint outline text blocks"));
+                    return Err(crate::rejection::resource(
+                        "too many PowerPoint outline text blocks",
+                    ));
                 }
                 slide.outline.push(String::new());
                 slide.outline_types.push(text_style::text_type(item)?);
@@ -156,10 +163,15 @@ pub(super) fn resolve_directory(
         if edit.kind != USER_EDIT_ATOM || edit.version != 0 || edit.payload.len() < 28 {
             return Err(unsupported("invalid PowerPoint UserEditAtom"));
         }
-        if edit.payload.len() != 28 {
-            return Err(unsupported(
-                "encrypted or unsupported PowerPoint UserEditAtom",
+        // MS-PPT §2.3.3: the optional nonzero PersistIdRef identifies
+        // CryptSession10Container, even if CurrentUser's token was inconsistent.
+        if edit.payload.len() == 32 && u32_at(edit.payload, 28)? != 0 {
+            return Err(crate::rejection::encryption(
+                "PowerPoint UserEditAtom encryption session",
             ));
+        }
+        if edit.payload.len() != 28 {
+            return Err(unsupported("unsupported PowerPoint UserEditAtom size"));
         }
         let previous = u32_at(edit.payload, 8)? as usize;
         let directory_offset = u32_at(edit.payload, 12)? as usize;
@@ -184,9 +196,9 @@ pub(super) fn resolve_directory(
                 return Err(unsupported("invalid PowerPoint persist ID range"));
             }
             position += 4;
-            *budget = budget
-                .checked_sub(count as usize)
-                .ok_or_else(|| unsupported("PowerPoint persist-entry budget exceeded"))?;
+            *budget = budget.checked_sub(count as usize).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint persist-entry budget exceeded")
+            })?;
             for id in first..first + count {
                 if !seen.insert(id) {
                     return Err(unsupported("duplicate PowerPoint persist ID in one edit"));
@@ -571,6 +583,20 @@ pub(crate) mod tests {
         assert_eq!(result.slides.len(), 2);
         assert_eq!(slide_text(&result.slides[0].0), ["updated"]);
     }
+    #[test]
+    fn edit_encryption_session_keeps_its_classification() {
+        let mut payload = vec![0; 32];
+        payload[28..].copy_from_slice(&1u32.to_le_bytes());
+        let mut bytes = vec![0; 8];
+        bytes[2..4].copy_from_slice(&USER_EDIT_ATOM.to_le_bytes());
+        bytes[4..8].copy_from_slice(&32u32.to_le_bytes());
+        bytes.extend(payload);
+        assert!(resolve_directory(&bytes, 0, &mut 100)
+            .err()
+            .unwrap()
+            .starts_with("LEGACY_UNSUPPORTED_ENCRYPTION:"));
+    }
+
     #[test]
     fn rejects_self_referential_edit_chain() {
         let (mut stream, edit) = fixture();

@@ -15,7 +15,7 @@ pub(crate) mod raster;
 pub(crate) mod stroke;
 
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -128,7 +128,9 @@ pub(crate) fn record_span_with_end_in(
     context: &str,
 ) -> Result<(RecordSpan, usize), String> {
     if *budget == 0 {
-        return Err(unsupported(format!("too many {context} records")));
+        return Err(crate::rejection::resource(format!(
+            "too many {context} records"
+        )));
     }
     *budget -= 1;
     let bounds = parent.range();

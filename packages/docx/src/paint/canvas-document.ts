@@ -5,6 +5,7 @@ import {
   defaultDpr,
   isHTMLCanvas,
   isOoxmlDecodedImageLimitError,
+  OoxmlResourceLimitError,
   isTiffDecodeError,
   isOptionalImageCodecUnavailableError,
   PT_TO_PX,
@@ -392,7 +393,8 @@ async function resolveChartImages<TTextRun>(
         if (!fill.duotone && preferVectorBlip(blip)) {
           try {
             image = await decodeSvg(blip.svgImagePath);
-          } catch {
+          } catch (error) {
+            if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
             image = await decodeFallback();
           }
         } else {
@@ -404,7 +406,8 @@ async function resolveChartImages<TTextRun>(
           chartImages.set(key, null);
           return;
         }
-        if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+        // A corrupt image may disappear; a package extraction limit is fatal.
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
         chartImages.set(key, null);
       }
     }));

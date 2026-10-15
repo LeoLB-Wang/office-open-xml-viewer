@@ -1293,7 +1293,7 @@ export interface MediaElement {
     mediaPath: string;
     mimeType: string;
 }
-const MODEL_SOURCE_MODULE_PROTOCOL = 'ooxml-model-source-module/v1';
+const MODEL_SOURCE_MODULE_PROTOCOL = 'ooxml-model-source-module/v2';
 export interface ModelSource<T extends ModelSourceTarget = ModelSourceTarget> {
     readonly target: T;
     claim(bytes: Uint8Array): boolean;
@@ -1326,12 +1326,13 @@ export class OoxmlDecodedImageLimitError extends RangeError {
     readonly code: 'ooxml-decoded-image-limit';
     constructor(metric: OoxmlDecodedImageLimitMetric, limit: number, observed: number);
 }
-export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work';
+export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work' | 'metafile-path-commands' | 'metafile-record-points' | 'metafile-record-polygons' | 'metafile-record-rectangles' | 'metafile-record-text-units';
 export class OoxmlError extends Error {
     readonly code: OoxmlErrorCode;
-    constructor(code: OoxmlErrorCode, message: string);
+    readonly details?: OoxmlUnsupportedContentDetails;
+    constructor(code: OoxmlErrorCode, message: string, details?: OoxmlUnsupportedContentDetails);
 }
-export type OoxmlErrorCode = 'encrypted' | 'invalid-password' | 'unsupported-encryption' | 'legacy-binary-format' | 'not-ooxml' | 'invalid-numbering';
+export type OoxmlErrorCode = 'encrypted' | 'invalid-password' | 'unsupported-encryption' | 'legacy-binary-format' | 'not-ooxml' | 'invalid-numbering' | 'unsupported-content';
 export type OoxmlErrorStage = 'container' | 'decompression' | 'parsing' | 'serialization' | 'layout' | 'rendering' | 'worker';
 export type OoxmlFormat = 'docx' | 'xlsx' | 'pptx';
 export type OoxmlResourceLimit = number | null;
@@ -1403,6 +1404,10 @@ export interface OoxmlResourceViolation {
     readonly observed: number;
     readonly configurable: boolean;
     readonly usage: OoxmlResourceUsageSnapshot;
+}
+export interface OoxmlUnsupportedContentDetails {
+    readonly format: string;
+    readonly reason: 'source-subset';
 }
 export interface OpenedModelSource<TArchive> {
     readonly archive: TArchive;

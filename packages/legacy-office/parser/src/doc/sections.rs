@@ -81,7 +81,7 @@ pub(super) fn read(word: &[u8], table: &[u8], ccp_text: usize) -> Result<Vec<Sec
     let count = (size - 4) / 16;
     // Resource policy, not a format limit.
     if count > 16384 {
-        return Err(unsupported("too many Word sections"));
+        return Err(crate::rejection::resource("too many Word sections"));
     }
     let offset = u32_at(word, 0xca)? as usize;
     let bytes = table
@@ -320,9 +320,9 @@ impl Properties {
             notes: NoteProperties::default(),
         };
         while !bytes.is_empty() {
-            *budget = budget
-                .checked_sub(1)
-                .ok_or_else(|| unsupported("Word section property budget exceeded"))?;
+            *budget = budget.checked_sub(1).ok_or_else(|| {
+                crate::rejection::resource("Word section property budget exceeded")
+            })?;
             let sprm = u16_at(bytes, 0)?;
             if (sprm >> 10) & 7 != 4 {
                 return Err(unsupported("non-section SPRM in Word Sepx"));

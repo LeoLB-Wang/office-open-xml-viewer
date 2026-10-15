@@ -160,7 +160,9 @@ pub(super) fn read<'a>(
         .count()
         > MAX_STORY_CONTROLS
     {
-        return Err(unsupported("Word header structure budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word header structure budget exceeded",
+        ));
     }
     let (entries, separators) = split(&story.text, &cps)?;
     let fields = header_fields::Table::read(word, table, length)?;
@@ -214,7 +216,9 @@ fn split(text: &str, cps: &[usize]) -> Result<(Vec<Entry>, [SeparatorRange; 6]),
             // Resource policy: parts and per-part relationships are retained
             // until packaging, independently of the compressed byte ceiling.
             if entries.len() >= 4096 {
-                return Err(unsupported("Word header part budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word header part budget exceeded",
+                ));
             }
             entries.push(Entry {
                 index: i - 6,

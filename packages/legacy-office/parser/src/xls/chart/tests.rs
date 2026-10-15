@@ -693,3 +693,28 @@ fn chart3d_group_shape_supplies_only_missing_series_shapes() {
         );
     }
 }
+
+#[test]
+fn chart_depth_ceiling_is_resource_policy() {
+    let mut records = vec![record(0x0809, u16s(&[0x0600, 0x0020]))];
+    records.extend((0..33).map(|_| record(0x1033, vec![])));
+    assert!(read(&as_records(&records))
+        .err()
+        .unwrap()
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
+}
+
+#[test]
+fn chart_cache_index_ceilings_keep_resource_classification() {
+    for (point, series) in [(32_000, 0), (0, 255)] {
+        let records = vec![
+            record(0x0809, u16s(&[0x0600, 0x0020])),
+            record(0x1065, u16s(&[1])),
+            record(0x0203, u16s(&[point, series])),
+        ];
+        assert!(read(&as_records(&records))
+            .err()
+            .unwrap()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+    }
+}

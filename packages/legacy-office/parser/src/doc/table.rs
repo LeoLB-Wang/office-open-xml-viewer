@@ -308,7 +308,9 @@ impl<R> Properties<R> {
         let n = self.depth.unwrap_or(i32::from(self.in_table));
         // Resource policy independent of the file's representable table depth.
         if !(0..=32).contains(&n) {
-            return Err(unsupported("Word table nesting budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word table nesting budget exceeded",
+            ));
         }
         Ok(n as usize)
     }

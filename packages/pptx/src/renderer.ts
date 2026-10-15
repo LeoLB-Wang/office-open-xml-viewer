@@ -118,6 +118,7 @@ import {
   metafileRasterSize,
   sourceRasterTargetSize,
   isOoxmlDecodedImageLimitError,
+  OoxmlResourceLimitError,
   isTiffDecodeError,
   highlightBox,
   symbolFontToUnicode,
@@ -451,7 +452,10 @@ async function planSlideImages(
             retainedSurfaceCount,
           }
         : null)
-      .catch(() => null));
+      .catch((error: unknown) => {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+        return null;
+      }));
   };
 
   const background = slide.background;
@@ -570,7 +574,10 @@ async function planSlideImages(
               sourceWidthPx: inspection.dimensions.width,
               sourceHeightPx: inspection.dimensions.height,
             }
-          : null).catch(() => null));
+          : null).catch((error: unknown) => {
+            if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+            return null;
+          }));
       }
     }
   }
@@ -777,7 +784,8 @@ export async function prepareSlideMath(slide: Slide, math: MathRenderer): Promis
         descentEm: out.descentEm,
         tinted: new Map(),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
       // leave unrendered
     }
   }
@@ -2059,7 +2067,7 @@ async function prepareBackground(
           },
         };
       }
-      if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
         return { paint: paintBase, failure: { error } };
       }
       // Decode failed — the white base remains as the fallback.
@@ -2147,7 +2155,7 @@ async function prepareBackground(
             });
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           // Paint failed — the white base painted above remains as the fallback.
         }
       },
@@ -5979,9 +5987,12 @@ export function buildBevelInputs(
   if (!sp3d) return [];
   const rig = lightRig?.rig ?? 'threePt';
   const dir = lightRig?.dir ?? 't';
-  // §20.1.5.9/§20.1.5.11: the lightRig's `<a:rot>` (rev = in-plane revolution about
-  // the view axis) rotates the key-light azimuth. lat/lon are a documented SPEC GAP
-  // in lightDirFromRig (no calibration sample exercises them).
+  // Full lightRig `<a:rot>` semantics (§20.1.5.11) are not yet applied; retain
+  // the historical rev-only approximation. PowerPoint-exported orthographic
+  // matte circle/threePt controls (dir t/r/br; axis quarter-turns and mixed
+  // rotations) show explicit rot overrides dir, zero differs from absent, and
+  // side/back lighting darkens the face. This face-preserving model cannot
+  // express those results; lat/lon support requires a lighting-model replacement.
   const light = lightDirFromRig(rig, dir, lightRig?.rot);
   const material = materialClass(prstMaterial);
   const emuToDev = scale * devScale;
@@ -6475,7 +6486,8 @@ async function preparePicture(
       // (uncropped is the overwhelmingly common case for icons).
       try {
         bitmap = await getCachedSvgImageByPath(el.svgImagePath, fetchImage, svgOptions);
-      } catch {
+      } catch (error) {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
         // §20.1.8.23 duotone recolour applies only to the raster fallback — an
         // SVG vector original has no readable pixel grid (matches xlsx).
         bitmap = dataIsSvg
@@ -6520,10 +6532,12 @@ async function preparePicture(
  *  paints the unavailable-picture placeholder, a decoded-image budget or TIFF
  *  decode error propagates, and any other broken image is skipped. */
 function pictureFailure(el: PictureElement, scale: number, error: unknown): PreparedPaint {
+  // Resource failures (including lazy package extraction) are fatal even when
+  // ordinary unsupported/corrupt image content may produce a fallback.
   if (isOptionalImageCodecUnavailableError(error, 'tiff')) {
     return { paint: (ctx) => paintUnavailablePicture(ctx, el, scale) };
   }
-  if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
+  if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
     return { ...NO_PAINT, failure: { error } };
   }
   return NO_PAINT;
@@ -6985,7 +6999,7 @@ async function prepareMedia(
       if (isOptionalImageCodecUnavailableError(error, 'tiff')) {
         posterCodecUnavailable = true;
       } else {
-        if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
           return { ...NO_PAINT, failure: { error } };
         }
         // fall through to plain fill
@@ -8251,7 +8265,7 @@ async function renderSlideLeased(
             pictureBulletImages.set(path, null);
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           pictureBulletImages.set(path, null);
         }
       });
@@ -8294,7 +8308,8 @@ async function renderSlideLeased(
                 ...(target ?? {}),
                 workerDecoder: opts.svgDecoder,
               });
-            } catch {
+            } catch (error) {
+              if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
               bitmap = await decodeFallback();
             }
           } else {
@@ -8306,7 +8321,7 @@ async function renderSlideLeased(
             chartMarkerImages.set(key, null);
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           chartMarkerImages.set(key, null);
         }
       });
@@ -8359,7 +8374,8 @@ async function renderSlideLeased(
               image = await getCachedSvgImageByPath(fill.svgImagePath as string, fetchImage, {
                 ...(target ?? {}), workerDecoder: opts.svgDecoder,
               });
-            } catch {
+            } catch (error) {
+              if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
               image = await fallback();
             }
           } else {
@@ -8371,7 +8387,7 @@ async function renderSlideLeased(
             shapeFillImages.set(key, null);
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           shapeFillImages.set(key, null);
         }
       });

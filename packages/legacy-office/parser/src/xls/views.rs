@@ -19,7 +19,12 @@ fn display_flags(flags: u16) -> (bool, bool, bool) {
 }
 
 pub(super) fn read_window(data: &[u8], count: &mut usize) -> Result<(), String> {
-    if data.len() != 18 || *count >= MAX_WINDOWS {
+    if *count >= MAX_WINDOWS {
+        return Err(crate::rejection::resource(
+            "BIFF workbook window retention budget exceeded",
+        ));
+    }
+    if data.len() != 18 {
         return Err(unsupported("invalid or excessive BIFF workbook windows"));
     }
     *count += 1;
@@ -80,7 +85,12 @@ impl SheetViews {
         }
         // Worksheet Window2 is 18 bytes. Chart Window2 is a different record
         // layout and is excluded by the caller's BOF/EOF ownership guard.
-        if record.data.len() != 18 || self.0.len() >= MAX_WINDOWS {
+        if self.0.len() >= MAX_WINDOWS {
+            return Err(crate::rejection::resource(
+                "BIFF worksheet window retention budget exceeded",
+            ));
+        }
+        if record.data.len() != 18 {
             return Err(unsupported("invalid or excessive BIFF worksheet windows"));
         }
         self.0.push(u16_at(record.data, 0)?);

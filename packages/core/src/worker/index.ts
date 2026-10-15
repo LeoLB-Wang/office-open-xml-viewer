@@ -22,7 +22,9 @@ export {
   decodeOoxmlResourceUsage,
   deserializeWorkerError,
   parseResourceLimitError,
+  withWasmResourceErrors,
   parseTypedParserError,
+  resourceLimitMessage,
   serializeWorkerError,
   type WorkerErrorPayload,
 } from './error-wire.js';
