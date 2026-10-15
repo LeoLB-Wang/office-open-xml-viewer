@@ -597,8 +597,10 @@ export interface LineLayout {
   readonly bounds: LayoutRect;
   readonly baselinePt: number;
   readonly advancePt: number;
-  /** Trailing grid leading beyond the natural/authored line box. Page admission
-   * may omit this tail; placement and paint retain the full advance. */
+  /** Trailing grid leading eligible for plain-paragraph page-edge admission.
+   * Authored paragraph decorations disable it before continuation slicing;
+   * object lines and reserved boundaries retain the full cell at admission.
+   * Placement and paint always retain the full advance. */
   readonly gridAfterLeadingPt?: number;
   readonly placements: readonly ParagraphPlacement[];
   /** §17.18.84 bar-tab vertical rules acquired independently of tab advances. */

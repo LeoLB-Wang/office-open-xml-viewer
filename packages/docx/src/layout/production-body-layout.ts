@@ -2016,8 +2016,8 @@ function measureFollowingBodyBlock(
       sessionState.drawingCollisionRegistry.entries,
     );
     const firstLine = layout.lines[0];
-    // Use the same retained first-line decoration slice as fragment selection;
-    // later lines and their bottom border do not belong to this lookahead.
+    // Use the same retained first-line slice as fragment selection. Acquisition
+    // keeps decorated paragraphs ineligible even if slicing removes an edge.
     const leadFragment = !firstLine?.gridAfterLeadingPt ? undefined
       : layout.lines.length === 1 ? layout : sliceParagraphLayout(layout, {
       lineStart: 0, lineEnd: 1,

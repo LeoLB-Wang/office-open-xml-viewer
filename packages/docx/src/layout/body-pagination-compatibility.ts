@@ -113,10 +113,10 @@ export const WORD_GRID_LINE_CONTENT_FIT_ADMISSION = defineCompatibilityRule({
     kind: 'regression-test',
     reference: 'packages/docx/src/line-spacing-baseline.test.ts#paginates a centered natural box with body bottom %s',
   },
-  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. Only leading added beyond its own natural/authored height is eligible; authored atLeast minima and auto multiples remain charged. Off-grid and exact lines retain full-box admission. This observation applies only at the physical body bottom with no intervening reservation; note bands, wrap exclusions and shortened column regions retain the whole grid cell.',
+  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. Only leading added beyond its own natural/authored height is eligible; authored atLeast minima and auto multiples remain charged. The allowance is restricted to undecorated paragraphs and lines without inline objects: borders (including between/bar rules), shading and bar tab stops retain the full cell, even when a continuation slice omits their paint. Off-grid and exact lines retain full-box admission. This observation applies only at the physical body bottom with no intervening reservation; note bands, wrap exclusions and shortened column regions retain the whole grid cell.',
 });
 
-/** Omit only the terminal grid leading, preserving paragraph trailing extents
+/** Omit only eligible blank terminal grid leading, preserving paragraph trailing extents
  * and all retained placement/paint geometry. Applies to complete and continuing
  * fragments; earlier lines still consume their full grid cells. The caller
  * supplies a physical body bottom only when the active region reaches it
@@ -148,18 +148,18 @@ export function wordGridLineAdmissionExtentPt(
       && bounds.xPt < paragraph.flowBounds.xPt + paragraph.flowBounds.widthPt
       && bounds.xPt + bounds.widthPt > paragraph.flowBounds.xPt;
   })) return logicalLineBoxExtentPt;
-  // §17.3.1.7/24 borders (including their authored spacing) and §17.3.1.31
-  // shading retain their acquired paint geometry. The observed grid-leading
-  // allowance exempts blank leading only, never decoration ink. Measure its
-  // block end relative to the fragment origin, including the border stroke.
-  let decorationExtentPt = paragraph.shading
-    ? paragraph.inkBounds.yPt + paragraph.inkBounds.heightPt - paragraph.flowBounds.yPt
-    : 0;
-  for (const border of paragraph.borders) {
-    decorationExtentPt = Math.max(decorationExtentPt,
-      Math.max(border.from.yPt, border.to.yPt) + border.widthPt / 2 - paragraph.flowBounds.yPt);
+  // Eligibility, not an inventory of decoration extents: §17.3.1.24 borders,
+  // §17.3.1.31 shading and §17.18.84 bar tabs may paint the complete cell.
+  // Inline objects also keep their allocated cell. Acquisition already blocks
+  // authored paragraph decoration before slicing can drop a top/bottom/between
+  // rule; these retained checks also protect directly constructed layouts.
+  if (paragraph.shading || paragraph.borders.length > 0
+    || paragraph.lines.some(line => (line.barTabRules?.length ?? 0) > 0)
+    || lastLine?.placements.some(placement =>
+      placement.kind === 'resource' || placement.kind === 'drawing')) {
+    return logicalLineBoxExtentPt;
   }
-  return Math.max(0, logicalLineBoxExtentPt - leadingPt, decorationExtentPt);
+  return Math.max(0, logicalLineBoxExtentPt - leadingPt);
 }
 
 export const WORD_VERTICAL_RL_FINAL_LINE_BASELINE_ADMISSION = defineCompatibilityRule({

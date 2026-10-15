@@ -2454,6 +2454,14 @@ function planMeasuredLines(
   /** Owner section's counter-turn for upright inline graphics. */
   resourceOrientation?: import('./types.js').UprightResourceOrientation,
 ): readonly LineLayout[] {
+  // WORD_GRID_LINE_CONTENT_FIT_ADMISSION covers plain captions only. Decide
+  // paragraph eligibility before continuation/keep-next slicing removes border
+  // edges. Include CT_PBdr's between/bar rules even when no edge is painted in
+  // this slice; a decorated paragraph always retains its full grid cell.
+  const allowsGridLeadingOverhang = !paragraph.shading
+    && !Object.values(paragraph.borders ?? {}).some(Boolean)
+    && !Object.values(paragraph.typographyInput?.borders ?? {}).some(Boolean)
+    && !paragraph.tabStops?.some(stop => stop.alignment === 'bar');
   let sourceOffset = 0;
   const consumedByRun = new Map<number, number>();
   const sequenceOwners = new Map<NonNullable<LayoutTextSeg['sourceTextSequence']>, number>();
@@ -2715,11 +2723,11 @@ function planMeasuredLines(
     ) : measuredLine.advancePt;
     const retained = context.lineGrid.active ? {
       ...planned,
-      gridAfterLeadingPt: Math.max(0, Math.min(
+      gridAfterLeadingPt: allowsGridLeadingOverhang ? Math.max(0, Math.min(
         (measuredLine.advancePt - ownHeightPt) / 2,
         measuredLine.topYPt + measuredLine.advancePt
           - baselinePt - (raw.visibleDescent ?? raw.descent),
-      )),
+      )) : 0,
     } : planned;
     return raw.availWidth !== undefined && (raw.availWidth < availableWidthPt || (raw.xOffset ?? 0) !== 0)
       ? { ...retained, wrapBounds: {
