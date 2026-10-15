@@ -729,11 +729,16 @@ impl MceScope {
 
 /// Repair namespace declarations when preprocessing removes physical XML
 /// ancestors but retains and serializes one of their descendants.
+///
+/// `repaired_tag_limit` bounds the serialized start-tag contents (including
+/// ordinary attributes and escaped injected declarations), not namespace state.
+/// Callers bound retained state separately with [`NamespaceContext::derive`]
+/// and charge the complete event, delimiters included, at projection time.
 pub fn inject_missing_namespaces(
     element: &mut BytesStart<'static>,
     element_context: &NamespaceContext,
     processed_parent_context: Option<&NamespaceContext>,
-    context_limit: usize,
+    repaired_tag_limit: usize,
     label: &str,
 ) -> Result<(), BoundedXmlError> {
     let mut locally_declared = HashSet::new();
@@ -776,9 +781,9 @@ pub fn inject_missing_namespaces(
         missing.push((prefix, namespace));
     }
     let observed = element.len().saturating_add(injected_bytes);
-    if observed > context_limit {
+    if observed > repaired_tag_limit {
         return Err(BoundedXmlError::Limit {
-            limit: context_limit,
+            limit: repaired_tag_limit,
             observed,
         });
     }

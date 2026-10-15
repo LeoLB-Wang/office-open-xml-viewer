@@ -29,14 +29,17 @@ const DOCUMENT_PART: &str = "word/document.xml";
 /// comment) may be as large as the logical body block that contains it, whose
 /// projection is already bounded by `HARD_MAX_DOCX_BODY_BLOCK_XML_BYTES`. A
 /// smaller per-event ceiling would reject blocks that ceiling admits, and Office
-/// writes such tokens: a legacy VML shape (ECMA-376 Part 4 §19.1.2) carries the
-/// DrawingML equivalent of the shape as a base64-encoded package in its
+/// writes such tokens: a legacy VML shape (ECMA-376 Part 4 §19.1.2.19,
+/// CT_Shape) carries the DrawingML equivalent as a base64-encoded package in its
 /// `o:gfxdata` attribute, so a single start tag grows with the shape's content
 /// and the format sets no bound on it. The event reader still stops one hostile
 /// or unterminated token at this ceiling rather than at the part size, and it
 /// applies equally to events that are not retained (an unselected
 /// `mc:Fallback`, a comment).
 pub(crate) const STREAMED_XML_EVENT_BYTES: usize = HARD_MAX_DOCX_BODY_BLOCK_XML_BYTES as usize;
+// Library resource policy: only retained namespace declarations and resolved
+// MCE state use this budget; ordinary attribute payload uses the event/block
+// ceiling, including when Part 3 §9.4 removes physical ancestors.
 const STREAMED_XML_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -985,11 +988,11 @@ impl<R: BufRead> DocumentBodyProjector<R> {
                 element,
                 context,
                 processed_parent,
-                STREAMED_XML_CONTEXT_BYTES,
+                STREAMED_XML_EVENT_BYTES,
                 "document body block",
             )
             .map_err(|error| {
-                self.map_bounded_error(error, HardResourceLimitKind::XmlContextBytes)
+                self.map_bounded_error(error, HardResourceLimitKind::DocxBodyBlockXmlBytes)
             })?;
         }
         if !opaque {
@@ -1088,11 +1091,11 @@ impl<R: BufRead> DocumentBodyProjector<R> {
                 &mut root,
                 context,
                 None,
-                STREAMED_XML_CONTEXT_BYTES,
+                STREAMED_XML_EVENT_BYTES,
                 "document body block",
             )
             .map_err(|error| {
-                self.map_bounded_error(error, HardResourceLimitKind::XmlContextBytes)
+                self.map_bounded_error(error, HardResourceLimitKind::DocxBodyBlockXmlBytes)
             })?;
             self.capture = Some(Capture {
                 root_depth: next_depth,
@@ -1123,10 +1126,12 @@ impl<R: BufRead> DocumentBodyProjector<R> {
             &mut root,
             context,
             None,
-            STREAMED_XML_CONTEXT_BYTES,
+            STREAMED_XML_EVENT_BYTES,
             "document body block",
         )
-        .map_err(|error| self.map_bounded_error(error, HardResourceLimitKind::XmlContextBytes))?;
+        .map_err(|error| {
+            self.map_bounded_error(error, HardResourceLimitKind::DocxBodyBlockXmlBytes)
+        })?;
         self.capture = Some(Capture {
             // Empty elements do not push a physical reader frame, but their
             // logical element depth is still one below the current parent.
@@ -1712,16 +1717,123 @@ mod tests {
     }
 
     #[test]
-    fn admits_one_start_tag_larger_than_a_mebibyte_within_the_block_ceiling() {
-        // A legacy VML shape carries its DrawingML twin as a base64 package in
-        // `o:gfxdata`, so one start tag grows with the shape's content.
-        let gfxdata = "A".repeat(2 * 1024 * 1024);
+    fn admits_large_vml_shape_start_tags_within_the_block_ceiling() {
+        // ECMA-376 Part 4 §19.1.2.19 CT_Shape declares o:gfxdata, a
+        // base64Binary DrawingML package. The same tag must be admitted after
+        // Part 3 §9.4 removes selected MCE/ProcessContent wrappers.
+        let gfxdata = "A".repeat(STREAMED_XML_CONTEXT_BYTES + 4);
+        let shape = format!(r#"<v:shape o:gfxdata="{gfxdata}"/>"#);
+        for content in [
+            format!(
+                r#"<v:shape xmlns:o="urn:schemas-microsoft-com:office:office" o:gfxdata="{gfxdata}"/>"#
+            ),
+            // Repair a large Empty event immediately below selected Choice.
+            format!(
+                r#"<mc:AlternateContent><mc:Choice Requires="wps" xmlns:o="urn:schemas-microsoft-com:office:office">{shape}</mc:Choice></mc:AlternateContent>"#
+            ),
+            // Repair a Start event through nested selection, including a
+            // selected Fallback, inside w:pict within w:object.
+            format!(
+                r#"<mc:AlternateContent><mc:Choice Requires="wps"><mc:AlternateContent><mc:Choice Requires="f"/><mc:Fallback xmlns:o="urn:schemas-microsoft-com:office:office"><v:shape o:gfxdata="{gfxdata}"><v:path/></v:shape></mc:Fallback></mc:AlternateContent></mc:Choice></mc:AlternateContent>"#
+            ),
+            // Ignorable attribute stripping must preserve the large retained
+            // attribute when ProcessContent removes the physical parent.
+            format!(
+                r#"<f:wrapper xmlns:o="urn:schemas-microsoft-com:office:office"><v:shape f:drop="ignored" o:gfxdata="{gfxdata}"/></f:wrapper>"#
+            ),
+        ] {
+            let xml = format!(
+                r#"<w:document xmlns:w="{W}" xmlns:mc="{MC}" xmlns:wps="{WPS}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:f="urn:future" mc:Ignorable="f" mc:ProcessContent="f:wrapper"><w:body><w:p><w:r><w:object><w:pict>{content}</w:pict></w:object></w:r></w:p></w:body></w:document>"#,
+            );
+            let (blocks, _) = project(&xml);
+            assert_eq!(blocks.len(), 1);
+            let projected = std::str::from_utf8(&blocks[0].xml).unwrap();
+            let doc = roxmltree::Document::parse(projected).unwrap();
+            let shape = doc
+                .descendants()
+                .find(|node| node.has_tag_name(("urn:schemas-microsoft-com:vml", "shape")))
+                .unwrap();
+            assert_eq!(
+                shape.attribute(("urn:schemas-microsoft-com:office:office", "gfxdata")),
+                Some(gfxdata.as_str())
+            );
+            assert!(!projected.contains("AlternateContent"));
+            assert!(!projected.contains("f:wrapper"));
+            assert!(!projected.contains("f:drop"));
+        }
+    }
+
+    #[test]
+    fn admits_large_unselected_fallback_tag_without_retaining_it() {
+        let gfxdata = "A".repeat(STREAMED_XML_CONTEXT_BYTES + 4);
         let xml = format!(
-            r#"<w:document xmlns:w="{W}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:body><w:p><w:r><w:pict><v:group o:gfxdata="{gfxdata}"/></w:pict></w:r></w:p></w:body></w:document>"#,
+            r#"<w:document xmlns:w="{W}" xmlns:mc="{MC}" xmlns:wps="{WPS}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:body><w:p><w:r><w:pict><mc:AlternateContent><mc:Choice Requires="wps"><v:shape id="selected"/></mc:Choice><mc:Fallback><v:shape o:gfxdata="{gfxdata}"/></mc:Fallback></mc:AlternateContent></w:pict></w:r></w:p></w:body></w:document>"#,
         );
         let (blocks, _) = project(&xml);
         assert_eq!(blocks.len(), 1);
-        assert!(blocks[0].xml.len() > gfxdata.len());
+        let projected = std::str::from_utf8(&blocks[0].xml).unwrap();
+        assert!(projected.contains(r#"id="selected""#));
+        assert!(!projected.contains("gfxdata"));
+        assert!(projected.len() < 1024);
+    }
+
+    #[test]
+    fn block_root_repair_uses_the_block_budget_for_start_and_empty_events() {
+        // Synthetic ordinary attribute isolates the block-root repair gates;
+        // this is a projection budget test, not a schema-validity claim.
+        let data = "A".repeat(STREAMED_XML_CONTEXT_BYTES + 4);
+        for tail in ["/>", "></w:p>"] {
+            let xml = format!(
+                r#"<w:document xmlns:w="{W}"><w:body><w:p data="{data}"{tail}</w:body></w:document>"#,
+            );
+            let (blocks, _) = project(&xml);
+            assert_eq!(blocks.len(), 1);
+            let doc =
+                roxmltree::Document::parse(std::str::from_utf8(&blocks[0].xml).unwrap()).unwrap();
+            assert_eq!(doc.root_element().attribute("data"), Some(data.as_str()));
+        }
+    }
+
+    #[test]
+    fn namespace_declaration_explosion_still_fails_with_typed_context_limit() {
+        use ooxml_common::resource::{OoxmlFormat, ResourceGovernor};
+
+        // Five declarations cross the 4 MiB state budget while staying well
+        // below the event/block ceiling. Include ignored branches: namespace
+        // state is bounded even when their ordinary payload is not retained.
+        let uri = "x".repeat(STREAMED_XML_CONTEXT_BYTES / 4);
+        let declarations = (0..5)
+            .map(|n| format!(r#" xmlns:n{n}="urn:{n}:{uri}""#))
+            .collect::<String>();
+        for requires in ["wps", "f"] {
+            let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, None, None, None);
+            let scope = governor.scope("parse");
+            let xml = format!(
+                r#"<w:document xmlns:w="{W}" xmlns:mc="{MC}" xmlns:wps="{WPS}" xmlns:f="urn:future" xmlns:v="urn:schemas-microsoft-com:vml"><w:body><w:p><w:r><w:pict><mc:AlternateContent><mc:Choice Requires="{requires}"><v:shape{declarations}/></mc:Choice><mc:Fallback/></mc:AlternateContent></w:pict></w:r></w:p></w:body></w:document>"#,
+            );
+            let mut projector = DocumentBodyProjector::new(
+                BufReader::new(Cursor::new(xml.into_bytes())),
+                None,
+                Rc::default(),
+            );
+            let error = projector.next_block().unwrap_err();
+            let payload: serde_json::Value = serde_json::from_str(
+                error
+                    .strip_prefix("OOXML_RESOURCE_LIMIT:")
+                    .expect("typed limit"),
+            )
+            .unwrap();
+            assert_eq!(payload["code"], "ooxml-resource-limit");
+            let violation = &payload["details"]["violation"];
+            assert_eq!(violation["resource"], "xml-context");
+            assert_eq!(violation["limit"], STREAMED_XML_CONTEXT_BYTES);
+            assert_eq!(violation["observed"], STREAMED_XML_CONTEXT_BYTES + 1);
+            assert_eq!(violation["part"], DOCUMENT_PART);
+            assert_eq!(
+                scope.resource_limit_error().as_deref(),
+                Some(error.as_str())
+            );
+        }
     }
 
     #[test]
