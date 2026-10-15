@@ -8,6 +8,7 @@ import {
   HARD_MAX_XLSX_WORKSHEET_CELL_CONTENT_UTF8_BYTES,
   HARD_MAX_XLSX_WORKSHEET_JSON_BYTES,
   HARD_MAX_XLSX_WORKSHEET_ROWS,
+  resourceLimitMessage,
   type NormalizedXlsxWorksheetPolicy,
 } from '@silurus/ooxml-core/worker';
 import {
@@ -170,7 +171,7 @@ export function worksheetLimitError(
 ): OoxmlResourceLimitError {
   const stage = resource === 'worksheet-json' ? 'serialization' : 'parsing';
   return new OoxmlResourceLimitError(
-    `OOXML resource limit exceeded${part ? ` for ${part}` : ''}: ${metric} ${observed} > ${limit}`,
+    resourceLimitMessage({ stage, violation: { part, resource, metric, observed, limit } }),
     {
       stage,
       violation: {
