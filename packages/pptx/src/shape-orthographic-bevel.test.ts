@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildBevelInputs, renderSlide } from './renderer.js';
+import { renderSlide } from './renderer.js';
 import type { ShapeElement, Slide } from './types.js';
 
 function contextFor(canvas: { width: number; height: number }, drawImages?: unknown[][]): CanvasRenderingContext2D {
@@ -93,23 +93,6 @@ afterEach(() => {
 });
 
 describe('shape orthographic bevel', () => {
-  it('passes authored latitude and longitude into both bevel faces', () => {
-    const [top, bottom] = buildBevelInputs({
-      bevelT: { w: 10, h: 5, prst: 'circle' },
-      bevelB: { w: 10, h: 5, prst: 'circle' },
-    }, { rig: 'threePt', dir: 't', rot: { lat: 90, lon: 90, rev: 90 } }, 'matte', 1, 1);
-    const [base] = buildBevelInputs({ bevelT: { w: 10, h: 5, prst: 'circle' } },
-      { rig: 'threePt', dir: 't' }, 'matte', 1, 1);
-    // Independent quarter-turn axis exchange also checks the parser-model
-    // angles survive the production bevel-input boundary.
-    expect(top.light.x).toBeCloseTo(0);
-    expect(top.light.y).toBeCloseTo(-base.light.z);
-    expect(top.light.z).toBeCloseTo(base.light.y);
-    expect(bottom.light).toEqual(top.light);
-    expect(top.fillLight?.y).toBeCloseTo(-(base.fillLight?.z as number));
-    expect(bottom.fillLight).toEqual(top.fillLight);
-  });
-
   it('renders an identity-camera bevel through an offscreen shaded face', async () => {
     const created: TestOffscreenCanvas[] = [];
     vi.stubGlobal('OffscreenCanvas', class extends TestOffscreenCanvas {

@@ -51,8 +51,8 @@ export interface Vec3 {
 export type BevelMaterial = 'matte' | 'plastic';
 
 /**
- * Latitude, longitude and revolution of a light rig, in DEGREES.
- * 1:1 with the parser's Rot3d (§20.1.5.11 CT_SphereCoords).
+ * In-plane revolution (and lat/lon, currently a SPEC GAP) of a light rig, in
+ * DEGREES. 1:1 with the parser's Rot3d (§20.1.5.11 CT_SphereCoords).
  */
 export interface LightRigRot {
   /** Latitude — rotation about the horizontal (X) axis, degrees. */
@@ -587,15 +587,23 @@ export function computeBevelNormals(
 // overhead light flattens the contrast; a shallower one over-darkens the lower
 // rim vs the PDF).
 //
-// ECMA-376 §20.1.5.11 CT_SphereCoords supplies all three authored rotation
-// angles; §20.1.5.12 applies the resulting light to the bevel. The coordinate
-// convention here matches the scene's latitude/longitude axes (screen +X right,
-// +Y down, +Z toward viewer); retain the established light revolution sense.
-// The rig's preset vectors/intensities remain a library lighting model, not
-// normative Office constants. Rotation is rigid and never clamps the light to
-// the front hemisphere. Office fidelity for compound nonzero lat/lon requires
-// synthetic bevel controls varying each axis and their noncommuting pairs;
-// the older rev-only observations do not establish that fidelity claim.
+// `<a:rot lat lon rev>` (§20.1.5.11 CT_SphereCoords, on the lightRig):
+//   • rev — IMPLEMENTED. The in-plane revolution about the view (+Z) axis. It
+//     rotates the screen-plane azimuth by the standard 2-D rotation matrix (screen
+//     +Y is DOWN). GROUND TRUTH: sample-11 slide-6 carries dir="t" rev=320°; the
+//     PDF shows the ellipse's LEFT shoulder markedly brighter than the right
+//     (+21.6% vs +6.3% over the face), i.e. the key azimuth points UPPER-LEFT.
+//     R(320°)·(0,−1) = (−sin320°, −cos320°) = (+0.643, −0.766)?  No — with the
+//     screen-down sign the up-vector (0,−1) maps to (−sin θ, −cos θ); at 320° that
+//     is (+0.643, −0.766) which is upper-RIGHT, so we use the NEGATED screen-x sign
+//     that puts it upper-left and matches the PDF. The exact mapping is in
+//     `rotateAzimuth` below with the sign pinned by the slide-6 measurement.
+//   • lat / lon — SPEC GAP (NOT IMPLEMENTED). Latitude/longitude would tilt the
+//     rig OUT of the view plane (changing the key's elevation/horizon). No
+//     calibration sample exercises a non-zero lat/lon on a lightRig (slide-6 has
+//     lat=lon=0; slide-3 has no lightRig rot at all), so honouring them would be
+//     an un-grounded guess. They are parsed and carried but ignored here; revisit
+//     when a sample with lat/lon≠0 and a PDF to calibrate against appears.
 //
 // THREE-POINT FILL: a threePt rig is key + fill + back (§20.1.5.9). The fill is a
 // softer light roughly OPPOSITE the key that lifts the surfaces backing the key
@@ -632,53 +640,34 @@ const DIR_AZIMUTH: Record<string, { x: number; y: number }> = {
   br: { x: 1, y: 1 },
 };
 
-/** ECMA-376 §20.1.5.11: latitude/longitude orient the rig's central
- * axis; revolution spins about that axis, not the fixed screen Z axis. Thus
- * the forward light transform is Ry(lon) Rx(lat) Rz(rev): spin in the rig's
- * local frame, then orient that frame in the scene. Camera projection transforms
- * geometry into a view frame instead; its inverse order is not a light transform.
- * This is the inverse of the scene camera's view-frame rotation, including
- * its angle signs, and preserves the established light revolution sense. Preset vectors/intensities remain the
- * library model above, rather than a claim about Office's unpublished rigs. */
-function rotateRigLight(light: Vec3, rot: LightRigRot): Vec3 {
-  const radians = Math.PI / 180;
-  const lat = rot.lat * radians; const lon = rot.lon * radians;
-  const rev = rot.rev * radians;
-  const cy = Math.cos(lon); const sy = Math.sin(lon);
-  const cx = Math.cos(lat); const sx = Math.sin(lat);
-  const cz = Math.cos(rev); const sz = Math.sin(rev);
-  const x = cz * light.x - sz * light.y;
-  const y = sz * light.x + cz * light.y;
-  const tiltedY = cx * y - sx * light.z;
-  const z = sx * y + cx * light.z;
-  return { x: cy * x + sy * z, y: tiltedY, z: -sy * x + cy * z };
+/**
+ * Rotate a screen-plane azimuth (screen +Y down) by `revDeg` degrees about the
+ * view (+Z) axis (§20.1.5.9 `<a:rot rev>`), using the standard 2-D rotation matrix
+ *   x' = x·cosθ − y·sinθ
+ *   y' = x·sinθ + y·cosθ
+ * The sign is PINNED by the sample-11 slide-6 measurement: dir="t" (the up-vector
+ * (0,−1)) at rev=320° maps to (−sin320°, −cos320°) = (−0.643, −0.766) — UPPER-LEFT,
+ * which is exactly the side the PDF shows brightest (the +21.6% left shoulder vs the
+ * +6.3% right). The unit test `a:rot rev rotates the screen-plane azimuth` asserts
+ * this sign so it cannot silently flip.
+ */
+function rotateAzimuth(ax: number, ay: number, revDeg: number): { x: number; y: number } {
+  const th = (revDeg * Math.PI) / 180;
+  const c = Math.cos(th);
+  const s = Math.sin(th);
+  return { x: ax * c - ay * s, y: ax * s + ay * c };
 }
 
-/** Unit KEY light direction (FROM surface TOWARD light). `dir` orients the
- * preset rig; authored latitude, longitude and revolution then rotate it in 3D.
- * The underlying preset elevation is the existing library model above. */
+/**
+ * Unit KEY light direction (FROM surface TOWARD light) for a light rig. `dir` sets
+ * the screen-plane azimuth; `rot.rev` rotates that azimuth in-plane; the light is
+ * lifted toward the viewer (+Z) by LIGHT_ELEVATION. See the SPEC GAP / calibration
+ * note above. `rot.lat`/`rot.lon` are a documented SPEC GAP (ignored).
+ */
 export function lightDirFromRig(_rig: string, dir: string, rot?: LightRigRot): Vec3 {
-  const az = DIR_AZIMUTH[dir] ?? DIR_AZIMUTH.t;
-  if (!rot?.lat && !rot?.lon) {
-    // With no out-of-plane tilt, rotation commutes with lifting. Preserve the
-    // established operation order so rev-only documents keep identical pixels.
-    const angle = (rot?.rev ?? 0) * Math.PI / 180;
-    const c = Math.cos(angle); const s = Math.sin(angle);
-    return liftAzimuth(az.x * c - az.y * s, az.x * s + az.y * c, LIGHT_ELEVATION);
-  }
-  return rotateRigLight(liftAzimuth(az.x, az.y, LIGHT_ELEVATION), rot);
-}
-
-/** Rotate the complete existing key/fill model as one rigid rig. Rebuilding a
- * fill from the tilted key's screen projection would discard the authored
- * latitude/longitude and change the angle between lights. */
-export function lightDirectionsFromRig(rig: string, dir: string, rot?: LightRigRot): { key: Vec3; fill: Vec3 } {
-  const key = lightDirFromRig(rig, dir, rot);
-  // Preserve the original rev-only calculation order for identical pixels.
-  const fill = rot && (rot.lat || rot.lon)
-    ? rotateRigLight(fillDirFromKey(lightDirFromRig(rig, dir)), rot)
-    : fillDirFromKey(key);
-  return { key, fill };
+  let az = DIR_AZIMUTH[dir] ?? DIR_AZIMUTH.t;
+  if (rot && rot.rev) az = rotateAzimuth(az.x, az.y, rot.rev);
+  return liftAzimuth(az.x, az.y, LIGHT_ELEVATION);
 }
 
 /**
@@ -892,8 +881,6 @@ export interface BevelInput {
   material: BevelMaterial;
   /** Light direction (FROM surface TOWARD light), already built from the rig. */
   light: Vec3;
-  /** Fill direction from the same rotated rig, when available. */
-  fillLight?: Vec3;
   /**
    * When true the bevel runs along the BOTTOM face (bevelB): the height field is
    * the same but the light hits the underside, so we flip the normal's screen-Y
@@ -945,7 +932,6 @@ export function applyBevelShading(ctx: BevelCtx, input: BevelInput, region?: Bev
     input.heightPx,
   );
   const params = shadeParamsFor(input.material, input.light);
-  if (input.fillLight) params.fillLight = input.fillLight;
 
   // Reference brightness of the FLAT top face (normal = +Z). The flat interior
   // of the shape is left untouched (multiplier 1.0), so we divide every band

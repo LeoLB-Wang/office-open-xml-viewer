@@ -73,7 +73,7 @@ import {
   applyBevelShading,
   applyExtrusion,
   computeDepthOffset,
-  lightDirectionsFromRig,
+  lightDirFromRig,
   materialClass,
   isHTMLCanvas,
   defaultDpr,
@@ -5954,7 +5954,7 @@ interface Sp3dLike {
 interface LightRigLike {
   rig: string;
   dir: string;
-  /** Optional `<a:rot lat lon rev>` (§20.1.5.11) — rotates the light direction in 3D. */
+  /** Optional `<a:rot lat lon rev>` (§20.1.5.11) — rev rotates the key azimuth. */
   rot?: { lat: number; lon: number; rev: number };
 }
 
@@ -5979,8 +5979,13 @@ export function buildBevelInputs(
   if (!sp3d) return [];
   const rig = lightRig?.rig ?? 'threePt';
   const dir = lightRig?.dir ?? 't';
-  // ECMA-376 §20.1.5.9/§20.1.5.11: apply the authored rig rotation in 3D.
-  const { key: light, fill: fillLight } = lightDirectionsFromRig(rig, dir, lightRig?.rot);
+  // Full lightRig `<a:rot>` semantics (§20.1.5.11) are not yet applied; retain
+  // the historical rev-only approximation. PowerPoint-exported orthographic
+  // matte circle/threePt controls (dir t/r/br; axis quarter-turns and mixed
+  // rotations) show explicit rot overrides dir, zero differs from absent, and
+  // side/back lighting darkens the face. This face-preserving model cannot
+  // express those results; lat/lon support requires a lighting-model replacement.
+  const light = lightDirFromRig(rig, dir, lightRig?.rot);
   const material = materialClass(prstMaterial);
   const emuToDev = scale * devScale;
   const out: BevelInput[] = [];
@@ -5991,7 +5996,6 @@ export function buildBevelInputs(
       prst: sp3d.bevelT.prst || 'circle',
       material,
       light,
-      fillLight,
     });
   }
   if (sp3d.bevelB && sp3d.bevelB.w > 0 && sp3d.bevelB.h > 0) {
@@ -6001,7 +6005,6 @@ export function buildBevelInputs(
       prst: sp3d.bevelB.prst || 'circle',
       material,
       light,
-      fillLight,
       bottom: true,
     });
   }

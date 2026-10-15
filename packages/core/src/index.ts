@@ -505,7 +505,6 @@ export {
   bevelHeightProfile,
   distanceToEdge,
   lightDirFromRig,
-  lightDirectionsFromRig,
   materialClass,
   type BevelMaterial,
   type BevelShadeParams,
