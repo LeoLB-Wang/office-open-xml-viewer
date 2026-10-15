@@ -36,7 +36,9 @@ impl<'a> Index<'a> {
         // Resource policy, not a file-format limit. Borrow properties instead
         // of copying each overlapping FKP payload into every run.
         if count > 65_536 {
-            return Err(unsupported("Word formatting page budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word formatting page budget exceeded",
+            ));
         }
         let mut runs = Vec::new();
         let mut paragraph_sprm_budget = Budget::default();
@@ -56,7 +58,12 @@ impl<'a> Index<'a> {
                 Kind::Character => (101, 1),
                 Kind::Paragraph => (29, 13),
             };
-            if n == 0 || n > maximum || runs.len() + n > 1_000_000 {
+            if runs.len() + n > 1_000_000 {
+                return Err(crate::rejection::resource(
+                    "Word formatting run retention budget exceeded",
+                ));
+            }
+            if n == 0 || n > maximum {
                 return Err(unsupported(
                     "invalid or excessive Word formatting run count",
                 ));

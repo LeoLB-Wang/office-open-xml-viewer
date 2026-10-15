@@ -236,7 +236,9 @@ fn prepare_workbook(workbook: &[u8]) -> Result<PreparedXls, String> {
         return Err(unsupported("only BIFF8 workbook globals are supported"));
     }
     if records.iter().any(|record| record.kind == FILEPASS) {
-        return Err(unsupported("encrypted BIFF workbooks are not supported"));
+        return Err(crate::rejection::encryption(
+            "encrypted BIFF workbooks are not supported",
+        ));
     }
 
     let styles = styles::Styles::parse(&records)?;
@@ -254,7 +256,7 @@ fn prepare_workbook(workbook: &[u8]) -> Result<PreparedXls, String> {
             0x0022 => date1904 = u16_at(record.data, 0)? != 0,
             BOUNDSHEET8 => {
                 if sheets.len() >= MAX_SHEETS {
-                    return Err(unsupported("too many BIFF worksheets"));
+                    return Err(crate::rejection::resource("too many BIFF worksheets"));
                 }
                 sheets.push(parse_bound_sheet(record.data)?);
             }
@@ -750,7 +752,9 @@ fn validate_direct_retention(records: &[Record<'_>]) -> Result<(), String> {
     }
     let possible_rows = rows.saturating_add(cells);
     if cells > MAX_DIRECT_CELLS || possible_rows > MAX_DIRECT_ROWS {
-        return Err(unsupported("XLS direct neutral entry-count limit exceeded"));
+        return Err(crate::rejection::resource(
+            "XLS direct neutral entry-count limit exceeded",
+        ));
     }
     // Logical payload accounting only; allocator bookkeeping is intentionally
     // excluded and independently bounded by the entry-count limits above.
@@ -764,9 +768,11 @@ fn validate_direct_retention(records: &[Record<'_>]) -> Result<(), String> {
         .checked_mul(cell_bytes)
         .and_then(|value| value.checked_add(possible_rows.checked_mul(row_bytes)?))
         .and_then(|value| value.checked_add(decoded_text_bytes))
-        .ok_or_else(|| unsupported("XLS direct neutral retention size overflow"))?;
+        .ok_or_else(|| crate::rejection::resource("XLS direct neutral retention size overflow"))?;
     if retained > MAX_DIRECT_NEUTRAL_BYTES {
-        return Err(unsupported("XLS direct neutral retention budget exceeded"));
+        return Err(crate::rejection::resource(
+            "XLS direct neutral retention budget exceeded",
+        ));
     }
     Ok(())
 }
@@ -783,7 +789,7 @@ fn records(bytes: &[u8]) -> Result<Vec<Record<'_>>, String> {
     let mut offset = 0usize;
     while offset < bytes.len() {
         if output.len() >= MAX_RECORDS {
-            return Err(unsupported("too many BIFF records"));
+            return Err(crate::rejection::resource("too many BIFF records"));
         }
         if bytes.len() - offset < 4 {
             return if bytes[offset..].iter().all(|byte| *byte == 0) {
@@ -862,28 +868,36 @@ fn parse_sst_elements(fragments: &[&[u8]]) -> Result<Vec<rich::Text>, String> {
     // Resource policy, separate from BIFF's cell/record limits. Retain only the
     // neutral text/run table here; model expansion is charged at projection.
     if unique > 1_000_000 || unique > total_bytes.saturating_sub(8) / 3 {
-        return Err(unsupported("too many BIFF shared strings"));
+        return Err(crate::rejection::resource("too many BIFF shared strings"));
     }
     let mut retention_budget = rich::MAX_MODEL_BYTES;
     retention_budget = retention_budget
         .checked_sub(
             unique
                 .checked_mul(std::mem::size_of::<rich::Text>())
-                .ok_or_else(|| unsupported("BIFF shared string retention size overflow"))?,
+                .ok_or_else(|| {
+                    crate::rejection::resource("BIFF shared string retention size overflow")
+                })?,
         )
-        .ok_or_else(|| unsupported("BIFF shared string retention budget exceeded"))?;
+        .ok_or_else(|| {
+            crate::rejection::resource("BIFF shared string retention budget exceeded")
+        })?;
     let mut strings = Vec::new();
-    strings
-        .try_reserve_exact(unique)
-        .map_err(|_| unsupported("BIFF shared string retention allocation failed"))?;
+    strings.try_reserve_exact(unique).map_err(|_| {
+        crate::rejection::resource("BIFF shared string retention allocation failed")
+    })?;
     let extra_slots = strings.capacity().saturating_sub(unique);
     retention_budget = retention_budget
         .checked_sub(
             extra_slots
                 .checked_mul(std::mem::size_of::<rich::Text>())
-                .ok_or_else(|| unsupported("BIFF shared string retention size overflow"))?,
+                .ok_or_else(|| {
+                    crate::rejection::resource("BIFF shared string retention size overflow")
+                })?,
         )
-        .ok_or_else(|| unsupported("BIFF shared string retention budget exceeded"))?;
+        .ok_or_else(|| {
+            crate::rejection::resource("BIFF shared string retention budget exceeded")
+        })?;
     let mut run_budget = 1_000_000usize;
     for _ in 0..unique {
         let header = cursor.read_fixed(3, "split or truncated BIFF string header")?;
@@ -910,7 +924,7 @@ fn parse_sst_elements(fragments: &[&[u8]]) -> Result<Vec<rich::Text>, String> {
         }
         run_budget = run_budget
             .checked_sub(rich_runs)
-            .ok_or_else(|| unsupported("BIFF rich-text run budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("BIFF rich-text run budget exceeded"))?;
         let units = cursor.read_characters(chars, (flags & 0x01) != 0)?;
         let mut runs = Vec::with_capacity(rich_runs);
         for _ in 0..rich_runs {
@@ -923,7 +937,9 @@ fn parse_sst_elements(fragments: &[&[u8]]) -> Result<Vec<rich::Text>, String> {
         let value = rich::Text::new(&units, &runs)?;
         retention_budget = retention_budget
             .checked_sub(value.retained_bytes()?)
-            .ok_or_else(|| unsupported("BIFF shared string retention budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("BIFF shared string retention budget exceeded")
+            })?;
         strings.push(value);
     }
     Ok(strings)
@@ -1342,7 +1358,7 @@ fn parse_sheet(
             {
                 return Err(unsupported("continued XLS conditional formatting record"));
             }
-            FILEPASS => return Err(unsupported("encrypted BIFF worksheet")),
+            FILEPASS => return Err(crate::rejection::encryption("encrypted BIFF worksheet")),
             _ => {}
         }
     }
@@ -1366,7 +1382,7 @@ fn insert_cell(
     if row_values.insert(column, value).is_none() {
         *count += 1;
         if *count > MAX_CELLS {
-            return Err(unsupported("too many BIFF worksheet cells"));
+            return Err(crate::rejection::resource("too many BIFF worksheet cells"));
         }
     }
     Ok(())
@@ -1421,8 +1437,13 @@ fn parse_merged_cells(data: &[u8], output: &mut Vec<(u16, u16, u16, u16)>) -> Re
     let required = 2usize
         .checked_add(count * 8)
         .ok_or_else(|| unsupported("MERGEDCELLS size overflow"))?;
-    if required > data.len() || output.len() + count > MAX_CELLS {
+    if required > data.len() {
         return Err(unsupported("invalid or excessive MERGEDCELLS record"));
+    }
+    if output.len() + count > MAX_CELLS {
+        return Err(crate::rejection::resource(
+            "MERGEDCELLS retention budget exceeded",
+        ));
     }
     for index in 0..count {
         let offset = 2 + index * 8;
@@ -1510,7 +1531,7 @@ fn berr_text(code: u8) -> &'static str {
 }
 
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 /// `offset..offset + N` of an input-derived offset, which may lie near

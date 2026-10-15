@@ -264,7 +264,7 @@ impl ResolvedStyleSheet {
             .and_then(|n| {
                 n.checked_add(self.formats.len() * std::mem::size_of::<xlsx_model::NumFmt>())
             })
-            .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("XLS style model byte budget exceeded"))?;
         for font in &self.fonts {
             let underline = match font.font.underline {
                 Underline::None | Underline::Single => 0,
@@ -278,7 +278,9 @@ impl ResolvedStyleSheet {
                 .checked_add(font.font.name.len())
                 .and_then(|n| n.checked_add(7))
                 .and_then(|n| n.checked_add(underline + script))
-                .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+                .ok_or_else(|| {
+                    crate::rejection::resource("XLS style model byte budget exceeded")
+                })?;
         }
         for fill in &self.fills {
             let owned = match fill {
@@ -286,9 +288,9 @@ impl ResolvedStyleSheet {
                 ResolvedFill::Gray125 => "gray125".len(),
                 ResolvedFill::Pattern { pattern, .. } => pattern.len() + 14,
             };
-            bytes = bytes
-                .checked_add(owned)
-                .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+            bytes = bytes.checked_add(owned).ok_or_else(|| {
+                crate::rejection::resource("XLS style model byte budget exceeded")
+            })?;
         }
         for border in &self.borders {
             for edge in [
@@ -301,30 +303,32 @@ impl ResolvedStyleSheet {
             .into_iter()
             .flatten()
             {
-                bytes = bytes
-                    .checked_add(edge.style.len() + 7)
-                    .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+                bytes = bytes.checked_add(edge.style.len() + 7).ok_or_else(|| {
+                    crate::rejection::resource("XLS style model byte budget exceeded")
+                })?;
             }
         }
         for border in &self.borders {
             // border_model clones the projected diagonal for diagonal_up.
             if border.diagonal_up {
                 if let Some(edge) = &border.diagonal {
-                    bytes = bytes
-                        .checked_add(edge.style.len() + 7)
-                        .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+                    bytes = bytes.checked_add(edge.style.len() + 7).ok_or_else(|| {
+                        crate::rejection::resource("XLS style model byte budget exceeded")
+                    })?;
                 }
             }
         }
         for xf in &self.xfs {
             bytes = bytes
                 .checked_add(xf.horizontal.len() + xf.vertical.len())
-                .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+                .ok_or_else(|| {
+                    crate::rejection::resource("XLS style model byte budget exceeded")
+                })?;
         }
         for format in self.formats.values() {
-            bytes = bytes
-                .checked_add(format.capacity())
-                .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+            bytes = bytes.checked_add(format.capacity()).ok_or_else(|| {
+                crate::rejection::resource("XLS style model byte budget exceeded")
+            })?;
         }
         for (_, gradient) in &self.gradients {
             bytes = bytes
@@ -334,16 +338,18 @@ impl ResolvedStyleSheet {
                         + gradient.stops.len()
                             * (std::mem::size_of::<xlsx_model::GradientStopSpec>() + 7),
                 )
-                .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+                .ok_or_else(|| {
+                    crate::rejection::resource("XLS style model byte budget exceeded")
+                })?;
         }
         for dxf in &self.dxfs {
-            bytes = bytes
-                .checked_add(dxf_bytes(dxf))
-                .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+            bytes = bytes.checked_add(dxf_bytes(dxf)).ok_or_else(|| {
+                crate::rejection::resource("XLS style model byte budget exceeded")
+            })?;
         }
         *budget = budget
             .checked_sub(bytes)
-            .ok_or_else(|| unsupported("XLS style model byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("XLS style model byte budget exceeded"))?;
         Ok(self.into_model())
     }
 
@@ -478,12 +484,17 @@ impl<'a> Styles<'a> {
             match record.kind {
                 0x0031 => {
                     if styles.fonts.len() >= 1022 {
-                        return Err(unsupported("too many BIFF fonts"));
+                        return Err(crate::rejection::resource("too many BIFF fonts"));
                     }
                     styles.fonts.push(record.data);
                 }
                 0x00e0 => {
-                    if record.data.len() != 20 || styles.xfs.len() >= 4096 {
+                    if styles.xfs.len() >= 4096 {
+                        return Err(crate::rejection::resource(
+                            "BIFF XF record retention budget exceeded",
+                        ));
+                    }
+                    if record.data.len() != 20 {
                         return Err(unsupported("invalid or excessive BIFF XF records"));
                     }
                     styles.xfs.push(record.data);

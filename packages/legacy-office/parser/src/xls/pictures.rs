@@ -234,9 +234,9 @@ impl ResolvedPictures {
     /// Source anchor/media limits bound map entry counts separately.
     pub(super) fn into_models(self, budget: &mut usize) -> Result<NativePictures, String> {
         fn charge(budget: &mut usize, bytes: usize) -> Result<(), String> {
-            *budget = budget
-                .checked_sub(bytes)
-                .ok_or_else(|| super::unsupported("XLS picture model byte budget exceeded"))?;
+            *budget = budget.checked_sub(bytes).ok_or_else(|| {
+                crate::rejection::resource("XLS picture model byte budget exceeded")
+            })?;
             Ok(())
         }
         fn key(id: u32, budget: &mut usize) -> Result<String, String> {
@@ -255,12 +255,14 @@ impl ResolvedPictures {
             let bytes = values
                 .len()
                 .checked_mul(std::mem::size_of::<xlsx_model::ImageAnchor>())
-                .ok_or_else(|| super::unsupported("XLS picture model byte budget exceeded"))?;
+                .ok_or_else(|| {
+                    crate::rejection::resource("XLS picture model byte budget exceeded")
+                })?;
             charge(budget, bytes)?;
             let mut anchors = Vec::new();
             anchors
                 .try_reserve_exact(values.len())
-                .map_err(|_| super::unsupported("XLS picture model allocation failed"))?;
+                .map_err(|_| crate::rejection::resource("XLS picture model allocation failed"))?;
             for value in values {
                 let image_path = key(value.store_index, budget)?;
                 let mime = ooxml_common::blip::mime_from_ext(value.extension);

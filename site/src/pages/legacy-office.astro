@@ -151,9 +151,12 @@ const assetExample = `const source = legacyPptSource({
           ask for conversion to DOCX, XLSX or PPTX. An unclaimed or ambiguous container still takes
           the ordinary OOXML path, including its encryption errors.</p>
         <p>Once a source claims the file, reader failure rejects the load with no fallback to another
-          source or parser. Unsupported claimed content currently has no dedicated typed error code:
-          use a generic preview failure, retain the original diagnostic and offer conversion.
-          Do not branch on diagnostic message text. The source input-size guard throws a
+          source or parser. Unsupported claimed content uses <code>OoxmlError</code> with
+          <code>code === 'unsupported-content'</code> and content-free
+          <code>details: &#123; format: 'doc' | 'xls' | 'ppt', reason: 'source-subset' &#125;</code>.
+          Offer conversion for this code, including failures during lazy reads. Do not branch on message text.
+          Encryption, resource limits, crashes and companion mismatches remain distinct.
+          The source input-size guard throws a
           <code>RangeError</code>; it defaults to, and cannot exceed, 256 MiB.</p>
         <p><a href="/errors">Error delivery and application messages →</a></p>
       </section>

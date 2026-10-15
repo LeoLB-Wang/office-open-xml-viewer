@@ -322,7 +322,7 @@ fn counter_error(error: ooxml_common::numbering::CounterError) -> String {
             unsupported("Word list counter overflow")
         }
         ooxml_common::numbering::CounterError::OutputTooLarge => {
-            unsupported("Word list marker output too large")
+            crate::rejection::resource("Word list marker output too large")
         }
         ooxml_common::numbering::CounterError::InvalidTemplate => {
             unsupported("invalid Word numbering template")

@@ -130,7 +130,9 @@ impl ScopedStreams<'_, '_> {
             return Ok(None);
         };
         if entry.stream_size > maximum_bytes as u64 {
-            return Err("CFB scoped stream exceeds its caller limit".into());
+            return Err(crate::rejection::resource(
+                "CFB scoped stream exceeds its caller limit",
+            ));
         }
         self.compound.read_stream(entry).map(Some)
     }
@@ -508,7 +510,12 @@ fn parse_directory(bytes: &[u8], major: u16) -> Result<Vec<DirectorySlot>, Strin
         return Err("misaligned CFB directory stream".into());
     }
     let count = bytes.len() / DIRECTORY_ENTRY_BYTES;
-    if count == 0 || count > MAX_DIRECTORY_ENTRIES {
+    if count > MAX_DIRECTORY_ENTRIES {
+        return Err(crate::rejection::resource(
+            "CFB directory entry budget exceeded",
+        ));
+    }
+    if count == 0 {
         return Err("invalid CFB directory entry count".into());
     }
     let mut entries = Vec::with_capacity(count);
@@ -575,7 +582,9 @@ fn read_regular_chain(
                 return Err("CFB stream size exceeds the physical file".into());
             }
             if maximum_bytes.is_some_and(|maximum| size > maximum) {
-                return Err("CFB stream exceeds its implementation limit".into());
+                return Err(crate::rejection::resource(
+                    "CFB stream exceeds its implementation limit",
+                ));
             }
             size.div_ceil(sector_size)
         }
@@ -613,6 +622,16 @@ fn read_regular_chain(
         }
     }
     if current != END_OF_CHAIN {
+        // A v3 directory has no declared size. Its caller's retained-entry
+        // ceiling can stop a valid chain before the physical end of input;
+        // that is resource policy. A declared-size or physical-chain overrun
+        // remains malformed CFB, independently of that implementation ceiling.
+        if declared_size.is_none() && maximum_bytes.is_some_and(|maximum| maximum < physical_bytes)
+        {
+            return Err(crate::rejection::resource(
+                "CFB stream exceeds its implementation limit",
+            ));
+        }
         return Err("CFB stream chain exceeds its bound".into());
     }
     if let Some(size) = declared_size {
@@ -1032,6 +1051,33 @@ mod tests {
             .unwrap_err()
             .contains("caller limit"));
         assert!(cfb.stream("OlePres000").unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn regular_chain_policy_limit_is_distinct_from_declared_size_mismatch() {
+        let bytes = vec![0; 3 * 512];
+        let fat = [1, END_OF_CHAIN];
+        assert!(
+            super::read_regular_chain(&bytes, 512, 2, &fat, 0, None, Some(512))
+                .unwrap_err()
+                .starts_with("LEGACY_RESOURCE_LIMIT:")
+        );
+        // The same chain exceeds its declared stream size: malformed CFB,
+        // rather than a caller's implementation quota.
+        assert!(
+            !super::read_regular_chain(&bytes, 512, 2, &fat, 0, Some(512), None)
+                .unwrap_err()
+                .starts_with("LEGACY_RESOURCE_LIMIT:")
+        );
+    }
+
+    #[test]
+    fn directory_entry_ceiling_keeps_resource_classification_before_parsing_entries() {
+        let bytes = vec![0; (super::MAX_DIRECTORY_ENTRIES + 1) * super::DIRECTORY_ENTRY_BYTES];
+        assert!(super::parse_directory(&bytes, 3)
+            .err()
+            .unwrap()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 
     #[test]

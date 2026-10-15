@@ -55,7 +55,7 @@ describe('Node openers and legacy model sources', () => {
     // The direct PPT reader does not project a slide with outline text but no
     // drawing; reaching its fail-closed rejection proves the routing.
     await expect(materializePptxPresentation(buildPptFixture(), { modelSources: [testPptSource()] }))
-      .rejects.toThrow(/UNSUPPORTED:.*no drawing/);
+      .rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   });
 
   // MS-DOC 2.6.1 sprmCFRMarkDel (0x0800, operand 1) is deleted-revision
@@ -69,12 +69,11 @@ describe('Node openers and legacy model sources', () => {
     { end: 2, properties: deletedRevision },
     { end: 4, properties: new Uint8Array() },
   ] });
-  const unsupportedFormatting = new Error('UNSUPPORTED:direct DOC model encountered unsupported formatting');
   const bodyTypes = (document: { body: unknown[] }) => (document.body as { type: string }[]).map(element => element.type);
 
   it('reject unsupported character formatting confined to a line-break control', async () => {
     await expect(materializeDocxDocument(confinedToControl('A\u000bB\r'), { modelSources: [testDocSource()] }))
-      .rejects.toThrow(unsupportedFormatting);
+      .rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
   });
 
   it.each([
@@ -83,7 +82,7 @@ describe('Node openers and legacy model sources', () => {
   ])('reject unsupported character formatting confined to a $kind break', async ({ kind, control }) => {
     const source = testDocSource();
     await expect(materializeDocxDocument(confinedToControl(`A${control}B\r`), { modelSources: [source] }))
-      .rejects.toThrow(unsupportedFormatting);
+      .rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
     // The gate rejects this input only: the same source still opens a valid
     // document whose plain break of the same kind is kept in the model.
     const plain = await materializeDocxDocument(buildDocFixture({ text: `A${control}B\r` }), { modelSources: [source] });
@@ -163,7 +162,7 @@ describe('Node openers and legacy model sources', () => {
 
   it('keep a value outside MSOTXFL invalid', async () => {
     await expect(loadDoc(oneSection(textFlow(6))))
-      .rejects.toThrow(new Error('UNSUPPORTED:invalid Word section text flow'));
+      .rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
   });
 
   it('keep horizontal-in-vertical text admitted only in tbRl sections', async () => {
@@ -173,7 +172,7 @@ describe('Node openers and legacy model sources', () => {
     const vertical = await loadDoc(withFlow(1));
     expect(JSON.stringify(vertical.body)).toContain('"eastAsianVert":true');
     for (const flow of [0, 2, 3, 4, 5]) {
-      await expect(loadDoc(withFlow(flow)), `MSOTXFL ${flow}`).rejects.toThrow(unsupportedFormatting);
+      await expect(loadDoc(withFlow(flow)), `MSOTXFL ${flow}`).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
     }
   });
 
