@@ -1,6 +1,7 @@
 import { defineConfig } from 'astro/config';
 import wasm from 'vite-plugin-wasm';
 import { fileURLToPath } from 'node:url';
+import { docxCompatibilityMetadata } from '../scripts/docx-compatibility-build.mjs';
 
 const pkgSrc = (p) => fileURLToPath(new URL(`../packages/${p}/src/index.ts`, import.meta.url));
 
@@ -19,10 +20,10 @@ export default defineConfig({
     // leave Astro's separately emitted page scripts using Viewer exports before
     // their chunks have initialized.
     build: { target: 'esnext' },
-    plugins: [wasm()],
+    plugins: [docxCompatibilityMetadata(), wasm()],
     worker: {
       format: 'es',
-      plugins: () => [wasm()],
+      plugins: () => [docxCompatibilityMetadata(), wasm()],
       // Inline parser workers run from Blob URLs and cannot resolve relative
       // sibling chunks. Keep dynamic analysis within the emitted worker module.
       rollupOptions: { output: { inlineDynamicImports: true } },
