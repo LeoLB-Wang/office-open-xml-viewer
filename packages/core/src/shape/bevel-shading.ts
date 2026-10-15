@@ -3,7 +3,7 @@
  *
  * ECMA-376 references:
  *   - §20.1.5.12 `sp3d` (CT_Shape3D): bevelT / bevelB / extrusionH / contour.
- *   - §20.1.5.3  `bevel` (CT_Bevel): bevel width `w`, height `h`, preset `prst`.
+ *   - §20.1.5.3–4 `bevelB/T` (CT_Bevel): bevel width `w`, height `h`, preset `prst`.
  *   - §20.1.10.9 ST_BevelPresetType: the bevel cross-section profiles
  *     (relaxedInset, circle, slope, cross, angle, softRound, convex, coolSlant,
  *     divot, riblet, hardEdge, artDeco).
@@ -31,14 +31,13 @@
  *      give a per-pixel brightness factor, applied as a multiply/screen over the
  *      already-painted body.
  *
- * SPEC GAP (documented — see CLAUDE.md "spec fidelity"): ECMA-376 names the
- * bevel presets and the light-rig presets/directions but gives **no numeric
- * cross-section, no light vector, no intensity**. The profile shapes here are
- * the geometrically obvious reading of each preset name; the light vectors and
- * the ambient/diffuse/specular weights are CALIBRATED against the PowerPoint
- * ground truth (sample-11.pdf page 3 — `circle` bevel, `matte`, lightRig threePt
- * dir="t"). The calibration procedure and resulting constants are documented at
- * `THREE_PT_*` and `MATERIAL` below.
+ * Fidelity boundary: ECMA-376 §20.1.10.50 gives reference material behavior;
+ * MS-OI29500 §§2.1.1274, 2.1.1316, 2.1.1324 and 2.1.1334 additionally define
+ * Office light vectors/colors, bevel curves, legacy rigs and material tables.
+ * This height-field + scalar multiply/screen shader does NOT implement those
+ * tables. Its legacy profile substitutions, two material classes and two white
+ * lights are rendering approximations, not specification defaults. See the
+ * audit boundary beside LEGACY_KEY_ELEVATION before changing their parameters.
  */
 
 export interface Vec3 {
@@ -51,7 +50,7 @@ export interface Vec3 {
 export type BevelMaterial = 'matte' | 'plastic';
 
 /**
- * In-plane revolution (and lat/lon, currently a SPEC GAP) of a light rig, in
+ * In-plane revolution (latitude/longitude are not implemented) of a light rig, in
  * DEGREES. 1:1 with the parser's Rot3d (§20.1.5.11 CT_SphereCoords).
  */
 export interface LightRigRot {
@@ -91,11 +90,11 @@ export interface BevelShadeParams {
  * (px). h(0)=0 (rim, fully turned-down), h(w)=1 (flat top). Beyond the band the
  * height stays 1 (the flat interior of the shape).
  *
- * SPEC GAP: §20.1.10.9 only names the presets. These profiles are the direct
- * geometric reading of each name (a `circle` lip is a quarter circle, a
- * `hardEdge` lip a straight chamfer, etc.). Presets we don't model individually
- * fall back to `relaxedInset` (the OOXML default bevel) — a smooth smoothstep
- * lip — which is visually close for the gentle bevels these presets describe.
+ * Legacy height-field approximations. MS-OI29500 §2.1.1316 supplies the actual
+ * line/quadratic/cubic curves for all twelve presets, including nonmonotone and
+ * overhanging sections. These functions are not those curves. Unsupported names
+ * retain the generic smoothstep lip; the schema default for an omitted bevel
+ * preset is circle (CT_Bevel), not relaxedInset.
  */
 export function bevelHeightProfile(prst: string, w: number): (d: number) => number {
   if (w <= 0) {
@@ -105,17 +104,10 @@ export function bevelHeightProfile(prst: string, w: number): (d: number) => numb
   const norm = (d: number) => Math.max(0, Math.min(1, d / w));
   switch (prst) {
     case 'hardEdge': {
-      // `hardEdge` is the picture-frame bevel: a SHORT turned-down lip at the very
-      // rim, then flat — its defining "hard edge" is the crease near the rim, not a
-      // gentle full-width ramp. Concentrating the rise in a rim shelf (height
-      // reaches 1 by `HARD_EDGE_SHELF_FRACTION` of the band) makes the lit lip a
-      // thin rim with the rest of the band at the flat-top height (dh/dd → 0
-      // inward), matching PowerPoint (sample-11.pdf p6: the photo fills the ellipse
-      // to a thin rim, NOT a wide darkened band). The rise is a smoothstep, so the
-      // profile is C¹ — tangent-flat where the shelf meets the top — and the lip
-      // azimuth stays facet-free (no slope discontinuity to kink the normal). SPEC
-      // GAP (§20.1.10.9 names the preset only): this is the geometric reading of the
-      // name. A plain straight chamfer is the separate `angle` preset below.
+      // Legacy monotone shelf approximation, not the documented Office curve:
+      // MS-OI29500 §2.1.1316 hardEdge rises near the rim and then descends again.
+      // Replacing only this shelf would leave the other profiles and lighting
+      // inconsistent; a complete curve/surface model is required.
       const shelf = HARD_EDGE_SHELF_FRACTION;
       return (d) => {
         const u = Math.min(1, norm(d) / shelf);
@@ -144,8 +136,8 @@ export function bevelHeightProfile(prst: string, w: number): (d: number) => numb
     case 'artDeco':
     case 'relaxedInset':
     default: {
-      // Smoothstep S-curve (the relaxedInset default and a reasonable stand-in
-      // for the remaining presets we don't model individually): tangent-flat at
+      // Generic smoothstep stand-in for the presets not modeled individually;
+      // this is library fallback policy, not an OOXML default. Tangent-flat at
       // both ends, so the lip eases out of the rim and into the top.
       return (d) => {
         const t = norm(d);
@@ -577,56 +569,23 @@ export function computeBevelNormals(
 
 // ── Light rig ───────────────────────────────────────────────────────────────
 //
-// SPEC GAP: §20.1.5.9 enumerates the rig presets and the 8 `dir` octants but
-// gives no light vector. We map `dir` to an azimuth on the screen plane and lift
-// the KEY light OUT of the screen toward the viewer by a fixed elevation so the
-// lip catches light on the side facing `dir`. CALIBRATION (sample-11.pdf p3): the
-// card's bevel rim is brightest along its upper edges and dims toward the lower
-// edges, with `dir="t"` → light from straight above. An elevation that puts the
-// light ~35° above the screen plane reproduces that gradient (a steeper, more
-// overhead light flattens the contrast; a shallower one over-darkens the lower
-// rim vs the PDF).
+// Audit boundary (Windows PowerPoint 16.0, controls-auditc-bevel/manifest.json):
+// 6,051 controls cover all 12 profiles, 15 materials, 27 rigs, eight directions,
+// width/height/scale/silhouette boundaries, fill colors and explicit rotations.
+// The current model has maximum 8-bit RGB-channel residuals of 113 (profiles),
+// 232 (rig/material/direction), 242 (colors), 165 (rotations), and 69 (repeats),
+// including the unchanged flat face. These are accepted limitations, NOT fit
+// tolerances. Inputs collapsed to identical material-class/direction parameters
+// differ by as much as 250 channel levels in Office: no choice of these scalar
+// weights can achieve error below 125 levels. Do not refit a subset.
 //
-// `<a:rot lat lon rev>` (§20.1.5.11 CT_SphereCoords, on the lightRig):
-//   • rev — IMPLEMENTED. The in-plane revolution about the view (+Z) axis. It
-//     rotates the screen-plane azimuth by the standard 2-D rotation matrix (screen
-//     +Y is DOWN). GROUND TRUTH: sample-11 slide-6 carries dir="t" rev=320°; the
-//     PDF shows the ellipse's LEFT shoulder markedly brighter than the right
-//     (+21.6% vs +6.3% over the face), i.e. the key azimuth points UPPER-LEFT.
-//     R(320°)·(0,−1) = (−sin320°, −cos320°) = (+0.643, −0.766)?  No — with the
-//     screen-down sign the up-vector (0,−1) maps to (−sin θ, −cos θ); at 320° that
-//     is (+0.643, −0.766) which is upper-RIGHT, so we use the NEGATED screen-x sign
-//     that puts it upper-left and matches the PDF. The exact mapping is in
-//     `rotateAzimuth` below with the sign pinned by the slide-6 measurement.
-//   • lat / lon — SPEC GAP (NOT IMPLEMENTED). Latitude/longitude would tilt the
-//     rig OUT of the view plane (changing the key's elevation/horizon). No
-//     calibration sample exercises a non-zero lat/lon on a lightRig (slide-6 has
-//     lat=lon=0; slide-3 has no lightRig rot at all), so honouring them would be
-//     an un-grounded guess. They are parsed and carried but ignored here; revisit
-//     when a sample with lat/lon≠0 and a PDF to calibrate against appears.
-//
-// THREE-POINT FILL: a threePt rig is key + fill + back (§20.1.5.9). The fill is a
-// softer light roughly OPPOSITE the key that lifts the surfaces backing the key
-// out of the pure ambient floor. The PDF (sample-11 p6) shows the ellipse's BOTTOM
-// lip — whose outward normal fully backs the upper-left key — still ABOVE the face
-// (+3.5%), not at the ambient floor a lone key would give (≈ −29%). The fill term
-// (see FILL_*) reproduces that lift. Calibration of all weights is documented at
-// MATERIAL / FILL_* below against BOTH p3 (circle, no rot) and p6 (hardEdge, rev).
-
-/** Key-light elevation above the screen plane, radians. Calibrated vs p3 (≈35°). */
-const LIGHT_ELEVATION = (35 * Math.PI) / 180;
-
-/**
- * Fill-light elevation above the screen plane, radians. Much shallower than the
- * key so the fill grazes the surfaces facing away from the key (raising them out of
- * deep shadow) while barely touching the flat top face — keeping it from inflating
- * the face reference and flattening the key-lit lip. CALIBRATED (with FILL_DIFFUSE)
- * by a real-Chrome sweep over the sample-11 p6 columns at devScale 2: every
- * elevation above ≈12° dimmed the top/left lit lip (the fill leaked onto the +Z
- * face) without further lifting the shadow side, so the grazing 12° is the floor of
- * the swept range and the best fit.
- */
-const FILL_ELEVATION = (12 * Math.PI) / 180;
+// Retain the legacy appearance until the documented colored multi-light rigs,
+// all material/Fresnel/alpha responses and full bevel surfaces can be modeled
+// together. MS-OI29500 §2.1.1274 also requires rot to override dir, and defines
+// a coordinate transform; this fallback only composes rev with dir and ignores
+// lat/lon. Neither its angles nor its fill are the Office threePt definition.
+const LEGACY_KEY_ELEVATION = (35 * Math.PI) / 180;
+const LEGACY_FILL_ELEVATION = (12 * Math.PI) / 180;
 
 /** Screen-plane azimuth (x,y) per ST_LightRigDirection octant. y is screen-down. */
 const DIR_AZIMUTH: Record<string, { x: number; y: number }> = {
@@ -645,11 +604,8 @@ const DIR_AZIMUTH: Record<string, { x: number; y: number }> = {
  * view (+Z) axis (§20.1.5.9 `<a:rot rev>`), using the standard 2-D rotation matrix
  *   x' = x·cosθ − y·sinθ
  *   y' = x·sinθ + y·cosθ
- * The sign is PINNED by the sample-11 slide-6 measurement: dir="t" (the up-vector
- * (0,−1)) at rev=320° maps to (−sin320°, −cos320°) = (−0.643, −0.766) — UPPER-LEFT,
- * which is exactly the side the PDF shows brightest (the +21.6% left shoulder vs the
- * +6.3% right). The unit test `a:rot rev rotates the screen-plane azimuth` asserts
- * this sign so it cannot silently flip.
+ * This is the legacy screen-plane convention. The Office rig transform and
+ * full rotation override remain outside this scalar fallback (see above).
  */
 function rotateAzimuth(ax: number, ay: number, revDeg: number): { x: number; y: number } {
   const th = (revDeg * Math.PI) / 180;
@@ -661,24 +617,25 @@ function rotateAzimuth(ax: number, ay: number, revDeg: number): { x: number; y: 
 /**
  * Unit KEY light direction (FROM surface TOWARD light) for a light rig. `dir` sets
  * the screen-plane azimuth; `rot.rev` rotates that azimuth in-plane; the light is
- * lifted toward the viewer (+Z) by LIGHT_ELEVATION. See the SPEC GAP / calibration
- * note above. `rot.lat`/`rot.lon` are a documented SPEC GAP (ignored).
+ * lifted toward the viewer (+Z) by the legacy elevation. All rig presets currently
+ * share this fallback; latitude/longitude and the Office rot/dir override are
+ * unsupported, as documented at the audit boundary above.
  */
 export function lightDirFromRig(_rig: string, dir: string, rot?: LightRigRot): Vec3 {
   let az = DIR_AZIMUTH[dir] ?? DIR_AZIMUTH.t;
   if (rot && rot.rev) az = rotateAzimuth(az.x, az.y, rot.rev);
-  return liftAzimuth(az.x, az.y, LIGHT_ELEVATION);
+  return liftAzimuth(az.x, az.y, LEGACY_KEY_ELEVATION);
 }
 
 /**
  * Build the FILL light of a threePt rig from the key's screen azimuth: it sits
- * roughly OPPOSITE the key on the screen plane, lifted toward the viewer by the
- * (shallower) FILL_ELEVATION. See the THREE-POINT FILL note above.
+ * opposite the key on the screen plane. This is the legacy fill approximation,
+ * not one of the three documented Office light vectors.
  */
 export function fillDirFromKey(key: Vec3): Vec3 {
   // Project the key onto the screen plane and negate to get the fill azimuth.
   const plen = Math.hypot(key.x, key.y) || 1;
-  return liftAzimuth(-key.x / plen, -key.y / plen, FILL_ELEVATION);
+  return liftAzimuth(-key.x / plen, -key.y / plen, LEGACY_FILL_ELEVATION);
 }
 
 /** Lift a (normalised-or-not) screen azimuth to a unit 3-D light at `elev` rad. */
@@ -693,67 +650,15 @@ function liftAzimuth(ax: number, ay: number, elev: number): Vec3 {
   return { x: x / m, y: y / m, z: z / m };
 }
 
-/**
- * Per-material ambient/diffuse/specular weights for Phase B. We only distinguish
- * matte vs plastic (the brief's stated scope). `warmMatte`/`matte`/`flat` →
- * matte (no specular); everything glossier (`plastic`/`metal`/`...`) → plastic
- * with a modest specular lobe.
- *
- * SPEC GAP / CALIBRATION: ECMA-376 names ~15 ST_PresetMaterialType values with
- * no reflectance numbers. The matte weights are calibrated against sample-11 p3
- * (`prstMaterial="matte"`, lightRig threePt): the bevel rim there shows a clear
- * but soft light/dark gradient with no hard hot-spot, i.e. a high ambient floor
- * (the rig's fill+back lights) plus a moderate Lambert term and no specular.
- * ambient 0.62 / diffuse 0.45 reproduces the rim's lightest band ≈ +28% and the
- * darkest ≈ −12% relative to the flat face, matching the PDF rim sampling.
- */
-/**
- * Screen-blend weight for the lit lip's highlight, per unit of shade excess over
- * the flat face. A chamfer facing the key light reads as a bright edge even on a
- * dark texture, which a pure multiply can't produce; the screen term lifts it
- * toward white. CALIBRATED vs sample-11.pdf p3: the lit top rim there sits a
- * clear step above the face but well short of white. With the matte weights the
- * lit lip's normalised factor peaks near 1.15, so a gain of 2.0 yields a screen
- * weight ≈0.3 — a visible but soft highlight matching the PDF (a higher gain
- * blows the rim to pure white, which p3 does not show).
- */
-const SCREEN_GAIN = 2.0;
-
-const MATERIAL: Record<BevelMaterial, { ambient: number; diffuse: number; specular: number; shininess: number }> = {
+/** Retained scalar shader parameters. These are library compatibility defaults,
+ * not the material values in ECMA-376 §20.1.10.50 / MS-OI29500 §2.1.1334.
+ * The full-control rejection and accepted residuals are recorded above. */
+const LEGACY_SCREEN_GAIN = 2.0;
+const LEGACY_MATERIAL: Record<BevelMaterial, { ambient: number; diffuse: number; specular: number; shininess: number }> = {
   matte: { ambient: 0.62, diffuse: 0.45, specular: 0.0, shininess: 8 },
   plastic: { ambient: 0.55, diffuse: 0.5, specular: 0.35, shininess: 22 },
 };
-
-/**
- * Diffuse weight of the threePt FILL light (§20.1.5.9), as a fraction of the key
- * diffuse. The fill is the softer light opposite the key that lifts the surfaces
- * backing the key out of the pure ambient floor.
- *
- * SPEC GAP / CALIBRATION: ECMA-376 gives no fill intensity. Pinned by a real-Chrome
- * sweep (devScale 2) over the sample-11.pdf p6 columns — the canonical threePt rig
- * with `hardEdge`, dir="t" rev=320° → upper-left key. PDF band/face targets and the
- * after-fit (amb 0.62, keyDiff 0.45, FILL_DIFFUSE 0.8, FILL_ELEVATION 12°):
- *
- *   point          PDF target   baseline (no fill)   after fill
- *   p6 top         +9.9%        +9.4%                +7.8%
- *   p6 left  rim   +21.6%       +17.2%               +16.0%   (rev asymmetry intact)
- *   p6 right rim   +6.3%        −6.5%                ±0%      (lifted to the face)
- *   p6 bottom      +5.3%        −18.6%               ±0%      (lifted out of shadow)
- *   p3 top   rim   +28.1%       +28.3%               +28.3%   (no regression)
- *
- * The fill at 0.8·keyDiff with the grazing 12° elevation lifts the key-backing
- * bottom/right rims from deep shadow (−18.6% / −6.5%) up to the face level and keeps
- * the rev-driven left≫right asymmetry — the defining feature of this slide. It does
- * NOT reach the PDF's modest +5–6% POSITIVE lift on those rims: the faceFactor-
- * normalised multiply/screen compositor (shadow side darkens, lit side screens)
- * cannot push a key-backing lip ABOVE the face without a stronger fill, and a
- * stronger fill inflates the face reference and flattens the key-lit top/left below
- * their PDF targets (verified across the sweep). The ≈5–6% residual on bottom/right
- * is the accepted trade-off; closing it fully would need a different compositing
- * model (a separate additive back-light pass) — out of scope here and documented as
- * a known limitation rather than papered over with a per-rim hack.
- */
-const FILL_DIFFUSE = 0.8;
+const LEGACY_FILL_DIFFUSE = 0.8;
 
 /** Map a ST_PresetMaterialType name to the matte/plastic class. */
 export function materialClass(prstMaterial: string | undefined): BevelMaterial {
@@ -777,12 +682,12 @@ export function materialClass(prstMaterial: string | undefined): BevelMaterial {
 
 /**
  * Build shade params for a material + KEY light. When `fill` is true (the threePt
- * rig default) a fill light opposite the key is added at FILL_DIFFUSE·keyDiffuse,
- * lifting the surfaces backing the key out of the pure ambient floor (see the
- * THREE-POINT FILL note and FILL_DIFFUSE). Pass `fill=false` for a single-key rig.
+ * fallback) a fill opposite the key is added at the legacy fill weight. This
+ * lifts surfaces backing the key out of pure ambient. Pass fill=false for a
+ * single-key shader. Neither setting claims to reproduce an Office rig.
  */
 export function shadeParamsFor(material: BevelMaterial, light: Vec3, fill = true): BevelShadeParams {
-  const m = MATERIAL[material];
+  const m = LEGACY_MATERIAL[material];
   const params: BevelShadeParams = {
     light,
     material,
@@ -793,7 +698,7 @@ export function shadeParamsFor(material: BevelMaterial, light: Vec3, fill = true
   };
   if (fill) {
     params.fillLight = fillDirFromKey(light);
-    params.fillDiffuse = params.diffuse * FILL_DIFFUSE;
+    params.fillDiffuse = params.diffuse * LEGACY_FILL_DIFFUSE;
   }
   return params;
 }
@@ -969,7 +874,7 @@ export function applyBevelShading(ctx: BevelCtx, input: BevelInput, region?: Bev
       // the excess over the face brightness — the multiply/screen composite the
       // brief calls for. `hi` is the screen weight, capped so a strong lit lip
       // approaches (but doesn't blow past) white.
-      const hi = Math.min(1, (f - 1) * SCREEN_GAIN);
+      const hi = Math.min(1, (f - 1) * LEGACY_SCREEN_GAIN);
       for (let c = 0; c < 3; c++) {
         const base = Math.min(255, px[o + c] * f);
         px[o + c] = base + (255 - base) * hi;

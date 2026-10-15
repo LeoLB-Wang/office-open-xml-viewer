@@ -6,15 +6,12 @@
  *   - §20.1.5.11 `rot`    (CT_SphereCoords): lat / lon / rev rotation.
  *   - §20.1.10.47 ST_PresetCameraType: the 62 preset cameras.
  *
- * SPEC GAP (documented assumption — see CLAUDE.md "spec fidelity"):
- * ECMA-376 specifies the camera *model* (rotation order, fov meaning, the
- * preset enumeration) but gives **no numeric definitions** for the presets —
- * no base orientation, no per-preset field of view, no near/far. There is no
- * MS-OI29500 in this repo's spec/ tree either. The numeric constants below are
- * therefore the de-facto values from the OOXML implementer consensus, i.e. the
- * orientation/FOV PowerPoint emits and that LibreOffice's `oox` import maps in
- * oox/source/drawingml/scene3dcontext.cxx + the preset-camera table. They are
- * flagged here as a derived assumption, not a spec quotation.
+ * Fidelity boundary: ECMA-376 names presets and authored FOV/zoom/rotation,
+ * but does not supply a numerical preset table or a complete projection matrix.
+ * MS-OI29500 §2.1.1270 says non-perspective cameras ignore FOV. This module's
+ * shape-local pinhole, rotation composition and incomplete orientation table are
+ * legacy rendering approximations; they are not normative Office definitions.
+ * See LEGACY_PERSP_FOV for the full-control evidence and accepted residuals.
  *
  * Phase A scope: we model the shape as a flat z=0 rectangle (the picture / 2D
  * drawing) and compute the 2D homography that maps the un-projected rectangle
@@ -58,9 +55,8 @@ export interface Scene3dQuad {
    * bounding-box top-left, in order: top-left, top-right, bottom-right,
    * bottom-left (matching the source rectangle (0,0)-(w,0)-(w,h)-(0,h)).
    *
-   * The quad is re-centred and scaled to fit the SAME bounding box (w×h) the
-   * un-projected shape occupied, so the renderer can blit a w×h offscreen
-   * bitmap onto it without changing the element's footprint.
+   * Projection is about the shape center and can extend beyond its original
+   * box; zoom is retained. Callers must allow the projected bitmap to overhang.
    */
   corners: [Vec2, Vec2, Vec2, Vec2];
   /**
@@ -82,10 +78,10 @@ export interface Scene3dQuad {
 type ProjectionKind = 'perspective' | 'orthographic';
 
 /**
- * Per-preset definition: the base camera orientation (applied before the user
- * `rot` override) and the default field of view in degrees for perspective
+ * Per-preset definition: the base camera orientation (replaced by an authored
+ * `rot` override) and the fallback field of view in degrees for perspective
  * presets. Orthographic / isometric presets use parallel projection (fov is
- * ignored). See the SPEC GAP note above for the source of these numbers.
+ * ignored). The table is an incomplete library fallback, as documented above.
  *
  * Base orientation is expressed as the same lat/lon/rev sphere coordinates the
  * file uses, in degrees, so it composes with the user rot in one place.
@@ -102,27 +98,23 @@ interface PresetDef {
   fovDeg: number;
 }
 
-// Default perspective FOV for the relaxed presets, in degrees.
-//
-// SPEC GAP (see the file header): ECMA-376 gives no per-preset FOV. This value
-// is CALIBRATED against the PowerPoint-rendered ground truth (sample-11.pdf
-// page 3, `perspectiveRelaxed` + an explicit <a:rot lat="-30" lon="20"
-// rev="-13">). Procedure: rasterise the PDF page at 200 DPI, detect the card's
-// four corners as the pixels extremal along x±y (robust for a convex quad),
-// normalise (centroid-subtract + mean-radius-divide), and minimise the summed
-// per-corner residual over (fov, rotation-sign, depth-sign). The composition
-// Rz(-rev)·Rx(-lat)·Ry(-lon) with depth = d − rz (see `buildRotation`) wins by
-// 5–9× over every other order/sign/depth variant, and its residual bottoms out
-// near **fov ≈ 26°** (top/bottom edge ratio 0.809 vs the PDF's 0.824, left/right
-// 0.927 vs 0.944). 26° is a *narrow* perspective — the earlier 45° vastly
-// over-foreshortened the card. The "relaxed" presets are gentle by design, so a
-// shallow FOV is expected.
-//
-// We have ground truth for `perspectiveRelaxed` only. The remaining perspective
-// presets share the same family/lens scale in PowerPoint's camera rig, so we
-// apply the same 26° default and flag it as a derived assumption; if a future
-// sample supplies a ground truth for another preset, recalibrate that entry.
-const DEFAULT_PERSP_FOV = 26;
+// Retained legacy lens; NOT a measured per-preset FOV table.
+// Windows PowerPoint 16.0 controls-auditc-camera/manifest.json covers all 62
+// presets with omitted/zero/combined rotation, every perspective preset at FOV
+// 5/15/26/45/75/115 degrees and three aspects/rotations, plus zoom and non-
+// perspective FOV counterexamples (1,572 controls). Modern omitted-lens responses
+// are near authored 45 degrees except the two heroic-extreme presets; legacy
+// perspective also has an off-axis response. That is evidence AGAINST sharing
+// one calibrated lens, not sufficient evidence for a complete camera model.
+// Even the explicit-lens controls (which never use this default) disagree with
+// the current framing: max corner error 451.57pt. Accepted maxima for presets,
+// non-perspective FOV controls and zoom are 39.61/11.74/35.97pt respectively
+// (conservative extraction uncertainty 0.75pt). No FOV-only refit can fix this.
+// Keep the existing fallback until rotation, projection/framing, omitted preset
+// orientation and physical size dependence can be identified together. The
+// controls vary aspect but keep width fixed; an absolute camera distance cannot
+// be inferred as scale-independent from them. Do not extrapolate a fitted table.
+const LEGACY_PERSP_FOV = 26;
 
 /**
  * Preset camera table. Only presets whose default orientation is implemented
@@ -130,22 +122,11 @@ const DEFAULT_PERSP_FOV = 26;
  * projection when an authored `<a:rot>` supplies their orientation; unrelated
  * unknown/legacy presets fall back to `orthographicFront` without throwing.
  *
- * Orientation sign convention. Object axes: +X right, +Y down, +Z toward the
- * viewer (depth = d − z, so a corner with larger +z projects larger). The
- * DrawingML `rot` latitude/longitude/revolution rotate in the OPPOSITE sense to
- * a textbook right-handed rotation about those axes — `buildRotation` therefore
- * spins by the NEGATED file angle. In the resulting (file-angle) terms:
- *   - `lat` > 0 tips the TOP edge TOWARD the viewer (top edge widens / nears);
- *     `lat` < 0 tips the top AWAY (top edge recedes). sample-11 slide 3 uses
- *     lat = −30° → top recedes, matching the PDF (top/bottom width ≈ 0.82).
- *   - `lon` > 0 turns the RIGHT edge TOWARD the viewer (right edge nears / grows
- *     taller); `lon` < 0 turns the right edge away. sample-11 slide 3 uses
- *     lon = +20° → right edge nearer, matching the PDF (left/right ≈ 0.94).
- *   - `rev` > 0 spins the shape COUNTER-CLOCKWISE on screen; `rev` < 0 clockwise.
- * These directions are calibrated against sample-11.pdf p3 (see DEFAULT_PERSP_FOV)
- * and verified by the per-axis geometric unit tests. Preset base orientations
- * below are written as the same file-angle lat/lon/rev so they compose with the
- * file <a:rot> through one code path.
+ * Library coordinate convention: +X right, +Y down, +Z toward the viewer.
+ * Positive latitude tips the top toward the viewer, positive longitude turns
+ * the right edge toward the viewer, and positive revolution spins counter-
+ * clockwise. These are the implemented geometric conventions, not a claim that
+ * the complete Office preset/rotation pipeline has been identified.
  */
 const PRESETS: Record<string, PresetDef> = {
   // ---- Orthographic / front-facing ----
@@ -153,35 +134,26 @@ const PRESETS: Record<string, PresetDef> = {
 
   // ---- Perspective family (front + heroic + relaxed) ----
   // perspectiveFront: looking straight on, but with perspective foreshortening.
-  perspectiveFront: { kind: 'perspective', baseLat: 0, baseLon: 0, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
+  perspectiveFront: { kind: 'perspective', baseLat: 0, baseLon: 0, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
   // perspectiveRelaxed / perspectiveRelaxedModerately: a gentle downward tilt so
-  // the top edge recedes. PowerPoint's "Perspective Relaxed" tips the shape
-  // back ~10–18°; "Moderately" is roughly half that. These are the de-facto
-  // angles (see SPEC GAP). The file-level <a:rot> overrides them when present.
-  perspectiveRelaxed: { kind: 'perspective', baseLat: 0, baseLon: 0, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
-  perspectiveRelaxedModerately: { kind: 'perspective', baseLat: 0, baseLon: 0, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
+  // the top edge recedes. Their actual omitted orientations are not implemented;
+  // retain the neutral fallback until the complete preset table is supported.
+  perspectiveRelaxed: { kind: 'perspective', baseLat: 0, baseLon: 0, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
+  perspectiveRelaxedModerately: { kind: 'perspective', baseLat: 0, baseLon: 0, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
   // perspectiveAbove / perspectiveBelow: camera looks down at / up at the shape.
   // "Above" → the top edge recedes, so lat < 0 in the file-angle convention
   // documented above (lat < 0 tips the top away); "Below" → top nears, lat > 0.
-  perspectiveAbove: { kind: 'perspective', baseLat: -20, baseLon: 0, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
-  perspectiveBelow: { kind: 'perspective', baseLat: 20, baseLon: 0, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
+  perspectiveAbove: { kind: 'perspective', baseLat: -20, baseLon: 0, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
+  perspectiveBelow: { kind: 'perspective', baseLat: 20, baseLon: 0, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
   // Left / right facing perspective variants: shape turned about the Y axis.
   // "Right" shows the right edge nearer (lon > 0); "Left" the left edge nearer
-  // (lon < 0). No ground truth for these — derived from the documented lon sign.
-  perspectiveLeft: { kind: 'perspective', baseLat: 0, baseLon: -20, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
-  perspectiveRight: { kind: 'perspective', baseLat: 0, baseLon: 20, baseRev: 0, fovDeg: DEFAULT_PERSP_FOV },
+  // (lon < 0). These ±20-degree fallback tilts are not the measured Office table.
+  perspectiveLeft: { kind: 'perspective', baseLat: 0, baseLon: -20, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
+  perspectiveRight: { kind: 'perspective', baseLat: 0, baseLon: 20, baseRev: 0, fovDeg: LEGACY_PERSP_FOV },
 };
 
-/**
- * Note on `perspectiveRelaxed` base orientation: the most common authoring path
- * (and the sample-11 case) supplies an explicit `<a:rot>` that fully defines the
- * orientation, so the preset's own base tilt is only a fallback. We keep the
- * base tilt at 0 for the relaxed presets and let the file's rot drive the
- * orientation; this is the spec-faithful choice because the rot override, when
- * present, *replaces* the preset rotation (§20.1.5.5: "rotation … overrides …
- * that further rotate the camera"). When no rot is present we fall back to the
- * front view rather than inventing an angle we cannot cite.
- */
+/** Relaxed omitted orientations remain neutral as a library fallback, not a
+ * specification default. Explicit rot supplies the modeled orientation. */
 
 /** 3×3 matrix in row-major order. */
 type Mat3 = [number, number, number, number, number, number, number, number, number];
@@ -231,19 +203,10 @@ function applyMat3(m: Mat3, x: number, y: number, z: number): [number, number, n
 }
 
 /**
- * Compose the full object rotation from a base orientation and an optional file
- * `rot` override. Per §20.1.5.11 the revolution is applied "about the axis as
- * the latitude and longitude coordinates", i.e. rev is the last (outermost)
- * rotation about the resulting view axis. We therefore compose
- *   R = Rz(−rev) · Rx(−lat) · Ry(−lon).
- * The angles are NEGATED: DrawingML's sphere-coordinate rotations spin in the
- * opposite sense to the textbook right-handed rotX/rotY/rotZ used here (the
- * y-down screen axis flips the apparent handedness). This negated composition
- * is the variant that fits the PowerPoint ground truth (sample-11.pdf p3) by
- * 5–9× over every alternative order/sign — see DEFAULT_PERSP_FOV for the fit.
- * When an explicit `<a:rot>` is present it supplies lat/lon/rev directly
- * (replacing the preset base, per the override semantics in §20.1.5.5); when
- * absent we use the preset's base angles.
+ * Legacy object rotation Rz(-rev) · Rx(-lat) · Ry(-lon), with explicit rot
+ * replacing the modeled preset orientation. ECMA-376 §§20.1.5.5/.11 describe
+ * rotation overrides but do not establish this entire matrix. Keep it stable
+ * while the full camera response, rather than a FOV-only fit, is unresolved.
  */
 function buildRotation(preset: PresetDef, rot: RotInput | undefined): Mat3 {
   const lat = rot ? rot.lat : preset.baseLat;
@@ -306,8 +269,8 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number): S
 
   // Camera distance for perspective. The shape's larger half-extent subtends
   // the full field of view at the camera plane: d = halfMax / tan(fov/2). This
-  // is the standard pinhole relation; it keeps the shape filling the frame
-  // before tilting, matching how PowerPoint frames the un-tilted shape.
+  // is a standard pinhole relation and our shape-local framing policy, not the
+  // Office framing rule (see the explicit-lens residuals above).
   const halfMax = Math.max(hw, hh);
   let projected: Array<[number, number]>;
 

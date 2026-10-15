@@ -149,6 +149,17 @@ describe('computeScene3dQuad', () => {
     expect(gap(qw)).toBeGreaterThan(gap(qb));
   });
 
+  it('ignores FOV for a non-perspective camera, including extrusion displacement', () => {
+    // MS-OI29500 §2.1.1270: an authored FOV must not change a parallel view.
+    const base: CameraInput = {
+      prst: 'orthographicFront', rot: { lat: 25, lon: 35, rev: 17 },
+    };
+    const narrow = { ...base, fov: 5 };
+    const wide = { ...base, fov: 115 };
+    expect(computeScene3dQuad(narrow, W, H)).toEqual(computeScene3dQuad(wide, W, H));
+    expect(computeDepthOffset(narrow, W, H, 40)).toEqual(computeDepthOffset(wide, W, H, 40));
+  });
+
   it('camera zoom changes the projected extent instead of being cancelled', () => {
     const base: CameraInput = {
       prst: 'perspectiveFront',
