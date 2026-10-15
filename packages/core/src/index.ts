@@ -102,8 +102,8 @@ export type {
   ViewerCommentMessageContext,
   ViewerCommentThreadContext,
 } from './comment-ui';
-// Typed load-time error (PD4 seed): the `load()` factories throw this with a
-// stable `code` for container-level failures detected on the main thread.
+// Typed input errors: container admission and configured sources report stable
+// codes; workers reconstruct them for load and lazy-operation callers.
 export {
   OoxmlError,
   OoxmlResourceLimitError,
@@ -113,6 +113,7 @@ export {
   type OoxmlResourceMetric,
   type OoxmlResourceName,
   type OoxmlResourceLimitErrorDetails,
+  type OoxmlUnsupportedContentDetails,
   type OoxmlResourceUsageSnapshot,
   type OoxmlResourceViolation,
 } from './errors/ooxml-error';

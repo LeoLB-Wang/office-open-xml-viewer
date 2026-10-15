@@ -184,7 +184,7 @@ describe('PptxPresentation.destroy() — rejects in-flight worker requests', () 
       claim: () => true,
       beginLoad: () => ({
         module: {
-          protocol: 'ooxml-model-source-module/v1',
+          protocol: 'ooxml-model-source-module/v2',
           target: 'pptx', moduleUrl: 'https://example.test/source.mjs', config: {},
         },
         release,
@@ -391,7 +391,7 @@ it.each(['ordinary', 'selected-source'] as const)('filters ordinary Window prelo
     };
   });
   const source: ModelSource<'pptx'> = { target: 'pptx', claim: () => true, beginLoad: () => ({
-    module: { protocol: 'ooxml-model-source-module/v1', target: 'pptx', moduleUrl: 'https://example.test/source.mjs', config: {} },
+    module: { protocol: 'ooxml-model-source-module/v2', target: 'pptx', moduleUrl: 'https://example.test/source.mjs', config: {} },
     release: () => undefined,
   }) };
   const presentation = await PptxPresentation.load(new ArrayBuffer(0), { useGoogleFonts: true,
