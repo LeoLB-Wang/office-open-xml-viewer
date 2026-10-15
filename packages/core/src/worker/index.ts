@@ -23,6 +23,7 @@ export {
   deserializeWorkerError,
   parseResourceLimitError,
   parseTypedParserError,
+  resourceLimitMessage,
   serializeWorkerError,
   type WorkerErrorPayload,
 } from './error-wire.js';
