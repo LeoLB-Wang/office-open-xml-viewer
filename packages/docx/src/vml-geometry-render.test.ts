@@ -94,6 +94,46 @@ it.each(['shape', 'picture'])('composes nested group and %s margins before paren
   expect(Buffer.compare(Buffer.from(actual.pixels), Buffer.from(reference.pixels))).toBe(0);
 });
 
+it.each(['shape', 'picture'])('uses parent coordinates for grouped %s CSS units and nested extents', async kind => {
+  const leaf = (style: string) => `<v:rect style="position:absolute;${style}" fillcolor="red" stroked="f">${kind === 'picture' ? '<v:imagedata r:id="pic"/>' : ''}</v:rect>`;
+  const root = (content: string) => `<v:group style="position:absolute;width:150pt;height:150pt" coordsize="300,300" coordorigin="10,20">${content}</v:group>`;
+  const reference = await renderVml(leaf('left:67pt;top:43pt;width:30pt;height:20pt'));
+  expect(counter(reference.pixels)(255, 0, 0)).toBeGreaterThan(100);
+  if (kind === 'picture') expect(counter(reference.pixels)(0, 0, 255)).toBeGreaterThan(100);
+  expect(reference.diagnostics).toEqual([]);
+  // Exercise all six properties together, including mixed units. The nested
+  // group scales its children by two; the outer group scales by one half.
+  for (const units of [Array<string>(6).fill('px'), ['in', 'cm', 'mm', 'pc', 'px', 'pt'], ['em', 'ex', 'em', 'ex', 'em', 'ex']]) {
+    const style = (values: number[]) => ['left', 'top', 'margin-left', 'margin-top', 'width', 'height']
+      .map((property, i) => `${property}:${values[i]}${units[i]}`).join(';');
+    for (const content of [
+      root(leaf(style([24, 26, 120, 80, 60, 40]))),
+      root(`<v:group style="${style([20, 10, 100, 80, 80, 40])}" coordsize="40,20">${leaf(style([2, 3, 10, 5, 30, 20]))}</v:group>`),
+    ]) {
+      const actual = await renderVml(content);
+      expect(actual.diagnostics).toEqual([]);
+      expect(Buffer.compare(Buffer.from(actual.pixels), Buffer.from(reference.pixels))).toBe(0);
+    }
+  }
+});
+
+it('retains physical CSS units for root groups and standalone leaves beside groups', async () => {
+  const leaf = (style: string) => `<v:rect style="position:absolute;${style}" fillcolor="red" stroked="f"/>`;
+  const root = (size: string) => `<v:group style="position:absolute;width:${size};height:${size}" coordsize="100,100">${leaf('left:10;top:20;width:30;height:40')}</v:group>`;
+  const reference = await renderVml(root('75pt'));
+  expect(counter(reference.pixels)(255, 0, 0)).toBeGreaterThan(100);
+  expect(reference.diagnostics).toEqual([]);
+  for (const content of [
+    root('100px'),
+    leaf('left:10px;top:20px;width:30px;height:40px'),
+    `<v:group style="position:absolute;width:100pt;height:100pt"/>${leaf('left:10px;top:20px;width:30px;height:40px')}`,
+  ]) {
+    const actual = await renderVml(content);
+    expect(actual.diagnostics).toEqual([]);
+    expect(Buffer.compare(Buffer.from(actual.pixels), Buffer.from(reference.pixels))).toBe(0);
+  }
+});
+
 it('paints equivalent textpath font shorthand, longhands and template overrides identically', async () => {
   const normal = "font-family:'Times New Roman';font-size:24pt;font-weight:normal;font-style:normal";
   const draw = (template: string, style: string, grouped = true) => {

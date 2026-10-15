@@ -12213,6 +12213,7 @@ fn parse_vml_shape(
     // A referenced shapetype carries the legacy conceptual shape id (`o:spt`);
     // map the interoperable subset onto the shared DrawingML preset engine.
     let style = shape.attribute("style").unwrap_or("");
+    let coordinates = VmlStyleCoordinates::for_node(shape);
     let spt = shape
         .attributes()
         .find(|attr| attr.name() == "spt")
@@ -12264,8 +12265,8 @@ fn parse_vml_shape(
         ((to.0 - from.0).abs(), (to.1 - from.1).abs())
     } else {
         (
-            vml_css_length_pt(style, "width").unwrap_or(0.0),
-            vml_css_length_pt(style, "height").unwrap_or(0.0),
+            coordinates.css_length(style, "width").unwrap_or(0.0),
+            coordinates.css_length(style, "height").unwrap_or(0.0),
         )
     };
     if width_pt < 0.0
@@ -12475,12 +12476,12 @@ fn parse_vml_shape(
         .as_ref()
         .map(|(_, (x, _, _, _))| *x)
         .or_else(|| line_points.map(|(from, to)| from.0.min(to.0)))
-        .unwrap_or_else(|| vml_numeric_offset_pt(style, "left", "margin-left"));
+        .unwrap_or_else(|| coordinates.offset(style, "left", "margin-left"));
     let anchor_y_pt = primitive
         .as_ref()
         .map(|(_, (_, y, _, _))| *y)
         .or_else(|| line_points.map(|(from, to)| from.1.min(to.1)))
-        .unwrap_or_else(|| vml_numeric_offset_pt(style, "top", "margin-top"));
+        .unwrap_or_else(|| coordinates.offset(style, "top", "margin-top"));
     let style_flip = vml_css_str(style, "flip").unwrap_or_default();
     let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0) ^ style_flip.contains('x');
     let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1) ^ style_flip.contains('y');
@@ -12859,23 +12860,75 @@ fn normalize_vml_dashstyle(raw: &str) -> Option<String> {
 /// inches in the same document (`from="…pt"`, `to="6in"`), while a bare number
 /// in a WordprocessingML `<w:pict>` is interpreted as points.
 fn parse_vml_length_pt(value: &str) -> Option<f64> {
-    let value = value.trim().to_ascii_lowercase();
-    let (number, scale) = if let Some(number) = value.strip_suffix("pt") {
-        (number, 1.0)
-    } else if let Some(number) = value.strip_suffix("in") {
-        (number, 72.0)
-    } else if let Some(number) = value.strip_suffix("cm") {
-        (number, 72.0 / 2.54)
-    } else if let Some(number) = value.strip_suffix("mm") {
-        (number, 72.0 / 25.4)
-    } else if let Some(number) = value.strip_suffix("pc") {
-        (number, 12.0)
-    } else if let Some(number) = value.strip_suffix("px") {
-        (number, 72.0 / 96.0)
-    } else {
-        (value.as_str(), 1.0)
-    };
-    number.trim().parse::<f64>().ok().map(|n| n * scale)
+    VmlStyleCoordinates::Points.length(value)
+}
+
+// ECMA-376 Part 4 §§19.1.2.7/.19 define the parent coordinate space.
+// Documented Office behavior, MS-OE376 §2.1.1692(fff), incorporated by
+// §§2.1.1698/.1707/.1710: ignore unit suffixes on grouped left/top,
+// margin-left/margin-top and width/height. Only these six CSS properties use
+// this context; root/standalone boxes and physical decoration lengths retain
+// point conversion. Combine offsets before the parent transform scales them.
+#[derive(Clone, Copy)]
+enum VmlStyleCoordinates {
+    Points,
+    Parent,
+}
+
+impl VmlStyleCoordinates {
+    fn for_node(node: roxmltree::Node) -> Self {
+        if node
+            .parent()
+            .is_some_and(|parent| parent.has_tag_name(("urn:schemas-microsoft-com:vml", "group")))
+        {
+            Self::Parent
+        } else {
+            Self::Points
+        }
+    }
+
+    fn css_length(self, style: &str, property: &str) -> Option<f64> {
+        vml_css_str(style, property).and_then(|value| self.length(value))
+    }
+
+    fn offset(self, style: &str, leading_property: &str, margin_property: &str) -> f64 {
+        self.css_length(style, leading_property).unwrap_or(0.0)
+            + self.css_length(style, margin_property).unwrap_or(0.0)
+    }
+
+    fn length(self, value: &str) -> Option<f64> {
+        let value = value.trim().to_ascii_lowercase();
+        let (number, scale) = if let Some(number) = value.strip_suffix("pt") {
+            (number, 1.0)
+        } else if let Some(number) = value.strip_suffix("in") {
+            (number, 72.0)
+        } else if let Some(number) = value.strip_suffix("cm") {
+            (number, 72.0 / 2.54)
+        } else if let Some(number) = value.strip_suffix("mm") {
+            (number, 72.0 / 25.4)
+        } else if let Some(number) = value.strip_suffix("pc") {
+            (number, 12.0)
+        } else if let Some(number) = value.strip_suffix("px") {
+            (number, 72.0 / 96.0)
+        } else if matches!(self, Self::Parent) {
+            // CSS relative length units are also ignored inside a group;
+            // resolving em/ex against a font would invent a physical scale.
+            (
+                value
+                    .strip_suffix("em")
+                    .or_else(|| value.strip_suffix("ex"))
+                    .unwrap_or(&value),
+                1.0,
+            )
+        } else {
+            (value.as_str(), 1.0)
+        };
+        let scale = match self {
+            Self::Points => scale,
+            Self::Parent => 1.0,
+        };
+        number.trim().parse::<f64>().ok().map(|n| n * scale)
+    }
 }
 
 fn parse_vml_textbox_inset(raw: &str, defaults: [f64; 4]) -> Option<[f64; 4]> {
@@ -13124,14 +13177,12 @@ fn vml_word_has_complete_anchor_reference(shape: roxmltree::Node, style: &str) -
         && has_axis("mso-position-vertical-relative", "anchory")
 }
 
-// ECMA-376 Part 4 §§19.1.2.7/.19: grouped offsets belong to the parent
-// coordinate space. MS-OE376 §2.1.1692(ee-ff) documents Office combining
+// MS-OE376 §2.1.1692(ee-ff) documents Office combining
 // left + margin-left and top + margin-top. Resolve both components before a
 // group transform or page-anchor choice consumes them; zero does not cancel
 // the other component. Primitive endpoint bounds are acquired separately.
 fn vml_numeric_offset_pt(style: &str, leading_property: &str, margin_property: &str) -> f64 {
-    vml_css_length_pt(style, leading_property).unwrap_or(0.0)
-        + vml_css_length_pt(style, margin_property).unwrap_or(0.0)
+    VmlStyleCoordinates::Points.offset(style, leading_property, margin_property)
 }
 
 fn vml_word_anchor_choice(style: &str, axis: &str) -> AnchorAxisChoiceWire {

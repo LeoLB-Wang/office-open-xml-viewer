@@ -65,11 +65,12 @@ pub(super) fn acquire(
     let image = reference(shape).or_else(|| definition.and_then(reference))?;
     let path = vml_image_source(image, media)?;
     let style = shape.attribute("style").unwrap_or("");
+    let coordinates = VmlStyleCoordinates::for_node(shape);
     let mut picture = vml_image_run(
         shape,
         path,
-        vml_css_length_pt(style, "width")?,
-        vml_css_length_pt(style, "height")?,
+        coordinates.css_length(style, "width")?,
+        coordinates.css_length(style, "height")?,
         image,
     );
     let fraction = |name| {

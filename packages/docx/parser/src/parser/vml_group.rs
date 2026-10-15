@@ -31,10 +31,11 @@ fn hidden(node: roxmltree::Node) -> bool {
 
 fn group_spec(group: roxmltree::Node, root: bool) -> Option<DrawingGroupSpec> {
     let style = group.attribute("style").unwrap_or("");
+    let coordinates = VmlStyleCoordinates::for_node(group);
     let (cx, cy) = pair(group.attribute("coordsize").unwrap_or("1000,1000"))?;
     let (ox, oy) = pair(group.attribute("coordorigin").unwrap_or("0,0"))?;
-    let width = vml_css_length_pt(style, "width")?;
-    let height = vml_css_length_pt(style, "height")?;
+    let width = coordinates.css_length(style, "width")?;
+    let height = coordinates.css_length(style, "height")?;
     let flip = vml_css_str(style, "flip").unwrap_or_default();
     // Part 4 §§19.1.2.7/.19: combine nested-group numeric offsets in the
     // parent's coordinate space, using the same authority as leaf/page anchors.
@@ -43,12 +44,12 @@ fn group_spec(group: roxmltree::Node, root: bool) -> Option<DrawingGroupSpec> {
         off_x: if root {
             0.0
         } else {
-            vml_numeric_offset_pt(style, "left", "margin-left")
+            coordinates.offset(style, "left", "margin-left")
         },
         off_y: if root {
             0.0
         } else {
-            vml_numeric_offset_pt(style, "top", "margin-top")
+            coordinates.offset(style, "top", "margin-top")
         },
         ext_x: width,
         ext_y: height,
@@ -638,6 +639,55 @@ mod tests {
             assert_eq!((shape.anchor_x_pt, shape.anchor_y_pt), (67.0, 43.0));
             assert_eq!((shape.width_pt, shape.height_pt), (10.0, 5.0));
         }
+    }
+
+    #[test]
+    fn grouped_style_units_are_parent_coordinates_at_every_depth() {
+        for unit in ["", "pt", "px", "in", "cm", "mm", "pc", "em", "ex"] {
+            let (group, diagnostics) = parse(&format!(
+                r#"<v:group style="width:150pt;height:150pt" coordsize="300,300" coordorigin="10,20">
+                  <v:group style="left:20{unit};top:10{unit};margin-left:100{unit};margin-top:80{unit};width:80{unit};height:40{unit}" coordsize="40,20">
+                    <v:rect style="left:2{unit};top:3{unit};margin-left:10{unit};margin-top:5{unit};width:10{unit};height:5{unit}"/>
+                    <v:shape style="left:2{unit};top:3{unit};margin-left:10{unit};margin-top:5{unit};width:10{unit};height:5{unit}"><v:imagedata r:id="pic"/></v:shape>
+                  </v:group>
+                </v:group>"#
+            ));
+            assert!(diagnostics.is_empty(), "{unit}");
+            assert_eq!(children(&group).len(), 2, "{unit}");
+            for run in children(&group) {
+                let DocRun::Shape(shape) = run else {
+                    panic!("shape or picture")
+                };
+                assert_eq!(
+                    (
+                        shape.anchor_x_pt,
+                        shape.anchor_y_pt,
+                        shape.width_pt,
+                        shape.height_pt
+                    ),
+                    (67.0, 43.0, 10.0, 5.0),
+                    "{unit}"
+                );
+            }
+        }
+        // A root group's dimensions still use physical units: 100px = 75pt.
+        let (root, diagnostics) = parse(
+            r#"<v:group style="width:100px;height:100px" coordsize="100,100"><v:rect style="left:10;top:20;width:30;height:40"/></v:group>"#,
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!((root.width_pt, root.height_pt), (75.0, 75.0));
+        let DocRun::Shape(shape) = &children(&root)[0] else {
+            panic!("shape")
+        };
+        assert_eq!(
+            (
+                shape.anchor_x_pt,
+                shape.anchor_y_pt,
+                shape.width_pt,
+                shape.height_pt
+            ),
+            (7.5, 15.0, 22.5, 30.0)
+        );
     }
 
     #[test]
