@@ -49,7 +49,7 @@ ${content}</w:pict></w:r></w:p><w:sectPr><w:pgSz w:w="4000" w:h="4000"/><w:pgMar
   const layout = layoutDocument(model, createLayoutServices(model, {
     measureContext: canvas.getContext('2d') as unknown as CanvasRenderingContext2D,
   }));
-  return { pixels, diagnostics: [...layout.diagnostics, ...diagnostics], model };
+  return { pixels, diagnostics: [...layout.diagnostics, ...diagnostics], model, layout };
 }
 
 function counter(pixels: Uint8ClampedArray) {
@@ -302,4 +302,78 @@ it('uses VML round joins and an inherited miter limit of eight when omitted', as
   expect(miter.pixels).not.toEqual(largerLimit.pixels);
   expect(miter.pixels).not.toEqual(explicit.pixels);
   expect([...omitted.diagnostics, ...explicit.diagnostics, ...inherited.diagnostics, ...miter.diagnostics, ...largerLimit.diagnostics]).toEqual([]);
+});
+
+
+it('inherits VML visibility through groups while preserving the root flow extent and visible siblings', async () => {
+  const red = '<v:rect style="position:absolute;left:10;top:10;width:60;height:60" fillcolor="red" stroked="f"/>';
+  const wrap = (content: string, style = '') => `<v:group style="width:100pt;height:100pt;${style}" coordsize="100,100">${content}</v:group>`;
+  const visible = await renderVml(wrap(red));
+  expect(counter(visible.pixels)(255, 0, 0)).toBeGreaterThan(3000);
+  for (const content of [
+    wrap(red.replace('position:absolute;', 'position:absolute;visibility:hidden;')),
+    wrap(`<v:group style="width:100;height:100;visibility:hidden" coordsize="100,100">${red}</v:group>`),
+    wrap(red, 'visibility:hidden'),
+  ]) {
+    const hidden = await renderVml(content);
+    expect(counter(hidden.pixels)(255, 0, 0)).toBe(0);
+    const flowBounds = (result: typeof visible) => result.layout.pages.flatMap(page =>
+      page.layers.body.filter(node => node.kind === 'paragraph').map(node => node.flowBounds));
+    expect(flowBounds(hidden)).toEqual(flowBounds(visible));
+    expect(hidden.diagnostics).toEqual([]);
+  }
+  const sibling = await renderVml(wrap(`<v:group style="width:100;height:100;visibility:hidden" coordsize="100,100">${red.replace('position:absolute;', 'position:absolute;visibility:visible;')}</v:group>${red.replace('fillcolor="red"', 'fillcolor="lime"')}`));
+  expect(counter(sibling.pixels)(255, 0, 0)).toBe(0);
+  expect(counter(sibling.pixels)(0, 255, 0)).toBeGreaterThan(3000);
+  expect(sibling.diagnostics).toEqual([]);
+});
+
+it('lets effective VML path arrowok override both arrowheads, including its false default', async () => {
+  const wrap = (definition: string, path: string) => `<v:group style="width:100pt;height:100pt" coordsize="100,100">${definition}<v:shape type="#pen" style="position:absolute;left:20;top:20;width:60;height:60" coordsize="100,100" filled="f" strokecolor="red" strokeweight="6pt"><v:stroke startarrow="block" endarrow="block"/>${path}</v:shape></v:group>`;
+  const path = (flag: string) => `<v:path ${flag} v="m0,0l100,100e"/>`;
+  const none = await renderVml(wrap('', path('arrowok="f"')));
+  const arrows = await renderVml(wrap('', path('arrowok="t"')));
+  expect(counter(arrows.pixels)(255, 0, 0)).toBeGreaterThan(counter(none.pixels)(255, 0, 0) + 100);
+  for (const [definition, flag, expected] of [
+    ['', '', none],
+    ['<v:shapetype id="pen"><v:path arrowok="f"/></v:shapetype>', '', none],
+    ['<v:shapetype id="pen"><v:path arrowok="t"/></v:shapetype>', 'arrowok="f"', none],
+    ['<v:shapetype id="pen"><v:path arrowok="f"/></v:shapetype>', 'arrowok="t"', arrows],
+    ['<v:shapetype id="pen"><v:path arrowok="t"/></v:shapetype>', '', arrows],
+  ] as const) {
+    const actual = await renderVml(wrap(definition, path(flag)));
+    expect(actual.pixels).toEqual(expected.pixels);
+    expect(actual.diagnostics).toEqual([]);
+  }
+  expect([...none.diagnostics, ...arrows.diagnostics]).toEqual([]);
+});
+
+it('renders omitted VML line endpoints with the normative defaults', async () => {
+  const wrap = (endpoints: string) => `<v:group style="width:100pt;height:100pt" coordsize="100,100"><v:line style="position:absolute" ${endpoints} strokecolor="red" strokeweight="6pt"/></v:group>`;
+  for (const [omitted, explicit] of [['to="60,60"', 'from="0,0" to="60,60"'], ['', 'from="0,0" to="10,10"']]) {
+    const actual = await renderVml(wrap(omitted));
+    const control = await renderVml(wrap(explicit));
+    expect(counter(actual.pixels)(255, 0, 0)).toBeGreaterThan(10);
+    expect(actual.pixels).toEqual(control.pixels);
+    expect([...actual.diagnostics, ...control.diagnostics]).toEqual([]);
+  }
+});
+
+
+it('applies host fill opacity with per-property shapetype and decoration overrides', async () => {
+  const wrap = (definition: string, host: string, fill = '') => `<v:group style="width:80pt;height:80pt" coordsize="80,80">${definition}<v:rect type="#alpha" style="left:10;top:10;width:40;height:40" fillcolor="red" stroked="f" ${host}>${fill}</v:rect></v:group>`;
+  const expected = await renderVml(wrap('', '', '<v:fill opacity=".5"/>'));
+  for (const [definition, host] of [
+    ['', 'opacity="32768f"'],
+    ['<v:shapetype id="alpha" opacity=".5"/>', ''],
+    ['<v:shapetype id="alpha" opacity="0"/>', 'opacity=".5"'],
+  ]) {
+    const actual = await renderVml(wrap(definition, host));
+    expect(actual.pixels).toEqual(expected.pixels);
+    expect(actual.diagnostics).toEqual([]);
+  }
+  const reset = await renderVml(wrap('<v:shapetype id="alpha" opacity=".5"/>', 'opacity="1"', '<v:fill opacity="0"/>'));
+  expect(counter(reset.pixels)(255, 255, 255)).toBe(40000);
+  expect(counter(expected.pixels)(255, 128, 128)).toBeGreaterThan(1000);
+  expect([...expected.diagnostics, ...reset.diagnostics]).toEqual([]);
 });

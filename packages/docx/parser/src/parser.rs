@@ -12218,13 +12218,14 @@ fn parse_vml_shape(
         });
 
     let line_points = if !is_picture && shape.tag_name().name() == "line" {
-        match (
-            shape.attribute("from").and_then(parse_vml_point_pt),
-            shape.attribute("to").and_then(parse_vml_point_pt),
-        ) {
-            (Some(from), Some(to)) => Some((from, to)),
-            _ => return None,
-        }
+        // Part 4 §19.1.2.12: absent endpoints are (0,0) and (10,10).
+        // MS-OI29500 §2.1.1801(a) documents Office's different to default
+        // (50pt,50pt); use the normative coordinates, without inferring an
+        // Office compatibility rule from the presence of a VML group.
+        Some((
+            parse_vml_point_pt(shape.attribute("from").unwrap_or("0,0"))?,
+            parse_vml_point_pt(shape.attribute("to").unwrap_or("10,10"))?,
+        ))
     } else {
         None
     };
@@ -12295,6 +12296,21 @@ fn parse_vml_shape(
         resolved_stroke.color = None;
     }
 
+    // Part 4 §19.1.2.14: an authored/custom path permits arrows only
+    // when effective arrowok is true (default false), independently of the
+    // stroke's start/end arrow settings. Primitive lines without a CT_Path
+    // retain their native stroke arrows; no path override exists there.
+    let has_path = vml_geometry::path_source(shape, shape_type).is_some()
+        || vml_direct_child(shape, "path").is_some()
+        || shape_type.is_some_and(|n| vml_direct_child(n, "path").is_some());
+    if has_path
+        && vml_geometry::path_attr(shape, shape_type, "arrowok").and_then(parse_vml_true_false)
+            != Some(true)
+    {
+        resolved_stroke.head_end = None;
+        resolved_stroke.tail_end = None;
+    }
+
     // ECMA-376 Part 4 §19.1.2.5 `<v:fill opacity>` — fill alpha (default opaque).
     let fill_opacity = resolved_fill.opacity;
 
@@ -12323,6 +12339,7 @@ fn parse_vml_shape(
                 .and_then(parse_vml_true_false)
         });
     let text_path = text_path_node
+        .or(inherited_text_path_node)
         .and_then(|node| parse_vml_textpath(node, inherited_text_path_node, text_path_ok));
 
     // §19.1.2.19 style `rotation` — degrees clockwise (default 0).
@@ -12657,16 +12674,20 @@ fn resolve_vml_stroke(
                 })
         })
         .flatten();
-    let head_end = shape_stroke
-        .filter(|node| node.attribute("startarrow").is_some())
-        .or_else(|| type_stroke.filter(|node| node.attribute("startarrow").is_some()))
-        .and_then(|node| {
-            parse_vml_line_end(node, "startarrow", "startarrowwidth", "startarrowlength")
-        });
-    let tail_end = shape_stroke
-        .filter(|node| node.attribute("endarrow").is_some())
-        .or_else(|| type_stroke.filter(|node| node.attribute("endarrow").is_some()))
-        .and_then(|node| parse_vml_line_end(node, "endarrow", "endarrowwidth", "endarrowlength"));
+    let head_end = parse_vml_line_end(
+        shape,
+        shape_type,
+        "startarrow",
+        "startarrowwidth",
+        "startarrowlength",
+    );
+    let tail_end = parse_vml_line_end(
+        shape,
+        shape_type,
+        "endarrow",
+        "endarrowwidth",
+        "endarrowlength",
+    );
 
     // Part 4 §19.1.2.21: opacity is independent of fill opacity. Retain
     // RRGGBBAA, the shared color contract used by layout, strokes and arrows.
@@ -12853,17 +12874,16 @@ fn parse_vml_point_pt(value: &str) -> Option<(f64, f64)> {
 /// Convert VML `<v:stroke startarrow/endarrow>` to the DrawingML-compatible
 /// line-end contract used by the shared renderer.
 fn parse_vml_line_end(
-    stroke: roxmltree::Node,
+    shape: roxmltree::Node,
+    definition: Option<roxmltree::Node>,
     type_attr: &str,
     width_attr: &str,
     length_attr: &str,
 ) -> Option<LineEnd> {
-    let r#type = match stroke
-        .attribute(type_attr)?
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    // All three arrow properties cascade independently, including a local
+    // width/length override when the arrow type belongs to the shapetype.
+    let property = |name| vml_decoration_attr(shape, definition, "stroke", name);
+    let r#type = match property(type_attr)?.trim().to_ascii_lowercase().as_str() {
         "none" => return None,
         "block" => "triangle",
         "classic" => "stealth",
@@ -12872,12 +12892,12 @@ fn parse_vml_line_end(
         "open" => "arrow",
         _ => return None,
     };
-    let w = match stroke.attribute(width_attr).unwrap_or("medium").trim() {
+    let w = match property(width_attr).unwrap_or("medium").trim() {
         "narrow" | "sm" => "sm",
         "wide" | "lg" => "lg",
         _ => "med",
     };
-    let len = match stroke.attribute(length_attr).unwrap_or("medium").trim() {
+    let len = match property(length_attr).unwrap_or("medium").trim() {
         "short" | "sm" => "sm",
         "long" | "lg" => "lg",
         _ => "med",
@@ -13272,7 +13292,11 @@ fn parse_vml_textpath(
     inherited: Option<roxmltree::Node>,
     text_path_ok: Option<bool>,
 ) -> Option<TextPath> {
-    let string = textpath.attribute("string")?.to_string();
+    let string = textpath
+        .attribute("string")
+        .or_else(|| inherited.and_then(|n| n.attribute("string")))
+        .unwrap_or("")
+        .to_string();
     let style = textpath.attribute("style").unwrap_or("");
     let inherited_style = inherited
         .and_then(|node| node.attribute("style"))
@@ -13305,19 +13329,19 @@ fn parse_vml_textpath(
         })
         .filter(|f| !f.is_empty());
 
-    let font_lc = vml_css_str(style, "font")
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let bold = vml_css_str(style, "font-weight")
-        .map(|w| w.eq_ignore_ascii_case("bold") || w.trim().parse::<u32>().is_ok_and(|n| n >= 600))
-        .unwrap_or(false)
-        || font_lc.split_whitespace().any(|t| t == "bold");
-    let italic = vml_css_str(style, "font-style")
+    let style_property =
+        |name| vml_css_str(style, name).or_else(|| vml_css_str(inherited_style, name));
+    let font_lc = style_property("font").unwrap_or("").to_ascii_lowercase();
+    let bold = style_property("font-weight")
+        .map(|w| matches!(w, "bold" | "bolder") || w.trim().parse::<u32>().is_ok_and(|n| n >= 500))
+        .unwrap_or_else(|| font_lc.split_whitespace().any(|t| t == "bold"));
+    let italic = style_property("font-style")
         .map(|s| s.eq_ignore_ascii_case("italic") || s.eq_ignore_ascii_case("oblique"))
-        .unwrap_or(false)
-        || font_lc
-            .split_whitespace()
-            .any(|t| t == "italic" || t == "oblique");
+        .unwrap_or_else(|| {
+            font_lc
+                .split_whitespace()
+                .any(|t| t == "italic" || t == "oblique")
+        });
 
     Some(TextPath {
         string,

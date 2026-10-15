@@ -716,6 +716,81 @@ pub(super) fn shadow(
     })
 }
 
+pub(super) fn incomplete_host(shape: roxmltree::Node, definition: Option<roxmltree::Node>) -> bool {
+    // Part 4 §19.1 attribute sweep: editor identifiers, hyperlinks and
+    // connection/handle metadata have no screen ink. Do not silently accept
+    // other authored host/path modes just because the primitive is supported.
+    // These retained diagnostics describe implementation limits, not Office
+    // compatibility rules; available geometry and sibling content still paint.
+    for host in std::iter::once(shape).chain(definition) {
+        if host.attribute("style").is_some_and(|style| {
+            style
+                .split(';')
+                .filter_map(|decl| decl.split_once(':'))
+                .any(|(key, _)| {
+                    !matches!(
+                        key.trim(),
+                        "position"
+                            | "left"
+                            | "top"
+                            | "width"
+                            | "height"
+                            | "margin-left"
+                            | "margin-top"
+                            | "rotation"
+                            | "flip"
+                            | "visibility"
+                            | "z-index"
+                            | "mso-position-horizontal"
+                            | "mso-position-vertical"
+                            | "mso-position-horizontal-relative"
+                            | "mso-position-vertical-relative"
+                            | "mso-wrap-style"
+                            | "mso-wrap-distance-left"
+                            | "mso-wrap-distance-right"
+                            | "mso-wrap-distance-top"
+                            | "mso-wrap-distance-bottom"
+                            | "mso-wrap-edited"
+                    )
+                })
+        }) {
+            return true;
+        }
+        for a in host.attributes() {
+            if host != shape
+                && shape
+                    .attributes()
+                    .any(|local| local.name() == a.name() && local.namespace() == a.namespace())
+            {
+                continue;
+            }
+            if !matches!(a.name(),
+                "id" | "style" | "href" | "target" | "title" | "alt" | "coordsize"
+                | "coordorigin" | "print" | "type" | "adj" | "path" | "filled"
+                | "fillcolor" | "opacity" | "stroked" | "strokecolor" | "strokeweight"
+                | "chromakey" | "src" | "cropleft" | "croptop" | "cropright" | "cropbottom"
+                | "gain" | "blacklevel" | "gamma" | "grayscale" | "bilevel"
+                | "from" | "to" | "control1" | "control2" | "points" | "startAngle"
+                | "endAngle" | "startangle" | "endangle" | "arcsize" | "spt"
+                | "spid" | "oned" | "regroupid" | "doubleclicknotify" | "button"
+                | "userhidden" | "userdrawn" | "preferrelative" | "ole" | "oleicon"
+                | "allowincell" | "allowoverlap" | "insetmode" | "master" | "gfxdata"
+                | "equationxml" | "connectortype" | "dgmlayoutmru" | "dgmnodekind"
+                | "editas" | "tableproperties" | "tablelimits")
+                // Inactive optional modes do not change screen output. An
+                // enabled inset pen is handled below after the path override.
+                && !(matches!(a.name(), "hr" | "hrstd" | "hrnoshade" | "bullet"
+                    | "forcedash" | "clip" | "cliptowrap" | "insetpen")
+                    && parse_vml_true_false(a.value()) == Some(false))
+                && a.name() != "insetpen"
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// CT_Shape/CT_Shapetype drawables are examined even when the host geometry is
 /// supported. Editor handles, connection sites and locks have no independent
 /// ink. Unknown extensions and paint modes not acquired by this adapter must
@@ -723,6 +798,53 @@ pub(super) fn shadow(
 pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltree::Node>) -> bool {
     if vml_image::incomplete(shape, definition) {
         return true;
+    }
+    if incomplete_host(shape, definition) {
+        return true;
+    }
+    let inset = vml_decoration_attr(shape, definition, "stroke", "insetpen")
+        .or_else(|| attr(shape, definition, "insetpen"))
+        .and_then(parse_vml_true_false)
+        .unwrap_or(false);
+    if inset
+        && path_attr(shape, definition, "insetpenok").and_then(parse_vml_true_false) != Some(false)
+    {
+        return true;
+    }
+    if path_attr(shape, definition, "gradientshapeok").and_then(parse_vml_true_false) == Some(true)
+        && vml_fill::property(shape, definition, "type") == Some("gradientradial")
+    {
+        return true;
+    }
+    if path_attr(shape, definition, "textboxrect").is_some()
+        && vml_direct_child(shape, "textbox").is_some()
+    {
+        return true;
+    }
+    for host in std::iter::once(shape).chain(definition) {
+        if let Some(path) = vml_direct_child(host, "path") {
+            if path.attributes().any(|a| {
+                !matches!(
+                    a.name(),
+                    "id" | "v"
+                        | "limo"
+                        | "textboxrect"
+                        | "fillok"
+                        | "strokeok"
+                        | "shadowok"
+                        | "arrowok"
+                        | "gradientshapeok"
+                        | "textpathok"
+                        | "insetpenok"
+                        | "connecttype"
+                        | "connectlocs"
+                        | "connectangles"
+                        | "extrusionok"
+                )
+            }) {
+                return true;
+            }
+        }
     }
     let effective = |name| {
         vml_direct_child(shape, name).or_else(|| definition.and_then(|n| vml_direct_child(n, name)))
@@ -740,6 +862,12 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
     // image filters/pen textures and edge-specific Office strokes are real
     // ink; metadata such as title/relationship IDs has no independent paint.
     for (element, allowed) in [
+        (
+            "textpath",
+            &[
+                "id", "style", "on", "fitshape", "fitpath", "trim", "xscale", "string",
+            ][..],
+        ),
         (
             "shadow",
             &[
@@ -801,6 +929,7 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
                 "althref",
                 "title",
                 "detectmouseclick",
+                "insetpen",
             ][..],
         ),
         (
@@ -854,6 +983,38 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
             }
         }
     }
+    for host in std::iter::once(shape).chain(definition) {
+        if let Some(text) = vml_direct_child(host, "textpath") {
+            if text.attribute("style").is_some_and(|style| {
+                style
+                    .split(';')
+                    .filter_map(|decl| decl.split_once(':'))
+                    .any(|(key, value)| {
+                        !matches!(
+                            key.trim(),
+                            "font" | "font-family" | "font-size" | "font-style" | "font-weight"
+                        ) && !matches!(
+                            (key.trim(), value.trim()),
+                            ("font-variant", "normal")
+                                | ("text-decoration", "none")
+                                | (
+                                    "mso-text-shadow"
+                                        | "v-rotate-letters"
+                                        | "v-same-letter-heights"
+                                        | "v-text-kern"
+                                        | "v-text-reverse",
+                                    "false" | "f" | "0"
+                                )
+                                | ("v-text-align", "left")
+                                | ("v-text-spacing-mode", "tightening")
+                                | ("v-text-spacing", "100")
+                        )
+                    })
+            }) {
+                return true;
+            }
+        }
+    }
     if let Some(kind) = vml_fill::property(shape, definition, "type") {
         if !matches!(
             kind,
@@ -862,8 +1023,9 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
             return true;
         }
     }
-    if let Some(shadow_node) = effective("shadow") {
-        if shadow_node.attribute("on").and_then(parse_vml_true_false) != Some(false)
+    if effective("shadow").is_some() {
+        if vml_decoration_attr(shape, definition, "shadow", "on").and_then(parse_vml_true_false)
+            != Some(false)
             && path_attr(shape, definition, "shadowok").and_then(parse_vml_true_false)
                 != Some(false)
             && shadow(shape, definition).is_none()

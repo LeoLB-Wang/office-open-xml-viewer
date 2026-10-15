@@ -10,6 +10,9 @@ pub(super) fn property<'a>(
     let read = |host| {
         vml_direct_child(host, "fill")
             .and_then(|n| n.attributes().find(|a| a.name() == name).map(|a| a.value()))
+            // AG_ShapeAttributes exposes the same primary-fill opacity;
+            // a direct decoration overrides its host before inheritance.
+            .or_else(|| (name == "opacity").then(|| host.attribute(name)).flatten())
     };
     read(shape).or_else(|| definition.and_then(read))
 }

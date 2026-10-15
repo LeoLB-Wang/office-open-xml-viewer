@@ -23,6 +23,12 @@ fn pair(raw: &str) -> Option<(f64, f64)> {
     (x.is_finite() && y.is_finite() && values.next().is_none()).then_some((x, y))
 }
 
+// Visibility is explicitly excluded from shapetype inheritance (§19.1.2.19).
+// Only the containing group supplies the inherited state, via traversal.
+fn hidden(node: roxmltree::Node) -> bool {
+    vml_css_str(node.attribute("style").unwrap_or(""), "visibility") == Some("hidden")
+}
+
 fn group_spec(group: roxmltree::Node, root: bool) -> Option<DrawingGroupSpec> {
     let style = group.attribute("style").unwrap_or("");
     let (cx, cy) = pair(group.attribute("coordsize").unwrap_or("1000,1000"))?;
@@ -128,6 +134,16 @@ pub(super) fn parse_groups(
             // A stack frame per group avoids recursive parser calls. Reverse
             // insertion preserves authored painter order across nested groups.
             if parent.has_tag_name((VML, "group")) {
+                // Part 4 §§19.1.2.7/.19: hidden is inherited from the
+                // containing group; every other value means inherit, even
+                // "visible". Keep the root wrapper's authored flow box below,
+                // but acquire no descendant ink/resources for a hidden group.
+                if hidden(parent) {
+                    continue;
+                }
+                if vml_geometry::incomplete_host(parent, None) {
+                    unsupported(diagnostics);
+                }
                 let mut ordered_children: Vec<_> =
                     parent.children().filter(|n| n.is_element()).collect();
                 // §19.1.2.19: signed z-index controls overlap. Stable sorting
@@ -154,6 +170,10 @@ pub(super) fn parse_groups(
                         pending.push((child, transform));
                     }
                 }
+                // CT_Group (§19.1.2.7) does not declare shape-level opacity;
+                // do not invent an extra group alpha multiplier. Leaf/template
+                // fill alpha is resolved by vml_fill. Property children that
+                // have no standalone geometry are disclosed by acquire_leaf.
                 // The group itself is only a coordinate container.
                 continue;
             }
@@ -279,7 +299,8 @@ fn acquire_leaf<'a, 'input>(
         .attribute("type")
         .and_then(|id| shape_types.get(id.trim_start_matches('#')))
         .copied();
-    if vml_geometry::incomplete_leaf(child, shape_type) {
+    let hidden = hidden(child);
+    if !hidden && vml_geometry::incomplete_leaf(child, shape_type) {
         unsupported(diagnostics);
     }
     // Device/EMU formula values describe the final extent, whereas
@@ -309,7 +330,26 @@ fn acquire_leaf<'a, 'input>(
         unsupported(diagnostics);
         return None;
     };
-    if vml_image::present(child, shape_type) {
+    if hidden {
+        // A hidden leaf still owns its extent (in particular an inline pict
+        // sibling). Retain placement only, so pictures, shadows and text can
+        // never escape the visibility gate through another paint layer.
+        shape = ShapeRun {
+            inline: !within_group
+                && vml_image::present(child, shape_type)
+                && vml_css_str(style, "position") != Some("absolute"),
+            text_box_content: Vec::new(),
+            fill: None,
+            stroke: None,
+            preset_geometry: None,
+            subpaths: Vec::new(),
+            subpath_paint: Vec::new(),
+            vml_shadow: None,
+            text_path: None,
+            text_blocks: Vec::new(),
+            ..shape
+        };
+    } else if vml_image::present(child, shape_type) {
         let Some(picture) = vml_image::acquire(child, shape_type, media_map) else {
             unsupported(diagnostics);
             return None;
@@ -411,6 +451,47 @@ mod tests {
     }
 
     #[test]
+    fn visibility_retains_flow_extent_without_inheriting_from_shapetype() {
+        let (hidden, diagnostics) = parse(
+            r##"<v:group style="width:100pt;height:80pt;visibility:hidden"><v:rect style="width:100;height:100"/></v:group>"##,
+        );
+        assert!(hidden.inline);
+        assert_eq!((hidden.width_pt, hidden.height_pt), (100.0, 80.0));
+        assert!(children(&hidden).is_empty());
+        assert!(diagnostics.is_empty());
+        let (group, _) = parse(
+            r##"<v:group style="width:100pt;height:80pt"><v:shapetype id="hidden" style="visibility:hidden"/><v:rect type="#hidden" style="width:100;height:100" fillcolor="red"/></v:group>"##,
+        );
+        assert!(matches!(&children(&group)[0], DocRun::Shape(shape) if shape.fill.is_some()));
+    }
+
+    #[test]
+    fn fill_opacity_arrow_dimensions_and_textpath_properties_cascade_individually() {
+        let (group, _) = parse(
+            r##"<v:group style="width:100pt;height:100pt" coordsize="100,100">
+          <v:shapetype id="template" opacity=".5"><v:path arrowok="t" textpathok="t"/><v:stroke endarrow="block" endarrowwidth="wide"/><v:textpath string="inherited" on="t" style="font-family:serif;font-weight:bold;font-style:italic"/></v:shapetype>
+          <v:shape type="#template" style="width:80;height:80" opacity=".25"><v:stroke endarrowlength="long"/><v:textpath style="font-style:normal"/></v:shape>
+          <v:shape type="#template" style="width:80;height:80"><v:fill opacity="0"/></v:shape>
+        </v:group>"##,
+        );
+        let DocRun::Shape(shape) = &children(&group)[0] else {
+            panic!("shape")
+        };
+        assert_eq!(shape.fill_opacity, Some(0.25));
+        let arrow = shape.tail_end.as_ref().unwrap();
+        assert_eq!((arrow.w.as_str(), arrow.len.as_str()), ("lg", "lg"));
+        let text = shape.text_path.as_ref().unwrap();
+        assert_eq!(text.string, "inherited");
+        assert!(text.bold);
+        assert!(!text.italic);
+        let DocRun::Shape(shape) = &children(&group)[1] else {
+            panic!("shape")
+        };
+        assert_eq!(shape.fill_opacity, Some(0.0));
+        assert_eq!(shape.text_path.as_ref().unwrap().string, "inherited");
+    }
+
+    #[test]
     fn effective_picture_outlines_and_stroke_alpha_are_retained() {
         let (group, _) = parse(
             r##"<v:group style="width:100pt;height:100pt">
@@ -452,6 +533,43 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, TextBoxBlockWire::Unsupported { .. }));
             assert_eq!(incomplete, i != 0);
+        }
+    }
+
+    #[test]
+    fn property_sweep_discloses_active_unacquired_modes_and_honors_path_gates() {
+        for (attributes, property, incomplete) in [
+            ("insetpen=\"t\"", "", true),
+            ("insetpen=\"t\"", "<v:path insetpenok=\"f\"/>", false),
+            (
+                "",
+                "<v:fill type=\"gradientradial\"/><v:path gradientshapeok=\"t\"/>",
+                true,
+            ),
+            (
+                "",
+                "<v:textpath string=\"text\" style=\"text-decoration:underline\"/>",
+                true,
+            ),
+            (
+                "",
+                "<v:textpath string=\"text\" style=\"text-decoration:none\"/>",
+                false,
+            ),
+            ("class=\"unresolved-css\"", "", true),
+            ("", "<v:path shadowok=\"f\"/><v:shadow on=\"t\"/>", false),
+        ] {
+            let (group, _) = parse(&format!(
+                r#"<v:group style="width:100pt;height:100pt"><v:rect style="width:100;height:100" {attributes}>{property}</v:rect></v:group>"#
+            ));
+            assert_eq!(
+                group
+                    .text_box_content
+                    .iter()
+                    .any(|b| matches!(b, TextBoxBlockWire::Unsupported { .. })),
+                incomplete,
+                "{attributes} {property}"
+            );
         }
     }
 
@@ -669,6 +787,21 @@ mod tests {
             shape.subpaths[0][1],
             PathCmd::LineTo { x: 0.2, y: 0.1 }
         ));
+    }
+
+    #[test]
+    fn metadata_only_shadow_override_keeps_inherited_off_state() {
+        let (group, _) = parse(
+            r##"<v:group style="width:100pt;height:100pt"><v:shapetype id="off"><v:shadow on="f"/></v:shapetype><v:rect type="#off" style="width:100;height:100"><v:shadow id="metadata"/></v:rect></v:group>"##,
+        );
+        let DocRun::Shape(shape) = &children(&group)[0] else {
+            panic!("shape")
+        };
+        assert!(shape.vml_shadow.is_none());
+        assert!(!group
+            .text_box_content
+            .iter()
+            .any(|b| matches!(b, TextBoxBlockWire::Unsupported { .. })));
     }
 
     #[test]
