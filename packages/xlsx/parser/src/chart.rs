@@ -497,24 +497,38 @@ pub(crate) fn load_sheet_charts(
 pub(crate) fn load_sheet_charts_with_theme_images(
     archive: &mut crate::XlsxZip,
     sheet_path: &str,
-    reference_context: Option<ChartReferenceContext<'_, '_, '_>>,
+    mut reference_context: Option<ChartReferenceContext<'_, '_, '_>>,
     theme_colors: &[String],
     theme_fonts: (Option<&str>, Option<&str>),
     theme_format_scheme: Option<&ooxml_common::theme::ThemeFormatScheme>,
     theme_images: &ooxml_common::chart::ChartImageRelationships,
 ) -> Vec<ChartAnchor> {
-    let parts = crate::drawing::read_sheet_drawing_parts(archive, sheet_path);
-    let drawings = crate::drawing::parse_sheet_drawings(&parts);
-    load_sheet_charts_observing_frames(
-        archive,
-        &drawings,
-        reference_context,
-        theme_colors,
-        theme_fonts,
-        theme_format_scheme,
-        theme_images,
-        &mut false,
-    )
+    let mut charts = Vec::new();
+    crate::drawing::for_each_sheet_drawing(archive, sheet_path, |archive, drawing| {
+        charts.extend(load_sheet_charts_observing_frames(
+            archive,
+            std::slice::from_ref(drawing),
+            reference_context
+                .as_mut()
+                .map(|context| ChartReferenceContext {
+                    materialized_rows: context.materialized_rows,
+                    materialized_col_hidden: context.materialized_col_hidden,
+                    sheet_name: context.sheet_name,
+                    sheets: context.sheets,
+                    workbook_rels: context.workbook_rels,
+                    shared_strings: context.shared_strings,
+                    defined_names: context.defined_names,
+                    number_formats: context.number_formats,
+                    session: context.session,
+                }),
+            theme_colors,
+            theme_fonts,
+            theme_format_scheme,
+            theme_images,
+            &mut false,
+        ));
+    });
+    charts
 }
 
 /// Load a sheet's drawing chart anchors and report whether any drawing anchor

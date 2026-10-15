@@ -844,24 +844,6 @@ fn finalize_projected_sheet_reusing(
     let needs_drawings = reuse
         .as_ref()
         .is_none_or(|parts| parts.charts_without_frames.is_none());
-    let drawing_parts = if needs_drawings {
-        read_sheet_drawing_parts(archive, sheet_path)
-    } else {
-        Vec::new()
-    };
-    let drawings = parse_sheet_drawings(&drawing_parts);
-
-    // Attach any drawing-anchored images and charts for this sheet
-    if let Some(parts) = reuse.as_mut() {
-        ws.images = std::mem::take(&mut parts.images);
-    } else {
-        ws.images = load_sheet_images(archive, &drawings, theme_colors);
-        // Embedded OLE object previews (the `<oleObjects>` collection, §18.3.1.60)
-        // draw through the same image
-        // list; their preview parts are referenced from the worksheet XML + rels.
-        ws.images
-            .extend(load_sheet_ole_images(archive, sheet_path, &sheet_shell_xml));
-    }
     let mut reference_session = WorksheetReferenceSession::default();
     let materialized_rows = match current_lookup {
         CurrentSheetLookup::BuildFromMaterializedRows => Some(ws.rows.as_slice()),
@@ -875,37 +857,52 @@ fn finalize_projected_sheet_reusing(
     let reused_charts = reuse
         .as_mut()
         .and_then(|parts| parts.charts_without_frames.take());
-    let charts = if let Some(charts) = reused_charts {
-        charts
-    } else {
-        load_sheet_charts_observing_frames(
-            archive,
-            &drawings,
-            Some(ChartReferenceContext {
-                materialized_rows,
-                materialized_col_hidden: Some(&ws.col_hidden),
-                sheet_name: name,
-                sheets: &shared.sheets,
-                workbook_rels: &rels_doc,
-                shared_strings: shared.shared_strings.as_ref(),
-                defined_names: &defined_names,
-                number_formats: &shared.chart_number_formats,
-                session: &mut reference_session,
-            }),
-            theme_colors,
-            (
-                shared.theme_fonts.0.as_deref(),
-                shared.theme_fonts.1.as_deref(),
-            ),
-            shared
-                .theme_format_scheme_present
-                .then_some(shared.theme_format_scheme.as_ref()),
-            shared.theme_chart_images.as_ref(),
-            &mut saw_chart_frame,
-        )
-    };
+    let mut charts = reused_charts.unwrap_or_default();
+    if needs_drawings {
+        for_each_sheet_drawing(archive, sheet_path, |archive, drawing| {
+            let drawings = std::slice::from_ref(drawing);
+            if reuse.is_none() {
+                ws.images
+                    .extend(load_sheet_images(archive, drawings, theme_colors));
+            }
+            charts.extend(load_sheet_charts_observing_frames(
+                archive,
+                drawings,
+                Some(ChartReferenceContext {
+                    materialized_rows,
+                    materialized_col_hidden: Some(&ws.col_hidden),
+                    sheet_name: name,
+                    sheets: &shared.sheets,
+                    workbook_rels: &rels_doc,
+                    shared_strings: shared.shared_strings.as_ref(),
+                    defined_names: &defined_names,
+                    number_formats: &shared.chart_number_formats,
+                    session: &mut reference_session,
+                }),
+                theme_colors,
+                (
+                    shared.theme_fonts.0.as_deref(),
+                    shared.theme_fonts.1.as_deref(),
+                ),
+                shared
+                    .theme_format_scheme_present
+                    .then_some(shared.theme_format_scheme.as_ref()),
+                shared.theme_chart_images.as_ref(),
+                &mut saw_chart_frame,
+            ));
+            if reuse.is_none() {
+                ws.shape_groups.extend(load_sheet_shape_groups(
+                    archive,
+                    drawings,
+                    theme_colors,
+                    shared.theme_format_scheme.as_ref(),
+                ));
+            }
+        });
+    }
     ws.charts = charts;
     if let Some(parts) = reuse {
+        ws.images = parts.images;
         ws.shape_groups = parts.shape_groups;
         ws.hyperlinks = parts.hyperlinks;
         ws.comments = parts.comments;
@@ -916,12 +913,9 @@ fn finalize_projected_sheet_reusing(
         ws.pivot_tables = parts.pivot_tables;
         ws.pivot_diagnostics = parts.pivot_diagnostics;
     } else {
-        ws.shape_groups = load_sheet_shape_groups(
-            archive,
-            &drawings,
-            theme_colors,
-            shared.theme_format_scheme.as_ref(),
-        );
+        // OLE previews (§18.3.1.60) follow drawing images in the wire order.
+        ws.images
+            .extend(load_sheet_ole_images(archive, sheet_path, &sheet_shell_xml));
         ws.hyperlinks = load_hyperlinks(archive, sheet_path, hyperlink_rids);
         ws.comments = load_sheet_comments(archive, sheet_path, &shared.rels_xml);
         ws.comment_refs = ws.comments.iter().map(|c| c.cell_ref.clone()).collect();

@@ -2033,15 +2033,7 @@ pub(crate) fn load_sheet_images(
     all_anchors
 }
 
-/// One `/drawing` relationship target of a sheet, inflated once per sheet
-/// finalization. `xml` is `None` when the part could not be read.
-pub(crate) struct SheetDrawingPart {
-    path: String,
-    xml: Option<String>,
-}
-
-/// A [`SheetDrawingPart`] parsed once and shared by the picture, chart and
-/// shape loaders, which otherwise each read and parsed the same part.
+/// One relationship's drawing, parsed once and borrowed by all three loaders.
 pub(crate) struct ParsedSheetDrawing<'a> {
     pub(crate) path: &'a str,
     /// Whether the part was read. A loader skips an unread part.
@@ -2050,12 +2042,52 @@ pub(crate) struct ParsedSheetDrawing<'a> {
     pub(crate) doc: Option<roxmltree::Document<'a>>,
 }
 
-/// Read every `/drawing` relationship target of `sheet_path` (e.g.
-/// `"worksheets/sheet1.xml"`) in relationship order.
-pub(crate) fn read_sheet_drawing_parts(
+impl<'a> ParsedSheetDrawing<'a> {
+    fn new(path: &'a str, xml: Option<&'a str>) -> Self {
+        let doc = xml.and_then(|xml| parse_guarded(xml).ok());
+        #[cfg(test)]
+        if doc.is_some() {
+            drawing_lifetime_tests::record_parse();
+        }
+        Self {
+            path,
+            read: xml.is_some(),
+            doc,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ParsedSheetDrawing<'_> {
+    fn drop(&mut self) {
+        if self.doc.is_some() {
+            drawing_lifetime_tests::record_drop();
+        }
+    }
+}
+
+/// Visit `/drawing` relationships in order, sharing one read and DOM parse
+/// between the picture, chart and shape loaders for each relationship.
+///
+/// Library resource policy: release the XML and DOM before reading the next
+/// target, including repeated targets. ZIP inflation accounting counts distinct
+/// entries, so it cannot bound copies retained per relationship. Only owned
+/// loader output may outlive the callback; never cache drawing XML or DOMs.
+pub(crate) fn for_each_sheet_drawing(
     archive: &mut crate::XlsxZip,
     sheet_path: &str,
-) -> Vec<SheetDrawingPart> {
+    mut visit: impl FnMut(&mut crate::XlsxZip, &ParsedSheetDrawing<'_>),
+) {
+    for path in sheet_drawing_paths(archive, sheet_path) {
+        let xml = read_zip_string(archive, &path).ok();
+        let drawing = ParsedSheetDrawing::new(&path, xml.as_deref());
+        visit(archive, &drawing);
+    }
+}
+
+/// Collect only paths, preserving relationship order and duplicate targets
+/// (ECMA-376 Part 2, CT_Relationships / CT_Relationship@Target).
+fn sheet_drawing_paths(archive: &mut crate::XlsxZip, sheet_path: &str) -> Vec<String> {
     // sheet rels path:  xl/worksheets/_rels/sheet1.xml.rels
     let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
         return Vec::new();
@@ -2084,22 +2116,94 @@ pub(crate) fn read_sheet_drawing_parts(
         .map(|target| {
             // sheet_dir is "worksheets", target typically "../drawings/drawing1.xml"
             // → "xl/drawings/drawing1.xml"
-            let path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
-            let xml = read_zip_string(archive, &path).ok();
-            SheetDrawingPart { path, xml }
+            resolve_zip_path(&format!("xl/{sheet_path}"), &target)
         })
         .collect()
 }
 
-pub(crate) fn parse_sheet_drawings(parts: &[SheetDrawingPart]) -> Vec<ParsedSheetDrawing<'_>> {
-    parts
-        .iter()
-        .map(|part| ParsedSheetDrawing {
-            path: &part.path,
-            read: part.xml.is_some(),
-            doc: part.xml.as_deref().and_then(|xml| parse_guarded(xml).ok()),
-        })
-        .collect()
+#[cfg(test)]
+mod drawing_lifetime_tests {
+    use std::{cell::Cell, io::Write};
+
+    // Track the actual parsed-drawing owners, rather than callback entry/exit:
+    // collecting DOMs before invoking a per-drawing callback must fail too.
+    thread_local! {
+        static COUNTS: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
+    }
+
+    pub(super) fn record_parse() {
+        COUNTS.with(|counts| {
+            let (live, peak, parsed) = counts.get();
+            counts.set((live + 1, peak.max(live + 1), parsed + 1));
+        });
+    }
+
+    pub(super) fn record_drop() {
+        COUNTS.with(|counts| {
+            let (live, peak, parsed) = counts.get();
+            counts.set((live - 1, peak, parsed));
+        });
+    }
+
+    fn workbook(relationships: usize) -> Vec<u8> {
+        let rels = (0..relationships)
+            .map(|i| format!(r#"<Relationship Id="r{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>"#))
+            .collect::<String>();
+        let rels = format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>"#
+        );
+        let drawing = format!(
+            r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"><!--{}--></xdr:wsDr>"#,
+            "x".repeat(16 * 1024)
+        );
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, body) in [
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rSheet"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rSheet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#,
+            ),
+            ("xl/worksheets/_rels/sheet1.xml.rels", &rels),
+            ("xl/drawings/drawing1.xml", &drawing),
+        ] {
+            writer
+                .start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body.as_bytes()).unwrap();
+        }
+        crate::write_test_content_types(&mut writer);
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn repeated_drawing_target_keeps_only_one_dom_live_per_finalization() {
+        let expected = crate::parse_sheet_native(&workbook(1), 0, "Sheet1").unwrap();
+        let data = workbook(96);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&data)).unwrap();
+        let distinct_bytes: u64 = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().size())
+            .sum();
+        // Repeat relationships must remain legal within a distinct-entry ZIP
+        // budget. Bound the lifetime, without changing inflation accounting.
+        let mut archive =
+            crate::open_workbook_package(data, None, Some(distinct_bytes), None).unwrap();
+        COUNTS.with(|counts| counts.set((0, 0, 0)));
+        let actual = crate::parse_sheet_native_in(&mut archive, 0, "Sheet1").unwrap();
+        assert_eq!(actual, expected, "empty drawings preserve exact JSON");
+        COUNTS.with(|counts| {
+            let (live, peak, parsed) = counts.get();
+            assert_eq!(live, 0, "no drawing DOM survives finalization");
+            assert_eq!(parsed, 96, "parse once per relationship, without caching");
+            assert_eq!(peak, 1, "release each drawing before parsing the next");
+        });
+    }
 }
 
 /// The two-cell `<from>`/`<to>` marker rect of an OLE-object anchor, in the same
