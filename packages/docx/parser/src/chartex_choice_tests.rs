@@ -191,6 +191,16 @@ fn cases() -> Vec<Case> {
         package(&ac(&live, &pic), "pie"),
         Expected::Picture,
     );
+    // OPC part names are unconstrained by the chart relationship family.
+    add(
+        "03-nonstandard-part",
+        package_with(
+            &ac(&live, &pic),
+            &chart_rel(rel_type, "plots/plot.xml", "Internal"),
+            Some(("word/plots/plot.xml", supported.as_str())),
+        ),
+        Expected::Chart,
+    );
     for (name, rel, part) in [
         (
             "03-missing-rel",
@@ -217,11 +227,6 @@ fn cases() -> Vec<Case> {
             None,
         ),
         ("03-missing-both", String::new(), None),
-        (
-            "03-nonstandard-part",
-            chart_rel(rel_type, "plots/plot.xml", "Internal"),
-            Some(("word/plots/plot.xml", supported.as_str())),
-        ),
         (
             "03-malformed",
             chart_rel(rel_type, "charts/chart.xml", "Internal"),

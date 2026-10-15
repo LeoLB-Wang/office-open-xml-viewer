@@ -41,6 +41,13 @@ pub const PARSE_DIAGNOSTIC_SEVERITY_NATIVE_DOC_NESTED_CELL_FRAME_FLOW: Diagnosti
 /// `word/document.xml` fact; layout accepts each code only from its own part.
 pub const PARSE_DIAGNOSTIC_PART_NATIVE_DOC_NESTED_CELL_FRAME_FLOW: &str = "WordDocument";
 
+pub const PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT: &str = "REF_BOOKMARK_RESOURCE_LIMIT";
+pub const PARSE_DIAGNOSTIC_SEVERITY_REF_BOOKMARK_RESOURCE_LIMIT: DiagnosticSeverity =
+    DiagnosticSeverity::Warning;
+pub const PARSE_DIAGNOSTIC_CODE_UNSUPPORTED_VML_CONTENT: &str = "UNSUPPORTED_VML_CONTENT";
+pub const PARSE_DIAGNOSTIC_SEVERITY_UNSUPPORTED_VML_CONTENT: DiagnosticSeverity =
+    DiagnosticSeverity::Warning;
+
 /// Private parser-to-layout diagnostic severity. This wire is intentionally
 /// smaller than the public document model: diagnostics carry stable facts and
 /// source coordinates, never authored text or raw invalid lexical values.

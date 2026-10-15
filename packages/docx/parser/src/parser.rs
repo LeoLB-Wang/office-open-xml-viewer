@@ -48,6 +48,9 @@ mod relationship_target_tests;
 #[path = "parser/word_ilvl_integration_tests.rs"]
 mod word_ilvl_integration_tests;
 
+#[path = "parser/vml_group.rs"]
+mod vml_group;
+
 const DEFAULT_FONT_SIZE: f64 = 10.0; // pt fallback
 
 /// DOCX-local adapter over one owned, validated package session. Every public
@@ -1136,6 +1139,7 @@ struct DocumentBodyPreflight {
     final_body_block_ordinal: Option<usize>,
     section: SectionProps,
     ref_leading_breaks: HashMap<String, String>,
+    ref_budget_exceeded: bool,
 }
 
 /// First pass over `word/document.xml`. Only cross-block facts survive this
@@ -1237,6 +1241,7 @@ fn preflight_document_body(
     // requested bookmark names, not document runs or whole-block XML; this pass
     // projects one block at a time and retains at most 1 MiB of matching text.
     let mut ref_leading_breaks = HashMap::new();
+    let mut ref_budget_exceeded = ref_instructions.budget_exceeded;
     if !ref_instructions.targets.is_empty() {
         drop(projector);
         let mut projector =
@@ -1257,6 +1262,7 @@ fn preflight_document_body(
         if projector.plan()? != plan {
             return Err("document body changed between bounded passes".to_string());
         }
+        ref_budget_exceeded |= collector.budget_exceeded;
         ref_leading_breaks = collector.finish();
     }
 
@@ -1267,6 +1273,7 @@ fn preflight_document_body(
         final_body_block_ordinal,
         section,
         ref_leading_breaks,
+        ref_budget_exceeded,
     })
 }
 
@@ -1362,6 +1369,7 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
     let mut section_hf: HashMap<roxmltree::NodeId, ResolvedSectionHf> = HashMap::new();
     let mut body_headers = HeadersFooters::default();
     let mut body_footers = HeadersFooters::default();
+    let mut story_diagnostics = Vec::new();
     for (node_id, refs, title_page) in &section_snapshots {
         let headers = load_header_footer_set(
             zip,
@@ -1371,6 +1379,7 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
             style_map,
             num_map,
             theme,
+            &mut story_diagnostics,
         );
         let footers = load_header_footer_set(
             zip,
@@ -1380,6 +1389,7 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
             style_map,
             num_map,
             theme,
+            &mut story_diagnostics,
         );
         if Some(*node_id) == body_level_sect_id {
             body_headers = headers;
@@ -1406,6 +1416,10 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
         theme,
         &section_hf,
     );
+    // Match the cursor's acquisition order: section stories precede body
+    // facts; notes are acquired in finish_document after both.
+    story_diagnostics.extend(diagnostics);
+    let diagnostics = story_diagnostics;
     let final_section_ordinal = body
         .iter()
         .filter(|element| matches!(element, BodyElement::SectionBreak { .. }))
@@ -1509,6 +1523,7 @@ impl DocxBodyCursor {
         let mut resolved_sections = Vec::with_capacity(preflight.sections.len());
         let mut body_headers = HeadersFooters::default();
         let mut body_footers = HeadersFooters::default();
+        let mut story_diagnostics = Vec::new();
         for (index, fact) in preflight.sections.iter().enumerate() {
             let headers = load_header_footer_set(
                 zip,
@@ -1518,6 +1533,7 @@ impl DocxBodyCursor {
                 &environment.style_map,
                 &mut environment.num_map,
                 &environment.theme,
+                &mut story_diagnostics,
             );
             let footers = load_header_footer_set(
                 zip,
@@ -1527,6 +1543,7 @@ impl DocxBodyCursor {
                 &environment.style_map,
                 &mut environment.num_map,
                 &environment.theme,
+                &mut story_diagnostics,
             );
             if Some(index) == final_section_fact {
                 body_headers = headers;
@@ -1561,7 +1578,17 @@ impl DocxBodyCursor {
                 ref_leading_breaks: preflight.ref_leading_breaks,
                 ..BodyParseCursor::default()
             },
-            diagnostics: Vec::new(),
+            diagnostics: {
+                if preflight.ref_budget_exceeded {
+                    story_diagnostics.push(ParseDiagnostic {
+                        code: PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT.to_string(),
+                        severity: PARSE_DIAGNOSTIC_SEVERITY_REF_BOOKMARK_RESOURCE_LIMIT,
+                        part: DOCUMENT_PART.to_string(),
+                        path: Vec::new(),
+                    });
+                }
+                story_diagnostics
+            },
             revisions: Vec::new(),
             section_cursor: 0,
             emitted_body_len: 0,
@@ -1776,7 +1803,7 @@ fn finish_document(
     headers: HeadersFooters,
     footers: HeadersFooters,
     revisions: Vec<crate::types::DocxRevision>,
-    diagnostics: Vec<ParseDiagnostic>,
+    mut diagnostics: Vec<ParseDiagnostic>,
 ) -> Result<Document, String> {
     let major_font = environment.theme.theme_font("major", "latin");
     let minor_font = environment.theme.theme_font("minor", "latin");
@@ -1855,6 +1882,7 @@ fn finish_document(
                 &mut environment.num_map,
                 &environment.theme,
                 &environment.special_note_references.footnotes,
+                &mut diagnostics,
             )
         })
         .unwrap_or_default();
@@ -1871,6 +1899,7 @@ fn finish_document(
                 &mut environment.num_map,
                 &environment.theme,
                 &environment.special_note_references.endnotes,
+                &mut diagnostics,
             )
         })
         .unwrap_or_default();
@@ -2188,6 +2217,7 @@ fn parse_comments_with_extended(
 /// Note content is parsed with the document's styles + numbering so the
 /// FootnoteText/EndnoteText style and the `<w:footnoteRef/>` auto-number marker
 /// resolve correctly; the note part's own relationships supply media.
+#[allow(clippy::too_many_arguments)]
 fn parse_notes(
     zip: &mut Zip,
     path: &str,
@@ -2196,6 +2226,7 @@ fn parse_notes(
     num_map: &mut NumberingMap,
     theme: &ThemeColors,
     special_references: &HashSet<String>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> (Vec<crate::types::DocxNote>, SelectedNoteSeparators) {
     let Ok(xml) = read_zip_string(zip, path) else {
         return Default::default();
@@ -2273,6 +2304,7 @@ fn parse_notes(
             continue;
         }
         // Footnote/endnote bodies carry no nested sections; pass an empty map.
+        let mut local_diagnostics = Vec::new();
         let content = parse_body_elements_in_story(
             n,
             style_map,
@@ -2283,8 +2315,9 @@ fn parse_notes(
             theme,
             &HashMap::new(),
             TablePositioningContext::IgnoredStory,
-            None,
+            Some(&mut local_diagnostics),
         );
+        commit_story_ref_budget_diagnostics(local_diagnostics, diagnostics);
         out.push(crate::types::DocxNote { id, content });
     }
     (out, selected_stories)
@@ -3914,6 +3947,7 @@ fn body_children_with_cover_breaks<'a, 'input>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn parse_body_elements(
     body_node: roxmltree::Node,
     style_map: &StyleMap,
@@ -3936,6 +3970,23 @@ fn parse_body_elements(
         TablePositioningContext::Normal,
         None,
     )
+}
+
+// REF acquisition has a story-local retained-text budget. A crossing in a
+// header/footer/note is still a document-level resource diagnostic. Its local
+// block indices cannot name main-body blocks, so publish an empty document
+// path instead of attributing the warning to an unrelated body paragraph.
+fn commit_story_ref_budget_diagnostics(
+    local: Vec<ParseDiagnostic>,
+    document: &mut Vec<ParseDiagnostic>,
+) {
+    document.extend(local.into_iter().filter_map(|mut diagnostic| {
+        if diagnostic.code != PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT {
+            return None;
+        }
+        diagnostic.path.clear();
+        Some(diagnostic)
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4331,12 +4382,24 @@ fn parse_body_elements_in_story(
     for (child, _) in &body_children {
         ref_instructions.observe(*child);
     }
+    let mut ref_budget_exceeded = ref_instructions.budget_exceeded;
     if !ref_instructions.targets.is_empty() {
         let mut collector = LeadingBreakCollector::new(&ref_instructions.targets);
         for (child, _) in &body_children {
             collector.observe(*child);
         }
+        ref_budget_exceeded |= collector.budget_exceeded;
         cursor.ref_leading_breaks = collector.finish();
+    }
+    if ref_budget_exceeded {
+        if let Some(diagnostics) = diagnostics.as_deref_mut() {
+            push_parse_diagnostic(
+                diagnostics,
+                PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT,
+                PARSE_DIAGNOSTIC_SEVERITY_REF_BOOKMARK_RESOURCE_LIMIT,
+                &[],
+            );
+        }
     }
 
     let logical_table_sequences =
@@ -5268,19 +5331,17 @@ fn load_media_map(
 /// references — so the drawing parse resolves its chart with a single map
 /// lookup, exactly like `media_map` does for blips. Relationships that don't
 /// resolve to a readable, parseable chart part are dropped (the drawing then
-/// renders nothing, matching the "drop unresolvable blip" behaviour).
+/// retains the authored extent and emits the existing unavailable-resource
+/// diagnostic through the drawing dispatcher).
 fn load_chart_map(
     zip: &mut Zip,
     relationships: &BTreeMap<String, RelTarget>,
     source_part: &str,
     theme: &ThemeColors,
 ) -> ChartMap {
-    // Resolve the rId's Type via the raw rels: `rel_map` only carries Targets,
-    // but a chart Target is distinguishable by the part it lands on. Match on the
-    // resolved zip path living under `word/charts/` and ending in `.xml` — the
-    // canonical location for a DrawingML chart part. `parse_chart_part` returns
-    // `None` for a colors/style sidecar, so a stray non-chart `.xml` there is
-    // harmless.
+    // ECMA-376 Part 1 §14.2.1 and [MS-ODRAWXML] §2.1.5 identify
+    // chart parts by relationship type. OPC targets may name any valid part;
+    // neither a charts directory nor an .xml suffix is required.
     let limit_reporter = zip
         .operation()
         .and_then(|operation| operation.limit_reporter())
@@ -5291,6 +5352,16 @@ fn load_chart_map(
         ..ChartMap::default()
     };
     for (rid, relationship) in relationships {
+        if !matches!(
+            relationship.relationship_type.as_deref(),
+            Some(
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+                    | "http://purl.oclc.org/ooxml/officeDocument/relationships/chart"
+            )
+        ) && relationship.relationship_type.as_deref() != Some(CHARTEX_REL)
+        {
+            continue;
+        }
         // Use the stored ZIP item name (§6.2.2.3 equivalence); an absent part
         // is dropped exactly like an unreadable one.
         let Some(path) = relationship
@@ -5299,10 +5370,6 @@ fn load_chart_map(
         else {
             continue;
         };
-        let key = ooxml_common::rels::part_name_equivalence_key(&path);
-        if !(key.contains("charts/") && key.ends_with(".xml")) {
-            continue;
-        }
         let Ok(xml) = read_zip_string(zip, &path) else {
             continue;
         };
@@ -5455,6 +5522,7 @@ fn load_chart_user_shapes_xml(zip: &mut Zip, chart_path: &str, chart_xml: &str) 
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn load_header_footer_set(
     zip: &mut Zip,
     relationships: &BTreeMap<String, RelTarget>,
@@ -5463,6 +5531,7 @@ fn load_header_footer_set(
     style_map: &StyleMap,
     num_map: &mut NumberingMap,
     theme: &ThemeColors,
+    diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> HeadersFooters {
     let mut out = HeadersFooters::default();
     for (kind, rid) in type_to_rid {
@@ -5502,7 +5571,7 @@ fn load_header_footer_set(
         // Header/footer bodies carry no nested sections, so pass an empty
         // section-resolution map (any stray sectPr would only produce an empty
         // resolved set, never recursing into header loading).
-        let body = parse_body_elements(
+        let (body, local_diagnostics) = parse_body_elements_with_diagnostics(
             root,
             style_map,
             num_map,
@@ -5512,6 +5581,7 @@ fn load_header_footer_set(
             theme,
             &HashMap::new(),
         );
+        commit_story_ref_budget_diagnostics(local_diagnostics, diagnostics);
         let hf = HeaderFooter { body };
         match kind.as_str() {
             "first" => out.first = Some(hf),
@@ -8376,7 +8446,20 @@ fn parse_run_inner(
                             && inner.tag_name().name() == "pict"
                         {
                             // Same VML dispatch and host metrics as the pict arm.
-                            if let Some(img) = parse_vml_pict_image(inner, media_map) {
+                            if let Some(mut group_runs) = vml_group::parse_groups(
+                                style_map,
+                                num_map,
+                                inner,
+                                theme,
+                                media_map,
+                                chart_map,
+                                rel_map,
+                                depth,
+                                diagnostics,
+                            ) {
+                                attach_anchor_host_metrics(&mut group_runs);
+                                runs.extend(group_runs);
+                            } else if let Some(img) = parse_vml_pict_image(inner, media_map) {
                                 let mut pict_runs = vec![DocRun::Image(Box::new(img))];
                                 attach_anchor_host_metrics(&mut pict_runs);
                                 runs.extend(pict_runs);
@@ -8407,7 +8490,20 @@ fn parse_run_inner(
                 //      a `ShapeRun` (the existing text-box path).
                 // The imagedata form is tried first so a picture pict is not
                 // mistaken for an (empty) text-box panel.
-                if let Some(img) = parse_vml_pict_image(child, media_map) {
+                if let Some(mut group_runs) = vml_group::parse_groups(
+                    style_map,
+                    num_map,
+                    child,
+                    theme,
+                    media_map,
+                    chart_map,
+                    rel_map,
+                    depth,
+                    diagnostics,
+                ) {
+                    attach_anchor_host_metrics(&mut group_runs);
+                    runs.extend(group_runs);
+                } else if let Some(img) = parse_vml_pict_image(child, media_map) {
                     let mut pict_runs = vec![DocRun::Image(Box::new(img))];
                     attach_anchor_host_metrics(&mut pict_runs);
                     runs.extend(pict_runs);
@@ -12032,10 +12128,6 @@ fn parse_vml_pict(
                 .any(|c| c.is_element() && c.tag_name().name() == "imagedata")
     })?;
 
-    // CSS-like `style`: "position:relative;width:300pt;height:60pt;…".
-    // A referenced shapetype carries the legacy conceptual shape id (`o:spt`);
-    // map the interoperable subset onto the shared DrawingML preset engine.
-    let style = shape.attribute("style").unwrap_or("");
     let shape_type = shape
         .attribute("type")
         .map(|value| value.trim_start_matches('#'))
@@ -12046,6 +12138,27 @@ fn parse_vml_pict(
                     && node.attribute("id") == Some(id)
             })
         });
+    parse_vml_shape(
+        style_map, num_map, shape, shape_type, theme, media_map, chart_map, rel_map, depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_vml_shape(
+    style_map: &StyleMap,
+    num_map: &mut NumberingMap,
+    shape: roxmltree::Node,
+    shape_type: Option<roxmltree::Node>,
+    theme: &ThemeColors,
+    media_map: &HashMap<String, String>,
+    chart_map: &ChartMap,
+    rel_map: &HashMap<String, String>,
+    depth: DepthGuard,
+) -> Option<ShapeRun> {
+    // CSS-like `style`: "position:relative;width:300pt;height:60pt;…".
+    // A referenced shapetype carries the legacy conceptual shape id (`o:spt`);
+    // map the interoperable subset onto the shared DrawingML preset engine.
+    let style = shape.attribute("style").unwrap_or("");
     let spt = shape
         .attributes()
         .find(|attr| attr.name() == "spt")
@@ -12202,10 +12315,8 @@ fn parse_vml_pict(
                 .unwrap_or(0.0)
         });
     let style_flip = vml_css_str(style, "flip").unwrap_or_default();
-    let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0)
-        ^ style_flip.split_whitespace().any(|axis| axis == "x");
-    let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1)
-        ^ style_flip.split_whitespace().any(|axis| axis == "y");
+    let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0) ^ style_flip.contains('x');
+    let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1) ^ style_flip.contains('y');
     let adj_values = shape
         .attribute("adj")
         .or_else(|| shape_type.and_then(|node| node.attribute("adj")))
@@ -13146,8 +13257,7 @@ fn resolved_vml_textpath_bool(
 ///     width/height are expressed in the GROUP's coordinate system
 ///     (`coordsize`), not points, so treating them as pt would badly mis-size
 ///     the image. Resolving the group transform (child offset × group scale) is
-///     a separate VML-group feature; until then a grouped imagedata is skipped
-///     rather than mis-rendered, matching the prior behaviour, or
+///     handled by `vml_group` before this ungrouped-picture reader, or
 ///   - the rId does not resolve, or the shape has no positive pt dimensions.
 fn vml_image_run(
     shape: roxmltree::Node,
@@ -13198,9 +13308,9 @@ fn vml_image_run(
         src_rect: None,
         width_pt,
         height_pt,
-        rotation: 0.0,
-        flip_h: false,
-        flip_v: false,
+        rotation: vml_css_length_pt(style, "rotation").unwrap_or(0.0),
+        flip_h: vml_css_str(style, "flip").is_some_and(|value| value.contains('x')),
+        flip_v: vml_css_str(style, "flip").is_some_and(|value| value.contains('y')),
         anchor,
         anchor_x_pt,
         anchor_y_pt,
@@ -21080,6 +21190,102 @@ mod svg_blip_tests {
     /// while a text-only range does not add a break. The cached text must still
     /// match the range; an unrelated/stale result cannot safely borrow its flow.
     #[test]
+    fn ref_bookmark_limits_publish_a_diagnostic_in_both_parser_entry_points() {
+        let instruction = " ".repeat(256) + "REF Anchor";
+        let body = format!(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText>{instruction}</w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Cached result</w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#
+        );
+        let data = build_docx_with_media(&body);
+        for streamed in [false, true] {
+            let doc = if streamed {
+                parse_from_bytes_streamed_with_limits(&data, None, None, "ref-budget-test")
+            } else {
+                parse_from_bytes(&data)
+            }
+            .unwrap();
+            assert!(doc
+                .diagnostics
+                .iter()
+                .any(|d| d.code == PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT));
+            assert!(doc.body.iter().any(|b| matches!(b, BodyElement::Paragraph(p)
+                if p.runs.iter().any(|r| matches!(r, DocRun::Text(t) if t.text == "Cached result")))));
+        }
+    }
+
+    #[test]
+    fn ref_bookmark_limits_in_header_and_note_stories_reach_both_document_entry_points() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let instruction = " ".repeat(256) + "REF Anchor";
+        let field = format!(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText>{instruction}</w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Cached</w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#
+        );
+        let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let document = format!(
+            r#"<w:document xmlns:w="{w}" xmlns:r="{r}"><w:body>
+          <w:p><w:r><w:footnoteReference w:id="1"/></w:r>
+          <w:r><w:rPr><w:effect w:val="shimmer"/></w:rPr><w:t>Body</w:t></w:r></w:p>
+          <w:sectPr><w:headerReference w:type="default" r:id="hdr"/></w:sectPr>
+        </w:body></w:document>"#
+        );
+        let rels = format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="hdr" Type="{r}/header" Target="header.xml"/>
+          <Relationship Id="notes" Type="{r}/footnotes" Target="footnotes.xml"/>
+        </Relationships>"#
+        );
+        let header = format!(r#"<w:hdr xmlns:w="{w}">{field}</w:hdr>"#);
+        let notes = format!(
+            r#"<w:footnotes xmlns:w="{w}"><w:footnote w:id="1">{field}</w:footnote></w:footnotes>"#
+        );
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            write_test_content_types(&mut writer);
+            for (path, xml) in [
+                ("word/document.xml", document),
+                ("word/_rels/document.xml.rels", rels),
+                ("word/header.xml", header),
+                ("word/footnotes.xml", notes),
+            ] {
+                writer
+                    .start_file(path, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(xml.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let mut previous_diagnostics = None;
+        for streamed in [false, true] {
+            let doc = if streamed {
+                parse_from_bytes_streamed_with_limits(&bytes, None, None, "story-ref-budget-test")
+            } else {
+                parse_from_bytes(&bytes)
+            }
+            .unwrap();
+            let diagnostics: Vec<_> = doc
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT)
+                .collect();
+            assert_eq!(diagnostics.len(), 2, "header and note, streamed={streamed}");
+            assert!(diagnostics.iter().all(|d| d.path.is_empty()));
+            let wire = serde_json::to_value(&doc.diagnostics).unwrap();
+            if let Some(previous) = previous_diagnostics {
+                assert_eq!(previous, wire);
+            }
+            previous_diagnostics = Some(wire);
+        }
+    }
+
+    #[test]
     fn ref_cached_result_preserves_a_matching_bookmark_leading_page_break() {
         fn body(target: &str, cached: &str) -> String {
             format!(
@@ -22995,7 +23201,7 @@ mod anchor_image_relative_from_tests {
         use zip::write::SimpleFileOptions;
 
         let document_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="4000000" cy="3000000"/><wp:docPr id="1" name="Chart 1"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#;
-        let document_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="charts/chartEx1.xml"/><Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>"#;
+        let document_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="figures/chartEx.data"/><Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>"#;
         let chart_xml = r#"<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chartData><cx:data id="0"><cx:strDim type="cat"><cx:lvl ptCount="1"><cx:pt idx="0">A</cx:pt></cx:lvl></cx:strDim><cx:numDim type="val"><cx:lvl ptCount="1"><cx:pt idx="0">1</cx:pt></cx:lvl></cx:numDim></cx:data></cx:chartData><cx:chart><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="boxWhisker"/></cx:plotAreaRegion></cx:plotArea></cx:chart></cx:chartSpace>"#;
         let chart_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdExternalStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="https://example.invalid/style.xml" TargetMode="External"/><Relationship Id="rIdStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/><Relationship Id="rIdColors" Type="http://schemas.microsoft.com/office/2011/relationships/chartColorStyle" Target="colors1.xml"/></Relationships>"#;
         let style_xml = r#"<cs:chartStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><cs:dataPoint><cs:fillRef idx="1"><cs:styleClr val="auto"/></cs:fillRef><cs:spPr><a:pattFill prst="diagCross"><a:fgClr><a:schemeClr val="phClr"/></a:fgClr><a:bgClr><a:srgbClr val="FFFFFF"/></a:bgClr></a:pattFill></cs:spPr></cs:dataPoint><cs:dataPointMarker><cs:fillRef idx="1"><cs:styleClr val="auto"/></cs:fillRef></cs:dataPointMarker><cs:dataLabelCallout><cs:defRPr><a:noFill/></cs:defRPr><cs:bodyPr/></cs:dataLabelCallout><cs:trendlineLabel><cs:defRPr><a:solidFill><a:srgbClr val="112233"/></a:solidFill></cs:defRPr></cs:trendlineLabel></cs:chartStyle>"#;
@@ -23010,14 +23216,14 @@ mod anchor_image_relative_from_tests {
             for (path, xml) in [
                 ("word/document.xml", document_xml),
                 ("word/_rels/document.xml.rels", document_rels),
-                ("word/charts/chartEx1.xml", chart_xml),
-                ("word/charts/_rels/chartEx1.xml.rels", chart_rels),
-                ("word/charts/style1.xml", style_xml),
+                ("word/figures/chartEx.data", chart_xml),
+                ("word/figures/_rels/chartEx.data.rels", chart_rels),
+                ("word/figures/style1.xml", style_xml),
                 (
-                    "word/charts/_rels/style1.xml.rels",
+                    "word/figures/_rels/style1.xml.rels",
                     r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdMarker" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/style-marker.png"/></Relationships>"#,
                 ),
-                ("word/charts/colors1.xml", colors_xml),
+                ("word/figures/colors1.xml", colors_xml),
                 ("word/theme/theme1.xml", theme_xml),
                 (
                     "word/theme/_rels/theme1.xml.rels",
