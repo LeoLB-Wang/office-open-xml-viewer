@@ -647,11 +647,9 @@ export {
 // / Khmer, issue #797): the ICU-backed word-break offset enumerator plus the
 // shared greedy whole-word fit kernel, consumed by all three renderers' wrap
 // loops. Graceful fallback to cluster/character wrap when Intl.Segmenter is
-// unavailable. `setSeaWordSegmenterForTest`/`resetSeaSegmenterForTest` are test
-// seams only.
+// unavailable.
 export {
   type SeaScript,
-  type SeaWordSegmenter,
   type SeaMixedKinsoku,
   isSeaScriptCodePoint,
   isSeaGraphemeExtend,
@@ -663,8 +661,6 @@ export {
   seaMixedBreakOffsets,
   fitSeaWordPrefix,
   graphemeClusterOffsets,
-  setSeaWordSegmenterForTest,
-  resetSeaSegmenterForTest,
 } from './text/sea-break';
 // UAX #50 Vertical_Orientation (vo): how a code point orients in vertical text
 // (tbRl / eaVert). Consumed by the vertical-text draw paths across packages.

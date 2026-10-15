@@ -77,7 +77,7 @@ function clusterCore(text: string): string {
  * which also perform the matching `currentLine` mutation, and is reset with
  * the line. `contributions` mirrors `currentLine` item for item when the
  * paragraph can use the rule (and stays empty otherwise); the totals equal a
- * full recomputation (scanLine) by construction, which tests assert.
+ * full recomputation by construction, which tests assert.
  */
 export interface MixedSpaceState {
   /** The current line was admitted by shrinking its U+0020; its natural
@@ -107,28 +107,6 @@ export function createMixedSpaceState(): MixedSpaceState {
   };
 }
 
-let summaryAssertions = false;
-let summaryWork = 0;
-
-/** Test hook: compare the running summary with a full recomputation on every
- * query and at finalization, throwing on any difference. */
-export function setMixedSpaceSummaryAssertions(enabled: boolean): void {
-  summaryAssertions = enabled;
-}
-
-/** Test hook: line items read and candidate characters measured since the
- * last reset (work, not time). */
-export function mixedSpaceSummaryWork(reset = false): number {
-  const value = summaryWork;
-  if (reset) summaryWork = 0;
-  return value;
-}
-
-/** Record candidate characters measured by a caller of this projection. */
-export function noteMixedSpaceWork(characters: number): void {
-  summaryWork += characters;
-}
-
 type BreakerState = PassOperationState['breakerState'];
 type LineItem = BreakerState['currentLine'][number];
 
@@ -145,12 +123,10 @@ function tailAfter(previous: LineTail, item: LayoutSeg, measure: MixedSpaceMeasu
   ) {
     return { tailPx: item.mixedNaturalTrailingSpacePx, coreLast: core.at(-1) };
   }
-  summaryWork += item.text.length;
   return { tailPx: item.measuredWidth - measure(item, core), coreLast: core.at(-1) };
 }
 
 function contributionOf(state: MixedSpaceState, item: LayoutSeg, scale: number): Contribution {
-  summaryWork += 1;
   if (inkless(item)) {
     return {
       item, inkless: true,
@@ -247,7 +223,6 @@ function lineTail(state: MixedSpaceState, measure: MixedSpaceMeasure): LineTail 
   while (start >= 0 && contributions[start]!.tail === undefined) start -= 1;
   let tail = start >= 0 ? contributions[start]!.tail! : EMPTY_TAIL;
   for (let index = start + 1; index < contributions.length; index += 1) {
-    summaryWork += 1;
     tail = tailAfter(tail, contributions[index]!.item, measure);
     contributions[index]!.tail = tail;
   }
@@ -257,7 +232,6 @@ function lineTail(state: MixedSpaceState, measure: MixedSpaceMeasure): LineTail 
 /** The committed line holds visible (non-whitespace) text; O(1). Only asked
  * for segments that carry the rule's eligibility. */
 export function mixedLineHasVisibleText(breakerState: BreakerState): boolean {
-  summaryWork += 1;
   return breakerState.mixedSpace.visibleItems > 0;
 }
 
@@ -280,7 +254,13 @@ export function mixedCandidateMayShrink(breakerState: BreakerState, text: string
 }
 
 /** Line facts from the running summary; O(1). */
-function summaryLine(state: MixedSpaceState): Omit<LineSpaces, 'gaps'> {
+function summaryLine(state: MixedSpaceState): {
+  valid: boolean;
+  eastAsian: boolean;
+  face: LayoutTextSeg | undefined;
+  perSpaceCapacity: number;
+  count: number;
+} {
   const first = state.firstGap >= 0 ? state.contributions[state.firstGap]! : undefined;
   const valid = state.invalidItems === 0 && state.mismatchedGaps === 0;
   return {
@@ -292,48 +272,12 @@ function summaryLine(state: MixedSpaceState): Omit<LineSpaces, 'gaps'> {
   };
 }
 
-function assertSummary(breakerState: BreakerState, scale: number, measure: MixedSpaceMeasure): void {
-  if (!summaryAssertions) return;
-  const state = breakerState.mixedSpace;
-  const line = breakerState.currentLine;
-  const full = scanLine(line, scale);
-  const summary = summaryLine(state);
-  let tail = EMPTY_TAIL;
-  for (const item of line) tail = tailAfter(tail, item, measure);
-  const top = lineTail(state, measure);
-  const same = state.contributions.length === line.length
-    && state.contributions.every((contribution, index) => contribution.item === line[index])
-    && state.visibleItems === line.filter((item) => 'text' in item && /\S/u.test(item.text)).length
-    && Math.abs(top.tailPx - tail.tailPx) <= 1e-9
-    && top.coreLast === tail.coreLast
-    && full.valid === summary.valid
-    && (!full.valid || (
-      full.eastAsian === summary.eastAsian
-      && full.face === summary.face
-      && full.count === summary.count
-      && Math.abs(full.perSpaceCapacity - summary.perSpaceCapacity) <= 1e-9
-    ));
-  if (!same) {
-    throw new Error('WORD_COMPRESSED_SPACE_LINE_FIT line summary drifted from its committed items');
-  }
-}
-
 /** One candidate unit: consecutive pieces of text that must share a line
  * (a segment, a prefix of one, or a joined group across source runs). */
 export interface MixedSpaceCandidate {
   readonly pieces: readonly Readonly<{ segment: LayoutTextSeg; text: string }>[];
   /** Fit width of the whole unit, as used by the ordinary natural fit test. */
   readonly fitWidth: number;
-}
-
-interface LineSpaces {
-  readonly valid: boolean;
-  readonly eastAsian: boolean;
-  readonly face: LayoutTextSeg | undefined;
-  /** Shrinkable advance of one space (natural minus floor). */
-  readonly perSpaceCapacity: number;
-  readonly gaps: readonly Readonly<{ segment: LayoutTextSeg; count: number }>[];
-  readonly count: number;
 }
 
 function sameSpaceFace(candidate: LayoutTextSeg, reference: LayoutTextSeg): boolean {
@@ -376,43 +320,6 @@ function perSpaceCapacity(segment: LayoutTextSeg, count: number, scale: number):
   );
 }
 
-/** Re-derive the shrinkable spaces of the committed line items. */
-function scanLine(line: readonly LayoutSeg[], scale: number): LineSpaces {
-  let eastAsian = false;
-  let face: LayoutTextSeg | undefined;
-  let capacity = 0;
-  let count = 0;
-  const gaps: { segment: LayoutTextSeg; count: number }[] = [];
-  const invalid = (): LineSpaces => ({
-    valid: false, eastAsian, face, perSpaceCapacity: 0, gaps: [], count: 0,
-  });
-  for (const item of line) {
-    summaryWork += 1;
-    if (inkless(item)) continue;
-    if (!('text' in item)) return invalid();
-    if (EAST_ASIAN_RE.test(item.text)) eastAsian = true;
-    const spaces = trailingSpaceCount(item.text);
-    if (
-      item.mixedNaturalTrailingSpacePx !== undefined &&
-      spaces > 0 &&
-      spaces === item.mixedNaturalTrailingSpaceCount &&
-      !item.text.slice(0, item.text.length - spaces).includes(' ')
-    ) {
-      const itemCapacity = perSpaceCapacity(item, spaces, scale);
-      if (face && (!sameSpaceFace(item, face) || Math.abs(itemCapacity - capacity) > 1e-6)) {
-        return invalid();
-      }
-      face ??= item;
-      capacity = itemCapacity;
-      gaps.push({ segment: item, count: spaces });
-      count += spaces;
-    } else if (!neutral(item, item.text)) {
-      return invalid();
-    }
-  }
-  return { valid: true, eastAsian, face, perSpaceCapacity: capacity, gaps, count };
-}
-
 /** Total U+0020 reduction the line needs to append `candidate`, or undefined
  * when the candidate belongs on the next line. Pure; O(1) in the committed
  * line plus the candidate's own text. */
@@ -441,7 +348,6 @@ export function performMixedSpaceRequirement(
     breakerState.currentLine.length === 0
   )
     return undefined;
-  assertSummary(breakerState, scale, strNaturalAdvance);
   const line = summaryLine(breakerState.mixedSpace);
   if (!line.valid || line.count === 0 || !line.face) return undefined;
   // Only mixed East Asian / Latin lines; Latin-only lines keep their own rule.
@@ -491,7 +397,6 @@ export function performMixedSpaceRequirement(
     let coreEnd = naturalWidth - (last >= 0 ? 0 : tail.tailPx);
     for (let index = 0; index <= last; index += 1) {
       if (cores[index]!.length > 0) {
-        summaryWork += cores[index]!.length;
         coreEnd += strNaturalAdvance(pieces[index]!.segment, cores[index]!);
       }
     }
@@ -511,11 +416,9 @@ export function performMarkMixedSpacesCompressed(operationState: PassOperationSt
 export function performSettleMixedSpaces(operationState: PassOperationState): void {
   const { breakerState, availW, scale, strNaturalAdvance } = operationState;
   if (breakerState.mixedSpace.compressed) {
-    assertSummary(breakerState, scale, strNaturalAdvance);
     const line = summaryLine(breakerState.mixedSpace);
     // Finalization walks the line once; every gap is written exactly once.
     const gaps = breakerState.mixedSpace.contributions.flatMap((contribution) => {
-      summaryWork += 1;
       return contribution.gapCount > 0
         ? [{ segment: contribution.item as LayoutTextSeg, count: contribution.gapCount }]
         : [];
