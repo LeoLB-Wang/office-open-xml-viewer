@@ -61,13 +61,23 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
               context.ctx as CanvasRenderingContext2D,
               command.plan,
             );
-            paintRetainedResource(
-              command.resourceKey,
-              'image',
-              destination,
-              undefined,
-              context,
-            );
+            context.ctx.save();
+            try {
+              if (command.imageRotationDeg || command.imageFlipH || command.imageFlipV) {
+                context.ctx.translate(x + w / 2, y + h / 2);
+                // Replay the inverse retained host transform inside its clip.
+                context.ctx.scale(command.imageFlipH ? -1 : 1, command.imageFlipV ? -1 : 1);
+                context.ctx.rotate((command.imageRotationDeg ?? 0) * Math.PI / 180);
+                context.ctx.translate(-x - w / 2, -y - h / 2);
+              }
+              paintRetainedResource(
+                command.resourceKey,
+                'image',
+                destination,
+                undefined,
+                context,
+              );
+            } finally { context.ctx.restore(); }
           },
         );
       }

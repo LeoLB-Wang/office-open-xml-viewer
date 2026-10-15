@@ -223,6 +223,7 @@ function imageDecodeRequests(
   devicePixelsPerPoint?: number,
 ): ImageDecodeRequest[] {
   const requests = new Map<string, ImageDecodeRequest>();
+  const naturalSizeChartKeys = new Set<string>();
   const demandByResource = new Map<string, { widthPt: number; heightPt: number }>();
   for (const occurrence of rasterPaintOccurrences) {
     if (occurrence.resourceKind !== 'image' && occurrence.resourceKind !== 'picture-bullet') {
@@ -277,6 +278,9 @@ function imageDecodeRequests(
       request.targetHeightPx = target.height;
     }
     const key = requestKey(request);
+    // VML image brushes use native pixel dimensions for size/aspect. Preserve
+    // the source grid even when another occurrence shares this decoded image.
+    if (image.vmlFill) naturalSizeChartKeys.add(key);
     const existing = requests.get(key);
     if (!existing) {
       requests.set(key, request);
@@ -288,7 +292,6 @@ function imageDecodeRequests(
       existing.targetHeightPx = Math.max(existing.targetHeightPx ?? 0, request.targetHeightPx ?? 0) || undefined;
     }
   }
-  const naturalSizeChartKeys = new Set<string>();
   const chartOccurrencesByResource = new Map<string, DeepReadonly<RasterPaintOccurrence>[]>();
   for (const occurrence of rasterPaintOccurrences) {
     if (occurrence.resourceKind !== 'chart') continue;
@@ -367,6 +370,10 @@ function imageDecodeRequests(
         }
       }
     }
+  }
+  for (const key of naturalSizeChartKeys) {
+    const request = requests.get(key);
+    if (request) { request.targetWidthPx = undefined; request.targetHeightPx = undefined; }
   }
   return [...requests.values()];
 }

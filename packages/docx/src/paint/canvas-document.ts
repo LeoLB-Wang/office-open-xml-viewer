@@ -1,3 +1,4 @@
+import { acquireVmlImageBrush } from './browser-vml-image-brush.js';
 import { readingPaintHooks } from './reading-hooks.js';
 import {
   withBitmapCacheLease,
@@ -551,6 +552,7 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
             { placeholder: 'tiff' },
           );
         }
+        if (image && descriptor.vmlFill) return acquireVmlImageBrush(descriptor, image);
         return image ?? unavailablePaintResourceHandle(
           options.fetchImage
             ? 'unsupported image format produced no drawable output'

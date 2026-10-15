@@ -23,8 +23,8 @@ function inlineGroup(): string {
   return `<w:r><w:drawing><wp:inline><wp:extent cx="${36 * EMU}" cy="${20 * EMU}"/><wp:docPr id="1" name="inline group"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><wpg:wgp><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${36 * EMU}" cy="${20 * EMU}"/><a:chOff x="0" y="0"/><a:chExt cx="${36 * EMU}" cy="${20 * EMU}"/></a:xfrm></wpg:grpSpPr>${shape('0000FF')}<pic:pic><pic:nvPicPr><pic:cNvPr id="2" name="middle.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdImage"/></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${36 * EMU}" cy="${20 * EMU}"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic>${shape('00FF00')}</wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 }
 
-function docx(kind: string, unsupported = false): Uint8Array {
-  const document = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body><w:p><w:r><w:t>BEFORE</w:t></w:r>${kind === 'DrawingML' ? inlineGroup() : `<w:r><w:pict><v:group style="width:36pt;height:20pt" coordsize="360,200"><v:rect style="width:360;height:200" fillcolor="blue" stroked="f"/><v:shape style="width:360;height:200"><v:imagedata r:id="rIdImage"/></v:shape><v:rect style="width:360;height:200" fillcolor="lime" stroked="f"/>${unsupported ? '<v:rect style="width:10;height:10"><v:unavailable-decoration/></v:rect>' : ''}</v:group></w:pict></w:r>`}<w:r><w:t>AFTER</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="15840" w:h="12240"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0"/></w:sectPr></w:body></w:document>`;
+function docx(kind: string, unsupported: boolean | 'sibling' = false): Uint8Array {
+  const document = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body><w:p><w:r><w:t>BEFORE</w:t></w:r>${kind === 'DrawingML' ? inlineGroup() : `<w:r><w:pict><v:group style="width:36pt;height:20pt" coordsize="360,200"><v:rect style="width:360;height:200" fillcolor="blue" stroked="f"/><v:shape style="width:360;height:200"><v:imagedata r:id="rIdImage"/></v:shape><v:rect style="width:360;height:200" fillcolor="lime" stroked="f"/>${unsupported === true ? '<v:rect style="width:10;height:10"><v:unavailable-decoration/></v:rect>' : ''}</v:group>${unsupported === 'sibling' ? '<v:rect style="width:10pt;height:10pt"><v:unavailable-decoration/></v:rect>' : ''}</w:pict></w:r>`}<w:r><w:t>AFTER</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="15840" w:h="12240"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0"/></w:sectPr></w:body></w:document>`;
   return storeZip(new Map([
     ['[Content_Types].xml', encoder.encode('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')],
     ['_rels/.rels', encoder.encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')],
@@ -105,8 +105,8 @@ describe('inline groups through DOCX parse and render', () => {
     if (!before || !after || !beforeRun) throw new Error('rendered text callbacks missing');
     expect(after.x - (before.x + beforeRun.w)).toBeCloseTo(36, 2);
   });
-  it.each(['body', 'header'])('retains unsupported VML group diagnostics in the %s story', story => {
-    const archive = new DocxArchive(docx('VML', true));
+  it.each(['body', 'header'].flatMap(story => [true, 'sibling' as const].map(kind => [story, kind] as const)))('retains unsupported VML %s story diagnostics for %s', (story, kind) => {
+    const archive = new DocxArchive(docx('VML', kind));
     let wire;
     try { wire = JSON.parse(new TextDecoder().decode(archive.parse())); }
     finally { archive.free(); }
@@ -119,7 +119,7 @@ describe('inline groups through DOCX parse and render', () => {
     const measureContext = recordingCanvas().canvas.getContext('2d');
     const layout = layoutDocument(model, createLayoutServices(model, { measureContext }));
     expect(layout.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
-      code: 'UNSUPPORTED_FEATURE', message: expect.stringContaining('v:group'),
+      code: 'UNSUPPORTED_FEATURE', message: expect.stringContaining(kind === 'sibling' ? 'v:shape' : 'v:group'),
     })]));
   });
 

@@ -48,6 +48,7 @@ mod relationship_target_tests;
 #[path = "parser/word_ilvl_integration_tests.rs"]
 mod word_ilvl_integration_tests;
 
+mod vml_fill;
 #[path = "parser/vml_geometry.rs"]
 mod vml_geometry;
 #[path = "parser/vml_group.rs"]
@@ -12237,7 +12238,7 @@ fn parse_vml_shape(
         return None;
     }
 
-    let mut resolved_fill = resolve_vml_fill(shape, shape_type);
+    let mut resolved_fill = vml_fill::resolve(shape, shape_type, media_map);
     let mut resolved_stroke = resolve_vml_stroke(shape, shape_type);
     let mut geometry_unavailable = preset_geometry.is_none()
         && primitive.is_none()
@@ -12278,6 +12279,7 @@ fn parse_vml_shape(
         == Some(false)
     {
         resolved_fill.fill = None;
+        resolved_fill.incomplete = false;
     }
     if vml_geometry::path_attr(shape, shape_type, "strokeok").and_then(parse_vml_true_false)
         == Some(false)
@@ -12365,7 +12367,10 @@ fn parse_vml_shape(
         ),
         None => (Vec::new(), Vec::new()),
     };
-    if geometry_unavailable || vml_geometry::incomplete_leaf(shape, shape_type) {
+    if geometry_unavailable
+        || resolved_fill.incomplete
+        || vml_geometry::incomplete_leaf(shape, shape_type)
+    {
         // Malformed path/formula input must not erase otherwise available text
         // or paint a substitute rectangle. Retain the story and disclose only
         // the unavailable geometry/decoration through its established marker.
@@ -12460,6 +12465,20 @@ fn parse_vml_shape(
         stroke_width: resolved_stroke.width_pt,
         stroke_dash: resolved_stroke.dash,
         stroke_cap: resolved_stroke.cap,
+        stroke_join: vml_decoration_attr(shape, shape_type, "stroke", "joinstyle")
+            .map(str::to_string),
+        stroke_miter_limit: vml_decoration_attr(shape, shape_type, "stroke", "miterlimit")
+            .and_then(|s| s.parse().ok()),
+        stroke_compound: vml_decoration_attr(shape, shape_type, "stroke", "linestyle")
+            .and_then(|s| match s {
+                "single" => Some("sng"),
+                "thinThin" => Some("dbl"),
+                "thinThick" => Some("thinThick"),
+                "thickThin" => Some("thickThin"),
+                "thickBetweenThin" => Some("tri"),
+                _ => None,
+            })
+            .map(str::to_string),
         head_end: resolved_stroke.head_end,
         tail_end: resolved_stroke.tail_end,
         rotation,
@@ -12507,6 +12526,21 @@ fn vml_direct_child<'a, 'input>(
         .find(|child| child.is_element() && child.tag_name().name() == local_name)
 }
 
+fn vml_decoration_attr<'a>(
+    shape: roxmltree::Node<'a, '_>,
+    definition: Option<roxmltree::Node<'a, '_>>,
+    element: &str,
+    name: &str,
+) -> Option<&'a str> {
+    vml_direct_child(shape, element)
+        .and_then(|n| n.attributes().find(|a| a.name() == name).map(|a| a.value()))
+        .or_else(|| {
+            definition
+                .and_then(|n| vml_direct_child(n, element))
+                .and_then(|n| n.attributes().find(|a| a.name() == name).map(|a| a.value()))
+        })
+}
+
 struct ResolvedVmlStroke {
     color: Option<String>,
     width_pt: f64,
@@ -12519,62 +12553,7 @@ struct ResolvedVmlStroke {
 struct ResolvedVmlFill {
     fill: Option<ShapeFill>,
     opacity: Option<f64>,
-}
-
-/// Resolve the Part 4 §19.1.2.5/§19.1.2.19 fill cascade. Instance properties
-/// override the referenced shapetype; within either layer `<v:fill>` overrides
-/// the element attributes. An enabled fill defaults to white. Word's PDF of a
-/// rotated VML textpath watermark with `v:fill type="pattern"` and a valid image
-/// relationship paints the textpath in `color` alone, without an image tile.
-/// That observation supports the solid projection for textpath watermarks; it
-/// does not establish image-pattern behaviour for other VML shape hosts.
-fn resolve_vml_fill(
-    shape: roxmltree::Node,
-    shape_type: Option<roxmltree::Node>,
-) -> ResolvedVmlFill {
-    let shape_fill = vml_direct_child(shape, "fill");
-    let type_fill = shape_type.and_then(|node| vml_direct_child(node, "fill"));
-    let type_enabled = type_fill
-        .and_then(|node| node.attribute("on"))
-        .and_then(parse_vml_true_false)
-        .or_else(|| {
-            shape_type
-                .and_then(|node| node.attribute("filled"))
-                .and_then(parse_vml_true_false)
-        })
-        .unwrap_or(true);
-    let enabled = shape_fill
-        .and_then(|node| node.attribute("on"))
-        .and_then(parse_vml_true_false)
-        .or_else(|| shape.attribute("filled").and_then(parse_vml_true_false))
-        .unwrap_or(type_enabled);
-    let fill = enabled.then(|| {
-        let color = shape_fill
-            .and_then(|node| node.attribute("color"))
-            .and_then(vml_color_hex6)
-            .or_else(|| shape.attribute("fillcolor").and_then(vml_color_hex6))
-            .or_else(|| {
-                type_fill
-                    .and_then(|node| node.attribute("color"))
-                    .and_then(vml_color_hex6)
-            })
-            .or_else(|| {
-                shape_type
-                    .and_then(|node| node.attribute("fillcolor"))
-                    .and_then(vml_color_hex6)
-            })
-            .unwrap_or_else(|| "FFFFFF".to_string());
-        ShapeFill::Solid { color }
-    });
-    let opacity = enabled
-        .then(|| {
-            shape_fill
-                .and_then(|node| node.attribute("opacity"))
-                .or_else(|| type_fill.and_then(|node| node.attribute("opacity")))
-                .and_then(parse_vml_opacity)
-        })
-        .flatten();
-    ResolvedVmlFill { fill, opacity }
+    incomplete: bool,
 }
 
 /// Resolve the Part 4 §19.1.2.19/§19.1.2.21 stroke cascade as one cohesive
@@ -12673,6 +12652,13 @@ fn resolve_vml_stroke(
         .or_else(|| type_stroke.filter(|node| node.attribute("endarrow").is_some()))
         .and_then(|node| parse_vml_line_end(node, "endarrow", "endarrowwidth", "endarrowlength"));
 
+    // Part 4 §19.1.2.21: opacity is independent of fill opacity. Retain
+    // RRGGBBAA, the shared color contract used by layout, strokes and arrows.
+    let opacity = shape_stroke
+        .and_then(|n| n.attribute("opacity"))
+        .or_else(|| type_stroke.and_then(|n| n.attribute("opacity")))
+        .and_then(parse_vml_opacity);
+    let color = color.map(|color| vml_color_alpha(color, opacity));
     ResolvedVmlStroke {
         color,
         width_pt,
@@ -12680,6 +12666,13 @@ fn resolve_vml_stroke(
         cap,
         head_end,
         tail_end,
+    }
+}
+
+fn vml_color_alpha(color: String, opacity: Option<f64>) -> String {
+    match opacity.filter(|a| a.is_finite() && *a < 1.0) {
+        Some(a) => format!("{color}{:02x}", (a.clamp(0.0, 1.0) * 255.0).round() as u8),
+        None => color,
     }
 }
 
@@ -13244,6 +13237,9 @@ fn vml_color_hex6(c: &str) -> Option<String> {
 /// fraction, or `None` when unparseable.
 fn parse_vml_opacity(raw: &str) -> Option<f64> {
     let raw = raw.trim();
+    if let Some(num) = raw.strip_suffix('%') {
+        return num.trim().parse::<f64>().ok().map(|n| n / 100.0);
+    }
     if let Some(num) = raw.strip_suffix('f') {
         return num.trim().parse::<f64>().ok().map(|n| n / 65536.0);
     }
@@ -13371,18 +13367,23 @@ fn vml_image_crop(node: roxmltree::Node) -> Option<SrcRect> {
     (crop.l != 0.0 || crop.t != 0.0 || crop.r != 0.0 || crop.b != 0.0).then_some(crop)
 }
 
+/// VML `id` is an object identifier. Only relationship-namespace id/pict
+/// (or Office relid) reference an image; the generic namespace fallback would
+/// let editor metadata shadow an inherited resource (Part 4 §19.1.2.5/.11).
+fn vml_image_relationship<'a>(node: roxmltree::Node<'a, '_>) -> Option<&'a str> {
+    node.attribute((relationships::TRANSITIONAL, "id"))
+        .or_else(|| node.attribute((relationships::STRICT, "id")))
+        .or_else(|| node.attribute((relationships::TRANSITIONAL, "pict")))
+        .or_else(|| node.attribute((relationships::STRICT, "pict")))
+        .or_else(|| {
+            node.attributes()
+                .find(|a| a.name() == "relid")
+                .map(|a| a.value())
+        })
+}
+
 fn vml_image_source(node: roxmltree::Node, media_map: &HashMap<String, String>) -> Option<String> {
-    if let Some(rid) = attr_ns(
-        &node,
-        relationships::TRANSITIONAL,
-        relationships::STRICT,
-        "id",
-    )
-    .or_else(|| {
-        node.attributes()
-            .find(|a| a.name() == "relid")
-            .map(|a| a.value())
-    }) {
+    if let Some(rid) = vml_image_relationship(node) {
         return media_map.get(rid).cloned();
     }
     // VML src is a URI rather than a relationship ID. Resolve package-relative
@@ -13676,6 +13677,7 @@ fn parse_shape_fill(
                     None
                 };
                 return FillSpec::Explicit(Box::new(ShapeFill::Image {
+                    vml: None,
                     image_path,
                     mime_type,
                     svg_image_path,

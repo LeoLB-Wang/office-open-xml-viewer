@@ -2379,6 +2379,25 @@ pub enum ShapeStrokeFill {
     },
 }
 
+/// VML Part 4 §19.1.2.5 brush placement. Native image dimensions are
+/// acquired lazily with the image, never inferred from the shape's extent.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlFillLength {
+    pub value: f64,
+    pub fraction: bool,
+}
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlImageFill {
+    pub repeat: bool,
+    pub size: Option<(VmlFillLength, VmlFillLength)>,
+    pub origin: (f64, f64),
+    pub position: (f64, f64),
+    pub aspect: String,
+    pub align_shape: bool,
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "fillType", rename_all = "camelCase")]
 pub enum ShapeFill {
@@ -2432,6 +2451,8 @@ pub enum ShapeFill {
         alpha: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         duotone: Option<Duotone>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        vml: Option<VmlImageFill>,
     },
 }
 

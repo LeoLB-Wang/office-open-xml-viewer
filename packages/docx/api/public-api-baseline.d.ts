@@ -2302,6 +2302,29 @@ export type ShapeFill = {
     preset: string;
 } | {
     fillType: 'image';
+    vml?: {
+        repeat: boolean;
+        size: [
+            {
+                value: number;
+                fraction: boolean;
+            },
+            {
+                value: number;
+                fraction: boolean;
+            }
+        ] | null;
+        origin: [
+            number,
+            number
+        ];
+        position: [
+            number,
+            number
+        ];
+        aspect: string;
+        alignShape: boolean;
+    };
     imagePath: string;
     mimeType: string;
     svgImagePath?: string;

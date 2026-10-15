@@ -1178,6 +1178,13 @@ export type ShapeFill =
   | {
       /** ECMA-376 §20.1.8.14 picture fill on a DrawingML shape. */
       fillType: 'image';
+      /** Part 4 §19.1.2.5 VML brush placement, resolved with lazy image metadata. */
+      vml?: {
+        repeat: boolean;
+        size: [{ value: number; fraction: boolean }, { value: number; fraction: boolean }] | null;
+        origin: [number, number]; position: [number, number];
+        aspect: string; alignShape: boolean;
+      };
       imagePath: string;
       mimeType: string;
       /** Microsoft 2016 SVG original retained beside the raster fallback. */

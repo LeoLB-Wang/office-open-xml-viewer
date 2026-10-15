@@ -24,13 +24,15 @@ export function chartPaintResourceKey(source: import('./types.js').SourceRef): s
   return chartResourceKey(source);
 }
 
+type ImageDescriptorOptions = Partial<ImageRun> & Pick<ImagePaintResourceDescriptor, 'vmlFill'>;
+
 type ImageDescriptorCandidate = Omit<ImagePaintResourceDescriptor, 'intrinsicSize' | 'mimeType'>;
 
 function imageCandidate(
   kind: 'image' | 'picture-bullet',
   resourceKey: string,
   partPath: string,
-  run: Partial<ImageRun> = {},
+  run: ImageDescriptorOptions = {},
 ): ImageDescriptorCandidate {
   return {
     kind,
@@ -46,6 +48,7 @@ function imageCandidate(
     // every authored string; only None/omission has no decoded effect owner.
     ...(run.colorReplaceFrom == null ? {} : { colorReplaceFrom: run.colorReplaceFrom }),
     ...(run.duotone === undefined ? {} : { duotone: { ...run.duotone } }),
+    ...(run.vmlFill === undefined ? {} : { vmlFill: run.vmlFill }),
   };
 }
 
@@ -65,7 +68,7 @@ function collectDescriptorCandidates(
     mimeType: string,
     widthPt: number,
     heightPt: number,
-    run: Partial<ImageRun> = {},
+    run: ImageDescriptorOptions = {},
   ): void => {
     const resourceKey = imageResourceKey(source, partPath);
     imageCandidates.push(imageCandidate(kind, resourceKey, partPath, run));
@@ -100,6 +103,7 @@ function collectDescriptorCandidates(
           }),
           ...(shape.fill.alpha === undefined ? {} : { alpha: shape.fill.alpha }),
           ...(shape.fill.duotone === undefined ? {} : { duotone: shape.fill.duotone }),
+          ...(shape.fill.vml === undefined ? {} : { vmlFill: shape.fill.vml }),
         },
       );
     }

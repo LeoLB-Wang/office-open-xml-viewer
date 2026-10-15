@@ -411,7 +411,7 @@ pub(super) fn acquire(
             ("ylimo", limo.1),
             (
                 "hasfill",
-                if resolve_vml_fill(shape, definition).fill.is_some() {
+                if vml_fill::enabled(shape, definition) {
                     1.0
                 } else {
                     0.0
@@ -574,13 +574,15 @@ pub(super) fn primitive(shape: roxmltree::Node) -> Option<(Geometry, (f64, f64, 
 
 pub(super) fn arc(shape: roxmltree::Node) -> Option<Geometry> {
     let start = shape
-        .attribute("startangle")
+        .attribute("startAngle")
+        .or_else(|| shape.attribute("startangle"))
         .unwrap_or("0")
         .parse::<f64>()
         .ok()?
         - 90.0;
     let end = shape
-        .attribute("endangle")
+        .attribute("endAngle")
+        .or_else(|| shape.attribute("endangle"))
         .unwrap_or("90")
         .parse::<f64>()
         .ok()?
@@ -731,10 +733,118 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
             }
         }
     }
-    if let Some(fill) = effective("fill") {
-        if fill.attribute("on").and_then(parse_vml_true_false) != Some(false)
-            && fill.attribute("type").is_some_and(|t| t != "solid")
-        {
+    // Audit authored paint attributes, not just element names. Unacquired
+    // image filters/pen textures and edge-specific Office strokes are real
+    // ink; metadata such as title/relationship IDs has no independent paint.
+    for (element, allowed) in [
+        (
+            "shadow",
+            &[
+                "id", "on", "type", "obscured", "color", "opacity", "offset", "color2", "offset2",
+                "origin", "matrix",
+            ][..],
+        ),
+        (
+            "fill",
+            &[
+                "id",
+                "type",
+                "on",
+                "color",
+                "color2",
+                "opacity",
+                "opacity2",
+                "src",
+                "href",
+                "althref",
+                "size",
+                "origin",
+                "position",
+                "aspect",
+                "colors",
+                "angle",
+                "alignshape",
+                "focus",
+                "focussize",
+                "focusposition",
+                "method",
+                "detectmouseclick",
+                "title",
+                "recolor",
+                "rotate",
+                "relid",
+            ][..],
+        ),
+        (
+            "stroke",
+            &[
+                "id",
+                "on",
+                "color",
+                "weight",
+                "opacity",
+                "dashstyle",
+                "endcap",
+                "joinstyle",
+                "miterlimit",
+                "linestyle",
+                "startarrow",
+                "startarrowwidth",
+                "startarrowlength",
+                "endarrow",
+                "endarrowwidth",
+                "endarrowlength",
+                "href",
+                "althref",
+                "title",
+                "detectmouseclick",
+            ][..],
+        ),
+        (
+            "imagedata",
+            &[
+                "id",
+                "src",
+                "relid",
+                "pict",
+                "href",
+                "althref",
+                "title",
+                "oleid",
+                "detectmouseclick",
+                "cropleft",
+                "croptop",
+                "cropright",
+                "cropbottom",
+            ][..],
+        ),
+    ] {
+        for host in std::iter::once(shape).chain(definition) {
+            if let Some(node) = vml_direct_child(host, element) {
+                if node.attributes().any(|a| {
+                    !allowed.contains(&a.name())
+                        && !matches!(
+                            (a.name(), a.value()),
+                            ("filltype", "solid")
+                                | ("insetpen", "f" | "false" | "0")
+                                | ("gain" | "gamma", "1" | "1.0" | "65536f")
+                                | ("blacklevel", "0" | "0.0" | "0f")
+                                | ("grayscale" | "bilevel", "f" | "false" | "0")
+                        )
+                        && vml_decoration_attr(shape, definition, element, a.name())
+                            == Some(a.value())
+                }) || node.children().any(|n| n.is_element())
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(kind) = vml_fill::property(shape, definition, "type") {
+        if !matches!(
+            kind,
+            "solid" | "gradient" | "gradientradial" | "tile" | "pattern" | "frame"
+        ) {
             return true;
         }
     }

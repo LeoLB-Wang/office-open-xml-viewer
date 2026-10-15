@@ -89,42 +89,30 @@ pub(super) fn parse_groups(
         .filter_map(|n| n.attribute("id").map(|id| (id, n)))
         .collect();
     let mut result = Vec::new();
+    let mut sibling_diagnostics = Vec::new();
     for group in pict.children().filter(|n| n.is_element()) {
         if group.has_tag_name((VML, "shapetype")) {
             continue;
         }
         if !group.has_tag_name((VML, "group")) {
-            // A pict may contain siblings beside its groups. Preserve their
-            // ordinary picture/panel path instead of making group detection
-            // an exclusive choice that loses otherwise supported siblings.
-            if let Some(image) = parse_vml_pict_image(group, media_map) {
-                result.push(DocRun::Image(Box::new(image)));
-            } else if matches!(
-                group.tag_name().name(),
-                "shape" | "rect" | "roundrect" | "oval" | "line"
+            // CT_Group and CT_Pict use the same drawable leaves. A sibling's
+            // coordinates are already points, so acquire with the identity map.
+            if let Some(run) = acquire_leaf(
+                style_map,
+                num_map,
+                group,
+                &shape_types,
+                GroupTransform::IDENTITY,
+                false,
+                result.len() as u32,
+                theme,
+                media_map,
+                chart_map,
+                rel_map,
+                depth,
+                &mut sibling_diagnostics,
             ) {
-                let definition = group
-                    .attribute("type")
-                    .and_then(|id| shape_types.get(id.trim_start_matches('#')))
-                    .copied();
-                if let Some(shape) = parse_vml_shape(
-                    style_map,
-                    num_map,
-                    group,
-                    definition,
-                    theme,
-                    media_map,
-                    chart_map,
-                    rel_map,
-                    (1.0, 1.0),
-                    depth,
-                ) {
-                    result.push(DocRun::Shape(Box::new(shape)));
-                } else {
-                    unsupported(document_diagnostics);
-                }
-            } else {
-                unsupported(document_diagnostics);
+                result.push(run);
             }
             continue;
         }
@@ -169,188 +157,23 @@ pub(super) fn parse_groups(
                 // The group itself is only a coordinate container.
                 continue;
             }
-            let child = parent;
-            if child.tag_name().namespace() != Some(VML) {
-                // Lock/wrap/anchorlock and editor metadata have no independent
-                // ink. Other Office extensions (diagram, skew, extrusion, etc.)
-                // are not implemented and must be disclosed.
-                if !matches!(
-                    child.tag_name().name(),
-                    "lock" | "wrap" | "anchorlock" | "ClientData"
-                ) {
-                    unsupported(diagnostics);
-                }
-                continue;
+            if let Some(run) = acquire_leaf(
+                style_map,
+                num_map,
+                parent,
+                &shape_types,
+                transform,
+                true,
+                children.len() as u32,
+                theme,
+                media_map,
+                chart_map,
+                rel_map,
+                depth,
+                diagnostics,
+            ) {
+                children.push(run);
             }
-            match child.tag_name().name() {
-                "shapetype" => continue,
-                "shape" | "rect" | "roundrect" | "oval" | "line" | "image" | "arc" | "curve"
-                | "polyline" => {}
-                // Property elements have no standalone leaf geometry; invalid
-                // drawable hosts and unavailable extensions remain explicit.
-                _ => {
-                    unsupported(diagnostics);
-                    continue;
-                }
-            }
-            let style = child.attribute("style").unwrap_or("");
-            let imagedata = child
-                .children()
-                .find(|n| n.has_tag_name((VML, "imagedata")));
-            let shape_type = child
-                .attribute("type")
-                .and_then(|id| shape_types.get(id.trim_start_matches('#')))
-                .copied();
-            if vml_geometry::incomplete_leaf(child, shape_type) {
-                unsupported(diagnostics);
-            }
-            // Device/EMU formula values describe the final extent, whereas
-            // path coordinates still belong to the shape's local coordsize.
-            let unit = transform.apply_rect(DrawingRect {
-                x: 0.0,
-                y: 0.0,
-                width: 1.0,
-                height: 1.0,
-                rotation_degrees: 0.0,
-                flip_h: false,
-                flip_v: false,
-            });
-            let physical_scale = (unit.width, unit.height);
-            let mut run = if let Some(image) =
-                imagedata.or_else(|| child.has_tag_name((VML, "image")).then_some(child))
-            {
-                let (Some(path), Some(width), Some(height)) = (
-                    vml_image_source(image, media_map),
-                    vml_css_length_pt(style, "width"),
-                    vml_css_length_pt(style, "height"),
-                ) else {
-                    unsupported(diagnostics);
-                    continue;
-                };
-                if vml_geometry::shadow(child, shape_type).is_some()
-                    || vml_direct_child(child, "stroke").is_some()
-                {
-                    let Some(mut shape) = parse_vml_shape(
-                        style_map,
-                        num_map,
-                        child,
-                        shape_type,
-                        theme,
-                        media_map,
-                        chart_map,
-                        rel_map,
-                        physical_scale,
-                        depth,
-                    ) else {
-                        unsupported(diagnostics);
-                        continue;
-                    };
-                    // Part 4 §19.1.2.11 gives imagedata an implied rectangle;
-                    // the image and its outline do not use the host's path.
-                    shape.preset_geometry = Some("rect".into());
-                    shape.subpaths.clear();
-                    shape.subpath_paint.clear();
-                    shape.fill = Some(ShapeFill::Image {
-                        mime_type: mime_from_ext(&path).into(),
-                        image_path: path,
-                        svg_image_path: None,
-                        src_rect: vml_image_crop(image),
-                        fill_rect: None,
-                        tile: None,
-                        alpha: None,
-                        duotone: None,
-                    });
-                    DocRun::Shape(Box::new(shape))
-                } else {
-                    DocRun::Image(Box::new(vml_image_run(child, path, width, height, image)))
-                }
-            } else {
-                let Some(shape) = parse_vml_shape(
-                    style_map,
-                    num_map,
-                    child,
-                    shape_type,
-                    theme,
-                    media_map,
-                    chart_map,
-                    rel_map,
-                    physical_scale,
-                    depth,
-                ) else {
-                    unsupported(diagnostics);
-                    continue;
-                };
-                DocRun::Shape(Box::new(shape))
-            };
-            let (x, y, width, height, rotation, flip_h, flip_v) = match &mut run {
-                DocRun::Image(image) => {
-                    image.anchor = true;
-                    image.anchor_acquisition = None;
-                    image.anchor_x_relative_from = Some("column".into());
-                    image.anchor_y_relative_from = Some("paragraph".into());
-                    (
-                        &mut image.anchor_x_pt,
-                        &mut image.anchor_y_pt,
-                        &mut image.width_pt,
-                        &mut image.height_pt,
-                        &mut image.rotation,
-                        &mut image.flip_h,
-                        &mut image.flip_v,
-                    )
-                }
-                DocRun::Shape(shape) => {
-                    shape.anchor_acquisition = None;
-                    shape.anchor_x_relative_from = Some("column".into());
-                    shape.anchor_y_relative_from = Some("paragraph".into());
-                    shape.z_order = children.len() as u32;
-                    (
-                        &mut shape.anchor_x_pt,
-                        &mut shape.anchor_y_pt,
-                        &mut shape.width_pt,
-                        &mut shape.height_pt,
-                        &mut shape.rotation,
-                        &mut shape.flip_h,
-                        &mut shape.flip_v,
-                    )
-                }
-                _ => unreachable!(),
-            };
-            if !matches!(child.tag_name().name(), "line" | "curve" | "polyline") {
-                *x = vml_css_length_pt(style, "left").unwrap_or(0.0);
-                *y = vml_css_length_pt(style, "top").unwrap_or(0.0);
-            }
-            let rect = transform.apply_rect(DrawingRect {
-                x: *x,
-                y: *y,
-                width: *width,
-                height: *height,
-                rotation_degrees: *rotation,
-                flip_h: *flip_h,
-                flip_v: *flip_v,
-            });
-            if ![
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
-                rect.rotation_degrees,
-            ]
-            .iter()
-            .all(|v| v.is_finite())
-                || rect.width < 0.0
-                || rect.height < 0.0
-            {
-                unsupported(diagnostics);
-                continue;
-            }
-            *x = rect.x;
-            *y = rect.y;
-            *width = rect.width;
-            *height = rect.height;
-            *rotation = rect.rotation_degrees;
-            *flip_h = rect.flip_h;
-            *flip_v = rect.flip_v;
-            children.push(run);
         }
         let style = group.attribute("style").unwrap_or("");
         let absolute = vml_css_str(style, "position") == Some("absolute");
@@ -391,7 +214,232 @@ pub(super) fn parse_groups(
         }
         result.push(DocRun::Shape(Box::new(wrapper)));
     }
+    if !sibling_diagnostics.is_empty() {
+        // Paragraph parsers in headers/footers do not publish body parse
+        // diagnostics. Bind sibling omissions to an existing retained group
+        // story as well, so every story reports the same incomplete pict.
+        if let Some(group) = result.iter_mut().find_map(|run| match run {
+            DocRun::Shape(shape) if !shape.text_box_content.is_empty() => Some(shape),
+            _ => None,
+        }) {
+            group.text_box_content.push(TextBoxBlockWire::Unsupported {
+                kind: "unsupportedTextBoxBlock".into(),
+                q_name: "v:pict".into(),
+                source_path: vec![group.text_box_content.len()],
+            });
+        }
+        document_diagnostics.extend(sibling_diagnostics);
+    }
     Some(result)
+}
+
+// One acquisition boundary for CT_Group members and pict siblings (Part 4
+// §19.1.2). All leaves retain the same geometry, resource and decoration facts.
+#[allow(clippy::too_many_arguments)]
+fn acquire_leaf<'a, 'input>(
+    style_map: &StyleMap,
+    num_map: &mut NumberingMap,
+    child: roxmltree::Node<'a, 'input>,
+    shape_types: &HashMap<&str, roxmltree::Node<'a, 'input>>,
+    transform: GroupTransform,
+    within_group: bool,
+    z_order: u32,
+    theme: &ThemeColors,
+    media_map: &HashMap<String, String>,
+    chart_map: &ChartMap,
+    rel_map: &HashMap<String, String>,
+    depth: DepthGuard,
+    diagnostics: &mut Vec<PendingParseDiagnostic>,
+) -> Option<DocRun> {
+    if child.tag_name().namespace() != Some(VML) {
+        // Lock/wrap/anchorlock and editor metadata have no independent
+        // ink. Other Office extensions (diagram, skew, extrusion, etc.)
+        // are not implemented and must be disclosed.
+        if !matches!(
+            child.tag_name().name(),
+            "lock" | "wrap" | "anchorlock" | "ClientData"
+        ) {
+            unsupported(diagnostics);
+        }
+        return None;
+    }
+    match child.tag_name().name() {
+        "shapetype" => return None,
+        "shape" | "rect" | "roundrect" | "oval" | "line" | "image" | "arc" | "curve"
+        | "polyline" => {}
+        // Property elements have no standalone leaf geometry; invalid
+        // drawable hosts and unavailable extensions remain explicit.
+        _ => {
+            unsupported(diagnostics);
+            return None;
+        }
+    }
+    let style = child.attribute("style").unwrap_or("");
+    let shape_type = child
+        .attribute("type")
+        .and_then(|id| shape_types.get(id.trim_start_matches('#')))
+        .copied();
+    let imagedata = vml_direct_child(child, "imagedata")
+        .or_else(|| shape_type.and_then(|n| vml_direct_child(n, "imagedata")));
+    if vml_geometry::incomplete_leaf(child, shape_type) {
+        unsupported(diagnostics);
+    }
+    // Device/EMU formula values describe the final extent, whereas
+    // path coordinates still belong to the shape's local coordsize.
+    let unit = transform.apply_rect(DrawingRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+        rotation_degrees: 0.0,
+        flip_h: false,
+        flip_v: false,
+    });
+    let physical_scale = (unit.width, unit.height);
+    let mut run = if let Some(image) =
+        imagedata.or_else(|| child.has_tag_name((VML, "image")).then_some(child))
+    {
+        let (Some(path), Some(width), Some(height)) = (
+            vml_image_source(image, media_map),
+            vml_css_length_pt(style, "width"),
+            vml_css_length_pt(style, "height"),
+        ) else {
+            unsupported(diagnostics);
+            return None;
+        };
+        if vml_geometry::incomplete_leaf(child, shape_type)
+            || vml_geometry::shadow(child, shape_type).is_some()
+            || (resolve_vml_stroke(child, shape_type).color.is_some()
+                && vml_geometry::path_attr(child, shape_type, "strokeok")
+                    .and_then(parse_vml_true_false)
+                    != Some(false))
+        {
+            let Some(mut shape) = parse_vml_shape(
+                style_map,
+                num_map,
+                child,
+                shape_type,
+                theme,
+                media_map,
+                chart_map,
+                rel_map,
+                physical_scale,
+                depth,
+            ) else {
+                unsupported(diagnostics);
+                return None;
+            };
+            // Part 4 §19.1.2.11 gives imagedata an implied rectangle;
+            // the image and its outline do not use the host's path.
+            shape.preset_geometry = Some("rect".into());
+            shape.subpaths.clear();
+            shape.subpath_paint.clear();
+            shape.fill = Some(ShapeFill::Image {
+                vml: None,
+                mime_type: mime_from_ext(&path).into(),
+                image_path: path,
+                svg_image_path: None,
+                src_rect: vml_image_crop(image),
+                fill_rect: None,
+                tile: None,
+                alpha: None,
+                duotone: None,
+            });
+            DocRun::Shape(Box::new(shape))
+        } else {
+            DocRun::Image(Box::new(vml_image_run(child, path, width, height, image)))
+        }
+    } else {
+        let Some(shape) = parse_vml_shape(
+            style_map,
+            num_map,
+            child,
+            shape_type,
+            theme,
+            media_map,
+            chart_map,
+            rel_map,
+            physical_scale,
+            depth,
+        ) else {
+            unsupported(diagnostics);
+            return None;
+        };
+        DocRun::Shape(Box::new(shape))
+    };
+    let (x, y, width, height, rotation, flip_h, flip_v) = match &mut run {
+        DocRun::Image(image) => {
+            if within_group {
+                image.anchor = true;
+                image.anchor_acquisition = None;
+                image.anchor_x_relative_from = Some("column".into());
+                image.anchor_y_relative_from = Some("paragraph".into());
+            }
+            (
+                &mut image.anchor_x_pt,
+                &mut image.anchor_y_pt,
+                &mut image.width_pt,
+                &mut image.height_pt,
+                &mut image.rotation,
+                &mut image.flip_h,
+                &mut image.flip_v,
+            )
+        }
+        DocRun::Shape(shape) => {
+            if within_group {
+                shape.anchor_acquisition = None;
+                shape.anchor_x_relative_from = Some("column".into());
+                shape.anchor_y_relative_from = Some("paragraph".into());
+            }
+            shape.z_order = z_order;
+            (
+                &mut shape.anchor_x_pt,
+                &mut shape.anchor_y_pt,
+                &mut shape.width_pt,
+                &mut shape.height_pt,
+                &mut shape.rotation,
+                &mut shape.flip_h,
+                &mut shape.flip_v,
+            )
+        }
+        _ => unreachable!(),
+    };
+    if within_group && !matches!(child.tag_name().name(), "line" | "curve" | "polyline") {
+        *x = vml_css_length_pt(style, "left").unwrap_or(0.0);
+        *y = vml_css_length_pt(style, "top").unwrap_or(0.0);
+    }
+    let rect = transform.apply_rect(DrawingRect {
+        x: *x,
+        y: *y,
+        width: *width,
+        height: *height,
+        rotation_degrees: *rotation,
+        flip_h: *flip_h,
+        flip_v: *flip_v,
+    });
+    if ![
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        rect.rotation_degrees,
+    ]
+    .iter()
+    .all(|v| v.is_finite())
+        || rect.width < 0.0
+        || rect.height < 0.0
+    {
+        unsupported(diagnostics);
+        return None;
+    }
+    *x = rect.x;
+    *y = rect.y;
+    *width = rect.width;
+    *height = rect.height;
+    *rotation = rect.rotation_degrees;
+    *flip_h = rect.flip_h;
+    *flip_v = rect.flip_v;
+    Some(run)
 }
 
 #[cfg(test)]
@@ -430,6 +478,93 @@ mod tests {
     }
 
     #[test]
+    fn effective_picture_outlines_and_stroke_alpha_are_retained() {
+        let (group, _) = parse(
+            r##"<v:group style="width:100pt;height:100pt">
+          <v:shapetype id="border"><v:stroke color="red" weight="4pt" opacity="50%"/></v:shapetype>
+          <v:shape style="width:20;height:20" stroked="t" strokecolor="red" strokeweight="4pt"><v:imagedata r:id="pic"/></v:shape>
+          <v:shape type="#border" style="width:20;height:20"><v:imagedata r:id="pic"/></v:shape>
+          <v:rect style="width:20;height:20" filled="f"><v:stroke color="red" opacity="0"/></v:rect>
+        </v:group>"##,
+        );
+        let runs = children(&group);
+        for (index, expected) in [(0, "ff0000"), (1, "ff000080"), (2, "ff000000")] {
+            let DocRun::Shape(shape) = &runs[index] else {
+                panic!("decoration lost")
+            };
+            assert_eq!(shape.stroke.as_deref(), Some(expected));
+            assert!(!shape
+                .text_box_content
+                .iter()
+                .any(|b| matches!(b, TextBoxBlockWire::Unsupported { .. })));
+        }
+    }
+
+    #[test]
+    fn leaf_property_audit_discloses_unacquired_paint_without_rejecting_metadata() {
+        let (group, _) = parse(
+            r#"<v:group style="width:100pt;height:100pt">
+          <v:rect style="width:20;height:20"><v:stroke opacity=".5" title="editor metadata"/></v:rect>
+          <v:rect style="width:20;height:20"><v:stroke src="media/pen.png" filltype="tile"/></v:rect>
+          <v:shape style="width:20;height:20" stroked="f"><v:imagedata r:id="pic" gamma="2"/></v:shape>
+          <v:rect style="width:20;height:20"><v:fill unavailable-property="1"/></v:rect>
+        </v:group>"#,
+        );
+        for (i, run) in children(&group).iter().enumerate() {
+            let DocRun::Shape(shape) = run else {
+                panic!("retained leaf")
+            };
+            let incomplete = shape
+                .text_box_content
+                .iter()
+                .any(|b| matches!(b, TextBoxBlockWire::Unsupported { .. }));
+            assert_eq!(incomplete, i != 0);
+        }
+    }
+
+    #[test]
+    fn hasfill_formula_does_not_depend_on_picture_relationship_acquisition() {
+        let (group, _) = parse(
+            r#"<v:group style="width:100pt;height:100pt" coordsize="100,100">
+          <v:shape style="width:100;height:100" coordsize="100,100" path="m0,0l@0,100e">
+            <v:fill type="tile" r:id="pic"/><v:formulas><v:f eqn="val hasfill"/></v:formulas>
+          </v:shape></v:group>"#,
+        );
+        let DocRun::Shape(shape) = &children(&group)[0] else {
+            panic!("shape")
+        };
+        assert!(matches!(
+            shape.subpaths[0][1],
+            PathCmd::LineTo { x: 0.01, y: 1.0 }
+        ));
+        assert!(matches!(shape.fill, Some(ShapeFill::Image { .. })));
+    }
+
+    #[test]
+    fn mixed_pict_siblings_use_the_group_leaf_dispatcher() {
+        let xml = r#"<w:pict xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml"><v:group style="width:10pt;height:10pt"/>
+          <v:arc style="width:20pt;height:20pt"/><v:curve from="0,0" control1="0,20" control2="20,20" to="20,0"/>
+          <v:polyline points="0,0 10,20 20,0"/><v:image src="media/picture.png" style="width:20pt;height:20pt"/>
+        </w:pict>"#;
+        let doc = XmlDoc::parse(xml).unwrap();
+        let mut diagnostics = Vec::new();
+        let runs = parse_groups(
+            &StyleMap::default(),
+            &mut NumberingMap::default(),
+            doc.root_element(),
+            &ThemeColors::default(),
+            &HashMap::new(),
+            &ChartMap::default(),
+            &HashMap::new(),
+            DepthGuard::root(),
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(runs.len(), 5);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
     fn group_maps_mixed_children_in_painter_order_with_nested_origin_rotation_and_flip() {
         let (shape, diagnostics) = parse(
             r#"<v:group style="width:200pt;height:100pt" coordsize="1000,500" coordorigin="100,50">
@@ -457,7 +592,7 @@ mod tests {
             ),
             (0.0, 0.0, 20.0, 20.0)
         );
-        let DocRun::Image(image) = &runs[1] else {
+        let DocRun::Shape(image) = &runs[1] else {
             panic!("nested picture")
         };
         // Nested centre (60,45) -> reflected/rotated centre (450,350)
@@ -504,7 +639,7 @@ mod tests {
         assert_eq!(shape.rotation, 15.0);
         assert!(shape.flip_h && shape.flip_v);
         assert!(shape.anchor_acquisition.is_some());
-        let DocRun::Image(image) = &children(&shape)[0] else {
+        let DocRun::Shape(image) = &children(&shape)[0] else {
             panic!("picture")
         };
         assert_eq!(
@@ -547,10 +682,16 @@ mod tests {
             formula.subpaths[0][1],
             PathCmd::LineTo { x: 0.5, y: 0.0 }
         ));
-        let DocRun::Image(crop) = &children(&group)[6] else {
+        let DocRun::Shape(crop) = &children(&group)[6] else {
             panic!("crop")
         };
-        let crop = crop.src_rect.as_ref().unwrap();
+        let Some(ShapeFill::Image {
+            src_rect: Some(crop),
+            ..
+        }) = &crop.fill
+        else {
+            panic!("image crop")
+        };
         assert_eq!((crop.l, crop.t), (0.5, 0.25));
         assert!(!group
             .text_box_content

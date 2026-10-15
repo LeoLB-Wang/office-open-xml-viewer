@@ -280,6 +280,9 @@ export function planShapeDrawing(
         kind: 'drawingml-image-fill' as const,
         plan: retainedPlan,
         resourceKey: imageFillResourceKey,
+        ...(shape.fill.vml?.alignShape === false ? {
+          imageRotationDeg: -(shape.rotation ?? 0), imageFlipH: shape.flipH ?? false, imageFlipV: shape.flipV ?? false,
+        } : {}),
         ...(shape.fill.fillRect === undefined ? {} : {
           fillRect: {
             l: shape.fill.fillRect.l ?? 0,

@@ -125,6 +125,9 @@ export type DrawingPaintCommand =
       kind: 'drawingml-image-fill';
       plan: DeepReadonly<DrawingMLShapePaintPlan & { readonly resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> }>;
       resourceKey: string;
+      imageRotationDeg?: number;
+      imageFlipH?: boolean;
+      imageFlipV?: boolean;
       fillRect?: Readonly<{ l: number; t: number; r: number; b: number }>;
     }>
   | Readonly<{
@@ -503,6 +506,7 @@ export type ImagePaintResourceDescriptor = Readonly<{
   alpha?: number;
   colorReplaceFrom?: string;
   duotone?: DeepReadonly<Duotone>;
+  vmlFill?: DeepReadonly<Extract<import('../types.js').ShapeFill, { fillType: 'image' }>['vml']>;
 }>;
 
 /** Exact accepted source facts, including decode-order/intrinsic ownership.
