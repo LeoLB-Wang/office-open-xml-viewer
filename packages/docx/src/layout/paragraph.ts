@@ -1,3 +1,5 @@
+import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
+import { addExactRational, exactRationalFromNumber, exactRationalToNumberUp } from './exact-geometry.js';
 import { readingHooks } from '../internal/reading-hooks.js';
 import { revisionIsOmitted } from './revision-visibility.js';
 import { wordKerningApplies } from './line-compatibility.js';
@@ -3264,6 +3266,11 @@ function anchorAxisOwnership(
     : 'page';
 }
 
+interface AnchorLineReference {
+  readonly bounds: LayoutRect;
+  readonly firstLine: boolean;
+}
+
 interface AcquiredAnchorOccurrence {
   readonly result: AnchorFrameResult;
   readonly drawing?: DrawingLayout;
@@ -3290,6 +3297,7 @@ function acquireAnchorOccurrence(
   paragraphOccurrenceIds: ReadonlySet<string>,
   /** First-line content top before any float moves the line down. */
   contentStartYPt: number,
+  lineReference?: AnchorLineReference,
 ): AcquiredAnchorOccurrence | null {
   let hostLineIndex = -1;
   let host: Extract<ParagraphPlacement, { kind: 'anchor-host' }> | undefined;
@@ -3310,6 +3318,8 @@ function acquireAnchorOccurrence(
   const outer = ordered[0];
   if (!outer?.run.anchorAcquisitionInput) return null;
   const line = lines[hostLineIndex]!;
+  const referenceBounds = lineReference?.bounds ?? line.bounds;
+  const referenceIsFirstLine = lineReference?.firstLine ?? (hostLineIndex === 0);
   const baseFrames = options.anchorFrames;
   const behavior = outer.run.anchorAcquisitionInput.behavior;
   const layoutInCellFrame = behavior.layoutInCellStatus === 'valid'
@@ -3361,16 +3371,16 @@ function acquireAnchorOccurrence(
       },
       // WORD_GRID_PICTURE_LINE_ORIGIN keeps text leading separate from the
       // reference frame; paragraph ownership already precedes before-spacing.
-      // The retained host index owns first-line policy. Distinct physical
+      // The reference host index owns first-line policy. Distinct physical
       // lines can share a numeric top; equal coordinates do not transfer it.
       // Only posOffset was measured: translating the frame for wp:align would
       // also move the line's center/bottom edge, so alignment keeps the line.
-      line: hostLineIndex === 0 && options.context.lineGrid.active && outer.run.type === 'image'
+      line: referenceIsFirstLine && options.context.lineGrid.active && outer.run.type === 'image'
         && outer.run.anchorAcquisitionInput.vertical.choice.kind === 'offset'
-        ? { ...line.bounds, yPt: wordGridPictureLineOriginPt(
-            line.bounds.yPt, options.placement.startYPt, contentStartYPt,
+        ? { ...referenceBounds, yPt: wordGridPictureLineOriginPt(
+            referenceBounds.yPt, options.placement.startYPt, contentStartYPt,
           ) }
-        : line.bounds,
+        : referenceBounds,
       character: host.bounds,
       pageParity: baseFrames?.pageParity ?? null,
     },
@@ -4505,6 +4515,7 @@ function wordMode14ColumnOriginApplies(
 function measurementPlacement(
   options: ParagraphAcquisitionOptions,
   exclusions: readonly WrapExclusion[],
+  observeBand?: (topPt: number, heightPt: number, moved: boolean) => void,
 ): MeasurementPlacement {
   if (exclusions.length === 0) return options.placement;
   if (options.placement.wrap) {
@@ -4520,7 +4531,20 @@ function measurementPlacement(
         });
   return {
     ...options.placement,
-    wrap: exclusionOracle,
+    wrap: observeBand ? {
+      hasExclusions: exclusionOracle.hasExclusions,
+      lineWindow(input) {
+        const result = exclusionOracle.lineWindow(input);
+        observeBand(Math.max(input.topYPt, result.topYPt), input.probeHeightPt,
+          result.topYPt !== input.topYPt);
+        return result;
+      },
+      skipTopAndBottomBands(input) {
+        const result = exclusionOracle.skipTopAndBottomBands(input);
+        observeBand(Math.max(input.yPt, result), 0, result !== input.yPt);
+        return result;
+      },
+    } : exclusionOracle,
   };
 }
 
@@ -4984,6 +5008,33 @@ function acquireParagraphCandidate(
   const acquisitionOptions = numberingPlan && !options.context.numberingMarkerGeometry
     ? { ...options, context: { ...options.context, numberingMarkerGeometry: numberingPlan } }
     : options;
+  const measureWithExclusions = (
+    exclusions: readonly WrapExclusion[],
+    observeBand?: (topPt: number, heightPt: number, moved: boolean) => void,
+  ) => measureParagraph(
+    paragraph,
+    acquisitionOptions.context,
+    measurementPlacement(options, exclusions, observeBand),
+    options.measurer,
+    {
+      ...options.environment,
+      paragraphMarkShapeInput: paragraph.paragraphMarkShapeInput,
+      ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
+        firstLineNumberingMarkerBox: numberingPlan.lineBox,
+      } : {}),
+    },
+    continuation,
+  );
+  const lineRelativeOccurrenceIds = new Set(occurrenceIds.size === 0 ? [] : paragraph.runs.flatMap((run) => {
+    if (!anchoredPayloadRun(run)) return [];
+    const input = run.anchorAcquisitionInput!;
+    return occurrenceIds.has(input.occurrenceId)
+      && input.vertical.relativeFrom === 'line'
+      && !input.simplePosition.enabled
+      && ['square', 'tight', 'through', 'topAndBottom'].includes(input.wrap.kind)
+      ? [input.occurrenceId] : [];
+  }));
+  let lineReferences: ReadonlyMap<string, AnchorLineReference> | undefined;
   type Pass = Readonly<{
     measured: MeasuredParagraph;
     layout: ParagraphLayout;
@@ -5003,28 +5054,105 @@ function acquireParagraphCandidate(
         );
         const measured = lineTemplate
           ? placeCachedLineBreaking(lineTemplate, options.placement)
-          : measureParagraph(
-          paragraph,
-          acquisitionOptions.context,
-          measurementPlacement(options, effectiveExclusions),
-          options.measurer,
-          {
-            ...options.environment,
-            paragraphMarkShapeInput: paragraph.paragraphMarkShapeInput,
-            ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
-              firstLineNumberingMarkerBox: numberingPlan.lineBox,
-            } : {}),
-          },
-          continuation,
-          );
-        const layout = projectAcquiredParagraph(
-          paragraph,
-          anchorLineExemptions && anchorLineExemptions.size > 0
-            ? { ...acquisitionOptions, anchorLineExemptions }
-            : acquisitionOptions,
-          measured,
-          stage,
+          : measureWithExclusions(effectiveExclusions);
+        const projectionOptions = anchorLineExemptions && anchorLineExemptions.size > 0
+          ? { ...acquisitionOptions, anchorLineExemptions } : acquisitionOptions;
+        let layout = projectAcquiredParagraph(
+          paragraph, projectionOptions, measured, stage, lineReferences,
         );
+        if (lineReferences === undefined && lineRelativeOccurrenceIds.size > 0) {
+          // ECMA-376 Part 1 §§20.4.2.11–12, 20.4.3.5: positionV's line
+          // frame belongs to the line containing the anchor character. Its own
+          // wrap cannot supply that frame: doing so feeds the output of wrap
+          // back into its input. Acquire each reference without that occurrence,
+          // preserving external exclusions and the other objects' seed geometry,
+          // then retain it for this acquisition, independently of the final host.
+          // This counterfactual step is library solver policy.
+          // Counterfactual work has its own size-weighted aggregate budget;
+          // neither cache misses nor the convergence-pass guard bound this loop.
+          // Projections here acquire only lines, never drawing/textbox stories.
+          const referenceWork = createParagraphAnchorReferenceWorkBudget(paragraph);
+          const seedOwned = canonicalOwnedExclusions(layout, occurrenceIds);
+          const hostReferences = (lines: ParagraphLayout['lines']) => {
+            const references = new Map<string, AnchorLineReference>();
+            lines.forEach((line, index) => {
+              for (const placement of line.placements) {
+                if (placement.kind === 'anchor-host' && placement.anchorOccurrenceId
+                  && !references.has(placement.anchorOccurrenceId)) {
+                  references.set(placement.anchorOccurrenceId, { bounds: line.bounds, firstLine: index === 0 });
+                }
+              }
+            });
+            return references;
+          };
+          const initialReferences = hostReferences(layout.lines);
+          let sharedReferences = initialReferences;
+          let queriedBottomPt = Number.NEGATIVE_INFINITY;
+          let sharedQueriesUnshifted = true;
+          // Measure all seed objects together once. Share only when every wrap
+          // query succeeds at its input Y: there is then no vertical search whose
+          // intermediate probes/events must also be proved independent. An object
+          // strictly below every queried band cannot affect those same queries
+          // when removed. All other objects' exclusions remain in that reference.
+          // A moved query conservatively uses individual budgeted measurements.
+          if (seedOwned.length > 1) {
+            const sharedExclusions = mergeParagraphExclusions(options.exclusions, seedOwned);
+            referenceWork.charge(sharedExclusions);
+            const sharedMeasured = measureWithExclusions(sharedExclusions, (topPt, heightPt, moved) => {
+              sharedQueriesUnshifted &&= !moved;
+              // Round the exact binary sum upward: strict separation must
+              // never discard a tight-wrap top-edge touch through rounding.
+              const bottomPt = exactRationalToNumberUp(addExactRational(
+                exactRationalFromNumber(topPt), exactRationalFromNumber(heightPt),
+              ));
+              queriedBottomPt = Math.max(queriedBottomPt, bottomPt);
+            });
+            sharedReferences = hostReferences(projectAcquiredParagraphLines(
+              paragraph, acquisitionOptions, sharedMeasured,
+            ).lines);
+          }
+          const seedByOccurrence = new Map(seedOwned.map((exclusion) =>
+            [exclusion.anchorOccurrenceId, exclusion]));
+          const references = new Map<string, AnchorLineReference>();
+          let measuredOtherObjects = false;
+          for (const occurrenceId of lineRelativeOccurrenceIds) {
+            const own = seedByOccurrence.get(occurrenceId);
+            let reference: AnchorLineReference | undefined;
+            // Check padded bounds and authored contour; either can extend
+            // higher. Equality stays on the independent-measurement path.
+            if (seedOwned.length > 1 && (!own || (
+              sharedQueriesUnshifted && own.bounds.yPt > queriedBottomPt
+              && own.polygon.every((point) => point.yPt > queriedBottomPt)
+            ))) {
+              reference = sharedReferences.get(occurrenceId);
+              measuredOtherObjects = true;
+            } else {
+              const otherOwned = seedOwned.filter((exclusion) =>
+                exclusion.anchorOccurrenceId !== occurrenceId);
+              measuredOtherObjects ||= otherOwned.length > 0;
+              if (otherOwned.length === 0) {
+                reference = initialReferences.get(occurrenceId);
+              } else {
+                const exclusions = mergeParagraphExclusions(options.exclusions, otherOwned);
+                referenceWork.charge(exclusions);
+                reference = hostReferences(projectAcquiredParagraphLines(paragraph, acquisitionOptions,
+                  measureWithExclusions(exclusions)).lines).get(occurrenceId);
+              }
+            }
+            if (reference) references.set(occurrenceId, reference);
+          }
+          lineReferences = references;
+          // Host-line policy B: after reference acquisition, all exclusions still
+          // apply to the host line. Whether Word instead exempts that line (A),
+          // especially for padding-only overlap, remains an open compatibility
+          // question requiring controlled Office evidence. Any future exemption
+          // belongs at the anchorLineExemptions decision below, not in this frame.
+          if (measuredOtherObjects) {
+            layout = projectAcquiredParagraph(
+              paragraph, projectionOptions, measured, stage, lineReferences,
+            );
+          }
+        }
         const ownedExclusions = canonicalOwnedExclusions(layout, occurrenceIds);
         if (anchorLineExemptions === undefined) {
           anchorLineExemptions = wordMode14AnchorLineExemptions(
@@ -5340,12 +5468,11 @@ export function paragraphLayoutFromMeasurement(
   return projectAcquiredParagraph(paragraph, options, measured, 'complete');
 }
 
-function projectAcquiredParagraph(
+function projectAcquiredParagraphLines(
   paragraph: ParagraphAcquisitionInput,
   options: ParagraphAcquisitionOptions,
   measured: MeasuredParagraph,
-  stage: 'complete' | 'anchor-run',
-): ParagraphLayout {
+) {
   const planningContext = options.continuesFromPrevious
     ? { ...options.context, firstIndentPt: 0 }
     : options.context;
@@ -5398,6 +5525,19 @@ function projectAcquiredParagraph(
       planningContext,
     )];
   }
+  return { lines, planningContext, paragraphXPt, availableWidthPt, occurrences, numberingPlan };
+}
+
+function projectAcquiredParagraph(
+  paragraph: ParagraphAcquisitionInput,
+  options: ParagraphAcquisitionOptions,
+  measured: MeasuredParagraph,
+  stage: 'complete' | 'anchor-run',
+  lineReferences?: ReadonlyMap<string, AnchorLineReference>,
+): ParagraphLayout {
+  const linePlan = projectAcquiredParagraphLines(paragraph, options, measured);
+  let { lines } = linePlan;
+  const { planningContext, paragraphXPt, availableWidthPt, occurrences, numberingPlan } = linePlan;
   const resources: InlineResourceLayout[] = [];
   const drawings: DrawingLayout[] = [];
   const textBoxes: TextBoxLayout[] = [];
@@ -5437,6 +5577,7 @@ function projectAcquiredParagraph(
       paragraphOccurrenceIds,
       options.placement.startYPt
         + (options.placement.suppressSpaceBefore ? 0 : measured.requestedSpaceBeforePt),
+      lineReferences?.get(occurrenceId),
     );
     if (!acquired) continue;
     anchorResults.push(acquired.result);
