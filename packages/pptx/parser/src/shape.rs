@@ -2869,11 +2869,11 @@ pub(crate) fn parse_sp_tree_node(
                     })
                 };
                 let owner = out[before..].iter().position(|element| match element {
-                    SlideElement::Shape(shape) => shape.text_body.as_ref().is_some_and(&has_math),
+                    SlideElement::Shape(shape) => shape.text_body.as_ref().is_some_and(has_math),
                     SlideElement::Table(table) => table.rows.iter().any(|row| {
                         row.cells
                             .iter()
-                            .any(|cell| cell.text_body.as_ref().is_some_and(&has_math))
+                            .any(|cell| cell.text_body.as_ref().is_some_and(has_math))
                     }),
                     _ => false,
                 });
