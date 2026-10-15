@@ -1,3 +1,4 @@
+import { planVmlShadows } from './vml-shadow.js';
 import { resolveDrawingMLGeometry } from '@silurus/ooxml-core';
 import type { ArrowEnd, DrawingMLShapePaintPlan, Stroke } from '@silurus/ooxml-core';
 import type { ShapeRun } from '../types.js';
@@ -20,6 +21,8 @@ export type ShapeDrawingPlanResult =
   | Readonly<{
       status: 'planned';
       command: ShapeDrawingCommand;
+      before?: readonly Extract<DrawingPaintCommand, { kind: 'drawingml-shape' | 'watermark-text' }>[];
+      diagnostics?: readonly Readonly<Omit<LayoutDiagnostic, 'source'>>[];
     }>
   | Readonly<{
       status: 'unsupported';
@@ -190,9 +193,7 @@ export function planShapeDrawing(
     ) {
       return unsupportedTextPathPlan('VML textPath produced empty glyph metrics');
     }
-    return Object.freeze({
-      status: 'planned',
-      command: snapshotPlainData({
+    const command = snapshotPlainData({
         kind: 'watermark-text' as const,
         rect: { ...bounds },
         text: textPath.string,
@@ -211,7 +212,21 @@ export function planShapeDrawing(
           fontWeight: span.font.weight,
           fontStyle: span.font.style,
         })),
-      }, 'VML textPath command'),
+      }, 'VML textPath command');
+    const shadow = shape.vmlShadow;
+    const before = shadow && shadow.kind !== 'perspective' && shadow.opacity > 0
+      ? (shadow.kind === 'single' ? [[shadow.offset, shadow.color]] as const
+        : [[shadow.offset, shadow.color], [shadow.offset2, shadow.color2]] as const).map(([offset, color]) => snapshotPlainData({
+          ...command,
+          rect: { ...bounds, xPt: bounds.xPt + offset.xPt + offset.xFraction * bounds.widthPt,
+            yPt: bounds.yPt + offset.yPt + offset.yFraction * bounds.heightPt },
+          fill: { fillType: 'solid' as const, color }, opacity: shadow.opacity,
+        }, 'VML text shadow')) : [];
+    return Object.freeze({ status: 'planned', command, ...(before.length ? { before } : {}),
+      // A perspective warp needs glyph outlines, which Canvas text shaping
+      // does not expose. Keep the available text and disclose only that effect.
+      ...(shadow?.kind === 'perspective' ? { diagnostics: [{ code: 'UNSUPPORTED_FEATURE' as const,
+        severity: 'error' as const, message: 'VML perspective text shadow requires glyph outlines' }] } : {}),
     });
   }
   const plan: DrawingMLShapePaintPlan = {
@@ -242,6 +257,7 @@ export function planShapeDrawing(
     },
   };
   const retainedPlan = { ...plan, resolvedGeometry: resolveDrawingMLGeometry(plan, 1, maximumGeometryWork) };
+  const shadows = planVmlShadows(shape, retainedPlan, (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits);
   if (shape.fill?.fillType === 'image') {
     if (shape.fill.tile !== undefined) {
       return Object.freeze({
@@ -259,6 +275,7 @@ export function planShapeDrawing(
     }
     return Object.freeze({
       status: 'planned',
+      ...(shadows.length ? { before: snapshotPlainData(shadows, 'VML shadows') } : {}),
       command: snapshotPlainData({
         kind: 'drawingml-image-fill' as const,
         plan: retainedPlan,
@@ -276,6 +293,7 @@ export function planShapeDrawing(
   }
   return Object.freeze({
     status: 'planned',
+    ...(shadows.length ? { before: snapshotPlainData(shadows, 'VML shadows') } : {}),
     command: snapshotPlainData(
       { kind: 'drawingml-shape', plan: retainedPlan } as const,
       'DrawingML shape command',

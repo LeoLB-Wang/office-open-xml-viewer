@@ -1,3 +1,4 @@
+import { shadowInkBounds } from './vml-shadow.js';
 import { describe, expect, it } from 'vitest';
 import type { ShapeRun } from '../types.js';
 import {
@@ -38,6 +39,57 @@ function textPathPlan(
 }
 
 describe('ShapeRun drawing command planner', () => {
+  it('retains both shadow silhouettes with point and fractional offsets, opacity and disabled-fill behavior', () => {
+    const input = shape({ presetGeometry: 'rect', fill: null, rotation: 0, flipH: false,
+      headEnd: null, tailEnd: null,
+      vmlShadow: {
+        kind: 'double', color: 'FF0000', color2: '0000FF', opacity: 0.5,
+        offset: { xPt: 10, yPt: 5, xFraction: 0, yFraction: 0 },
+        offset2: { xPt: 0, yPt: 0, xFraction: -.25, yFraction: .5 },
+        obscured: false, origin: [0, 0], matrix: [1, 0, 0, 1, 0, 0], absolutePerspective: true,
+      },
+    });
+    const result = planShapeDrawing(input, { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 });
+    if (result.status !== 'planned') throw new Error('expected planned shadows');
+    expect(result.before).toMatchObject([
+      { opacity: .5, plan: { rect: { x: 10, y: 5 }, fill: { color: 'FF0000' } } },
+      { opacity: .5, plan: { rect: { x: -25, y: 25 }, fill: { color: '0000FF' } } },
+    ]);
+    const ink = shadowInkBounds(result.before ?? [], { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 });
+    expect(ink.xPt).toBeLessThanOrEqual(-25);
+    expect(ink.xPt + ink.widthPt).toBeGreaterThanOrEqual(110);
+    expect(ink.yPt + ink.heightPt).toBeGreaterThanOrEqual(75);
+    if (!input.vmlShadow) throw new Error('missing shadow fixture');
+    input.vmlShadow.obscured = true;
+    const transparent = planShapeDrawing(input, { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 });
+    if (transparent.status !== 'planned') throw new Error('expected planned shadows');
+    expect(transparent.before?.map(c => {
+      if (c.kind !== 'drawingml-shape') throw new Error('expected vector shadow');
+      return c.plan.fill;
+    })).toEqual([null, null]);
+  });
+
+  it('projects perspective shadow geometry about its origin and charges the geometry allowance', () => {
+    const input = shape({ presetGeometry: 'rect', fill: { fillType: 'solid', color: 'FFFFFF' },
+      stroke: null, rotation: 0, flipH: false, headEnd: null, tailEnd: null,
+      vmlShadow: {
+        kind: 'perspective', color: 'FF0000', color2: '0000FF', opacity: 1,
+        offset: { xPt: 0, yPt: 0, xFraction: 0, yFraction: 0 },
+        offset2: { xPt: 0, yPt: 0, xFraction: 0, yFraction: 0 },
+        obscured: false, origin: [-.5, -.5], matrix: [1, 0, 0, 1, .01 / 12700, 0], absolutePerspective: true,
+      },
+    });
+    const result = planShapeDrawing(input, { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 });
+    if (result.status !== 'planned') throw new Error('expected perspective shadow');
+    const shadow = result.before?.[0];
+    if (shadow?.kind !== 'drawingml-shape') throw new Error('expected vector shadow');
+    expect(shadow.plan.geometry).toMatchObject({ kind: 'custom', subpaths: [[
+      { cmd: 'moveTo', x: 0, y: 0 }, { cmd: 'lineTo', x: 50, y: 0 },
+      { cmd: 'lineTo', x: 50, y: 25 }, { cmd: 'lineTo', x: 0, y: 50 }, { cmd: 'close' },
+    ]] });
+    expect(() => planShapeDrawing(input, { xPt: 0, yPt: 0, widthPt: 100, heightPt: 50 }, undefined, undefined, undefined, 12)).toThrow(/allowance|budget/i);
+  });
+
   it('projects only clone-safe DrawingML paint facts without raw ShapeRun or shape resources', () => {
     const input = shape();
     const result = planShapeDrawing(input, { xPt: 10, yPt: 20, widthPt: 100, heightPt: 50 });
@@ -180,6 +232,10 @@ describe('ShapeRun drawing command planner', () => {
         trim: false, xScale: false, fontSizePt: 36,
       },
       fill: { fillType: 'solid', color: '808080' }, fillOpacity: .4, rotation: 315,
+      vmlShadow: { kind: 'single', color: 'FF0000', color2: 'FFFFFF', opacity: .5,
+        offset: { xPt: 10, yPt: 20, xFraction: 0, yFraction: 0 },
+        offset2: { xPt: 0, yPt: 0, xFraction: 0, yFraction: 0 },
+        obscured: false, origin: [0, 0], matrix: [1, 0, 0, 1, 0, 0], absolutePerspective: true },
     } as InternalShapeRun), { xPt: 1, yPt: 2, widthPt: 300, heightPt: 120 }, text);
 
     expect(result).toMatchObject({
@@ -194,6 +250,9 @@ describe('ShapeRun drawing command planner', () => {
         spans: [{ text: 'DRAFT', advancePt: 250, fontWeight: 700, fontStyle: 'italic' }],
       },
     });
+    if (result.status !== 'planned') throw new Error('expected text and shadow');
+    expect(result.before).toMatchObject([{ kind: 'watermark-text', opacity: .5,
+      rect: { xPt: 11, yPt: 22 }, fill: { color: 'FF0000' }, text: 'DRAFT' }]);
     expect(requests).toMatchObject([{ fontSizePt: 36, text: 'DRAFT' }]);
     expect(structuredClone(result)).toEqual(result);
   });

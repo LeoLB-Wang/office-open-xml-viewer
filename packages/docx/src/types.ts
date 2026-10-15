@@ -917,12 +917,26 @@ export interface ShapeRun {
   behindDoc?: boolean;
   /** ECMA-376 §20.4.2.3 `wp:anchor/@relativeHeight`: lower values render first. */
   zOrder: number;
+  /** ECMA-376 Part 4 §19.1.2.18; VML shadow facts resolved by layout. */
+  vmlShadow?: {
+    kind: 'single' | 'double' | 'emboss' | 'perspective';
+    color: string;
+    color2: string;
+    offset: { xPt: number; yPt: number; xFraction: number; yFraction: number };
+    offset2: { xPt: number; yPt: number; xFraction: number; yFraction: number };
+    opacity: number;
+    obscured: boolean;
+    origin: [number, number];
+    matrix: [number, number, number, number, number, number];
+    absolutePerspective: boolean;
+  };
   /** Normalized [0,1] custom-geometry sub-paths. Empty when `presetGeometry`
    *  is set; the renderer chooses between buildCustomPath and buildShapePath. */
   subpaths: PathCmd[][];
   /** ECMA-376 §20.1.9.15 per-path `fill` mode and `stroke` flag, parallel to
    *  `subpaths`; absent when every path uses the defaults. */
   subpathPaint?: Array<{
+    fillRule?: 'nonzero' | 'evenodd';
     fill?: 'none' | 'lighten' | 'lightenLess' | 'darken' | 'darkenLess';
     stroke?: false;
   }>;

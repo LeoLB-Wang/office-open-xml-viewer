@@ -45,10 +45,57 @@ pub(crate) fn ref_target(instruction: &str) -> Option<&str> {
 /// blocks, so the small instruction stack survives each block's XML arena.
 #[derive(Default)]
 pub(crate) struct RefInstructionCollector {
-    stack: Vec<Option<String>>,
+    stack: Vec<RefInstruction>,
     overflow_depth: usize,
+    overflow_instruction: RefInstruction,
     pub(crate) targets: HashSet<String>,
     pub(crate) budget_exceeded: bool,
+}
+
+// Recognize the keyword across instrText chunks without retaining unrelated
+// fields or unbounded leading whitespace. A REF diagnostic belongs only to a
+// relevant acquisition that was actually curtailed, never a long HYPERLINK.
+#[derive(Default)]
+struct RefInstruction {
+    prefix: String,
+    text: String,
+    bytes: usize,
+    relevant: bool,
+    irrelevant: bool,
+}
+impl RefInstruction {
+    fn append(&mut self, text: &str, depth_limited: bool) -> bool {
+        if self.irrelevant {
+            return false;
+        }
+        let mut exceeded = false;
+        for ch in text.chars() {
+            self.bytes = self.bytes.saturating_add(ch.len_utf8());
+            if !self.relevant {
+                if self.prefix.is_empty() && ch.is_whitespace() {
+                    continue;
+                }
+                if ch.is_whitespace() && self.prefix.eq_ignore_ascii_case("REF") {
+                    self.relevant = true;
+                    self.text.push_str("REF ");
+                } else {
+                    self.prefix.push(ch);
+                    if !"REF".starts_with(&self.prefix.to_ascii_uppercase()) {
+                        self.irrelevant = true;
+                        return exceeded;
+                    }
+                }
+            } else if self.bytes <= MAX_FIELD_INSTRUCTION_BYTES && !depth_limited {
+                self.text.push(ch);
+            }
+            if self.relevant && (depth_limited || self.bytes > MAX_FIELD_INSTRUCTION_BYTES) {
+                exceeded = true;
+                self.irrelevant = true;
+                break;
+            }
+        }
+        exceeded
+    }
 }
 
 impl RefInstructionCollector {
@@ -63,15 +110,15 @@ impl RefInstructionCollector {
             match attr_w(node, "fldCharType").as_deref() {
                 Some("begin") => {
                     if self.overflow_depth > 0 || self.stack.len() >= MAX_ACTIVE_BOOKMARKS {
-                        self.budget_exceeded = true;
+                        self.overflow_instruction = RefInstruction::default();
                         self.overflow_depth = self.overflow_depth.saturating_add(1);
                     } else {
-                        self.stack.push(Some(String::new()));
+                        self.stack.push(RefInstruction::default());
                     }
                 }
                 Some("separate") if self.overflow_depth == 0 => {
-                    if let Some(Some(instruction)) = self.stack.last() {
-                        if let Some(target) = ref_target(instruction) {
+                    if let Some(instruction) = self.stack.last().filter(|i| !i.irrelevant) {
+                        if let Some(target) = ref_target(&instruction.text) {
                             if self.targets.contains(target) || self.targets.len() < MAX_REF_TARGETS
                             {
                                 self.targets.insert(target.to_string());
@@ -90,17 +137,15 @@ impl RefInstructionCollector {
                 }
                 _ => {}
             }
-        } else if is_word(node, "instrText") && self.overflow_depth == 0 {
-            if let Some(frame) = self.stack.last_mut() {
-                if let Some(instruction) = frame {
-                    let text = node.text().unwrap_or_default();
-                    if instruction.len().saturating_add(text.len()) <= MAX_FIELD_INSTRUCTION_BYTES {
-                        instruction.push_str(text);
-                    } else {
-                        self.budget_exceeded = true;
-                        *frame = None;
-                    }
-                }
+        } else if is_word(node, "instrText") {
+            let limited = self.overflow_depth > 0;
+            let frame = if limited {
+                Some(&mut self.overflow_instruction)
+            } else {
+                self.stack.last_mut()
+            };
+            if let Some(frame) = frame {
+                self.budget_exceeded |= frame.append(node.text().unwrap_or_default(), limited);
             }
         }
     }
@@ -410,6 +455,19 @@ mod budget_tests {
             &mut collector,
             &(" ".repeat(MAX_FIELD_INSTRUCTION_BYTES) + "REF B"),
         );
+        assert!(collector.budget_exceeded);
+    }
+
+    #[test]
+    fn long_non_ref_instructions_do_not_report_ref_acquisition_failure() {
+        let mut collector = RefInstructionCollector::default();
+        observe_instruction(
+            &mut collector,
+            &format!("HYPERLINK https://example.test/{}", "a".repeat(300)),
+        );
+        assert!(!collector.budget_exceeded);
+        assert!(collector.targets.is_empty());
+        observe_instruction(&mut collector, &format!("REF {}", "a".repeat(300)));
         assert!(collector.budget_exceeded);
     }
 

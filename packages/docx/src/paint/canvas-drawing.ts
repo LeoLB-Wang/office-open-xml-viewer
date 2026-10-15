@@ -30,7 +30,15 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
     if (command.kind === 'drawingml-shape') {
       // Page setup already maps retained point coordinates to device pixels. A
       // second scale here would multiply stroke widths and arrowhead geometry.
-      paintPageAlignedDrawingMLShape(command.plan, context);
+      if (command.opacity === undefined) {
+        paintPageAlignedDrawingMLShape(command.plan, context);
+      } else {
+        context.ctx.save();
+        try {
+          context.ctx.globalAlpha *= command.opacity;
+          paintPageAlignedDrawingMLShape(command.plan, context);
+        } finally { context.ctx.restore(); }
+      }
       continue;
     }
     if (command.kind === 'drawingml-image-fill') {

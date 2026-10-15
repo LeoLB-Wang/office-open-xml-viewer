@@ -48,6 +48,8 @@ mod relationship_target_tests;
 #[path = "parser/word_ilvl_integration_tests.rs"]
 mod word_ilvl_integration_tests;
 
+#[path = "parser/vml_geometry.rs"]
+mod vml_geometry;
 #[path = "parser/vml_group.rs"]
 mod vml_group;
 
@@ -5295,6 +5297,10 @@ fn load_media_map(
     source_part: &str,
 ) -> HashMap<String, String> {
     let mut media_map: HashMap<String, String> = HashMap::new();
+    // Private acquisition context for VML src URIs, which are relative to the
+    // owning story part (Part 4 §19.1.2.10/.11), not necessarily document.xml.
+    // NUL cannot occur in an XML relationship ID. No media bytes are acquired.
+    media_map.insert("\0vml-source-part".into(), source_part.into());
     for (rid, relationship) in relationships {
         // The media filter compares the Target's part-name equivalence key, so
         // `Media/Image1.png` and `%6Dedia/...` spell the same kind of target.
@@ -5316,6 +5322,13 @@ fn load_media_map(
             // part share one model path. `entry_name` consults only the
             // central directory — no inflate.
             if let Some(stored) = zip.entry_name(&path) {
+                media_map.insert(
+                    format!(
+                        "\0vml-part:{}",
+                        ooxml_common::rels::part_name_equivalence_key(&stored)
+                    ),
+                    stored.clone(),
+                );
                 media_map.insert(rid.clone(), stored);
             }
         }
@@ -12121,7 +12134,7 @@ fn parse_vml_pict(
         n.is_element()
             && matches!(
                 n.tag_name().name(),
-                "shape" | "rect" | "roundrect" | "oval" | "line"
+                "shape" | "rect" | "roundrect" | "oval" | "line" | "arc" | "curve" | "polyline"
             )
             && !n
                 .children()
@@ -12139,7 +12152,16 @@ fn parse_vml_pict(
             })
         });
     parse_vml_shape(
-        style_map, num_map, shape, shape_type, theme, media_map, chart_map, rel_map, depth,
+        style_map,
+        num_map,
+        shape,
+        shape_type,
+        theme,
+        media_map,
+        chart_map,
+        rel_map,
+        (1.0, 1.0),
+        depth,
     )
 }
 
@@ -12153,6 +12175,7 @@ fn parse_vml_shape(
     media_map: &HashMap<String, String>,
     chart_map: &ChartMap,
     rel_map: &HashMap<String, String>,
+    physical_scale: (f64, f64),
     depth: DepthGuard,
 ) -> Option<ShapeRun> {
     // CSS-like `style`: "position:relative;width:300pt;height:60pt;…".
@@ -12164,21 +12187,26 @@ fn parse_vml_shape(
         .find(|attr| attr.name() == "spt")
         .or_else(|| shape_type.and_then(|node| node.attributes().find(|attr| attr.name() == "spt")))
         .and_then(|attr| attr.value().parse::<u16>().ok());
-    let preset_geometry = match shape.tag_name().name() {
+    let mut preset_geometry = match shape.tag_name().name() {
         "line" => Some("line".to_string()),
         "rect" => Some("rect".to_string()),
         "roundrect" => Some("roundRect".to_string()),
         "oval" => Some("ellipse".to_string()),
-        _ => Some(
-            spt.and_then(vml_shape_type_preset)
-                .unwrap_or("rect")
-                .to_string(),
-        ),
+        _ => spt
+            .and_then(vml_shape_type_preset)
+            .map(str::to_string)
+            .or_else(|| spt.is_none().then(|| "rect".into())),
     };
-    let is_line_geometry = preset_geometry.as_deref().is_some_and(|preset| {
-        let preset = preset.to_ascii_lowercase();
-        preset == "line" || preset.contains("connector")
-    });
+    let primitive = if matches!(shape.tag_name().name(), "curve" | "polyline") {
+        Some(vml_geometry::primitive(shape)?)
+    } else {
+        None
+    };
+    let is_line_geometry = primitive.is_some()
+        || preset_geometry.as_deref().is_some_and(|preset| {
+            let preset = preset.to_ascii_lowercase();
+            preset == "line" || preset.contains("connector")
+        });
 
     let line_points = if shape.tag_name().name() == "line" {
         match (
@@ -12191,7 +12219,9 @@ fn parse_vml_shape(
     } else {
         None
     };
-    let (width_pt, height_pt) = if let Some((from, to)) = line_points {
+    let (width_pt, height_pt) = if let Some((_, (_, _, w, h))) = &primitive {
+        (*w, *h)
+    } else if let Some((from, to)) = line_points {
         ((to.0 - from.0).abs(), (to.1 - from.1).abs())
     } else {
         (
@@ -12207,8 +12237,53 @@ fn parse_vml_shape(
         return None;
     }
 
-    let resolved_fill = resolve_vml_fill(shape, shape_type);
-    let resolved_stroke = resolve_vml_stroke(shape, shape_type);
+    let mut resolved_fill = resolve_vml_fill(shape, shape_type);
+    let mut resolved_stroke = resolve_vml_stroke(shape, shape_type);
+    let mut geometry_unavailable = preset_geometry.is_none()
+        && primitive.is_none()
+        && shape.tag_name().name() != "arc"
+        && vml_geometry::path_source(shape, shape_type).is_none();
+    let geometry = if let Some((geometry, _)) = &primitive {
+        Some(vml_geometry::Geometry {
+            paths: geometry.paths.clone(),
+            paint: geometry.paint.clone(),
+        })
+    } else if shape.tag_name().name() == "arc" {
+        let acquired = vml_geometry::arc(shape);
+        geometry_unavailable = acquired.is_none();
+        acquired
+    } else if vml_geometry::path_source(shape, shape_type).is_some() {
+        let acquired = vml_geometry::acquire(
+            shape,
+            shape_type,
+            width_pt * physical_scale.0,
+            height_pt * physical_scale.1,
+        );
+        geometry_unavailable = acquired.is_none();
+        acquired
+    } else {
+        None
+    };
+    let (subpaths, subpath_paint) = if let Some(geometry) = geometry {
+        preset_geometry = None;
+        (geometry.paths, geometry.paint)
+    } else {
+        if geometry_unavailable {
+            preset_geometry = None;
+        }
+        (Vec::new(), Vec::new())
+    };
+    // CT_Path controls override shape and decoration properties (§19.1.2.14).
+    if vml_geometry::path_attr(shape, shape_type, "fillok").and_then(parse_vml_true_false)
+        == Some(false)
+    {
+        resolved_fill.fill = None;
+    }
+    if vml_geometry::path_attr(shape, shape_type, "strokeok").and_then(parse_vml_true_false)
+        == Some(false)
+    {
+        resolved_stroke.color = None;
+    }
 
     // ECMA-376 Part 4 §19.1.2.5 `<v:fill opacity>` — fill alpha (default opaque).
     let fill_opacity = resolved_fill.opacity;
@@ -12268,7 +12343,7 @@ fn parse_vml_shape(
             .descendants()
             .find(|n| n.is_element() && n.tag_name().name() == "txbxContent")
     });
-    let (text_box_content, parsed_legacy_blocks) = match text_box_content_node {
+    let (mut text_box_content, parsed_legacy_blocks) = match text_box_content_node {
         Some(content) if text_path.is_some() => {
             // Before B2, a VML textPath suppressed txbxContent before parsing,
             // so its paragraphs did not advance document numbering. Preserve
@@ -12290,6 +12365,16 @@ fn parse_vml_shape(
         ),
         None => (Vec::new(), Vec::new()),
     };
+    if geometry_unavailable || vml_geometry::incomplete_leaf(shape, shape_type) {
+        // Malformed path/formula input must not erase otherwise available text
+        // or paint a substitute rectangle. Retain the story and disclose only
+        // the unavailable geometry/decoration through its established marker.
+        text_box_content.push(TextBoxBlockWire::Unsupported {
+            kind: "unsupportedTextBoxBlock".into(),
+            q_name: "v:shape".into(),
+            source_path: vec![text_box_content.len()],
+        });
+    }
     let text_blocks = if text_path.is_some() {
         Vec::new()
     } else {
@@ -12300,15 +12385,19 @@ fn parse_vml_shape(
     // position in margin-left / margin-top even when `left:0` is also present.
     // Preserve those authored offsets instead of collapsing every box to the
     // anchor paragraph's leading corner.
-    let anchor_x_pt = line_points
-        .map(|(from, to)| from.0.min(to.0))
+    let anchor_x_pt = primitive
+        .as_ref()
+        .map(|(_, (x, _, _, _))| *x)
+        .or_else(|| line_points.map(|(from, to)| from.0.min(to.0)))
         .unwrap_or_else(|| {
             vml_css_length_pt(style, "margin-left")
                 .or_else(|| vml_css_length_pt(style, "left"))
                 .unwrap_or(0.0)
         });
-    let anchor_y_pt = line_points
-        .map(|(from, to)| from.1.min(to.1))
+    let anchor_y_pt = primitive
+        .as_ref()
+        .map(|(_, (_, y, _, _))| *y)
+        .or_else(|| line_points.map(|(from, to)| from.1.min(to.1)))
         .unwrap_or_else(|| {
             vml_css_length_pt(style, "margin-top")
                 .or_else(|| vml_css_length_pt(style, "top"))
@@ -12317,13 +12406,27 @@ fn parse_vml_shape(
     let style_flip = vml_css_str(style, "flip").unwrap_or_default();
     let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0) ^ style_flip.contains('x');
     let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1) ^ style_flip.contains('y');
-    let adj_values = shape
-        .attribute("adj")
-        .or_else(|| shape_type.and_then(|node| node.attribute("adj")))
-        .and_then(|value| value.split(',').next())
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .map(|value| vec![Some(value * 100000.0 / 21600.0)])
-        .unwrap_or_default();
+    let adj_values = if shape.tag_name().name() == "roundrect" {
+        // Part 4 §19.1.2.17: VML arcsize defaults to 20% of half the
+        // smaller extent. DrawingML roundRect's adj is a fraction of that
+        // extent, so the conversion is exactly one half of the VML fraction.
+        let raw = shape.attribute("arcsize").unwrap_or("20%");
+        let fraction = raw
+            .strip_suffix('%')
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|n| n / 100.0)
+            .or_else(|| parse_vml_opacity(raw))
+            .unwrap_or(0.2);
+        vec![Some(fraction * 50000.0)]
+    } else {
+        shape
+            .attribute("adj")
+            .or_else(|| shape_type.and_then(|node| node.attribute("adj")))
+            .and_then(|value| value.split(',').next())
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(|value| vec![Some(value * 100000.0 / 21600.0)])
+            .unwrap_or_default()
+    };
     let anchor = vml_css_str(style, "position")
         .is_some_and(|value| value.eq_ignore_ascii_case("absolute"))
         && vml_word_has_complete_anchor_reference(shape, style);
@@ -12346,9 +12449,10 @@ fn parse_vml_shape(
         anchor_y_relative_from,
         behind_doc,
         z_order: 0,
-        subpaths: Vec::new(),
-        subpath_paint: Vec::new(),
+        subpaths,
+        subpath_paint,
         preset_geometry,
+        vml_shadow: vml_geometry::shadow(shape, shape_type),
         adj_values,
         fill: resolved_fill.fill,
         fill_opacity,
@@ -13242,28 +13346,70 @@ fn resolved_vml_textpath_bool(
         })
 }
 
-/// Parse a bare legacy VML `<w:pict>` picture — a `<v:shape>` (or
-/// `<v:rect>`/`<v:roundrect>`/`<v:oval>`) carrying a `<v:imagedata r:id>`
-/// (ECMA-376 Part 4 §19.1.2.11 imagedata) with NO surrounding `<w:object>`. This
-/// is the non-OLE inline VML image form (e.g. a header picture Word emits as VML
-/// rather than DrawingML). The rId maps to an embedded part via the media map,
-/// and the draw size comes from the shape's CSS `style` width/height in pt
-/// (§19.1.2.19). The result is an inline `ImageRun`, feeding the same image
-/// pipeline as a DrawingML `<a:blip>` picture.
-///
-/// Returns `None` (leaving the pict to the text-box path) when:
-///   - no shape carries a `<v:imagedata r:id>` (it is a filled/text panel), or
-///   - the relevant shape is inside a `<v:group>` — a grouped shape's
-///     width/height are expressed in the GROUP's coordinate system
-///     (`coordsize`), not points, so treating them as pt would badly mis-size
-///     the image. Resolving the group transform (child offset × group scale) is
-///     handled by `vml_group` before this ungrouped-picture reader, or
-///   - the rId does not resolve, or the shape has no positive pt dimensions.
+// Part 4 §19.1.2.11: crop insets are fractions, percentages, or signed
+// 16.16 fixed-point values. Preserve negative insets for the existing srcRect
+// pipeline; clamping here would discard authored outsets.
+fn vml_image_crop(node: roxmltree::Node) -> Option<SrcRect> {
+    let fraction = |name| {
+        node.attribute(name)
+            .and_then(|s| {
+                s.trim()
+                    .strip_suffix('%')
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|n| n / 100.0)
+                    .or_else(|| parse_vml_opacity(s))
+            })
+            .filter(|n| n.is_finite())
+            .unwrap_or(0.0)
+    };
+    let crop = SrcRect {
+        l: fraction("cropleft"),
+        t: fraction("croptop"),
+        r: fraction("cropright"),
+        b: fraction("cropbottom"),
+    };
+    (crop.l != 0.0 || crop.t != 0.0 || crop.r != 0.0 || crop.b != 0.0).then_some(crop)
+}
+
+fn vml_image_source(node: roxmltree::Node, media_map: &HashMap<String, String>) -> Option<String> {
+    if let Some(rid) = attr_ns(
+        &node,
+        relationships::TRANSITIONAL,
+        relationships::STRICT,
+        "id",
+    )
+    .or_else(|| {
+        node.attributes()
+            .find(|a| a.name() == "relid")
+            .map(|a| a.value())
+    }) {
+        return media_map.get(rid).cloned();
+    }
+    // VML src is a URI rather than a relationship ID. Resolve package-relative
+    // sources against this story's base; missing bytes use normal lazy resource
+    // diagnostics. External URIs have no package part and remain unavailable.
+    let path = ooxml_common::rels::resolve_part_name(
+        media_map
+            .get("\0vml-source-part")
+            .map(String::as_str)
+            .unwrap_or("word/document.xml"),
+        node.attribute("src")?,
+    )?;
+    let key = ooxml_common::rels::part_name_equivalence_key(&path);
+    Some(
+        media_map
+            .get(&format!("\0vml-part:{key}"))
+            .cloned()
+            .unwrap_or(path),
+    )
+}
+
 fn vml_image_run(
     shape: roxmltree::Node,
     image_path: String,
     width_pt: f64,
     height_pt: f64,
+    imagedata: roxmltree::Node,
 ) -> ImageRun {
     let style = shape.attribute("style").unwrap_or("");
     // ECMA-376 Part 4 §19.1.2.19: an absolute VML image has its own
@@ -13305,7 +13451,7 @@ fn vml_image_run(
         mime_type: mime_from_ext(&image_path).to_string(),
         image_path,
         svg_image_path: None,
-        src_rect: None,
+        src_rect: vml_image_crop(imagedata),
         width_pt,
         height_pt,
         rotation: vml_css_length_pt(style, "rotation").unwrap_or(0.0),
@@ -13334,6 +13480,23 @@ fn vml_image_run(
     }
 }
 
+/// Parse a bare legacy VML `<w:pict>` picture — a `<v:shape>` (or
+/// `<v:rect>`/`<v:roundrect>`/`<v:oval>`) carrying a `<v:imagedata r:id>`
+/// (ECMA-376 Part 4 §19.1.2.11 imagedata) with NO surrounding `<w:object>`. This
+/// is the non-OLE inline VML image form (e.g. a header picture Word emits as VML
+/// rather than DrawingML). The rId maps to an embedded part via the media map,
+/// and the draw size comes from the shape's CSS `style` width/height in pt
+/// (§19.1.2.19). The result is an inline `ImageRun`, feeding the same image
+/// pipeline as a DrawingML `<a:blip>` picture.
+///
+/// Returns `None` (leaving the pict to the text-box path) when:
+///   - no shape carries a `<v:imagedata r:id>` (it is a filled/text panel), or
+///   - the relevant shape is inside a `<v:group>` — a grouped shape's
+///     width/height are expressed in the GROUP's coordinate system
+///     (`coordsize`), not points, so treating them as pt would badly mis-size
+///     the image. Resolving the group transform (child offset × group scale) is
+///     handled by `vml_group` before this ungrouped-picture reader, or
+///   - the rId does not resolve, or the shape has no positive pt dimensions.
 fn parse_vml_pict_image(
     pict: roxmltree::Node,
     media_map: &HashMap<String, String>,
@@ -13355,13 +13518,7 @@ fn parse_vml_pict_image(
     let imagedata = shape
         .children()
         .find(|c| c.is_element() && c.tag_name().name() == "imagedata")?;
-    let rid = attr_ns(
-        &imagedata,
-        relationships::TRANSITIONAL,
-        relationships::STRICT,
-        "id",
-    )?;
-    let image_path = media_map.get(rid)?.clone();
+    let image_path = vml_image_source(imagedata, media_map)?;
 
     let style = shape.attribute("style").unwrap_or("");
     let width_pt = vml_css_length_pt(style, "width").unwrap_or(0.0);
@@ -13370,7 +13527,9 @@ fn parse_vml_pict_image(
         return None;
     }
 
-    Some(vml_image_run(shape, image_path, width_pt, height_pt))
+    Some(vml_image_run(
+        shape, image_path, width_pt, height_pt, imagedata,
+    ))
 }
 
 /// Extract the preview image from an embedded OLE object (`<w:object>`,
@@ -13431,7 +13590,9 @@ fn parse_object_ole_image(
         return None;
     }
 
-    Some(vml_image_run(shape, image_path, width_pt, height_pt))
+    Some(vml_image_run(
+        shape, image_path, width_pt, height_pt, imagedata,
+    ))
 }
 
 /// Result of inspecting a shape's spPr for a direct fill.
@@ -13827,6 +13988,7 @@ fn parse_custom_geometry_with_paint(
         .into_iter()
         .filter_map(|path| {
             let paint = PathPaint {
+                fill_rule: None,
                 fill: path.fill.clone(),
                 stroke: path.stroke,
             };

@@ -116,6 +116,8 @@ export type DrawingPaintCommand =
     }>
   | Readonly<{
       kind: 'drawingml-shape';
+      /** Retained VML shadow opacity, independent of the source brush. */
+      opacity?: number;
       plan: DeepReadonly<DrawingMLShapePaintPlan & { readonly resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> }>;
     }>
   | Readonly<{

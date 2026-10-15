@@ -2032,6 +2032,32 @@ pub struct AnchorAcquisitionWire {
     pub native_picture_metadata: Option<Box<NativePictureMetadataWire>>,
 }
 
+/// VML §19.1.2.18 facts. Absolute offsets remain points; fractional offsets
+/// resolve against final layout dimensions, including group scaling.
+#[derive(Serialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlShadowOffset {
+    pub x_pt: f64,
+    pub y_pt: f64,
+    pub x_fraction: f64,
+    pub y_fraction: f64,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlShadow {
+    pub kind: String,
+    pub color: String,
+    pub color2: String,
+    pub offset: VmlShadowOffset,
+    pub offset2: VmlShadowOffset,
+    pub opacity: f64,
+    pub obscured: bool,
+    pub origin: (f64, f64),
+    pub matrix: [f64; 6],
+    pub absolute_perspective: bool,
+}
+
 /// A drawn shape (wps:wsp inside wp:anchor). Positioned like an anchor image
 /// and rendered via core's buildCustomPath + paint primitives.
 #[derive(Serialize, Debug, Clone, Default)]
@@ -2111,6 +2137,9 @@ pub struct ShapeRun {
     /// anchors sharing the same behindDoc value. Lower value = drawn first.
     /// Group children add their document-order index to the anchor value.
     pub z_order: u32,
+    /// Part 4 §19.1.2.18 shadow acquired independently of its source brush.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_shadow: Option<VmlShadow>,
     /// normalized [0,1] custom path commands (one or more sub-paths). Empty
     /// when `preset_geometry` is set; the renderer chooses between
     /// buildCustomPath (custGeom) and buildShapePath (prstGeom).
@@ -2419,6 +2448,9 @@ pub struct GradientStop {
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PathPaint {
+    /// VML end-delimited path sets use even-odd parity. DrawingML keeps nonzero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill_rule: Option<String>,
     /// ST_PathFillMode (§20.1.10.37) other than `norm`: `none`, `lighten`,
     /// `lightenLess`, `darken` or `darkenLess`.
     #[serde(skip_serializing_if = "Option::is_none")]

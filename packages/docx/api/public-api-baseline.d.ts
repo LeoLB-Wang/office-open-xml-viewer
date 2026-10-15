@@ -2338,8 +2338,41 @@ export interface ShapeRun {
     groupHeightPt?: number | null;
     behindDoc?: boolean;
     zOrder: number;
+    vmlShadow?: {
+        kind: 'single' | 'double' | 'emboss' | 'perspective';
+        color: string;
+        color2: string;
+        offset: {
+            xPt: number;
+            yPt: number;
+            xFraction: number;
+            yFraction: number;
+        };
+        offset2: {
+            xPt: number;
+            yPt: number;
+            xFraction: number;
+            yFraction: number;
+        };
+        opacity: number;
+        obscured: boolean;
+        origin: [
+            number,
+            number
+        ];
+        matrix: [
+            number,
+            number,
+            number,
+            number,
+            number,
+            number
+        ];
+        absolutePerspective: boolean;
+    };
     subpaths: PathCmd[][];
     subpathPaint?: Array<{
+        fillRule?: 'nonzero' | 'evenodd';
         fill?: 'none' | 'lighten' | 'lightenLess' | 'darken' | 'darkenLess';
         stroke?: false;
     }>;
@@ -2380,7 +2413,6 @@ export interface ShapeRun {
     textInsetR?: number;
     textInsetB?: number;
     textVert?: string | null;
-    /** DrawingML bodyPr@upright: keep text independent of the shape rotation. */
     textUpright?: boolean | null;
     textPath?: TextPath | null;
     fillOpacity?: number | null;
