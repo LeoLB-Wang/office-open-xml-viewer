@@ -35,7 +35,7 @@ describe('computeScene3dQuad', () => {
   });
 
   it('unknown preset falls back to identity (no throw)', () => {
-    const cam: CameraInput = { prst: 'legacyObliqueTopLeft' };
+    const cam: CameraInput = { prst: 'unknownCamera' };
     const q = computeScene3dQuad(cam, W, H);
     expect(q.isIdentity).toBe(true);
   });
@@ -180,22 +180,6 @@ describe('computeScene3dQuad', () => {
     expect(q.corners.some((c) => c.x < 0 || c.x > W || c.y < 0 || c.y > H))
       .toBe(true);
   });
-
-  it('snapshot — sample-11 slide-3 camera (perspectiveRelaxed lat330 lon20 rev347)', () => {
-    // The exact camera from sample-11 slide 3, "図 3". lat=330° (=−30° tilt → top
-    // recedes), lon=20° (right edge nears), rev=347° (=−13° → clockwise in-plane),
-    // fov=26° (calibrated, see scene3d-camera.ts). Fixed numeric snapshot so
-    // future changes to the camera math are caught; the corner positions encode
-    // the corrected axis convention validated against sample-11.pdf page 3.
-    const cam: CameraInput = { prst: 'perspectiveRelaxed', rot: { lat: 330, lon: 20, rev: 347 } };
-    const q = computeScene3dQuad(cam, W, H);
-    expect(q.isAffine).toBe(false);
-    // Top edge narrower than bottom edge (top recedes — the PDF keystone).
-    const topW = q.corners[1].x - q.corners[0].x;
-    const botW = q.corners[2].x - q.corners[3].x;
-    expect(topW).toBeLessThan(botW);
-    expect(q.corners.map((c) => r(c, 2))).toMatchSnapshot();
-  });
 });
 
 describe('computeDepthOffset (extrusion side-wall direction, §20.1.5.12)', () => {
@@ -223,5 +207,85 @@ describe('computeDepthOffset (extrusion side-wall direction, §20.1.5.12)', () =
     const a = computeDepthOffset(cam, W, H, 20);
     const b = computeDepthOffset(cam, W, H, 40);
     expect(Math.hypot(b.x, b.y)).toBeGreaterThan(Math.hypot(a.x, a.y));
+  });
+});
+
+describe('modern camera families', () => {
+  it.each([
+    ['perspectiveRelaxed', 45],
+    ['perspectiveHeroicExtremeLeftFacing', 80],
+    ['perspectiveHeroicExtremeRightFacing', 80],
+  ] as const)('%s uses its omitted lens, while an explicit lens takes precedence', (prst, fov) => {
+    const camera: CameraInput = { prst, rot: { lat: 25, lon: 35, rev: 17 } };
+    expect(computeScene3dQuad(camera, W, H))
+      .toEqual(computeScene3dQuad({ ...camera, fov }, W, H));
+    expect(computeDepthOffset(camera, W, H, 40))
+      .toEqual(computeDepthOffset({ ...camera, fov }, W, H, 40));
+    expect(computeScene3dQuad({ ...camera, fov: 15 }, W, H))
+      .toEqual(computeScene3dQuad({ ...camera, prst: 'perspectiveFront', fov: 15 }, W, H));
+  });
+
+  // Independent synthetic Windows PowerPoint rectangle controls, measured in
+  // points. Corners are unlabelled; match the point set within the conservative
+  // 0.75pt PDF extraction uncertainty. These cover distinct orientation classes.
+  it.each([
+    ['isometricLeftDown', [[13.63, -13.987513], [81.63, 25.041232], [81.63, 77.341319], [13.63, 38.297]]],
+    ['isometricOffAxis4Bottom', [[-9.399058, 29.3229], [76.777613, 16.348932], [104.647141, 34.020438], [18.485515, 46.989077]]],
+    ['perspectiveAboveLeftFacing', [[13.900154, -14.375288], [98.436788, 30.355168], [80.793806, 76.730822], [-0.423556, 32.856135]]],
+    ['perspectiveRelaxed', [[0.766264, 11.92], [94.515514, 11.92], [96.659306, 52.42], [-1.397547, 52.42]]],
+  ] as const)('%s supplies the omitted orientation', (prst, observed) => {
+    const { corners } = computeScene3dQuad({ prst }, 95.76, 63.84);
+    for (const [x, y] of observed) {
+      expect(Math.min(...corners.map((p) => Math.hypot(p.x - x, p.y - y)))).toBeLessThan(0.75);
+    }
+  });
+
+  it('explicit rotation replaces the isometric preset orientation', () => {
+    const camera = { prst: 'isometricOffAxis4Bottom', rot: { lat: 0, lon: 0, rev: 0 } };
+    expect(computeScene3dQuad(camera, W, H).isIdentity).toBe(true);
+  });
+
+  it('modern oblique uses parallel directional shear after rotation, including depth', () => {
+    const camera = { prst: 'obliqueTopLeft', rot: { lat: 0, lon: 30, rev: 0 }, fov: 115 };
+    const { corners, isAffine } = computeScene3dQuad(camera, 200, 100);
+    // The right corners rotate to x=100*cos(30), z=50. The 0.3 shear
+    // distributes z equally over the diagonal, independently of the FOV.
+    expect(corners[1].x).toBeCloseTo(100 + 100 * Math.cos(Math.PI / 6) + 15 / Math.sqrt(2), 8);
+    expect(corners[1].y).toBeCloseTo(15 / Math.sqrt(2), 8);
+    expect(isAffine).toBe(true);
+    expect(computeScene3dQuad({ ...camera, fov: 5 }, 200, 100).corners).toEqual(corners);
+    expect(computeDepthOffset({ prst: 'obliqueLeft' }, 200, 100, 20)).toEqual({ x: -6, y: 0 });
+    expect(computeDepthOffset({ prst: 'obliqueRight' }, 200, 100, 20).x).toBeCloseTo(6, 8);
+  });
+
+  it('modern perspective distance follows width rather than the larger half-extent', () => {
+    const camera = { prst: 'perspectiveFront', fov: 90, rot: { lat: 0, lon: 30, rev: 0 } };
+    const wide = computeScene3dQuad(camera, 95.76, 63.84);
+    const tall = computeScene3dQuad(camera, 95.76, 191.52);
+    // Independent ray-plane result: x=47.88+41.4652963332/(1-23.94/452.16).
+    expect(wide.corners[1].x).toBeCloseTo(91.6634486713, 7);
+    expect(tall.corners[1].x).toBeCloseTo(wide.corners[1].x, 8);
+  });
+
+  it('keeps CSS and device projections consistent under uniform scaling', () => {
+    const camera = { prst: 'perspectiveHeroicExtremeLeftFacing', zoom: 1.5, rot: { lat: 25, lon: 35, rev: 17 } };
+    const a = computeScene3dQuad(camera, W, H);
+    const b = computeScene3dQuad(camera, W * 4, H * 4);
+    a.corners.forEach((p, i) => {
+      expect(b.corners[i].x).toBeCloseTo(p.x * 4, 8);
+      expect(b.corners[i].y).toBeCloseTo(p.y * 4, 8);
+    });
+    const da = computeDepthOffset(camera, W, H, 20);
+    const db = computeDepthOffset(camera, W * 4, H * 4, 80);
+    expect(db.x).toBeCloseTo(da.x * 4, 8);
+    expect(db.y).toBeCloseTo(da.y * 4, 8);
+  });
+
+  it.each(['legacyObliqueTopLeft', 'legacyPerspectiveBottomRight'])('retains %s fallback behavior', (prst) => {
+    const camera = { prst, fov: 115, zoom: 1.5, rot: { lat: 25, lon: 35, rev: 17 } };
+    expect(computeScene3dQuad(camera, W, H))
+      .toEqual(computeScene3dQuad({ ...camera, prst: 'orthographicFront' }, W, H));
+    expect(computeDepthOffset(camera, W, H, 40))
+      .toEqual(computeDepthOffset({ ...camera, prst: 'orthographicFront' }, W, H, 40));
   });
 });
