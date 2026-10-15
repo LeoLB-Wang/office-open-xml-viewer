@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetFontRegistryForTests } from './font-registry.js';
-import { loadOfficeFontFallbacks, unloadOfficeFontFallbacks } from './office-fallback.js';
+import { loadOfficeFontFallbacks, officeFontRequestDeclared, unloadOfficeFontFallbacks } from './office-fallback.js';
 import referenceData from './reference-font-metrics-data.json';
 
 const globals = globalThis as unknown as Record<string, unknown>;
@@ -247,6 +247,13 @@ describe('loadOfficeFontFallbacks', () => {
     const result = await loadOfficeFontFallbacks([{ family: 'Times New Roman' }], set);
     expect(result).toEqual({ faces: [], routes: {}, checked: [] });
     expect(added).toEqual([]);
+  });
+
+  it('reports exactly the tuples a loaded application face declares', () => {
+    const { set } = fontSet([], 0, ['Calibri']);
+    expect(officeFontRequestDeclared(set, { family: 'Calibri', weight: 400, style: 'normal' })).toBe(true);
+    expect(officeFontRequestDeclared(set, { family: 'Calibri', weight: 700, style: 'normal' })).toBe(false);
+    expect(officeFontRequestDeclared(fontSet([]).set, { family: 'Calibri', weight: 400, style: 'normal' })).toBe(false);
   });
 
   it('preflights a bold local face when the application declares only regular', async () => {

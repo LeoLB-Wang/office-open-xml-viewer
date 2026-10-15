@@ -187,6 +187,7 @@ export {
 export {
   fontFaceWeightCovers,
   loadOfficeFontFallbacks,
+  officeFontRequestDeclared,
   unloadOfficeFontFallbacks,
   type OfficeFontFallbackRequest,
   type OfficeFontFallbackRoute,

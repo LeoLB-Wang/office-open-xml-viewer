@@ -52,10 +52,6 @@ fn merge_shared_attributes(
     }
 }
 
-fn shared_is_empty<K, V>(value: &Arc<BTreeMap<K, V>>) -> bool {
-    value.is_empty()
-}
-
 fn serialize_shared<T: serde::Serialize, S: serde::Serializer>(
     value: &Arc<T>,
     serializer: S,
@@ -969,86 +965,48 @@ fn parse_text_line(
 /// own presence bit so a partial pPr/defRPr overrides only that property of
 /// lstStyle, layout and master (§21.1.2.2.7, §21.1.2.4, §21.1.2.3.9).
 /// An explicit noFill is stored as Fill::None and never becomes "missing".
-///
-/// Serialization only sizes the shared master/layout cache projection, so
-/// absent members are omitted: they retain no data, and nine levels per
-/// placeholder of explicit nulls would dominate that projection.
 #[derive(Clone, Default, serde::Serialize)]
 pub(crate) struct RunProperties {
     /// Authored CT_TextCharacterProperties attributes, except dirty/err (the
     /// schema marks these as editing diagnostics).  Keep the full set so
     /// language, kerning, normalization and annotation state survive the same
     /// cascade as visible paint even when this canvas has no consumer yet.
-    #[serde(
-        serialize_with = "serialize_shared",
-        skip_serializing_if = "shared_is_empty"
-    )]
+    #[serde(serialize_with = "serialize_shared")]
     attributes: SharedAttributes,
     /// Direct child attributes, merged within a child after schema choice
     /// groups have selected the nearest authored alternative.
-    #[serde(
-        serialize_with = "serialize_shared",
-        skip_serializing_if = "shared_is_empty"
-    )]
+    #[serde(serialize_with = "serialize_shared")]
     child_attributes: SharedChildAttributes,
-    #[serde(skip_serializing_if = "Option::is_none")]
     bold: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     italic: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     underline: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     underline_fill: Option<Option<Fill>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     underline_line: Option<Option<TextOutline>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     underline_line_follow_text: Option<bool>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     underline_line_fill_authored: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     strike: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     caps: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     letter_spacing: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     font_size: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     fill: Option<Fill>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     fill_authored: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     font_family: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     font_family_ea: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     font_family_cs: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     font_family_sym: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<i32>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     effects_authored: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     shadow: Option<Shadow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     reflection: Option<Reflection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     outline: Option<Option<TextOutline>>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     outline_fill_authored: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     highlight: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     hyperlink_uses_text_fill: Option<bool>,
     // Relationship IDs are local to their owning OPC part. Keep the target
     // paired with the authored r:id as levels from master, layout and slide
     // are merged (ECMA-376 Part 2, §9.3.3; §21.1.2.3.5).
-    #[serde(skip_serializing_if = "Option::is_none")]
     hlink_click_target: Option<Option<InheritedRelationship>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     hlink_mouse_over_target: Option<Option<InheritedRelationship>>,
 }
 pub(crate) type LevelRunProperties = [RunProperties; 9];
