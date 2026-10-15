@@ -9,7 +9,7 @@ import {
   type DrawingMlInputRun,
 } from '@silurus/ooxml-core/internal/drawingml-text';
 import { containsHanScript } from '@silurus/ooxml-core/internal/script-preload-accumulator';
-import { activeFontSet, findReferenceFontMetrics, isHTMLCanvas, loadedGoogleRegularAliases } from '@silurus/ooxml-core';
+import { activeFontSet, isHTMLCanvas, loadedGoogleRegularAliases } from '@silurus/ooxml-core';
 import { buildPivotStyleMap, type PivotCellFormat } from './pivot-style.js';
 import type {
   Worksheet, Styles, Cell, CellValue, CellFont, CellFill, Border, BorderEdge, CellXf,
@@ -28,7 +28,6 @@ import type {
 import { usesPathShade, trackPaintPath, currentStrokeBounds, chartImageFillKey, paintOptionalImagePlaceholder, pathFillModeOverlay, withDrawingMLShapeTransform, buildPresetGeometryFillPath } from '@silurus/ooxml-core';
 import { placePhoneticRuns } from './phonetic.js';
 import { crispOffset, renderChart, renderSparkline, renderPresetShape, createAuxCanvas, PT_TO_PX, EMU_PER_PX, mathToMathML, rasterizeMathSvg, tintMathRaster, classifyCjkFont, classifyFontGeneric, googleCjkFontAlias, cjkFallbackChain, NON_CJK_SANS_FALLBACKS, NON_CJK_SERIF_FALLBACKS, isCjkBreakChar, xlsxBorderDashArray, drawImageCropped, hexToRgba, verticalTrLongMark, verticalVertGlyphReachable, applyStroke, resolveFill, type SparklineModel, type MathNode, type MathRenderer, type RasterizedMathSvg } from '@silurus/ooxml-core';
-import { isMacDesktop } from './internal/platform.js';
 import {
   canvasShapeFontBoxProbe, excelShapeSpacing, officeRequestKey, shapeOfficeRouteKey, shapeRunLineRatios,
   type ShapeRunLineRatios,
@@ -124,9 +123,6 @@ const googleSubstitutesByContext = new WeakMap<object, boolean>();
 const googleSubstitutesByWorksheet = new WeakMap<Worksheet, boolean>();
 const regularAliasesByContext = new WeakMap<object, ReadonlyMap<string, string>>();
 const regularAliasesByWorksheet = new WeakMap<Worksheet, ReadonlyMap<string, string>>();
-const worksheetByContext = new WeakMap<object, Worksheet>();
-type ResolvedThemeCellFont = { family: string | null; weight: number; fallbackAlias?: string };
-const themeCellFontByWorksheet = new WeakMap<Worksheet, Map<string, ResolvedThemeCellFont>>();
 
 function bindNormalFontState(
   worksheet: Worksheet, routes: OfficeRoutes | undefined,
@@ -167,7 +163,6 @@ export function bindXlsxOfficeFontRoutes(
   routes?: OfficeRoutes,
   googleSubstitutes = false,
 ): void {
-  worksheetByContext.set(ctx, worksheet);
   if (officeRoutesByWorksheet.get(worksheet) !== routes ||
       googleSubstitutesByWorksheet.get(worksheet) !== googleSubstitutes) GridGeometry.invalidate(worksheet);
   googleSubstitutesByContext.set(ctx, googleSubstitutes);
@@ -296,20 +291,17 @@ export function fontStackFor(
   text = '',
   route?: import('@silurus/ooxml-core').OfficeFontFallbackRoute,
   googleSubstitutes = false,
-  fallbackAlias?: string,
   regularAlias?: string,
 ): string {
   const normalized = name?.trim();
   const fallback = containsHanScript(text) ? cjkFallback : undefined;
   const selected = route && (normalized?.toLocaleLowerCase('en-US') || 'calibri')
     === route.requestedFamily.trim().toLocaleLowerCase('en-US') ? route : undefined;
-  const aliasPart = fallbackAlias && fallbackAlias.toLocaleLowerCase('en-US') !== normalized?.toLocaleLowerCase('en-US')
-    ? `${quoteCssFontFamily(fallbackAlias)}, ` : '';
   const regularPart = regularAlias && regularAlias.toLocaleLowerCase('en-US') !== normalized?.toLocaleLowerCase('en-US')
     ? `${quoteCssFontFamily(regularAlias)}, ` : '';
   return selected
-    ? `${quoteCssFontFamily(selected.family)}, ${aliasPart}${regularPart}${cssTailFor(normalized, fallback, googleSubstitutes, text)}`
-    : normalized ? `${quoteCssFontFamily(normalized)}, ${aliasPart}${regularPart}${cssTailFor(normalized, fallback, googleSubstitutes, text)}` : cssTailFor(null, fallback, googleSubstitutes, text);
+    ? `${quoteCssFontFamily(selected.family)}, ${regularPart}${cssTailFor(normalized, fallback, googleSubstitutes, text)}`
+    : normalized ? `${quoteCssFontFamily(normalized)}, ${regularPart}${cssTailFor(normalized, fallback, googleSubstitutes, text)}` : cssTailFor(null, fallback, googleSubstitutes, text);
 }
 
 const DEFAULT_FONT_SIZE = 11;
@@ -366,12 +358,8 @@ const FREEZE_LINE_COLOR = '#7a7a7a';
 
 /** Measure the Max Digit Width (ECMA-376 §18.3.1.13) for an arbitrary font
  *  using Canvas2D. The maximum of `measureText('0'..'9').width` is taken.
- *  Mac Excel quantizes the advance in integer points before allocating column
- *  width: controlled Calibri 9/10/11/12/14 pt, Arial 11 pt, and Meiryo UI 11 pt
- *  workbooks in Excel for Mac 16.113.2 gave the point-rounded width classes,
- *  including the Calibri 11 pt
- *  boundary where rounding in CSS pixels is one pixel narrower. This is an
- *  observed Mac Office rule, not a different metric for the painted font.
+ *  Round to integer CSS pixels, using Windows Excel as the layout reference
+ *  independently of the viewer OS.
  *
  *  A bound worksheet caches the measured scalar for its current owner; each
  *  rebind refreshes it after font preflight, without retaining that Canvas.
@@ -397,7 +385,7 @@ export function computeMdw(
   const stylePrefix = weight !== 400 || style !== 'normal' ? `${style} ${weight} ` : '';
   if (ownerCtx) ctx.save();
   try {
-    ctx.font = `${stylePrefix}${sizePx}px ${fontStackFor(family, undefined, '', route, googleSubstitutes, undefined, regularAlias)}`;
+    ctx.font = `${stylePrefix}${sizePx}px ${fontStackFor(family, undefined, '', route, googleSubstitutes, regularAlias)}`;
     let mdw = 0;
     for (const d of '0123456789') {
       const w = ctx.measureText(d).width;
@@ -411,9 +399,7 @@ export function computeMdw(
 }
 
 function quantizeMdw(widthPx: number): number {
-  return (isMacDesktop()
-    ? Math.round(Math.round(widthPx / PT_TO_PX) * PT_TO_PX)
-    : Math.round(widthPx)) || MDW_FALLBACK;
+  return Math.round(widthPx) || MDW_FALLBACK;
 }
 
 function hasDeclaredFamilyFace(family: string, fontSet: FontFaceSet | null): boolean {
@@ -836,102 +822,18 @@ function vMetricPx(sizePt: number, cs: number, factor = 1): number {
   return Math.round(sizePt * PT_TO_PX * factor * cs);
 }
 
-/** Excel for Mac 16.113.2 (Japanese UI locale) resolves a scheme-marked SpreadsheetML
- * cell through the theme's Jpan face even when `<font><name>` names a Latin
- * face. Controlled Excel PDFs covered minor/major, Calibri/Arial names, Latin
- * and Japanese text, regular/bold/italic styles, a changed Jpan face, absent
- * Jpan, and absent scheme. The italic controls retained the same embedded
- * theme face; local browser stroke synthesis can still differ from Excel.
- * This is an observed locale-dependent Office behavior, not an ECMA-376 rule
- * that all locales must choose Jpan. Browser locale is our declared proxy for
- * the producer's Excel UI locale because this workbook does not encode that
- * choice; a workbook created under a different UI locale may resolve another
- * theme face even on the same Mac. Preserve direct-name fonts otherwise. */
-export function resolvedThemeCellFont(
-  font: Pick<CellFont, 'name' | 'scheme' | 'bold' | 'italic'>,
-  worksheet?: Pick<Worksheet, 'themeJapaneseMajorFont' | 'themeJapaneseMinorFont'>,
-): ResolvedThemeCellFont {
-  const fallback = { family: font.name, weight: font.bold ? 700 : 400 };
-  if (!isMacJapaneseLocale()) return fallback;
-  const themeFace = themeFaceForCellFont(font, worksheet);
-  if (!themeFace) return fallback;
-
-  // The pinned Office face catalog retains full/PostScript aliases. Keep the
-  // authored theme name first: an installed face must win. A catalog alias
-  // may follow for hosts that expose the same family under its PostScript
-  // base. This is name-table metadata, not proof of the selected font bytes.
-  const exactMatches = findReferenceFontMetrics(themeFace, {
-    source: 'office-mac', weight: font.bold ? 700 : 400,
-    style: font.italic ? 'italic' : 'normal',
-  });
-  const matches = exactMatches.length ? exactMatches
-    : findReferenceFontMetrics(themeFace, { source: 'office-mac' });
-  const postScriptBases = new Set(matches.flatMap((profile) => profile.aliases)
-    .filter((alias) => /-(?:Regular|Bold|Italic|BoldItalic|Light|Medium)$/i.test(alias))
-    .map((alias) => alias.replace(/-(?:Regular|Bold|Italic|BoldItalic|Light|Medium)$/i, '')));
-  const catalogFamilies = new Set(matches.map((profile) => profile.family));
-  // A theme face whose full name specifies a unique nonstandard weight (for
-  // example a Light face) stays at that authored weight even if the cell's
-  // `<b>` is set. Excel's major-Light PDFs preserve that face; a browser whose
-  // local family lacks Light may choose its nearest available stroke weight.
-  const weight = exactMatches.length === 0 && matches.length === 1
-    && ![400, 700].includes(matches[0].weight)
-    ? matches[0].weight : fallback.weight;
-  const alias = postScriptBases.size === 1 ? [...postScriptBases][0]
-    : catalogFamilies.size === 1 ? [...catalogFamilies][0] : undefined;
-  return {
-    family: themeFace,
-    weight,
-    ...(alias && alias.toLocaleLowerCase('en-US') !== themeFace.toLocaleLowerCase('en-US')
-      ? { fallbackAlias: alias } : {}),
-  };
-}
-
-function isMacJapaneseLocale(): boolean {
-  const nav = typeof navigator !== 'undefined' ? navigator : undefined;
-  return Boolean(isMacDesktop() && nav
-    && (nav.language || '').toLowerCase().startsWith('ja'));
-}
-
-function themeFaceForCellFont(
-  font: Pick<CellFont, 'scheme'>,
-  worksheet?: Pick<Worksheet, 'themeJapaneseMajorFont' | 'themeJapaneseMinorFont'>,
-): string | undefined {
-  return font.scheme === 'major' ? worksheet?.themeJapaneseMajorFont
-    : font.scheme === 'minor' ? worksheet?.themeJapaneseMinorFont : undefined;
-}
-
-function cachedThemeCellFont(font: CellFont, worksheet?: Worksheet): ResolvedThemeCellFont {
-  const themeFace = isMacJapaneseLocale() && themeFaceForCellFont(font, worksheet);
-  if (!worksheet || !themeFace) return { family: font.name, weight: font.bold ? 700 : 400 };
-  // A worksheet has at most major/minor Jpan faces, each with four requested
-  // bold/italic combinations. Keep catalog alias work out of the cell paint
-  // loop while retaining a worksheet-scoped lifetime and a fixed entry bound.
-  let cache = themeCellFontByWorksheet.get(worksheet);
-  if (!cache) {
-    cache = new Map();
-    themeCellFontByWorksheet.set(worksheet, cache);
-  }
-  const key = `${font.scheme}:${themeFace}:${font.bold ? 1 : 0}:${font.italic ? 1 : 0}`;
-  let selected = cache.get(key);
-  if (!selected) {
-    selected = resolvedThemeCellFont(font, worksheet);
-    if (cache.size < 8) cache.set(key, selected);
-  }
-  return selected;
-}
-
+/** Use the authored face (§18.8.29 name) and style (§18.8.2 b).
+ * The Mac-only Jpan theme substitution was removed: layout must not depend on
+ * the viewer OS, and that substitution is unverified in Windows Excel. */
 function buildFont(ctx: CanvasRenderingContext2D, font: CellFont, cs = 1, cjkFallback?: CjkLang, text = ''): string {
   const style = font.italic ? 'italic ' : '';
   const sizePx = Math.max(1, Math.round(font.size * PT_TO_PX * cs));
-  const selected = cachedThemeCellFont(font, worksheetByContext.get(ctx));
-  const weight = selected.weight === 400 ? '' : `${selected.weight} `;
+  const weight = font.bold ? '700 ' : '';
   return `${style}${weight}${sizePx}px ${fontStackFor(
-    selected.family, cjkFallback, text,
-    officeRoute(ctx, selected.family, font.bold, font.italic),
+    font.name, cjkFallback, text,
+    officeRoute(ctx, font.name, font.bold, font.italic),
     googleSubstitutesByContext.get(ctx) === true,
-    selected.fallbackAlias,
-    contextRegularAlias(ctx, selected.family),
+    contextRegularAlias(ctx, font.name),
   )}`;
 }
 
@@ -4881,7 +4783,7 @@ export function drawShapeText(
     const family = fontStackFor(run.fontFace, cjkFallback, run.text,
       officeRoute(ctx, run.fontFace, run.bold, run.italic),
       googleSubstitutesByContext.get(ctx) === true,
-      undefined, contextRegularAlias(ctx, run.fontFace));
+      contextRegularAlias(ctx, run.fontFace));
     return { font: `${run.italic ? 'italic ' : ''}${run.bold ? 'bold ' : ''}${px}px ${family}`, px };
   };
 
@@ -5073,7 +4975,7 @@ export function drawShapeText(
         height: pxSize * 1.2,
         ascent: measuredAscent(`${pxSize}px ${fontStackFor(face, undefined, '',
           officeRoute(ctx, face), googleSubstitutesByContext.get(ctx) === true,
-          undefined, contextRegularAlias(ctx, face))}`, pxSize),
+          contextRegularAlias(ctx, face))}`, pxSize),
       };
     };
     const reduction = txt.autoFit === 'norm' ? txt.lnSpcReduction ?? 0 : 0;

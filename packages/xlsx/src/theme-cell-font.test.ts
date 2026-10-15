@@ -1,46 +1,58 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fontStackFor, resolvedThemeCellFont } from './renderer.js';
+import { renderViewport } from './renderer.js';
+import type { CellFont, Styles, Worksheet } from './types.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const theme = {
-  themeJapaneseMajorFont: '游ゴシック Light',
-  themeJapaneseMinorFont: '游ゴシック',
-};
-const font = { name: 'Calibri', scheme: 'minor' as const, bold: true, italic: false };
+function paintedFonts(platform: string): Map<string, string> {
+  vi.stubGlobal('navigator', { platform, language: 'ja-JP', maxTouchPoints: 0 });
+  const base: CellFont = { name: null, size: 11, bold: false, italic: false,
+    underline: false, strike: false, color: null };
+  const fonts: CellFont[] = [
+    { ...base, name: 'Calibri', scheme: 'minor', bold: true, italic: false },
+    { ...base, name: 'Arial', scheme: 'major', bold: false, italic: true },
+    { ...base, name: '游ゴシック', bold: false, italic: false },
+    { ...base, name: null, scheme: 'minor', bold: false, italic: false },
+  ];
+  const styles: Styles = {
+    fonts, fills: [], borders: [], numFmts: [], dxfs: [],
+    cellXfs: fonts.map((_, fontId) => ({ fontId, fillId: 0, borderId: 0, numFmtId: 0,
+      alignH: null, alignV: null, wrapText: false })),
+  };
+  const ws = {
+    name: 'Authored fonts', defaultColWidth: 20, defaultRowHeight: 15,
+    colWidths: {}, rowHeights: {}, mergeCells: [], freezeRows: 0, freezeCols: 0,
+    themeJapaneseMajorFont: '游ゴシック Light', themeJapaneseMinorFont: 'メイリオ',
+    conditionalFormats: [], images: [], charts: [],
+    rows: fonts.map((_, styleIndex) => ({ index: styleIndex + 1, height: null,
+      cells: [{ row: styleIndex + 1, col: 1, styleIndex,
+        value: { type: 'text', text: `cell${styleIndex}` } }] })),
+  } as Worksheet;
+  let font = '';
+  const drawn = new Map<string, string>();
+  const noop = () => {};
+  const ctx = new Proxy({
+    canvas: { width: 400, height: 200 },
+    get font() { return font; },
+    set font(value: string) { font = value; },
+    measureText: () => ({ width: 35 }),
+    fillText: (text: string) => drawn.set(text, font),
+  } as Record<string, unknown>, {
+    get: (target, key) => key in target ? target[key as string] : noop,
+    set: (target, key, value) => { target[key as string] = value; return true; },
+  }) as unknown as CanvasRenderingContext2D;
+  renderViewport(ctx, ws, styles, { row: 1, col: 1, rows: 4, cols: 1 });
+  return drawn;
+}
 
-describe('Mac Japanese Excel theme cell font selection', () => {
-  it('uses the Jpan theme face for both Calibri- and Arial-named minor fonts', () => {
-    vi.stubGlobal('navigator', { platform: 'MacIntel', language: 'ja-JP', userAgent: 'Macintosh' });
-    expect(resolvedThemeCellFont(font, theme)).toEqual({ family: '游ゴシック', weight: 700, fallbackAlias: 'YuGothic' });
-    expect(resolvedThemeCellFont({ ...font, name: 'Arial' }, theme)).toEqual({ family: '游ゴシック', weight: 700, fallbackAlias: 'YuGothic' });
-    expect(resolvedThemeCellFont({ ...font, bold: false, italic: true }, theme))
-      .toEqual({ family: '游ゴシック', weight: 400, fallbackAlias: 'YuGothic' });
-    const selected = resolvedThemeCellFont(font, theme);
-    expect(fontStackFor(selected.family, undefined, '', undefined, false, selected.fallbackAlias))
-      .toMatch(/^"游ゴシック", "YuGothic", /);
-  });
-
-  it('keeps major and minor theme faces distinct', () => {
-    vi.stubGlobal('navigator', { platform: 'MacIntel', language: 'ja-JP', userAgent: 'Macintosh' });
-    expect(resolvedThemeCellFont({ ...font, scheme: 'major' }, theme)).toEqual({ family: '游ゴシック Light', weight: 300, fallbackAlias: 'YuGothic' });
-    expect(resolvedThemeCellFont(font, { ...theme, themeJapaneseMinorFont: 'メイリオ' })).toEqual({ family: 'メイリオ', weight: 700, fallbackAlias: 'Meiryo' });
-    expect(resolvedThemeCellFont({ ...font, bold: false }, { ...theme, themeJapaneseMinorFont: 'メイリオ' }))
-      .toEqual({ family: 'メイリオ', weight: 400, fallbackAlias: 'Meiryo' });
-  });
-
-  it('preserves the authored name without scheme or Jpan entry', () => {
-    vi.stubGlobal('navigator', { platform: 'MacIntel', language: 'ja-JP', userAgent: 'Macintosh' });
-    expect(resolvedThemeCellFont({ ...font, scheme: undefined }, theme).family).toBe('Calibri');
-    expect(resolvedThemeCellFont(font, { themeJapaneseMinorFont: undefined }).family).toBe('Calibri');
-  });
-
-  it('leaves other browser locales and platforms on their existing route', () => {
-    vi.stubGlobal('navigator', { platform: 'MacIntel', language: 'en-US', userAgent: 'Macintosh' });
-    expect(resolvedThemeCellFont(font, theme).family).toBe('Calibri');
-    vi.stubGlobal('navigator', { platform: 'Win32', language: 'ja-JP', userAgent: 'Windows' });
-    expect(resolvedThemeCellFont(font, theme).family).toBe('Calibri');
-    vi.stubGlobal('navigator', { platform: 'MacIntel', maxTouchPoints: 5, language: 'ja-JP', userAgent: 'Macintosh' });
-    expect(resolvedThemeCellFont(font, theme).family).toBe('Calibri');
+describe('authored cell fonts independent of viewer OS', () => {
+  it('paints the same authored families and bold/italic styles on Japanese Mac and Windows', () => {
+    const windows = paintedFonts('Win32');
+    const mac = paintedFonts('MacIntel');
+    expect(mac).toEqual(windows);
+    expect(mac.get('cell0')).toMatch(/^700 15px "Calibri", /);
+    expect(mac.get('cell1')).toMatch(/^italic 15px "Arial", /);
+    expect(mac.get('cell2')).toMatch(/^15px "游ゴシック", /);
+    expect(mac.get('cell3')).toMatch(/^15px "Calibri", /);
   });
 });

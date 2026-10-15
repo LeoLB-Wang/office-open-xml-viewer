@@ -47,7 +47,7 @@ describe('fontStackFor — default Latin chain (regression)', () => {
     expect(aliases.get('lato regular')).toBe('Lato');
     expect(aliases.has('carlito regular')).toBe(false);
     expect(aliases.has('roboto regular')).toBe(false);
-    expect(fontStackFor('Lato Regular', undefined, '', undefined, true, undefined,
+    expect(fontStackFor('Lato Regular', undefined, '', undefined, true,
       aliases.get('lato regular')).startsWith('"Lato Regular", "Lato", Arial')).toBe(true);
     expect(fontStackFor('Lato Regular').startsWith('"Lato Regular", Arial')).toBe(true);
   });
