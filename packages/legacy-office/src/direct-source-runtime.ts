@@ -1,3 +1,5 @@
+import { nativeRejection } from './native-rejection.js';
+import type { LegacyFamily } from './legacy-source.js';
 import {
   detachWasmBindgenResource,
   isWasmTrap,
@@ -44,6 +46,7 @@ export interface DirectSourceGlue {
 export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends DirectSourceArchive, C = undefined>(
   config: Readonly<{
     label: string;
+    format?: LegacyFamily;
     maximumSourceBytes: number;
     loadGlue(): Promise<G>;
     resolveWasm(wasmUrl: string): Promise<unknown>;
@@ -69,7 +72,7 @@ export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends 
   const runNative = <T>(operation: () => T): T => {
     const poisoned = failure();
     if (poisoned) throw poisoned;
-    try { return operation(); } catch (error) { return failTrap(error); }
+    try { return operation(); } catch (error) { return failTrap(config.format ? nativeRejection(error, config.format) : error); }
   };
   const initialize = (wasmUrl: string): Promise<G> => {
     if (initialized) {

@@ -192,10 +192,9 @@ pub(super) fn bind(
     let mut groups = Vec::new();
     let (mut ci, mut index) = (0, 0usize);
     while reader.pos < bytes.len() {
-        *reader.budget = reader
-            .budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint PP9 text work budget exceeded"))?;
+        *reader.budget = reader.budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint PP9 text work budget exceeded")
+        })?;
         let value = read(&mut reader)?;
         if ci < characters.len() && index % 16 == usize::from((characters[ci].1.style >> 10) & 15) {
             let id = (characters[ci].1.style >> 10) & 15;

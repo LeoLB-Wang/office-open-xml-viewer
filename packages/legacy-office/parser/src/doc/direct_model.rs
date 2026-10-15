@@ -85,7 +85,9 @@ pub(super) fn build(
         .count()
         > super::MAX_STORY_CONTROLS
     {
-        return Err(unsupported("Word story structure budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word story structure budget exceeded",
+        ));
     }
     let note_layout_settings = notes::validate(
         &facts.note_stories,

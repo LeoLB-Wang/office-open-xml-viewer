@@ -5979,9 +5979,12 @@ export function buildBevelInputs(
   if (!sp3d) return [];
   const rig = lightRig?.rig ?? 'threePt';
   const dir = lightRig?.dir ?? 't';
-  // §20.1.5.9/§20.1.5.11: the lightRig's `<a:rot>` (rev = in-plane revolution about
-  // the view axis) rotates the key-light azimuth. lat/lon are a documented SPEC GAP
-  // in lightDirFromRig (no calibration sample exercises them).
+  // Full lightRig `<a:rot>` semantics (§20.1.5.11) are not yet applied; retain
+  // the historical rev-only approximation. PowerPoint-exported orthographic
+  // matte circle/threePt controls (dir t/r/br; axis quarter-turns and mixed
+  // rotations) show explicit rot overrides dir, zero differs from absent, and
+  // side/back lighting darkens the face. This face-preserving model cannot
+  // express those results; lat/lon support requires a lighting-model replacement.
   const light = lightDirFromRig(rig, dir, lightRig?.rot);
   const material = materialClass(prstMaterial);
   const emuToDev = scale * devScale;

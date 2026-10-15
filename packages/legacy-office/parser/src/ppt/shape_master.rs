@@ -39,7 +39,9 @@ struct TextBase {
 impl Resolver {
     pub fn insert(&mut self, node: Node) -> Result<(), String> {
         if self.nodes.len() + self.resolved.len() >= MAX_MASTER_SHAPES {
-            return Err(unsupported("PowerPoint master shape limit exceeded"));
+            return Err(crate::rejection::resource(
+                "PowerPoint master shape limit exceeded",
+            ));
         }
         if node.id == 0 || self.nodes.contains_key(&node.id) || self.resolved.contains_key(&node.id)
         {
@@ -107,17 +109,24 @@ impl Resolver {
         path: &mut Vec<u32>,
         budget: &mut usize,
     ) -> Result<Rc<Vec<text_style::Level>>, String> {
-        *budget = budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint master shape work budget exceeded"))?;
+        *budget = budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint master shape work budget exceeded")
+        })?;
         if let Some(resolved) = self.resolved.get(&id) {
             // A cached suffix still counts toward the complete chain depth.
             if path.len() + resolved.depth > MAX_DEPTH {
-                return Err(unsupported("excessive PowerPoint master shape inheritance"));
+                return Err(crate::rejection::resource(
+                    "excessive PowerPoint master shape inheritance",
+                ));
             }
             return Ok(resolved.levels.clone());
         }
-        if path.len() >= MAX_DEPTH || path.contains(&id) {
+        if path.len() >= MAX_DEPTH {
+            return Err(crate::rejection::resource(
+                "PowerPoint inheritance depth limit exceeded",
+            ));
+        }
+        if path.contains(&id) {
             return Err(unsupported(
                 "cyclic or excessive PowerPoint master shape inheritance",
             ));
@@ -328,7 +337,10 @@ mod tests {
         for id in 1..=MAX_DEPTH as u32 + 1 {
             r.insert(node(id, Some(id + 1))).unwrap();
         }
-        assert!(r.finish(&mut 1000).unwrap_err().contains("excessive"));
+        assert!(r
+            .finish(&mut 1000)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
         // Ascending resolution order caches every parent before its child.
         // The cap must not depend on whether ancestors were already resolved.
         let mut r = Resolver::default();
@@ -339,7 +351,10 @@ mod tests {
         r.finish(&mut 1000).unwrap();
         r.insert(node(MAX_DEPTH as u32 + 1, Some(MAX_DEPTH as u32)))
             .unwrap();
-        assert!(r.finish(&mut 1000).unwrap_err().contains("excessive"));
+        assert!(r
+            .finish(&mut 1000)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
     #[test]
     fn bounds_retained_nodes_before_inserting_and_rejects_ambiguous_ids() {

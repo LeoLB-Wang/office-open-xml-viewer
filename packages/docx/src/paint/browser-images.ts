@@ -174,7 +174,6 @@ export async function decodeRaster(
   const sourceBitmapOptions = {
     widthPt,
     heightPt,
-    suppressBoundaryFrame: true,
     svgDecoder: svgDecoder ?? (mimeType === 'image/svg+xml' && typeof Image !== 'undefined'
       ? decodeSvgBlobOnMainThread : undefined),
     tiff,

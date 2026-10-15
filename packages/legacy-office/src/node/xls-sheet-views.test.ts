@@ -61,7 +61,11 @@ it.each([
   fixture([0], { count: 0 }), fixture([], { count: 1 }), fixture([0], { count: 2 }),
   fixture([0], { windowLength: 17 }),
   fixture([], { count: 1, extra: record(0x023e, new Uint8Array(10)) }),
-  fixture(Array.from({ length: 1025 }, () => 0)),
 ])('rejects malformed or unbound views rather than inventing associations (%#)', async bytes => {
-  await expect(view(bytes)).rejects.toThrow(/^UNSUPPORTED:.*BIFF (workbook|worksheet) windows/);
+  await expect(view(bytes)).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'xls', reason: 'source-subset' } });
+});
+
+it('keeps the window retention budget distinct from unsupported content', async () => {
+  await expect(view(fixture(Array.from({ length: 1025 }, () => 0))))
+    .rejects.toMatchObject({ message: 'LEGACY_RESOURCE_LIMIT:BIFF workbook window retention budget exceeded' });
 });

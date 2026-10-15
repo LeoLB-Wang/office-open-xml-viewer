@@ -35,7 +35,7 @@ impl Records {
             .bytes
             .checked_add(data.len())
             .filter(|bytes| *bytes <= MAX_SHEET_BYTES)
-            .ok_or_else(|| unsupported("XLS table byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("XLS table byte budget exceeded"))?;
         self.records.push((kind, data.to_vec()));
         Ok(())
     }
@@ -388,7 +388,9 @@ impl Styles {
             .ok_or_else(|| unsupported("XLS table style names no DXF record"))?;
         let dxf = xfprops(data, 14, context, false)?;
         if dxfs.len() >= super::conditional::MAX_DXFS {
-            return Err(unsupported("too many XLS differential formats"));
+            return Err(crate::rejection::resource(
+                "too many XLS differential formats",
+            ));
         }
         dxfs.push(dxf);
         let id = u32::try_from(dxfs.len() - 1).map_err(|_| truncated())?;

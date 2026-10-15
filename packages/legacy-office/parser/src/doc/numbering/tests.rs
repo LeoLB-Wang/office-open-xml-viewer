@@ -533,7 +533,10 @@ fn typed_template_rejects_unconsumed_offsets_before_callbacks() {
 
 #[test]
 fn typed_template_literal_utf8_budget_is_not_a_character_count() {
-    let exact = [b'a', 0].repeat(ooxml_common::numbering::MAX_MARKER_BYTES);
+    let exact: Vec<u8> = ("界".repeat(21_845) + "x")
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
     let value = typed_level(&exact);
     assert_eq!(
         value
@@ -547,5 +550,6 @@ fn typed_template_literal_utf8_budget_is_not_a_character_count() {
     let oversized_utf8 = [0x42, 0x30].repeat(ooxml_common::numbering::MAX_MARKER_BYTES / 3 + 1);
     assert!(typed_level(&oversized_utf8)
         .numbering_template(0, |_| None)
-        .is_err());
+        .unwrap_err()
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
 }

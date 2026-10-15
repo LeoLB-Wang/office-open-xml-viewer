@@ -33,11 +33,11 @@ it.each([
   // The converter wrote w:shd patterns (and warned and dropped the unmappable
   // 0x23); the DOCX cell model has only a resolved solid background, and a
   // solid pattern takes the automatic foreground here.
-  await expect(load(tableFixture(0xd612, concat(new Uint8Array([10]), modern(pattern as number))))).rejects.toThrow(new Error(`UNSUPPORTED:direct DOC model ${reason}`));
+  await expect(load(tableFixture(0xd612, concat(new Uint8Array([10]), modern(pattern as number))))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('direct rejects table-wide shading instead of synthesizing cell overrides', async () => {
-  await expect(load(tableFixture(0xd660, concat(new Uint8Array([10]), modern())))).rejects.toThrow(new Error('UNSUPPORTED:direct DOC model cannot retain table-level shading'));
+  await expect(load(tableFixture(0xd660, concat(new Uint8Array([10]), modern())))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it.each([
@@ -46,7 +46,7 @@ it.each([
   [0xd62d, concat(new Uint8Array([12, 0, 3]), modern()), 'Word cell range outside row'],
   [0xd609, new Uint8Array([2, 31, 0]), 'invalid Word shading palette index'],
 ])('rejects malformed shading operands, code=%i', async (code, operand, reason) => {
-  await expect(load(tableFixture(code as number, operand as Uint8Array))).rejects.toThrow(new Error(`UNSUPPORTED:${reason as string}`));
+  await expect(load(tableFixture(code as number, operand as Uint8Array))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('retains the table position and no-overlap', async () => {
@@ -67,5 +67,5 @@ it.each([
   [0x940e, 'position'],
   [0x9410, 'wrap distance'],
 ])('rejects out-of-range table position sprm %i', async (code, kind) => {
-  await expect(load(tableFixture(code as number, little16(32767)))).rejects.toThrow(new Error(`UNSUPPORTED:invalid Word table ${kind}`));
+  await expect(load(tableFixture(code as number, little16(32767)))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });

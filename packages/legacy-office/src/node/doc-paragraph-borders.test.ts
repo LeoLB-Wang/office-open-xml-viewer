@@ -19,8 +19,7 @@ it('rejects a malformed BrcOperand length without consuming the next property', 
   const bytes = buildDocFixture({ text: 'Body\r', paragraphProperties: concat(
     little16(0xc650), new Uint8Array([7, 0, 0, 0, 0, 8, 1, 0]), little16(0x2406), new Uint8Array([1]),
   ) });
-  expect(await load(bytes).then(() => 'resolved', (e: unknown) => String(e instanceof Error ? e.message : e)))
-    .toBe('UNSUPPORTED:invalid Word paragraph border operand');
+  await expect(load(bytes)).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it.skipIf(!skia).each([false, true])('renders one grouped paragraph rule in the body and one in the header, old=%s', async old => {

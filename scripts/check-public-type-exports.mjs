@@ -9,7 +9,7 @@ const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript-compiler-api');
 const typesDir = path.resolve(process.cwd(), 'dist/types');
 const formats = ['docx', 'pptx', 'xlsx'];
-const files = ['index', ...formats, 'math', 'three-d', 'region-map', 'chart-ex', 'tiff', 'internal-companion']
+const files = ['index', ...formats, 'math', 'three-d', 'region-map', 'chart-ex', 'tiff', 'internal-companion', 'node']
   .map((entry) => path.join(typesDir, `${entry}.d.ts`));
 
 const legacyTypesDir = path.resolve('packages/legacy-office/dist/types');
@@ -59,6 +59,7 @@ for (const [index, format] of formats.entries()) {
 const sharedOoxmlTypes = [
   'LoadOptions',
   'OoxmlError',
+  'OoxmlUnsupportedContentDetails',
   'OoxmlErrorStage',
   'OoxmlFormat',
   'OoxmlResourceLimit',
@@ -88,6 +89,14 @@ for (const name of sharedOoxmlTypes) {
       `${name} differs between ${formats[0]} and ${formats[index]}.`,
     );
   }
+}
+
+const nodeExports = moduleExports(path.join(typesDir, 'node.d.ts'));
+for (const name of ['OoxmlError', 'OoxmlErrorCode', 'OoxmlUnsupportedContentDetails']) {
+  const nodeType = declaredType(nodeExports, name, 'Node');
+  const formatType = declaredType(formatExports[0], name, 'DOCX');
+  assert.ok(checker.isTypeAssignableTo(nodeType, formatType) && checker.isTypeAssignableTo(formatType, nodeType),
+    `Node and format entries disagree on ${name}.`);
 }
 
 const tiffExports = moduleExports(path.join(typesDir, 'tiff.d.ts'));

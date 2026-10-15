@@ -116,7 +116,9 @@ impl<'a> Cells<'a> {
     fn resolve(&self, rgce: &[u8]) -> Result<Option<Vec<Option<reader::Cached>>>, String> {
         let result = self.resolve_optional(rgce);
         if self.budget_exceeded.get() {
-            return Err(unsupported("XLS chart reference retention budget exceeded"));
+            return Err(crate::rejection::resource(
+                "XLS chart reference retention budget exceeded",
+            ));
         }
         Ok(result)
     }
@@ -216,7 +218,9 @@ fn with_context<R>(
     };
     let result = body(&palette, &references);
     if cells.budget_exceeded.get() {
-        return Err(unsupported("XLS chart reference retention budget exceeded"));
+        return Err(crate::rejection::resource(
+            "XLS chart reference retention budget exceeded",
+        ));
     }
     Ok(result)
 }

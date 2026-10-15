@@ -44,6 +44,7 @@ export function createLegacyXlsSourceEngine(
 }> {
   return createDirectSourceRuntime({
     label: 'legacy XLS',
+    format: 'xls',
     maximumSourceBytes: MAX_LEGACY_XLS_SOURCE_BYTES,
     loadGlue,
     resolveWasm,
