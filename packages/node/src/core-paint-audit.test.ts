@@ -112,6 +112,84 @@ describe.skipIf(!skia)('shared paint regressions', () => {
     expect(pixel(ctx, 60, 20)[3]).toBe(0);
   });
 
+  it('retains off-surface selected region contents through subtraction, translation and saved DC restoration', () => {
+    const region = record(0x06ff, words(0, 6, 0, 0, 34, 1, 2, 0, 0, 200, 100,
+      2, 0, 100, 0, 200, 2));
+    const ctx = render(brush, select(0), region, record(0x012c, words(1)),
+      rect(50, 0, 60, 100, 0x0415), record(0x001e),
+      record(0x0220, words(0, -100)), rect(0, 0, 100, 100),
+      record(0x0127, words(-1)), record(0x02fc, words(0, 0, 0xff, 0)), select(2),
+      rect(0, 0, 100, 100));
+    expect(pixel(ctx, 50, 50)).toEqual([255, 0, 0, 255]);
+    expect(pixel(ctx, 70, 50)).toEqual([0, 0, 255, 255]);
+  });
+
+  it('keeps the implicit clip independent of the playback surface after exclusion and offset', () => {
+    const ctx = render(brush, select(0), rect(50, 0, 60, 100, 0x0415),
+      record(0x0220, words(0, -100)), rect(0, 0, 100, 100));
+    expect(pixel(ctx, 50, 50)).toEqual([255, 0, 0, 255]);
+  });
+
+  it('keeps fragmented region pieces exact through offsets, intersection and restoration', () => {
+    const holes = Array.from({ length: 128 }, (_, i) => ({ x: (i * 13) % 180, y: (i * 7) % 90 }));
+    const operations = holes.flatMap(({ x, y }) => [rect(x, y, x + 2, y + 2, 0x0415),
+      record(0x0220, words(0, 1))]);
+    const ctx = render(brush, select(0), rect(0, 0, 200, 100, 0x0416), ...operations,
+      record(0x001e), rect(0, 0, 0, 0, 0x0416), record(0x0127, words(-1)),
+      record(0x0220, words(0, -128)), rect(0, 0, 100, 100));
+    // Independent point-membership oracle: each hole moves with every later
+    // offset. The initial intersection returns to [0,200] after the final move.
+    const expected = new Uint8ClampedArray(100 * 100 * 4);
+    for (let y = 0; y < 100; y++) for (let x = 0; x < 100; x++) {
+      const excluded = holes.some((hole, i) => x >= hole.x - i && x < hole.x - i + 2 &&
+        y >= hole.y && y < hole.y + 2);
+      if (!excluded) { expected[(y * 100 + x) * 4] = 255; expected[(y * 100 + x) * 4 + 3] = 255; }
+    }
+    expect(ctx.getImageData(0, 0, 100, 100).data).toEqual(expected);
+  });
+
+  it('honors MM_TEXT device pixels despite extent and scale records, including the clip mapping', () => {
+    const ctx = render(brush, select(0), record(0x0103, words(1)),
+      record(0x020c, words(200, 200)), record(0x020e, words(50, 50)),
+      record(0x0410, words(1, 3, 1, 3)), record(0x0412, words(1, 2, 1, 2)),
+      rect(20, 20, 35, 40, 0x0416), rect(20, 20, 40, 40));
+    expect(pixel(ctx, 30, 30)).toEqual([255, 0, 0, 255]);
+    expect(pixel(ctx, 15, 15)[3]).toBe(0);
+    expect(pixel(ctx, 37, 30)[3]).toBe(0);
+  });
+
+  it.each([7, 8])('uses mode %i for axis scaling and restores it with the DC', mode => {
+    const ctx = render(brush, select(0), record(0x0103, words(mode)),
+      record(0x020c, words(100, 100)),
+      record(0x020d, words(100, 0)), record(0x001e),
+      record(0x0103, words(1)), record(0x0127, words(-1)),
+      record(0x020e, words(-100, 50)), rect(20, 20, 40, 40));
+    expect(pixel(ctx, 15, mode === 7 ? 85 : 70)).toEqual([255, 0, 0, 255]);
+    expect(pixel(ctx, 15, mode === 7 ? 70 : 85)[3]).toBe(0);
+  });
+
+  it.each([[2, 254], [3, 2540], [4, 100], [5, 1000], [6, 1440]])(
+    'maps fixed physical mode %i to the square 96-dpi Canvas device, ignoring extent changes', (mode, inch) => {
+      const ctx = render(brush, select(0), record(0x0103, words(mode)),
+        record(0x020d, words(96, 0)), record(0x020c, words(10, 10)),
+        record(0x020e, words(10, 10)), record(0x0410, words(1, 2, 1, 2)),
+        record(0x0412, words(1, 3, 1, 3)),
+        rect(0, 0, inch / 2, inch / 2, 0x0416), rect(0, 0, inch, inch));
+      expect(pixel(ctx, 24, 72)).toEqual([255, 0, 0, 255]);
+      expect(pixel(ctx, 24, 24)[3]).toBe(0);
+      expect(pixel(ctx, 72, 72)[3]).toBe(0);
+    });
+
+  it('keeps isotropic axes equal after window and viewport scaling', () => {
+    const ctx = render(brush, select(0), record(0x0103, words(7)),
+      record(0x020c, words(100, 100)), record(0x020e, words(100, 50)),
+      record(0x0410, words(1, 1, 1, 2)), record(0x0412, words(1, 2, 1, 3)),
+      rect(20, 20, 40, 40));
+    expect(pixel(ctx, 15, 15)).toEqual([255, 0, 0, 255]);
+    expect(pixel(ctx, 25, 15)[3]).toBe(0);
+    expect(pixel(ctx, 15, 25)[3]).toBe(0);
+  });
+
   it('selects scan regions, replacing an existing clip, and maps subsequent geometry through the viewport', () => {
     // MS-WMF 2.2.1.5 / 2.2.2.21: two intervals in a single scan band.
     const region = record(0x06ff, words(0, 6, 0, 0, 38, 1, 4, 0, 0, 100, 100,
@@ -123,5 +201,19 @@ describe.skipIf(!skia)('shared paint regressions', () => {
     expect(pixel(ctx, 20, 50)).toEqual([255, 0, 0, 255]);
     expect(pixel(ctx, 50, 50)[3]).toBe(0);
     expect(pixel(ctx, 80, 50)[3]).toBe(0);
+  });
+
+  it('subtracts and offsets selected scan bands under a captured mirrored mapping', () => {
+    const region = record(0x06ff, words(0, 6, 0, 0, 38, 1, 4, 0, 0, 100, 100,
+      4, 20, 80, 10, 30, 70, 90, 4));
+    const ctx = render(brush, select(0), region,
+      record(0x020c, words(100, -100)), record(0x020d, words(0, 100)),
+      record(0x012c, words(1)), rect(70, 20, 80, 80, 0x0415),
+      record(0x0220, words(0, -10)),
+      record(0x020c, words(100, 100)), record(0x020d, words(0, 0)), rect(0, 0, 100, 100));
+    expect(pixel(ctx, 25, 50)).toEqual([255, 0, 0, 255]);
+    expect(pixel(ctx, 85, 50)).toEqual([255, 0, 0, 255]);
+    expect(pixel(ctx, 15, 50)[3]).toBe(0);
+    expect(pixel(ctx, 35, 50)[3]).toBe(0);
   });
 });

@@ -24,7 +24,7 @@
 // STRETCHDIBITS (embedded raster DIB via the
 // shared decoder in ./dib.ts), EOF.
 // Ignored (no-op, skipped by size):
-// SETSTRETCHBLTMODE, SETMAPMODE, DIBBITBLT/DIBSTRETCHBLT (their exact param
+// SETSTRETCHBLTMODE, DIBBITBLT/DIBSTRETCHBLT (their exact param
 // layout is not decoded here — skipped rather than mis-parsed), and any
 // unrecognized record.
 //
@@ -47,6 +47,7 @@ const META = {
   SETTEXTCOLOR: 0x0209,
   SETPOLYFILLMODE: 0x0106,
   SETROP2: 0x0104,
+  SETMAPMODE: 0x0103,
   SETWINDOWORG: 0x020b,
   SETWINDOWEXT: 0x020c,
   SETVIEWPORTORG: 0x020d,
@@ -174,18 +175,65 @@ interface Font {
   validForExt: boolean;
 }
 type RectBounds = [number, number, number, number];
-interface Region { kind: 'region'; rects: RectBounds[]; valid: boolean }
+interface Region { kind: 'region'; tree: ClipNode | null; valid: boolean }
 type WmfObject = Pen | Brush | Font | Region;
-// Immutable clip history permits O(1) DC snapshots. Intersections/exclusions
-// apply immediately; only replacement, offset and restoration replay history.
-interface ClipStep {
-  previous: ClipStep | null;
-  rects: readonly RectBounds[];
-  exclude: boolean;
-  /** Captured logical-to-device scale/origin for a selected region. */
+// The DC region is independent of both the raster surface and caller clip.
+// An immutable, height-balanced spatial tree owns disjoint rectangle pieces.
+// Saved DCs share untouched subtrees; offsets are O(1), never history replays.
+interface ClipNode {
+  bounds: RectBounds;
+  height: number;
+  children?: readonly [ClipNode, ClipNode];
+}
+interface WmfClip {
+  tree: ClipNode | null;
+  dx: number;
+  dy: number;
+  /** Borrow selected scan bands without copying them for every SELECT/SAVEDC. */
   mapping?: readonly [number, number, number, number];
 }
-interface WmfClip { tail: ClipStep | null; dx: number; dy: number }
+const UNBOUNDED_CLIP: WmfClip = {
+  tree: { bounds: [-Infinity, -Infinity, Infinity, Infinity], height: 1 }, dx: 0, dy: 0,
+};
+
+function clipBranch(a: ClipNode, b: ClipNode): ClipNode {
+  return { bounds: [Math.min(a.bounds[0], b.bounds[0]), Math.min(a.bounds[1], b.bounds[1]),
+    Math.max(a.bounds[2], b.bounds[2]), Math.max(a.bounds[3], b.bounds[3])],
+    height: Math.max(a.height, b.height) + 1, children: [a, b] };
+}
+
+/** Persistent AVL concatenation: retain spatial neighbors and logarithmic
+ * tree depth after a rectangle is split or removed. No saved tree is mutated. */
+function joinClip(a: ClipNode | null, b: ClipNode | null): ClipNode | null {
+  if (!a) return b;
+  if (!b) return a;
+  if (a.height > b.height + 1 && a.children) {
+    const [l, r] = a.children;
+    const next = joinClip(r, b) as ClipNode;
+    if (next.height <= l.height + 1) return clipBranch(l, next);
+    const [nl, nr] = next.children as readonly [ClipNode, ClipNode];
+    if (nr.height >= nl.height) return clipBranch(clipBranch(l, nl), nr);
+    const [nll, nlr] = nl.children as readonly [ClipNode, ClipNode];
+    return clipBranch(clipBranch(l, nll), clipBranch(nlr, nr));
+  }
+  if (b.height > a.height + 1 && b.children) {
+    const [l, r] = b.children;
+    const next = joinClip(a, l) as ClipNode;
+    if (next.height <= r.height + 1) return clipBranch(next, r);
+    const [nl, nr] = next.children as readonly [ClipNode, ClipNode];
+    if (nl.height >= nr.height) return clipBranch(nl, clipBranch(nr, r));
+    const [nrl, nrr] = nr.children as readonly [ClipNode, ClipNode];
+    return clipBranch(clipBranch(nl, nrl), clipBranch(nrr, r));
+  }
+  return clipBranch(a, b);
+}
+
+function clipTree(rects: readonly RectBounds[], start = 0, end = rects.length): ClipNode | null {
+  if (start === end) return null;
+  if (end === start + 1) return { bounds: rects[start], height: 1 };
+  const mid = Math.floor((start + end) / 2);
+  return clipBranch(clipTree(rects, start, mid) as ClipNode, clipTree(rects, mid, end) as ClipNode);
+}
 
 /** Inserts an object at the FIRST free slot (lowest index whose slot is empty
  *  or was deleted), mirroring the WMF object-table allocation rule. */
@@ -266,6 +314,8 @@ interface PlayState {
   vpW: number;
   vpH: number;
   clip: WmfClip;
+  clipDirty: boolean;
+  mapMode: number;
   // GDI state
   objects: (WmfObject | null)[];
   curPen: Pen | null;
@@ -295,6 +345,39 @@ function mapY(s: PlayState, y: number): number {
   return s.vpY + (y - s.orgY) * (s.vpH / s.extY);
 }
 
+/** MS-WMF 2.1.1.16 / 2.3.5.17: fixed-unit modes ignore window/viewport
+ * extent setters and scalers; origins remain independently adjustable.
+ * Library device policy: Canvas pixels are square, 96 pixels per inch (CSS
+ * reference pixels), not the original metafile author's printer/display DPI.
+ * MM_TEXT is exactly one device pixel. Physical modes have upward-positive Y.
+ * The initial mode is caller-defined; only an authored SETMAPMODE selects one
+ * of these fixed mappings. No machine/OS-dependent device capabilities enter.
+ */
+function setMapMode(s: PlayState, mode: number): void {
+  s.mapMode = mode;
+  if (mode <= 6) {
+    const unitsPerInch = [0, 1, 254, 2540, 100, 1000, 1440][mode];
+    s.extX = unitsPerInch; s.extY = unitsPerInch;
+    s.vpW = mode === 1 ? 1 : 96;
+    s.vpH = mode === 1 ? 1 : -96;
+    s.haveExt = true;
+    s.extTextMappingSafe = true;
+  }
+  adjustIsotropic(s);
+}
+
+/** MS-WMF 2.1.1.16 requires equal physical units in MM_ISOTROPIC and
+ * recommends adjusting the viewport when extents change. On the square-pixel
+ * Canvas device, reduce the larger scale to fit both requested extents, while
+ * preserving each authored axis direction. MM_ANISOTROPIC keeps both scales.
+ */
+function adjustIsotropic(s: PlayState): void {
+  if (s.mapMode !== 7) return;
+  const scale = Math.min(Math.abs(s.vpW / s.extX), Math.abs(s.vpH / s.extY));
+  s.vpW = Math.sign(s.vpW) * Math.abs(s.extX) * scale;
+  s.vpH = Math.sign(s.vpH) * Math.abs(s.extY) * scale;
+}
+
 /** Device line width: scale the logical pen width by |W/extX| and clamp to ≥1
  *  so hairlines stay visible after mapping. */
 function deviceLineWidth(s: PlayState, logicalWidth: number): number {
@@ -318,36 +401,80 @@ function strokeEdges(s: PlayState, pts: Array<[number, number]>, closed: boolean
   s.drew = true;
 }
 
-/** MS-WMF 2.3.5.2–3: clip rectangles use the mapping at the time of the
- * record. Later mapping changes do not move the device clip. Exclusion uses
- * an even-odd complement within the playback surface, without edge guesses. */
-function applyClipStep(s: PlayState, step: ClipStep): void {
-  const { ctx } = s;
-  ctx.beginPath();
-  if (step.exclude) ctx.rect(s.clip.dx, s.clip.dy, s.W, s.H);
-  for (const rect of step.rects) {
-    let [l, t, r, b] = rect;
-    if (step.mapping) {
-      const [sx, sy, tx, ty] = step.mapping;
-      const x0 = l * sx + tx; const x1 = r * sx + tx;
-      const y0 = t * sy + ty; const y1 = b * sy + ty;
-      l = Math.min(x0, x1); r = Math.max(x0, x1);
-      t = Math.min(y0, y1); b = Math.max(y0, y1);
-    }
-    ctx.rect(l + s.clip.dx, t + s.clip.dy, r - l, b - t);
-  }
-  ctx.clip(step.exclude ? 'evenodd' : 'nonzero');
+/** Map a selected scan band only when it is consumed; subsequent mapping
+ * changes do not move a region already in device space (MS-WMF 2.3.4.9). */
+function clipRect(clip: WmfClip, rect: RectBounds): RectBounds {
+  if (!clip.mapping) return rect;
+  const [sx, sy, tx, ty] = clip.mapping;
+  const x0 = rect[0] * sx + tx; const x1 = rect[2] * sx + tx;
+  const y0 = rect[1] * sy + ty; const y1 = rect[3] * sy + ty;
+  return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
 }
 
-function resetClip(s: PlayState): void {
-  // Own one Canvas save frame for the entire player, independent of WMF DC
-  // levels. This allows SELECTCLIPREGION to replace even an inherited clip
-  // while preserving the caller's pre-existing Canvas clip.
+/** MS-WMF 2.3.5.2–3: Boolean operations affect the actual device region,
+ * including off-surface pieces that OFFSETCLIPRGN can later bring into view.
+ * Prune disjoint/contained subtrees; copy only affected branches. Work follows
+ * visited live geometry, with at most four pieces per split leaf, rather than
+ * scanning/copying every saved region or replaying a growing operation log.
+ * The implicit region is the plane; the surface/caller clip is applied only at
+ * Canvas emission, never used as a subtraction universe. */
+function cutClip(node: ClipNode | null, bounds: RectBounds, exclude: boolean): ClipNode | null {
+  if (!node) return null;
+  const [pl, pt, pr, pb] = node.bounds;
+  const il = Math.max(pl, bounds[0]); const it = Math.max(pt, bounds[1]);
+  const ir = Math.min(pr, bounds[2]); const ib = Math.min(pb, bounds[3]);
+  if (il >= ir || it >= ib) return exclude ? node : null;
+  if (il === pl && it === pt && ir === pr && ib === pb) return exclude ? null : node;
+  if (node.children) {
+    const [a, b] = node.children;
+    const l = cutClip(a, bounds, exclude); const r = cutClip(b, bounds, exclude);
+    return l === a && r === b ? node : joinClip(l, r);
+  }
+  if (!exclude) return { bounds: [il, it, ir, ib], height: 1 };
+  const pieces: RectBounds[] = [];
+  if (pt < it) pieces.push([pl, pt, pr, it]);
+  if (pl < il) pieces.push([pl, it, il, ib]);
+  if (ir < pr) pieces.push([ir, it, pr, ib]);
+  if (ib < pb) pieces.push([pl, ib, pr, pb]);
+  return clipTree(pieces);
+}
+
+function combineClip(s: PlayState, bounds: RectBounds, exclude: boolean): void {
+  const { dx, dy, mapping } = s.clip;
+  let local: RectBounds = [bounds[0] - dx, bounds[1] - dy, bounds[2] - dx, bounds[3] - dy];
+  // Keep a selected region in its captured coordinate space. Inverse-map the
+  // new operand, so a cut copies only affected branches even for a large region
+  // shared by many saved DCs. Signed scales preserve mirrored region membership.
+  if (mapping) {
+    const [sx, sy, tx, ty] = mapping;
+    const x0 = (local[0] - tx) / sx; const x1 = (local[2] - tx) / sx;
+    const y0 = (local[1] - ty) / sy; const y1 = (local[3] - ty) / sy;
+    local = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+  }
+  s.clip = { ...s.clip, tree: cutClip(s.clip.tree, local, exclude) };
+  s.clipDirty = true;
+}
+
+function applyClip(s: PlayState): void {
+  if (!s.clipDirty) return;
+  // Own one Canvas save frame, independent of WMF DC levels. Replacement
+  // preserves the caller's pre-existing clip. Emit the current region once,
+  // just before drawing; exclude/offset-only files do no Canvas clip work.
   s.ctx.restore();
   s.ctx.save();
-  const steps: ClipStep[] = [];
-  for (let step = s.clip.tail; step; step = step.previous) steps.push(step);
-  for (let i = steps.length - 1; i >= 0; i--) applyClipStep(s, steps[i]);
+  s.ctx.beginPath();
+  const pending = s.clip.tree ? [s.clip.tree] : [];
+  while (pending.length) {
+    const node = pending.pop() as ClipNode;
+    const rect = clipRect(s.clip, node.bounds);
+    const l = Math.max(0, rect[0] + s.clip.dx); const t = Math.max(0, rect[1] + s.clip.dy);
+    const r = Math.min(s.W, rect[2] + s.clip.dx); const b = Math.min(s.H, rect[3] + s.clip.dy);
+    if (l >= r || t >= b) continue;
+    if (node.children) pending.push(...node.children);
+    else s.ctx.rect(l, t, r - l, b - t);
+  }
+  s.ctx.clip();
+  s.clipDirty = false;
 }
 
 function mappedRect(s: PlayState, l: number, t: number, r: number, b: number): RectBounds {
@@ -359,7 +486,8 @@ function mappedRect(s: PlayState, l: number, t: number, r: number, b: number): R
 /** MS-WMF 2.2.1.5 and 2.2.2.21: a region is the union of every interval in
  * every scan band, not its bounding rectangle. Validate counts before reads. */
 function createRegion(c: Cursor): Region {
-  const region: Region = { kind: 'region', rects: [], valid: false };
+  const region: Region = { kind: 'region', tree: null, valid: false };
+  const rects: RectBounds[] = [];
   if (c.remaining < 22) return region;
   c.u16(); const type = c.i16(); c.u32(); c.i16();
   const scans = c.i16(); c.i16(); c.skip(8);
@@ -370,11 +498,12 @@ function createRegion(c: Cursor): Region {
     if (count % 2 !== 0 || c.remaining < count * 2 + 2) return region;
     for (let j = 0; j < count; j += 2) {
       const left = c.u16(); const right = c.u16();
-      if (left < right && top < bottom) region.rects.push([left, top, right, bottom]);
+      if (left < right && top < bottom) rects.push([left, top, right, bottom]);
     }
     if (c.u16() !== count) return region;
   }
   region.valid = c.remaining === 0;
+  if (region.valid) region.tree = clipTree(rects);
   return region;
 }
 
@@ -703,7 +832,11 @@ export function playWmf(
     extY: H || 1,
     haveExt: false,
     vpX: 0, vpY: 0, vpW: W, vpH: H,
-    clip: { tail: null, dx: 0, dy: 0 },
+    clip: UNBOUNDED_CLIP,
+    clipDirty: false,
+    // MS-WMF 3.1.5 leaves initial DC attributes device-dependent. Preserve
+    // this player's caller-sized anisotropic viewport until SETMAPMODE.
+    mapMode: 8,
     objects: [],
     curPen: null,
     curBrush: null,
@@ -738,7 +871,7 @@ export function playWmf(
 /** Replay owns the WMF DC stack; the public wrapper owns Canvas state cleanup. */
 function replayWmfRecords(bytes: Uint8Array, s: PlayState, pos: number): void {
   // Object table, diagnostics and output are player-owned, not saved DC state.
-  type SavedDc = Omit<PlayState, 'objects' | 'unsupported' | 'drew' | 'ctx'>;
+  type SavedDc = Omit<PlayState, 'objects' | 'unsupported' | 'drew' | 'ctx' | 'clipDirty'>;
   const stack: SavedDc[] = [];
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
@@ -755,10 +888,22 @@ function replayWmfRecords(bytes: Uint8Array, s: PlayState, pos: number): void {
     const paramStart = pos + 6;
     const c = new Cursor(bytes, paramStart, recEnd);
 
+    // All drawing records share the same current device-region clip.
+    if (fn === META.LINETO || fn === META.POLYLINE || fn === META.POLYGON ||
+        fn === META.POLYPOLYGON || fn === META.RECTANGLE || fn === META.TEXTOUT ||
+        fn === META.EXTTEXTOUT || fn === META.STRETCHDIBITS) applyClip(s);
+
     switch (fn) {
+      case META.SETMAPMODE: {
+        if (c.remaining !== 2) { s.unsupported.add('META_SETMAPMODE malformed'); break; }
+        const mode = c.u16();
+        if (mode < 1 || mode > 8) { s.unsupported.add('META_SETMAPMODE invalid mode'); break; }
+        setMapMode(s, mode);
+        break;
+      }
       case META.SAVEDC: {
         if (c.remaining !== 0) { s.unsupported.add('META_SAVEDC malformed'); break; }
-        const { objects: _objects, unsupported: _unsupported, drew: _drew, ctx: _ctx, ...dc } = s;
+        const { objects: _objects, unsupported: _unsupported, drew: _drew, ctx: _ctx, clipDirty: _clipDirty, ...dc } = s;
         stack.push(dc);
         break;
       }
@@ -771,7 +916,7 @@ function replayWmfRecords(bytes: Uint8Array, s: PlayState, pos: number): void {
         }
         Object.assign(s, stack[index]);
         stack.length = index;
-        resetClip(s);
+        s.clipDirty = true;
         break;
       }
       case META.CREATEREGION: {
@@ -785,31 +930,24 @@ function replayWmfRecords(bytes: Uint8Array, s: PlayState, pos: number): void {
         if (region?.kind !== 'region' || !region.valid) {
           s.unsupported.add('META_SELECTCLIPREGION invalid region'); break;
         }
-        // Borrow immutable scan bands: repeated SELECT/SAVEDC must not retain
-        // a fresh copy of a large region for each DC level. Capture only the
-        // mapping (MS-WMF 2.3.4.9); later viewport changes cannot move it.
-        s.clip = { tail: { previous: null, exclude: false, rects: region.rects,
-          mapping: [s.vpW / s.extX, s.vpH / s.extY, mapX(s, 0), mapY(s, 0)] }, dx: 0, dy: 0 };
-        resetClip(s);
+        s.clip = { tree: region.tree,
+          mapping: [s.vpW / s.extX, s.vpH / s.extY, mapX(s, 0), mapY(s, 0)], dx: 0, dy: 0 };
+        s.clipDirty = true;
         break;
       }
       case META.INTERSECTCLIPRECT:
       case META.EXCLUDECLIPRECT: {
         if (c.remaining !== 8) { s.unsupported.add('WMF clip rectangle malformed'); break; }
         const b = c.i16(); const r = c.i16(); const t = c.i16(); const l = c.i16();
-        const bounds = mappedRect(s, l, t, r, b);
-        const step: ClipStep = { previous: s.clip.tail, exclude: fn === META.EXCLUDECLIPRECT,
-          rects: [[bounds[0] - s.clip.dx, bounds[1] - s.clip.dy, bounds[2] - s.clip.dx, bounds[3] - s.clip.dy]] };
-        s.clip = { ...s.clip, tail: step };
-        applyClipStep(s, step);
+        combineClip(s, mappedRect(s, l, t, r, b), fn === META.EXCLUDECLIPRECT);
         break;
       }
       case META.OFFSETCLIPRGN: {
         if (c.remaining !== 4) { s.unsupported.add('META_OFFSETCLIPRGN malformed'); break; }
         const y = c.i16(); const x = c.i16();
-        if (s.clip.tail) {
+        if (s.clip !== UNBOUNDED_CLIP) {
           s.clip = { ...s.clip, dx: s.clip.dx + x * s.vpW / s.extX, dy: s.clip.dy + y * s.vpH / s.extY };
-          resetClip(s);
+          s.clipDirty = true;
         }
         break;
       }
@@ -822,16 +960,20 @@ function replayWmfRecords(bytes: Uint8Array, s: PlayState, pos: number): void {
         if (fn === META.SETVIEWPORTORG) { s.vpX = x; s.vpY = y; }
         else if (fn === META.OFFSETVIEWPORTORG) { s.vpX += x; s.vpY += y; }
         else if (fn === META.OFFSETWINDOWORG) { s.orgX += x; s.orgY += y; }
-        else if (x !== 0 && y !== 0) { s.vpW = x; s.vpH = y; }
+        else if (s.mapMode >= 7 && x !== 0 && y !== 0) {
+          s.vpW = x; s.vpH = y; adjustIsotropic(s);
+        }
         break;
       }
       case META.SCALEWINDOWEXT:
       case META.SCALEVIEWPORTEXT: {
         if (c.remaining !== 8) { s.unsupported.add('WMF mapping scale malformed'); break; }
         const yd = c.i16(); const yn = c.i16(); const xd = c.i16(); const xn = c.i16();
+        if (s.mapMode <= 6) break;
         if (xd === 0 || yd === 0 || xn === 0 || yn === 0) { s.unsupported.add('WMF mapping scale invalid'); break; }
         if (fn === META.SCALEWINDOWEXT) { s.extX *= xn / xd; s.extY *= yn / yd; }
         else { s.vpW *= xn / xd; s.vpH *= yn / yd; }
+        adjustIsotropic(s);
         break;
       }
       case META.SETWINDOWORG: {
@@ -855,10 +997,12 @@ function replayWmfRecords(bytes: Uint8Array, s: PlayState, pos: number): void {
         }
         const yExt = c.i16();
         const xExt = c.i16();
+        if (s.mapMode <= 6) break;
         s.extTextMappingSafe = xExt > 0 && yExt > 0;
         s.extY = yExt || 1;
         s.extX = xExt || 1;
         s.haveExt = true;
+        adjustIsotropic(s);
         break;
       }
       case META.SETROP2: {

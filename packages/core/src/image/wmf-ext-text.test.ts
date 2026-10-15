@@ -192,7 +192,7 @@ describe('WMF EXTTEXTOUT bounded font encoding', () => {
 
   it('requires transparent mode and positive mapping, and latches unsafe state', () => {
     const files = [
-      join(header(), record(0x0102, u16(1)), record(0x0103, u16(1)), font(), record(0x012d, u16(0)), record(0x012e, u16(0x18)), extText([65]), record(0, [])),
+      join(header(), record(0x0102, u16(1)), font(), record(0x012d, u16(0)), record(0x012e, u16(0x18)), extText([65]), record(0, [])),
       join(header(), record(0x020c, [...u16(100), ...u16(100)]), font(), record(0x012d, u16(0)), record(0x012e, u16(0x18)), extText([65]), record(0, [])),
       join(header(), record(0x020c, [...u16(-100), ...u16(100)]), record(0x0102, u16(1)), font(), record(0x012d, u16(0)), record(0x012e, u16(0x18)), extText([65]), record(0, [])),
     ];
@@ -201,6 +201,14 @@ describe('WMF EXTTEXTOUT bounded font encoding', () => {
       playWmf(file, mock.ctx, 100, 100);
       expect(mock.fillText).not.toHaveBeenCalled();
     }
+  });
+
+  it('accepts an explicit MM_TEXT mapping without requiring SETWINDOWEXT', () => {
+    const mock = context();
+    const file = join(header(), record(0x0102, u16(1)), record(0x0103, u16(1)),
+      font(), record(0x012d, u16(0)), record(0x012e, u16(0x18)), extText([65]), record(0, []));
+    expect(playWmf(file, mock.ctx, 100, 100)).toBe(true);
+    expect(mock.fillText).toHaveBeenCalledOnce();
   });
 
   it('allows SETBKCOLOR and reserved BKMODE/TEXTALIGN words', () => {

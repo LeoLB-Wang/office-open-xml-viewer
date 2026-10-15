@@ -144,6 +144,7 @@ function makeRecordingCtx(): MockCtx {
     moveTo(x: number, y: number) { calls.push({ op: 'moveTo', args: [x, y] }); },
     lineTo(x: number, y: number) { calls.push({ op: 'lineTo', args: [x, y] }); },
     rect(x: number, y: number, w: number, h: number) { calls.push({ op: 'rect', args: [x, y, w, h] }); },
+    clip() { calls.push({ op: 'clip', args: [] }); },
     stroke() {
       calls.push({ op: 'stroke', args: [] });
       styles.stroke.push(_stroke);
@@ -392,6 +393,27 @@ describe('playWmf — authored boundary edges', () => {
 });
 
 describe('playWmf — clip and raster-state diagnostics', () => {
+  it.each([false, true])('bounds exclude/offset Canvas work with drawing=%s', drawEach => {
+    const draw = record(FN.RECTANGLE, w => w.i16(100).i16(100).i16(0).i16(0));
+    const pair = [record(0x0415, w => w.i16(100).i16(60).i16(0).i16(50)),
+      record(0x0220, w => w.i16(0).i16(1)), ...(drawEach ? [draw] : [])];
+    const file = concat(wmfHeader(),
+      record(FN.CREATEBRUSHINDIRECT, w => w.u16(0).u32(0xff).u16(0)),
+      record(FN.SELECTOBJECT, w => w.u16(0)),
+      ...Array.from({ length: 1000 }, () => pair).flat());
+    const mock = makeRecordingCtx();
+    playWmf(file, mock.ctx, 100, 100);
+    expect(mock.calls.filter(c => c.op === 'clip').length).toBe(drawEach ? 1000 : 0);
+    expect(mock.calls.filter(c => c.op === 'rect').length).toBeLessThanOrEqual(drawEach ? 4000 : 0);
+  });
+
+  it.each([{ params: [] }, { params: [9] }])('diagnoses an invalid or malformed mapping mode $params', ({ params }) => {
+    const report = vi.fn();
+    playWmf(concat(wmfHeader(), record(0x0103, w => params.forEach(p => w.u16(p)))),
+      makeRecordingCtx().ctx, 100, 100, report);
+    expect(report).toHaveBeenCalledWith([params.length ? 'META_SETMAPMODE invalid mode' : 'META_SETMAPMODE malformed']);
+  });
+
   it('reports unsupported Boolean raster mixes instead of silently copying the pen', () => {
     const file = concat(wmfHeader(),
       record(FN.CREATEPENINDIRECT, w => w.u16(0).i16(0).i16(0).u32(0)),
