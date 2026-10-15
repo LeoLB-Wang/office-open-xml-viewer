@@ -599,7 +599,7 @@ export interface LineLayout {
   readonly advancePt: number;
   /** Trailing grid leading eligible for plain-paragraph page-edge admission.
    * Authored paragraph decorations disable it before continuation slicing;
-   * object lines and reserved boundaries retain the full cell at admission.
+   * only whitelisted plain text paint can use it at unreserved body boundaries.
    * Placement and paint always retain the full advance. */
   readonly gridAfterLeadingPt?: number;
   readonly placements: readonly ParagraphPlacement[];

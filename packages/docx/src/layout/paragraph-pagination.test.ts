@@ -175,6 +175,23 @@ describe('paragraph page-local reserve selection', () => {
     expect(wordGridLineAdmissionExtentPt(successor, 10, 18, 0, 10)).toBe(expectedExtent);
   });
 
+  it.each(['paragraph', 'line', 'text', 'glyph'] as const)(
+    'charges the full cell for an unknown %s paint capability', owner => {
+      const retained = verticalEdgeParagraph('horizontal-tb', 8, undefined, 2);
+      const line = { ...retained.lines[0]!, gridAfterLeadingPt: 2 };
+      const candidate = { ...retained, lines: [line] };
+      expect(wordGridLineAdmissionExtentPt(candidate, 10, 18)).toBe(8);
+      // New retained paint must be reviewed before it joins the plain-text
+      // observation, even when an older admission implementation cannot paint it.
+      Object.assign(owner === 'paragraph' ? candidate
+        : owner === 'line' ? line
+          : owner === 'text' ? line.placements[0]!
+            : (line.placements[0]! as import('./types.js').TextPlacement).paintOps[0]!,
+      { futureDecoration: {} });
+      expect(wordGridLineAdmissionExtentPt(candidate, 10, 18)).toBe(10);
+    },
+  );
+
   it('fails closed when a splittable retained paragraph lacks a continuation boundary', () => {
     expect(() => selectParagraphFragment(
       paragraph(),

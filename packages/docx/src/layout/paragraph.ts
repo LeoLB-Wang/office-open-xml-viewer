@@ -2455,9 +2455,10 @@ function planMeasuredLines(
   resourceOrientation?: import('./types.js').UprightResourceOrientation,
 ): readonly LineLayout[] {
   // WORD_GRID_LINE_CONTENT_FIT_ADMISSION covers plain captions only. Decide
-  // paragraph eligibility before continuation/keep-next slicing removes border
-  // edges. Include CT_PBdr's between/bar rules even when no edge is painted in
-  // this slice; a decorated paragraph always retains its full grid cell.
+  // authored paragraph eligibility before continuation/keep-next slicing removes
+  // border edges. Include CT_PBdr's between/bar rules even when no edge is painted in
+  // this slice. The shared admission predicate separately whitelists retained
+  // plain text paint, including run-level formatting, on each terminal line.
   const allowsGridLeadingOverhang = !paragraph.shading
     && !Object.values(paragraph.borders ?? {}).some(Boolean)
     && !Object.values(paragraph.typographyInput?.borders ?? {}).some(Boolean)

@@ -229,8 +229,11 @@ describe('line-grid page-bottom admission', () => {
     expect(layout.pages[1].layers.notes).toHaveLength(0);
   });
 
-  it.each(['complete', 'continuing', 'keep-next'] as const)(
-    'charges a bar-tab caption its full grid cell on the %s path', path => {
+  it.each([
+    ['bar-tab', 'complete'], ['bar-tab', 'continuing'], ['bar-tab', 'keep-next'],
+    ['run-border', 'complete'], ['run-border', 'continuing'], ['run-border', 'keep-next'],
+  ] as const)(
+    'charges a %s caption its full grid cell on the %s path', (decoration, path) => {
       const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
       caption.defaultFontSize = 16;
       caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 }];
@@ -238,7 +241,13 @@ describe('line-grid page-bottom admission', () => {
         { type: 'break', breakType: 'line' },
         { type: 'text', ...textRun('Continuation'), fontSize: 16 },
       );
-      caption.tabStops = [{ pos: 40, alignment: 'bar', leader: 'none' }];
+      if (decoration === 'bar-tab') {
+        caption.tabStops = [{ pos: 40, alignment: 'bar', leader: 'none' }];
+      } else {
+        for (const run of caption.runs) if (run.type === 'text') {
+          run.border = { style: 'single', color: '000000', width: 1, space: 1 };
+        }
+      }
       const preceding = path === 'keep-next'
         ? [paragraph('Preceding', exact(10)), { ...paragraph('Heading', exact(10)), keepNext: true } as BodyElement]
         : [paragraph('Preceding', exact(20))];
@@ -251,21 +260,45 @@ describe('line-grid page-bottom admission', () => {
         localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
         measureContext: canvas.getContext('2d'),
       }));
-      // Text ends at 38pt, but the first line's bar paints through 40pt.
+      // Text ends at 38pt, but the bar paints through 40pt, and the
+      // run border through 41.5pt (cell + spacing + half the stroke).
       // A continuation must defer that line; keep-next must move its heading too.
       expect(layout.pages).toHaveLength(path === 'continuing' ? 3 : 2);
       expect(layout.pages[0].layers.body).toHaveLength(1);
       let barCount = 0;
       for (const page of layout.pages) for (const block of page.layers.body) {
         if (block.kind !== 'paragraph') continue;
-        for (const line of block.lines) for (const rule of line.barTabRules ?? []) {
+        for (const line of block.lines) for (const rule of decoration === 'bar-tab'
+          ? line.barTabRules ?? []
+          : line.placements.flatMap(placement => placement.kind === 'text'
+            ? placement.runBorderFragments ?? [] : [])) {
           barCount += 1;
-          expect(Math.max(rule.from.yPt, rule.to.yPt)).toBeLessThanOrEqual(38);
+          expect(Math.max(rule.from.yPt, rule.to.yPt) + rule.widthPt / 2).toBeLessThanOrEqual(38);
         }
       }
-      expect(barCount).toBe(path === 'continuing' ? 2 : 1);
+      expect(barCount).toBe((path === 'continuing' ? 2 : 1) * (decoration === 'run-border' ? 4 : 1));
     },
   );
+
+  it.each([
+    { underline: true }, { strikethrough: true }, { doubleStrikethrough: true },
+    { highlight: 'yellow' }, { background: 'EEEEEE' }, { emphasisMark: 'dot' as const },
+    { ruby: { text: 'Guide', fontSizePt: 8 } },
+  ])('charges a decorated text run its full grid cell: %j', decoration => {
+    const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
+    caption.defaultFontSize = 16;
+    caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16, ...decoration }];
+    const model = docWith(paragraph('Preceding', exact(20)), caption);
+    model.section.pageHeight = 38;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual([1, 1]);
+  });
 
   it.each(['top border', 'between border', 'bar border', 'shading', 'inline image'] as const)(
     'retains the full grid cell for a caption with %s', decoration => {
