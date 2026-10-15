@@ -1,45 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderSlide } from './renderer.js';
-import type { ShapeElement, Slide } from './types.js';
-
-function contextFor(canvas: { width: number; height: number }, drawImages?: unknown[][]): CanvasRenderingContext2D {
-  const state: Record<string, unknown> = {
-    canvas,
-    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
-    measureText: (text: string) => ({ width: text.length * 6 }),
-    getImageData: (_x: number, _y: number, width: number, height: number) => ({
-      data: new Uint8ClampedArray(width * height * 4),
-      width,
-      height,
-    }),
-    drawImage: (...args: unknown[]) => drawImages?.push(args),
-  };
-  return new Proxy(state, {
-    get(target, property, receiver) {
-      if (property in target) return Reflect.get(target, property, receiver);
-      return () => undefined;
-    },
-    set(target, property, value, receiver) {
-      return Reflect.set(target, property, value, receiver);
-    },
-  }) as unknown as CanvasRenderingContext2D;
-}
-
-class TestOffscreenCanvas {
-  width: number;
-  height: number;
-  readonly context: CanvasRenderingContext2D;
-
-  constructor(width: number, height: number) {
-    this.width = width;
-    this.height = height;
-    this.context = contextFor(this);
-  }
-
-  getContext(): CanvasRenderingContext2D {
-    return this.context;
-  }
-}
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { chromium, type Browser, type Page } from '@playwright/test';
+import { build } from 'vite';
+import { existsSync } from 'node:fs';
+import { PNG } from 'pngjs';
+import type { ShapeElement } from './types.js';
 
 function orthographicBeveledShape(): ShapeElement {
   return {
@@ -88,69 +52,119 @@ function projectedBeveledShape(): ShapeElement {
   };
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
 
-describe('shape orthographic bevel', () => {
-  it('renders an identity-camera bevel through an offscreen shaded face', async () => {
-    const created: TestOffscreenCanvas[] = [];
-    vi.stubGlobal('OffscreenCanvas', class extends TestOffscreenCanvas {
-      constructor(width: number, height: number) {
-        super(width, height);
-        created.push(this);
-      }
+// Real browser pixels cover material ownership and camera routing; allocation
+// counts cannot distinguish an extra warp buffer from a second material pass.
+describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera pixels', () => {
+  let browser: Browser;
+  let page: Page;
+  beforeAll(async () => {
+    const result = await build({
+      configFile: false, logLevel: 'error',
+      define: { __OOXML_MODEL_SOURCES__: 'true' },
+      // Preserve core module initialization in this isolated renderer bundle.
+      build: { write: false, minify: false, rolldownOptions: { treeshake: false },
+        lib: { entry: new URL('./renderer.ts', import.meta.url).pathname,
+          formats: ['iife'], name: 'pptxRenderer' } },
     });
+    const outputs = Array.isArray(result) ? result : [result];
+    const chunk = outputs.flatMap(output => 'output' in output ? output.output : [])
+      .find(output => output.type === 'chunk');
+    if (!chunk || chunk.type !== 'chunk') throw new Error('Renderer bundle missing');
+    browser = await chromium.launch({ channel: 'chromium' });
+    page = await browser.newPage();
+    await page.setContent('<!doctype html><canvas></canvas>');
+    await page.addScriptTag({ content: chunk.code });
+  }, 60_000);
+  afterAll(async () => { await browser?.close(); });
 
-    const drawImages: unknown[][] = [];
-    const canvas = {
-      width: 960,
-      height: 540,
-      style: {} as CSSStyleDeclaration,
-      offsetWidth: 960,
-    } as HTMLCanvasElement;
-    const ctx = contextFor(canvas, drawImages);
-    canvas.getContext = (() => ctx) as unknown as HTMLCanvasElement['getContext'];
-    const slide: Slide = {
-      index: 0,
-      slideNumber: 1,
-      background: null,
-      elements: [orthographicBeveledShape()],
+  async function render(shape: ShapeElement, height = 400) {
+    const png = await page.evaluate(async ({ shape, height }) => {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      const renderer = (globalThis as unknown as { pptxRenderer: typeof import('./renderer') }).pptxRenderer;
+      await renderer.renderSlide(canvas,
+        { index: 0, slideNumber: 1, background: null, elements: [shape] },
+        400 * 9525, height * 9525, { width: 400, dpr: 1 });
+      return canvas.toDataURL('image/png').split(',')[1];
+    }, { shape, height });
+    return PNG.sync.read(Buffer.from(png, 'base64')).data;
+  }
+  const pixel = (data: Uint8Array, x: number, y: number) => [...data.subarray((y * 400 + x) * 4, (y * 400 + x) * 4 + 3)];
+
+  for (const projected of [false, true]) {
+    it(`applies translucent material once (${projected ? 'projected' : 'identity'} camera)`, async () => {
+      const shape = projected ? projectedBeveledShape() : orthographicBeveledShape();
+      shape.fill = { fillType: 'solid', color: '50648C' };
+      shape.scene3d!.lightRig = { rig: 'contrasting', dir: 't' };
+      const data = await render(shape);
+      // Contrasting has ambient=1 and no diffuse. The flat material has alpha
+      // .7, so (80,100,140) over white must be (133,147,175), within rounding.
+      const center = pixel(data, 144, 144);
+      for (const [i, expected] of [133, 147, 175].entries())
+        expect(Math.abs(center[i] - expected)).toBeLessThanOrEqual(1);
+    });
+  }
+
+  it('keeps projected text unshaded when an invisible shadow selects the effect path', async () => {
+    const shape = projectedBeveledShape();
+    shape.geometry = 'rect';
+    shape.width *= 2;
+    shape.textBody = {
+      verticalAnchor: 'ctr', defaultFontSize: 32, defaultBold: false, defaultItalic: false,
+      lIns: 0, rIns: 0, tIns: 0, bIns: 0, wrap: 'none', vert: 'horz', autoFit: 'none',
+      paragraphs: [{ alignment: 'ctr', marL: 0, marR: 0, indent: 0,
+        spaceBefore: null, spaceAfter: null, spaceLine: null, lvl: 0,
+        bullet: { type: 'none' }, defFontSize: 32, defColor: 'FF0000',
+        defBold: false, defItalic: false, defFontFamily: 'Arial', tabStops: [], eaLnBrk: true,
+        runs: [{ type: 'text', text: 'MMMM', bold: false, italic: false, underline: false,
+          strikethrough: false, fontSize: 32, color: 'FF0000', fontFamily: 'Arial' }] }],
     };
-
-    await renderSlide(canvas, slide, 9_144_000, 6_858_000, { width: 960, dpr: 1 });
-
-    expect(created).toHaveLength(1);
-    expect(drawImages).toHaveLength(1);
-    expect(drawImages[0]?.[0]).toBe(created[0]);
+    const plain = await render(shape);
+    const shadow = await render({ ...shape, shadow: { color: '000000', alpha: 0, blur: 0, dist: 0, dir: 0 } });
+    const redPixels = (data: Uint8Array) => Array.from(data).reduce<number[]>((indices, r, i) => {
+      if (i % 4 === 0 && r === 255 && data[i + 1] === 0 && data[i + 2] === 0) indices.push(i);
+      return indices;
+    }, []);
+    expect(redPixels(plain).length).toBeGreaterThan(50);
+    expect(redPixels(plain)).toEqual(redPixels(shadow));
   });
 
-  it('applies a projected bevel once instead of shading the recursive flat body', async () => {
-    const created: TestOffscreenCanvas[] = [];
-    vi.stubGlobal('OffscreenCanvas', class extends TestOffscreenCanvas {
-      constructor(width: number, height: number) {
-        super(width, height);
-        created.push(this);
-      }
-    });
+  it('projects a 100 by 1000 shape under a one-degree perspective tilt', async () => {
+    const shape = orthographicBeveledShape();
+    Object.assign(shape, { x: 50 * 9525, y: 80 * 9525, width: 100 * 9525,
+      height: 1000 * 9525, geometry: 'rect', sp3d: undefined,
+      scene3d: { camera: { prst: 'perspectiveFront', rot: { lat: 1, lon: 0, rev: 0 } } } });
+    const data = await render(shape, 1200);
+    // The tilted near edge extends above y=80 by roughly four pixels.
+    expect(pixel(data, 100, 78)).toEqual([68, 114, 196]);
+  });
 
-    const canvas = {
-      width: 960,
-      height: 540,
-      style: {} as CSSStyleDeclaration,
-      offsetWidth: 960,
-    } as HTMLCanvasElement;
-    const ctx = contextFor(canvas);
-    canvas.getContext = (() => ctx) as unknown as HTMLCanvasElement['getContext'];
-    const slide: Slide = {
-      index: 0,
-      slideNumber: 1,
-      background: null,
-      elements: [projectedBeveledShape()],
-    };
+  it('shows a back bevel only when the camera exposes the back face', async () => {
+    const shape = orthographicBeveledShape();
+    shape.sp3d = { prstMaterial: 'matte', bevelB: { w: 127000, h: 127000, prst: 'angle' } };
+    const front = await render(shape);
+    expect(pixel(front, 144, 144)).toEqual([68, 114, 196]);
+    expect(pixel(front, 144, 105)).toEqual([68, 114, 196]);
+    shape.scene3d!.camera = { prst: 'orthographicFront', rot: { lat: 0, lon: 180, rev: 0 } };
+    const back = await render(shape);
+    expect(pixel(back, 144, 144)).not.toEqual(pixel(await render({ ...shape, sp3d: undefined }), 144, 144));
+    expect(pixel(back, 144, 105)).not.toEqual(pixel(back, 144, 144));
+    shape.scene3d!.camera.rot!.lon = 150;
+    shape.sp3d.extrusionH = 24 * 9525;
+    const extruded = await render(shape);
+    // The back plane moves 12 px right (24 * sin(150 degrees)). Its bevel
+    // remains visible near x=190, with the wall extending toward the front.
+    expect(pixel(extruded, 190, 144)).not.toEqual([255, 255, 255]);
+    expect(pixel(extruded, 190, 144)).not.toEqual(pixel(extruded, 156, 144));
+  });
 
-    await renderSlide(canvas, slide, 9_144_000, 6_858_000, { width: 960, dpr: 1 });
-
-    expect(created).toHaveLength(1);
+  it('renders wireframe rims with a transparent interior', async () => {
+    const shape = projectedBeveledShape();
+    shape.sp3d!.prstMaterial = 'legacyWireframe';
+    const data = await render(shape);
+    expect(pixel(data, 144, 144)).toEqual([255, 255, 255]);
+    const ink = data.filter((v, i) => i % 4 === 0 && v < 250).length;
+    expect(ink).toBeGreaterThan(100);
+    expect(ink).toBeLessThan(3000);
   });
 });

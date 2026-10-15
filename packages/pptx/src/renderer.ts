@@ -3596,8 +3596,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   }
 
   // ── scene3d camera projection for p:sp (ECMA-376 §20.1.5.5, Phase B) ──────
-  // A text-bearing shape with a non-identity 3-D camera is rendered to a local
-  // offscreen (fill + stroke + TEXT), optionally bevel-shaded, then warped onto
+  // A text-bearing shape with a non-identity 3-D camera uses local offscreens:
+  // the body is bevel-shaded and text is painted unshaded onto
   // the live ctx through the camera homography — the same pipeline the picture
   // path uses. Authored flips are part of the local face before projection;
   // the element's 2-D rotation stays on the live ctx outside the warp.
@@ -3607,7 +3607,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   // follow the per-pixel perspective warp applied here. So a projected shape's
   // text is drawn into the bitmap but EXCLUDED from the selection overlay
   // (onTextRun is suppressed below). See README "Bevel / 3D" note.
-  const spScene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera) ? el.scene3d : null;
+  const spScene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera, w, h) ? el.scene3d : null;
   if (spScene3d && w > 0 && h > 0) {
     const tf = ctx.getTransform();
     const det = Math.abs(tf.a * tf.d - tf.b * tf.c);
@@ -3618,6 +3618,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
       (el.sp3d as { prstMaterial?: string } | undefined)?.prstMaterial,
       scale,
       ctxDevScale,
+      spScene3d.camera,
     );
     const extrusion = buildExtrusion(
       el.sp3d as Sp3dLike | undefined,
@@ -3757,12 +3758,20 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         ctx.restore();
         return;
       }
-    } else if (paintProjectedElement(
-      ctx, localEl, true,
-      projectedTextHasPattern && el.fill?.fillType !== 'pattern',
-    )) {
-      ctx.restore();
-      return;
+    } else {
+      // sp3d belongs to the shape body (§20.1.5.12); text has its own run
+      // properties. Use the same unshaded text pass as the raster-effect path.
+      // Without a material pass, retain the combined face's rasterization and
+      // single warp, including the established pattern coordinate frame.
+      const projected = bevels.length > 0
+        ? paintProjectedBody(ctx)
+        : paintProjectedElement(ctx, localEl, true,
+            projectedTextHasPattern && el.fill?.fillType !== 'pattern');
+      if (projected) {
+        if (bevels.length > 0) paintProjectedText(ctx);
+        ctx.restore();
+        return;
+      }
     }
     // Headless fallback (no offscreen): draw flat below, but still without the
     // projection. Restore and fall through to the normal path.
@@ -4046,6 +4055,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         el.sp3d?.prstMaterial,
         scale,
         devScale,
+        el.scene3d?.camera,
       )
     : [];
   const flatBevelEdgePadCss = (el.stroke ? (el.stroke.width * scale) / 2 : 0) + 2;
@@ -5968,6 +5978,7 @@ export function buildBevelInputs(
   prstMaterial: string | undefined,
   scale: number,
   devScale: number,
+  camera?: CameraInput,
 ): BevelInput[] {
   if (!sp3d) return [];
   const rig = lightRig?.rig ?? 'threePt';
@@ -5986,6 +5997,8 @@ export function buildBevelInputs(
       prst: sp3d.bevelT.prst || 'circle',
       material,
       light,
+      camera,
+      wireframeLinePx: devScale,
     });
   }
   if (sp3d.bevelB && sp3d.bevelB.w > 0 && sp3d.bevelB.h > 0) {
@@ -5996,7 +6009,20 @@ export function buildBevelInputs(
       material,
       light,
       bottom: true,
+      camera,
+      depthPx: (sp3d.extrusionH ?? 0) * emuToDev,
+      wireframeLinePx: devScale,
     });
+  }
+  // Wireframe has geometry even without a bevel; it must not retain a solid
+  // face just because there is no bevel band to send to the compositor.
+  if (material === 'legacyWireframe') {
+    for (const bottom of [false, true]) {
+      if (!out.some(bevel => Boolean(bevel.bottom) === bottom))
+        out.push({ widthPx: 0, heightPx: 0, prst: 'circle', material, light, camera,
+          bottom, depthPx: bottom ? (sp3d.extrusionH ?? 0) * emuToDev : 0,
+          wireframeLinePx: devScale });
+    }
   }
   return out;
 }
@@ -6138,7 +6164,13 @@ function projectScene3dPaint(
   // homography. The camera is defined for the authored w×h face, so it must not
   // be recomputed from the padded raster size. Degenerate extrapolation → pad 0.
   let padDev = Math.max(0, Math.ceil((opts.edgePadCss ?? 0) * devScale));
-  const quad = computeScene3dQuad(camera, w, h);
+  let quad = computeScene3dQuad(camera, w, h);
+  const [p0, p1, , p3] = quad.corners;
+  const backFacing = (p1.x - p0.x) * (p3.y - p0.y) - (p1.y - p0.y) * (p3.x - p0.x) < 0;
+  const backDepth = opts.bevels?.find(bevel => bevel.bottom)?.depthPx ?? 0;
+  // MS-OI29500 §2.1.1268: bevelB starts at the extrusion base. A reversed
+  // planar face uses that plane's quad, not a second shading of the front.
+  if (backFacing && backDepth > 0) quad = computeScene3dQuad(camera, w, h, backDepth / devScale);
   let quadCorners = quad.corners;
   if (padDev > 0) {
     const padCss = padDev / devScale;
@@ -6193,17 +6225,33 @@ function projectScene3dPaint(
   // Extrusion side wall first (it sits behind/around the front face), then the
   // bevel lip on the front-face silhouette (§20.1.5.12). Both are baked into the
   // offscreen so they ride the camera warp.
-  if (opts.extrusion) {
-    const reach = Math.ceil(Math.hypot(opts.extrusion.offsetX, opts.extrusion.offsetY)) + 2;
-    applyExtrusion(octx, opts.extrusion, regionFor(reach));
-  }
+  const extrusion = opts.extrusion && backFacing && backDepth > 0
+    ? { ...opts.extrusion, offsetX: -opts.extrusion.offsetX, offsetY: -opts.extrusion.offsetY }
+    : opts.extrusion;
+  const wireframe = opts.bevels?.some(bevel => bevel.material === 'legacyWireframe');
+  const shadeBackBeforeWall = backFacing && opts.bevels?.some(bevel => bevel.bottom);
+  const paintWall = () => {
+    if (!extrusion || wireframe) return;
+    const reach = Math.ceil(Math.hypot(extrusion.offsetX, extrusion.offsetY)) + 2;
+    applyExtrusion(octx, extrusion, regionFor(reach));
+  };
+  if (!shadeBackBeforeWall) paintWall();
   // Bake bevel lip shading into the body bitmap (device-px band) before the
   // warp so the lit/shadowed rim rides the camera homography (§20.1.5.12).
   if (opts.bevels && opts.bevels.length > 0) {
     for (const bevel of opts.bevels) {
-      applyBevelShading(octx, bevel, regionFor(Math.ceil(bevel.widthPx) + 2));
+      const wireframeDepth = wireframe && extrusion
+        ? { x: extrusion.offsetX, y: extrusion.offsetY } : undefined;
+      const reach = bevel.widthPx + (wireframeDepth ? Math.hypot(wireframeDepth.x, wireframeDepth.y) : 0);
+      applyBevelShading(octx, wireframeDepth ? { ...bevel, wireframeDepth } : bevel,
+        regionFor(Math.ceil(reach) + 2));
     }
   }
+
+  // The exposed back lip is measured from the back-face silhouette, not from
+  // the outside of a wall swept toward the front. Shade it before that sweep;
+  // keep the established front-face compositing order above.
+  if (shadeBackBeforeWall) paintWall();
 
   // Post-bevel edges (the contour rim) on top of the beveled body, still
   // pre-projection. The a:ln border is painted inside paintBody (see
@@ -6697,7 +6745,7 @@ function paintResolvedPicture(
     // to the normal flat draw (but sp3d bevel/extrusion still apply via the flat
     // path below). sp3d bevel/extrusion shading is wired in just after this; the
     // contour edge is the flat approximation in strokeContourEdge.
-    const scene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera) ? el.scene3d : null;
+    const scene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera, w, h) ? el.scene3d : null;
 
     // Paint JUST the (clipped, optionally cropped) bitmap body at a local rect —
     // no border/contour. Separated from the edges so the bevel shading reads the
@@ -6772,6 +6820,7 @@ function paintResolvedPicture(
       (el.sp3d as Sp3dLike | undefined) ? (el.sp3d as { prstMaterial?: string }).prstMaterial : undefined,
       scale,
       ctxDevScale,
+      el.scene3d?.camera,
     );
     // Extrusion side wall only resolves under a camera that turns it visible
     // (§20.1.5.12). Computed against the active camera so a face-on view yields

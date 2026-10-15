@@ -112,7 +112,7 @@ describe('documented DrawingML bevel model', () => {
 // Independent arithmetic expectations exercise production lighting rather than
 // copying the implementation's table or checking its private representation.
 
-describe('reference lighting arithmetic and unsupported surfaces', () => {
+describe('reference lighting arithmetic and surface visibility', () => {
   it('uses ambient-only diffuse in contrasting, including the powder color mix', () => {
     const out = new Float64Array(4);
     shadeSurface(
@@ -193,6 +193,64 @@ describe('reference lighting arithmetic and unsupported surfaces', () => {
     });
     expect([...data]).toEqual([80, 100, 140, 255]);
   });
+  it('lights an exposed bottom profile with its outward normal in the camera frame', () => {
+    const w = 40, data = new Uint8ClampedArray(w * w * 4);
+    for (let i = 0; i < w * w; i++) data.set([80, 100, 140, 255], i * 4);
+    const ctx: BevelCtx = {
+      canvas: { width: w, height: w },
+      getImageData: () => ({ data: data.slice(), width: w, height: w }) as ImageData,
+      putImageData: image => { data.set(image.data); },
+    };
+    const input = { widthPx: 8, heightPx: 8, prst: 'angle', material: 'matte' as const,
+      light: { x: 0, y: 0, z: 1 },
+      camera: { prst: 'orthographicFront', rot: { lat: 0, lon: 180, rev: 0 } } };
+    applyBevelShading(ctx, { ...input, bottom: true });
+    const center = (20 * w + 20) * 4, rim = (20 * w + 2) * 4;
+    expect([...data.slice(center, center + 4)]).toEqual([80, 100, 140, 255]);
+    // Angle bevel has a 45-degree normal; frontal Lambert response is 1/sqrt(2).
+    expect(data[rim]).toBe(57);
+    const back = data.slice();
+    applyBevelShading(ctx, input); // hidden front cannot relight the exposed back
+    expect(data).toEqual(back);
+  });
+
+  it('draws wire rims and back edges without a filled face or a material response', () => {
+    const w = 48, data = new Uint8ClampedArray(w * w * 4);
+    for (let y = 8; y < 32; y++) for (let x = 8; x < 32; x++)
+      data.set([80, 100, 140, 255], (y * w + x) * 4);
+    const ctx: BevelCtx = {
+      canvas: { width: w, height: w },
+      getImageData: () => ({ data: data.slice(), width: w, height: w }) as ImageData,
+      putImageData: image => { data.set(image.data); },
+    };
+    applyBevelShading(ctx, { widthPx: 4, heightPx: 4, prst: 'angle',
+      material: 'legacyWireframe', light: { x: 0, y: 0, z: -1 },
+      wireframeDepth: { x: 8, y: 4 } });
+    const pixel = (x: number, y: number) => [...data.slice((y * w + x) * 4, (y * w + x) * 4 + 4)];
+    expect(pixel(24, 24)[3]).toBe(0);
+    expect(pixel(8, 20)).toEqual([80, 100, 140, 255]);
+    expect(pixel(12, 20)[3]).toBeGreaterThan(0); // inner profile rim
+    expect(pixel(39, 24)).toEqual([80, 100, 140, 255]); // translated back rim
+  });
+
+  it('bounds wireframe work to a noisy local raster despite an enormous depth', () => {
+    const w = 96, data = new Uint8ClampedArray(w * w * 4);
+    for (let y = 0; y < w; y++) for (let x = 0; x < w; x++)
+      if ((Math.floor(x / 2) + Math.floor(y / 2)) % 2 === 0)
+        data.set([80, 100, 140, 255], (y * w + x) * 4);
+    const ctx: BevelCtx = {
+      canvas: { width: w, height: w },
+      getImageData: () => ({ data: data.slice(), width: w, height: w }) as ImageData,
+      putImageData: image => { data.set(image.data); },
+    };
+    applyBevelShading(ctx, { widthPx: 4, heightPx: 4, prst: 'angle',
+      material: 'legacyWireframe', light: { x: 0, y: 0, z: 1 },
+      wireframeDepth: { x: 1e12, y: 1e12 } });
+    // Depth edges leave the raster rather than requesting a depth-sized buffer
+    // or iterating to their off-canvas endpoints. The visible wire survives.
+    expect([...data.slice(-4)]).toEqual([80, 100, 140, 255]);
+  });
+
   it('defaults unknown preset names safely, including object property names', () => {
     expect(lightDirFromRig('constructor', '__proto__')).toEqual(
       lightDirFromRig('threePt', 't'),

@@ -5,16 +5,18 @@
  * This reference shader replaces the old fitted multiply/screen appearance.
  * See bevel-lighting.ts for the remaining Office photometric fidelity boundary.
  * Control audit: 6,051 Windows PowerPoint front-view rectangle/ellipse controls,
- * all 12 profiles, 27 rigs and 15 material names (wireframe needs mesh geometry),
+ * all 12 profiles, 27 rigs and 15 material names (wireframe uses raster geometry),
  * eight directions, five fill colors and explicit single/combined light rotations.
  * Sampled RGB mean error improves 59.83→37.96, max 242→238; profile/rotation/
  * repeat maxima worsen. This is a closer reference model, not an Office match.
  * Literal curve coordinates/visibility and the rotation convention remain
  * unresolved alongside Fresnel/compositing; large residuals are not raster AA.
- * Arbitrary backgrounds, camera-rotated normals and bottom/mesh visibility are
+ * Arbitrary backgrounds, camera-rotated lighting and back/mesh visibility are
  * not established by these controls. No per-case fit or scalar gain is used.
  */
 import { profileHeight, profileSlope } from './bevel-profiles';
+import { scene3dSurfaceFrame, type CameraInput } from './scene3d-camera';
+import { rasterBevelWireframe } from './bevel-wireframe';
 import {
   presetMaterial,
   prepareLighting,
@@ -413,32 +415,37 @@ export interface BevelInput {
   prst: string;
   material: BevelMaterial;
   light: Vec3;
-  /** The underside requires a separate surface/visibility pass. A front-view
-   * bitmap cannot expose it: skip it rather than relight the top face twice. */
+  /** Back-face profile (§20.1.5.3). Hidden unless the camera exposes it. */
   bottom?: boolean;
+  /** Distance to the back surface, in the same device units as the band. */
+  depthPx?: number;
+  camera?: CameraInput;
+  /** Raster wire width and parallel back-rim offset; no surface lighting. */
+  wireframeLinePx?: number;
+  wireframeDepth?: { x: number; y: number };
 }
 /** Shade the entire painted surface, including the flat face. Region callers
  * must include the whole silhouette plus the spatial reach (see BevelRegion).
  * Direct calls with zero/subpixel bevels still shade the flat face. The PPTX
  * adapter currently omits those inputs, so scenes without a nonzero bevel need
  * a separate flat-surface pass in that adapter; this API cannot create a call.
- * Bottom bevels require a depth-aware back surface; shading this front bitmap
- * again would incorrectly apply the material to its face twice.
- * Wireframe has no surface material and requires wire geometry from the painter;
- * leave its bitmap untouched rather than invent an opaque material for it.
+ * ECMA §§20.1.5.3–4 assign bevelB/T to back/front faces. Cull the hidden
+ * planar face and shade the visible back with the same profile/material and
+ * camera-rotated outward normals. The painter positions it at the extrusion
+ * base (MS-OI29500 §2.1.1268). This planar bitmap model does not tessellate
+ * overhanging side lips or resolve their self-occlusion; front-view controls
+ * establish neither those surfaces nor complete solid/Office fidelity.
+ * Wireframe renders rims and connecting edges instead of a filled material.
  */
 export function applyBevelShading(
   ctx: BevelCtx,
   input: BevelInput,
   region?: BevelRegion,
 ): void {
-  if (
-    ctx.canvas.width <= 0 ||
-    ctx.canvas.height <= 0 ||
-    input.bottom ||
-    input.material === 'legacyWireframe'
-  )
-    return;
+  if (ctx.canvas.width <= 0 || ctx.canvas.height <= 0) return;
+  const frame = input.camera ? scene3dSurfaceFrame(input.camera) : undefined;
+  const backFacing = frame?.backFacing ?? false;
+  if (Boolean(input.bottom) !== backFacing) return;
   const {
     x: rx,
     y: ry,
@@ -450,28 +457,39 @@ export function applyBevelShading(
     px = img.data;
   const alpha = new Uint8ClampedArray(w * h);
   for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
+  if (input.material === 'legacyWireframe') {
+    rasterBevelWireframe(px, alpha, distanceToEdge(alpha, w, h), w, h,
+      input.widthPx, input.wireframeLinePx ?? 1, input.wireframeDepth);
+    ctx.putImageData(img, rx, ry);
+    return;
+  }
   const { normals } = computeBevelNormals(
-    alpha,
-    w,
-    h,
-    input.widthPx,
-    input.prst,
-    input.heightPx,
+    alpha, w, h, input.widthPx, input.prst, input.heightPx,
   );
   const params = prepareLighting(input.material, input.light),
     out = new Float64Array(4);
   for (let i = 0; i < w * h; i++) {
     const o = i * 4;
     if (px[o + 3] === 0) continue;
+    let nx = normals[i * 3], ny = normals[i * 3 + 1], nz = normals[i * 3 + 2];
+    if (input.bottom && frame) {
+      // Mirroring the profile through its base reverses its axial normal. The
+      // camera rotation then maps that outward normal into the lighting frame.
+      const R = frame.rotation;
+      const x = R[0] * nx + R[1] * ny - R[2] * nz;
+      const y = R[3] * nx + R[4] * ny - R[5] * nz;
+      nz = R[6] * nx + R[7] * ny - R[8] * nz;
+      nx = x; ny = y;
+    }
     shadeSurface(
       out,
       px[o],
       px[o + 1],
       px[o + 2],
       px[o + 3],
-      normals[i * 3],
-      normals[i * 3 + 1],
-      normals[i * 3 + 2],
+      nx,
+      ny,
+      nz,
       params,
     );
     px[o] = out[0];

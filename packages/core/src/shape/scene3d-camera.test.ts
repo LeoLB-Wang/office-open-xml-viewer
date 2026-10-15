@@ -34,6 +34,18 @@ describe('computeScene3dQuad', () => {
     expect(isScene3dNonIdentity(cam)).toBe(false);
   });
 
+  it('positions the back surface at the extrusion base rather than at the front plane', () => {
+    const camera = { prst: 'orthographicFront', rot: { lat: 0, lon: 150, rev: 0 } };
+    const front = computeScene3dQuad(camera, 100, 200);
+    const back = computeScene3dQuad(camera, 100, 200, 40);
+    // A 40-unit push along -Z rotated 150 degrees moves every corner 20
+    // units right in parallel projection: 40 * sin(150 degrees).
+    for (let i = 0; i < 4; i++) {
+      expect(back.corners[i].x - front.corners[i].x).toBeCloseTo(20, 10);
+      expect(back.corners[i].y).toBeCloseTo(front.corners[i].y, 10);
+    }
+  });
+
   it('unknown preset falls back to identity (no throw)', () => {
     const cam: CameraInput = { prst: 'unknownCamera' };
     const q = computeScene3dQuad(cam, W, H);

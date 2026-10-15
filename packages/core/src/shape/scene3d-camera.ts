@@ -296,8 +296,10 @@ function cameraDistance(camera: CameraInput, def: PresetDef, w: number, h: numbe
  * @param camera  parsed <a:camera> (prst / fov / zoom / rot, angles in degrees).
  * @param w       shape width in CSS pixels.
  * @param h       shape height in CSS pixels.
+ * @param surfaceDepth back surface distance along object −Z, in the same units.
+ *                MS-OI29500 §2.1.1268 places bevelB at the extrusion base.
  */
-export function computeScene3dQuad(camera: CameraInput, w: number, h: number): Scene3dQuad {
+export function computeScene3dQuad(camera: CameraInput, w: number, h: number, surfaceDepth = 0): Scene3dQuad {
   const def = presetDef(camera.prst);
   const R = buildRotation(def, camera.rot);
 
@@ -332,7 +334,7 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number): S
   if (def.kind === 'perspective') {
     const d = cameraDistance(camera, def, w, h);
     projected = srcCorners.map(([sx, sy]) => {
-      const [rx, ry, rz] = applyMat3(R, sx, sy, 0);
+      const [rx, ry, rz] = applyMat3(R, sx, sy, -surfaceDepth);
       // Camera at +Z = d looking toward -Z (origin). A point at object-z rz is
       // at camera-relative depth (d - rz); perspective divide by that depth.
       const depth = d - rz;
@@ -345,7 +347,7 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number): S
   } else {
     // Parallel projection, including the oblique preset's directional depth shear.
     projected = srcCorners.map(([sx, sy]) => {
-      const [rx, ry, rz] = applyMat3(R, sx, sy, 0);
+      const [rx, ry, rz] = applyMat3(R, sx, sy, -surfaceDepth);
       return [rx + rz * def.shearX, ry + rz * def.shearY] as [number, number];
     });
   }
@@ -388,10 +390,28 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number): S
  * should take the projection path. A camera whose preset is unknown/front-facing
  * with no rot (or an all-zero rot) is the identity and can be skipped.
  */
-export function isScene3dNonIdentity(camera: CameraInput): boolean {
-  // Width-relative framing makes this identity probe independent of scale.
-  const { isIdentity } = computeScene3dQuad(camera, 1000, 1000);
-  return !isIdentity;
+export function isScene3dNonIdentity(camera: CameraInput, w?: number, h?: number): boolean {
+  // Perspective framing depends on aspect, so a square probe can miss a visible
+  // projection on a tall shape. Renderers supply their actual dimensions.
+  if (w !== undefined && h !== undefined) return !computeScene3dQuad(camera, w, h).isIdentity;
+  // Geometry-free callers use a conservative mathematical identity test instead
+  // of borrowing a shape's numerical pixel tolerance.
+  const def = presetDef(camera.prst), R = buildRotation(def, camera.rot);
+  const terms = def.kind === 'perspective'
+    ? [R[0] - 1, R[1], R[3], R[4] - 1, R[6], R[7]]
+    : [R[0] + def.shearX * R[6] - 1, R[1] + def.shearX * R[7],
+       R[3] + def.shearY * R[6], R[4] + def.shearY * R[7] - 1];
+  return (camera.zoom ?? 1) !== 1 || terms.some(value => Math.abs(value) > 1e-12);
+}
+
+/** Internal surface frame for the bitmap bevel compositor. Back-face selection
+ * uses the camera's viewing direction (including parallel oblique shear), not
+ * a rotation-angle threshold. ECMA §§20.1.5.3–4 assign separate back/front faces.
+ */
+export function scene3dSurfaceFrame(camera: CameraInput) {
+  const def = presetDef(camera.prst), rotation = buildRotation(def, camera.rot);
+  const facing = rotation[8] - def.shearX * rotation[2] - def.shearY * rotation[5];
+  return { rotation, backFacing: facing < 0 };
 }
 
 /**

@@ -63,7 +63,7 @@ function material(
  * unclamped, exactly as the documented function. Metal's colored specular is
  * already expressed by the color columns (no invented extra metal gain).
  * legacyWireframe has no surface properties (ECMA §20.1.10.50); its geometry
- * must be supplied by the shape painter. This shader leaves that bitmap alone.
+ * is rasterized by the bevel compositor instead of receiving surface lighting.
  */
 const MATERIALS: Readonly<Record<PresetMaterial, Material>> = {
   legacyMatte: material(0, 0, 1, 0, 0, true),
