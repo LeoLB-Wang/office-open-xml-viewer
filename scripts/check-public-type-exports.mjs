@@ -12,7 +12,7 @@ const formats = ['docx', 'pptx', 'xlsx'];
 const files = ['index', ...formats, 'math', 'three-d', 'region-map', 'chart-ex', 'tiff', 'internal-companion']
   .map((entry) => path.join(typesDir, `${entry}.d.ts`));
 
-const legacyTypesDir = path.resolve('packages/legacy-converter/dist/types');
+const legacyTypesDir = path.resolve('packages/legacy-office/dist/types');
 files.push(...['doc', 'xls', 'ppt'].map(entry => path.join(legacyTypesDir, `${entry}.d.ts`)));
 const program = ts.createProgram(files, {
   module: ts.ModuleKind.ESNext,

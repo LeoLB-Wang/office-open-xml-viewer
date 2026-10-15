@@ -294,8 +294,8 @@ test('PPTX single-comment margin has no trailing scroll range', async ({ page })
 // production bundle. Mocked viewer tests cannot detect missing/rewritten sidecars.
 test('Try Yours loads only the selected experimental legacy reader', async ({ page }) => {
   test.setTimeout(120_000);
-  const { buildDocFixture, buildXlsFixture } = await import('../../packages/legacy-converter/src/test-fixtures');
-  const { buildPptShapeImageFillFixture } = await import('../../packages/legacy-converter/src/ppt-shape-image-fill-fixture');
+  const { buildDocFixture, buildXlsFixture } = await import('../../packages/legacy-office/src/test-fixtures');
+  const { buildPptShapeImageFillFixture } = await import('../../packages/legacy-office/src/ppt-shape-image-fill-fixture');
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   await page.route('https://fonts.gstatic.com/**', (route) => route.abort());
   const requested: string[] = [];

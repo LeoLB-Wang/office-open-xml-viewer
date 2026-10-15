@@ -18,7 +18,7 @@ const run = (command, args, cwd = scratch) => execFileSync(command, args, { cwd,
 try {
   run(process.execPath, ['scripts/sync-companion-version.mjs'], root);
   const tarballs = [];
-  for (const directory of [root, join(root, 'packages/legacy-converter')]) {
+  for (const directory of [root, join(root, 'packages/legacy-office')]) {
     const packed = JSON.parse(run('npm', ['pack', '--json', '--pack-destination', scratch], directory));
     const wasm = packed[0].files.map(file => file.path).filter(path => path.endsWith('.wasm')).sort();
     if (directory !== root) {
@@ -33,7 +33,7 @@ try {
   // Fixture bundling is test setup only; the consumer itself resolves exclusively
   // from its installed packages. Extension aliases support the TS fixture imports.
   const fixtureEntry = join(scratch, 'fixtures.ts');
-  await writeFile(fixtureEntry, `export { buildDocFixture, buildXlsFixture } from ${JSON.stringify(join(root, 'packages/legacy-converter/src/test-fixtures.ts'))};\nexport { buildPptShapeImageFillFixture } from ${JSON.stringify(join(root, 'packages/legacy-converter/src/ppt-shape-image-fill-fixture.ts'))};`);
+  await writeFile(fixtureEntry, `export { buildDocFixture, buildXlsFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/test-fixtures.ts'))};\nexport { buildPptShapeImageFillFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/ppt-shape-image-fill-fixture.ts'))};`);
   const fixturesBuild = await rolldown({ input: fixtureEntry, platform: 'node', resolve: { extensionAlias: { '.js': ['.ts', '.js'] } } });
   try { await fixturesBuild.write({ file: join(scratch, 'fixtures.mjs'), format: 'es', codeSplitting: false }); }
   finally { await fixturesBuild.close(); }

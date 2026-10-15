@@ -469,7 +469,7 @@ Release checklist:
    - `packages/mcp-server/Cargo.toml`.
 
    After bumping the root version, run `pnpm sync:versions` to synchronize
-   `packages/legacy-converter/package.json` (the public
+   `packages/legacy-office/package.json` (the public
    `@silurus/ooxml-legacy-office` package), its exact `@silurus/ooxml` peer pin,
    and the compiled companion runtime version. Run `pnpm install --lockfile-only`
    and `pnpm check:versions`; CI and publishing reject any mismatch. Both npm

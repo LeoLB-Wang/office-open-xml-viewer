@@ -43,9 +43,9 @@ jobs:
       - name: Legacy reader clippy (per feature)
         run: |
           for features in direct-doc direct-xls direct-ppt inspection; do
-            cargo clippy -p legacy-office-converter --all-targets --features "$features" -- -D warnings
+            cargo clippy -p legacy-office-parser --all-targets --features "$features" -- -D warnings
           done
-          cargo clippy -p legacy-office-converter --all-targets --all-features -- -D warnings
+          cargo clippy -p legacy-office-parser --all-targets --all-features -- -D warnings
 
       # The cargo-fuzz harness is an intentionally independent workspace, so
       # the root workspace checks above do not format, lint, or compile it.
@@ -63,9 +63,9 @@ jobs:
       - name: Legacy reader tests (per feature)
         run: |
           for features in direct-doc direct-xls direct-ppt; do
-            cargo test -p legacy-office-converter --features "$features"
+            cargo test -p legacy-office-parser --features "$features"
           done
-          cargo test -p legacy-office-converter --all-features
+          cargo test -p legacy-office-parser --all-features
 
   # RB8 — dependency vulnerability audit. Report-only for now
   # (continue-on-error): one known advisory already exists at introduction —
@@ -136,7 +136,7 @@ jobs:
             packages/pptx/parser
             packages/xlsx/parser
             packages/docx/parser
-            packages/legacy-converter/parser
+            packages/legacy-office/parser
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
@@ -250,7 +250,7 @@ jobs:
             packages/pptx/parser
             packages/xlsx/parser
             packages/docx/parser
-            packages/legacy-converter/parser
+            packages/legacy-office/parser
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Install dependencies

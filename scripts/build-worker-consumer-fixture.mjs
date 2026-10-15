@@ -11,7 +11,7 @@ import {
 
 import { pathGradientPptxBytes } from '../tests/fixtures/path-gradient-package.mjs';
 // Node strips the fixture module's type annotations; it has no imports.
-import { buildDocFixture } from '../packages/legacy-converter/src/test-fixtures.ts';
+import { buildDocFixture } from '../packages/legacy-office/src/test-fixtures.ts';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
 const outDir = join(tmpdir(), 'ooxml-worker-consumer-dist');
@@ -31,7 +31,7 @@ await build({
       '@silurus/ooxml/three-d': entry('three-d'),
       '@silurus/ooxml/region-map': entry('region-map'),
       '@silurus/ooxml/chart-ex': entry('chart-ex'),
-      '@silurus/ooxml-legacy-office/doc': resolve(root, 'packages/legacy-converter/dist/doc.mjs'),
+      '@silurus/ooxml-legacy-office/doc': resolve(root, 'packages/legacy-office/dist/doc.mjs'),
       '@silurus/ooxml/internal/companion': entry('internal-companion'),
     },
   },

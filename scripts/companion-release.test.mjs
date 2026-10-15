@@ -8,12 +8,12 @@ import { test } from 'node:test';
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'ooxml-companion-release-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (const directory of ['scripts', 'src', 'packages/legacy-converter', 'bin']) mkdirSync(join(root, directory), { recursive: true });
+  for (const directory of ['scripts', 'src', 'packages/legacy-office', 'bin']) mkdirSync(join(root, directory), { recursive: true });
   for (const name of ['sync-companion-version.mjs', 'publish-packages.mjs']) {
     copyFileSync(new URL(name, import.meta.url), join(root, 'scripts', name));
   }
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@silurus/ooxml', version: '1.2.3' }));
-  const writeLegacy = (version, peer) => writeFileSync(join(root, 'packages/legacy-converter/package.json'), JSON.stringify({
+  const writeLegacy = (version, peer) => writeFileSync(join(root, 'packages/legacy-office/package.json'), JSON.stringify({
     name: '@silurus/ooxml-legacy-office', version, peerDependencies: { '@silurus/ooxml': peer },
   }));
   writeLegacy('1.2.3', '1.2.3');

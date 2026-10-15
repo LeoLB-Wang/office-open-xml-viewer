@@ -59,7 +59,7 @@ export function wasmAssetUrl(
       const filePath = id.slice(0, -SUFFIX.length);
       // A `?url` import of a TypeScript module names a self-contained ES
       // module asset (an application-loaded model source module, see
-      // packages/legacy-converter/src/legacy-*.ts). It is bundled on its own,
+      // packages/legacy-office/src/legacy-*.ts). It is bundled on its own,
       // with every dependency inlined and its exports preserved, because the
       // realm that imports it by URL cannot resolve sibling chunks.
       const moduleAsset = /\.[cm]?ts$/.test(filePath);
@@ -117,8 +117,8 @@ export function legacyBundleBoundary(): Plugin {
         if (visited.has(output.fileName)) continue;
         visited.add(output.fileName);
         for (const moduleId of Object.keys(output.modules)) {
-          if (/(?:^|[\\/])packages[\\/]legacy-converter(?:[\\/]|$)/.test(moduleId)
-            || /@silurus\/ooxml-legacy-(?:converter|office)/.test(moduleId)) {
+          if (/(?:^|[\\/])packages[\\/]legacy-office(?:[\\/]|$)/.test(moduleId)
+            || /@silurus\/ooxml-legacy-office/.test(moduleId)) {
             this.error(`${output.fileName} contains forbidden legacy module ${moduleId}`);
           }
         }

@@ -157,7 +157,7 @@
         await new Promise((resolve) => { window.resumeSourceStages = resolve; });
       }
       // The optional legacy entry is part of the selected-source stage.
-      const { legacyDocSource } = await import('/packages/legacy-converter/dist/doc.mjs');
+      const { legacyDocSource } = await import('/packages/legacy-office/dist/doc.mjs');
       await runModelSourceStages({
         DocxDocument,
         DocxViewer,

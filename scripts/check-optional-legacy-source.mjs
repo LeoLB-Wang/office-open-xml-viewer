@@ -22,14 +22,14 @@ const FORMATS = {
 const family = process.argv[2];
 const format = FORMATS[family];
 if (!format) throw new Error('usage: check-optional-legacy-source.mjs <doc|xls|ppt> [dist]');
-const distDir = resolve(process.argv[3] ?? 'packages/legacy-converter/dist');
+const distDir = resolve(process.argv[3] ?? 'packages/legacy-office/dist');
 const entry = `${family}.mjs`;
 const rootDistDir = resolve('dist');
 const wasmAsset = `legacy_${family}_direct_bg.wasm`;
 const moduleAssetPattern = new RegExp(`^legacy-${family}-source-module(?:-[\\w-]+)?\\.m?js$`);
 const runtimeMarkers = [
-  `packages/legacy-converter/src/direct-${family}-engine.ts`,
-  'packages/legacy-converter/src/direct-source-runtime.ts',
+  `packages/legacy-office/src/direct-${family}-engine.ts`,
+  'packages/legacy-office/src/direct-source-runtime.ts',
   `wasm-direct-${family}/legacy_${family}_direct.js`,
 ];
 
@@ -139,7 +139,7 @@ for (const other of otherEntries) {
 const workers = (await filesUnder(rootDistDir)).filter((path) => /render-worker|(?:^|[/\\])worker-[\w-]+\.js$/.test(path) && path.endsWith('.js'));
 for (const worker of workers) {
   const text = await readFile(worker, 'utf8');
-  for (const marker of [format.nativeClass, wasmAsset, 'legacy-converter']) {
+  for (const marker of [format.nativeClass, wasmAsset, 'legacy-office']) {
     if (text.includes(marker)) throw new Error(`${basename(worker)} contains ${marker}`);
   }
 }

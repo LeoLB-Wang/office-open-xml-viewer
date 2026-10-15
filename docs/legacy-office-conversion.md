@@ -374,7 +374,7 @@ extract the supported passive PNG, JPEG, EMF and WMF entries from a BIFF8 global
 image store without requiring font metrics:
 
 ```sh
-cargo run -p legacy-office-converter --features inspection \
+cargo run -p legacy-office-parser --features inspection \
   --example inspect_xls_images -- sample.xls fresh-output-directory
 ```
 
@@ -402,7 +402,7 @@ The companion `inspect_xls_anchors` native example prints raw worksheet anchor
 metadata without extracting images:
 
 ```sh
-cargo run -p legacy-office-converter --features inspection \
+cargo run -p legacy-office-parser --features inspection \
   --example inspect_xls_anchors -- sample.xls
 ```
 
@@ -450,7 +450,7 @@ helpers remain separate from the direct XLS reader.
 ## Current implementation boundary
 
 The repository contains only the direct readers; legacy input is never
-converted to OOXML. The Rust crate `legacy-office-converter` builds one reader
+converted to OOXML. The Rust crate `legacy-office-parser` builds one reader
 per feature: `direct-doc`, `direct-xls` and `direct-ppt`. Building it for
 `wasm32` with none of them enabled is a compile error. The `inspection`
 feature adds the native-only examples above, and `fuzzing` exposes the fuzz
@@ -481,7 +481,7 @@ Office, with macros disabled and Word/Excel external-link updates disabled,
 and writes a PDF to a fresh output path:
 
 ```bash
-osascript packages/legacy-converter/tools/legacy-office-export.applescript \
+osascript packages/legacy-office/tools/legacy-office-export.applescript \
   doc disposable-copy.doc fresh-output.pdf
 ```
 

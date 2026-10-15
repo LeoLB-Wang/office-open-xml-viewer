@@ -1,11 +1,11 @@
 {
-  "extends": "./packages/legacy-converter/tsconfig.json",
+  "extends": "./packages/legacy-office/tsconfig.json",
   "compilerOptions": { "noEmit": false, "emitDeclarationOnly": true },
   "include": [
-    "packages/legacy-converter/src/legacy-doc.ts",
-    "packages/legacy-converter/src/legacy-xls.ts",
-    "packages/legacy-converter/src/legacy-ppt.ts",
-    "packages/legacy-converter/src/vite-env.d.ts",
+    "packages/legacy-office/src/legacy-doc.ts",
+    "packages/legacy-office/src/legacy-xls.ts",
+    "packages/legacy-office/src/legacy-ppt.ts",
+    "packages/legacy-office/src/vite-env.d.ts",
     "packages/core/src/vite-env.d.ts"
   ]
 }

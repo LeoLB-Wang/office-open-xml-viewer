@@ -213,7 +213,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "legacy-office-converter"
+name = "legacy-office-parser"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
@@ -294,7 +294,7 @@ name = "ooxml-fuzz"
 version = "0.0.0"
 dependencies = [
  "docx-parser",
- "legacy-office-converter",
+ "legacy-office-parser",
  "libfuzzer-sys",
  "ooxml-common",
  "pptx-parser",

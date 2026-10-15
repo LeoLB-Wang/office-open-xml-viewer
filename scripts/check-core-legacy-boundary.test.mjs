@@ -28,11 +28,11 @@ test('allows the pre-existing generic CFB rejection and unrelated "legacy" wordi
 
 test('decodes escaped static, dynamic, require and re-export module specifiers', () => {
   for (const code of [
-    "import x from '@silurus/ooxml-\\u006cegacy-converter';",
-    "export * from '@silurus/ooxml-\\u006cegacy-converter';",
-    "await import('@silurus/ooxml-\\u006cegacy-converter');",
-    "require('@silurus/ooxml-\\u006cegacy-converter');",
-    "import x from '../../legacy-\\u0063onverter/src/index.js';",
+    "import x from '@silurus/ooxml-\\u006cegacy-office';",
+    "export * from '@silurus/ooxml-\\u006cegacy-office';",
+    "await import('@silurus/ooxml-\\u006cegacy-office');",
+    "require('@silurus/ooxml-\\u006cegacy-office');",
+    "import x from '../../legacy-\\u006fffice/src/index.js';",
   ]) {
     assert.ok(rules(code).includes('legacy-package'), code);
   }
@@ -40,14 +40,14 @@ test('decodes escaped static, dynamic, require and re-export module specifiers',
 
 test('rejects computed imports and requires, import attributes and type-level imports', () => {
   for (const code of [
-    "import('@silurus/ooxml-' + 'legacy' + '-converter');",
-    "import(`@silurus/ooxml-${'legacy'}-converter`);",
-    "const p = '@silurus/ooxml-\\u006cegacy-converter'; require(p);",
+    "import('@silurus/ooxml-' + 'legacy' + '-office');",
+    "import(`@silurus/ooxml-${'legacy'}-office`);",
+    "const p = '@silurus/ooxml-\\u006cegacy-office'; require(p);",
   ]) {
     assert.ok(rules(code).includes('computed-module'), code);
   }
-  assert.deepEqual(rules("import('@silurus/ooxml-\\u006cegacy-converter/package.json', { with: { type: 'json' } });"), ['legacy-package']);
-  assert.deepEqual(rules("type X = import('@silurus/ooxml-\\u006cegacy-converter').X;"), ['legacy-package']);
+  assert.deepEqual(rules("import('@silurus/ooxml-\\u006cegacy-office/package.json', { with: { type: 'json' } });"), ['legacy-package']);
+  assert.deepEqual(rules("type X = import('@silurus/ooxml-\\u006cegacy-office').X;"), ['legacy-package']);
   assert.ok(rules('require(variable);').includes('computed-module'));
   assert.ok(rules('require(variable);').includes('loader-identifier'));
   assert.deepEqual(rules('import(variable);'), ['computed-module']);
@@ -133,14 +133,14 @@ test('follows a relay outside guarded roots to a dynamic legacy import', () => {
   const root = mkdtempSync(join(tmpdir(), 'ooxml-boundary-relay-'));
   try {
     mkdirSync(join(root, 'packages/core/src'), { recursive: true });
-    mkdirSync(join(root, 'packages/legacy-converter/src'), { recursive: true });
+    mkdirSync(join(root, 'packages/legacy-office/src'), { recursive: true });
     mkdirSync(join(root, 'shared'), { recursive: true });
     writeFileSync(join(root, 'packages/core/tsconfig.json'), JSON.stringify({
       compilerOptions: { moduleResolution: 'bundler', module: 'esnext' },
     }));
-    writeFileSync(join(root, 'packages/legacy-converter/src/index.ts'), 'export const reader = 1;');
+    writeFileSync(join(root, 'packages/legacy-office/src/index.ts'), 'export const reader = 1;');
     writeFileSync(join(root, 'shared/reader.ts'),
-      "export const reader = () => import('../packages/legacy-converter/src/index.ts');");
+      "export const reader = () => import('../packages/legacy-office/src/index.ts');");
     const violations = findViolations([{
       path: 'packages/core/src/probe.ts',
       text: "export { reader } from '../../../shared/reader.ts';",
@@ -156,10 +156,10 @@ test('TypeScript module resolution catches a path alias into the legacy package'
   const root = mkdtempSync(join(tmpdir(), 'ooxml-boundary-'));
   try {
     mkdirSync(join(root, 'packages/core/src'), { recursive: true });
-    mkdirSync(join(root, 'packages/legacy-converter/src'), { recursive: true });
-    writeFileSync(join(root, 'packages/legacy-converter/src/index.ts'), 'export const reader = 1;');
+    mkdirSync(join(root, 'packages/legacy-office/src'), { recursive: true });
+    writeFileSync(join(root, 'packages/legacy-office/src/index.ts'), 'export const reader = 1;');
     writeFileSync(join(root, 'packages/core/tsconfig.json'), JSON.stringify({
-      compilerOptions: { baseUrl: '../..', paths: { '@reader': ['packages/legacy-converter/src/index.ts'] }, moduleResolution: 'bundler', module: 'esnext' },
+      compilerOptions: { baseUrl: '../..', paths: { '@reader': ['packages/legacy-office/src/index.ts'] }, moduleResolution: 'bundler', module: 'esnext' },
     }));
     const violations = findViolations(
       [{ path: 'packages/core/src/probe.ts', text: "import { reader } from '@reader';" }],
@@ -181,16 +181,16 @@ test('built chunk graph rejects a resolved legacy module even after aliasing', (
   );
   assert.doesNotThrow(() => invoke('/repo/packages/core/src/index.ts'));
   assert.throws(
-    () => invoke('/repo/packages/legacy-converter/src/index.ts'),
+    () => invoke('/repo/packages/legacy-office/src/index.ts'),
     /forbidden legacy module/,
   );
-  assert.throws(() => invoke('/repo/packages/legacy-converter/src/index.ts', 'legacy-ppt.mjs'), /forbidden legacy module/);
+  assert.throws(() => invoke('/repo/packages/legacy-office/src/index.ts', 'legacy-ppt.mjs'), /forbidden legacy module/);
   assert.throws(() => hook.call(
     { error(message) { throw new Error(message); } },
     {},
     {
       'docx.mjs': { type: 'chunk', fileName: 'docx.mjs', isEntry: true, imports: ['shared.js'], modules: {} },
-      'shared.js': { type: 'chunk', fileName: 'shared.js', isEntry: false, imports: [], modules: { '/repo/packages/legacy-converter/src/index.ts': {} } },
+      'shared.js': { type: 'chunk', fileName: 'shared.js', isEntry: false, imports: [], modules: { '/repo/packages/legacy-office/src/index.ts': {} } },
     },
   ), /forbidden legacy module/);
   assert.throws(() => hook.call(
@@ -198,7 +198,7 @@ test('built chunk graph rejects a resolved legacy module even after aliasing', (
     {},
     {
       'docx.mjs': { type: 'chunk', fileName: 'docx.mjs', isEntry: true, imports: [], dynamicImports: ['relay.js'], modules: {} },
-      'relay.js': { type: 'chunk', fileName: 'relay.js', isEntry: false, imports: [], dynamicImports: [], modules: { '/repo/packages/legacy-converter/src/index.ts': {} } },
+      'relay.js': { type: 'chunk', fileName: 'relay.js', isEntry: false, imports: [], dynamicImports: [], modules: { '/repo/packages/legacy-office/src/index.ts': {} } },
     },
   ), /forbidden legacy module/);
 });
@@ -207,13 +207,13 @@ test('a real build rejects a dynamic chunk reached through a relay', async () =>
   const root = mkdtempSync(join(tmpdir(), 'ooxml-boundary-bundle-'));
   try {
     mkdirSync(join(root, 'packages/core/src'), { recursive: true });
-    mkdirSync(join(root, 'packages/legacy-converter/src'), { recursive: true });
+    mkdirSync(join(root, 'packages/legacy-office/src'), { recursive: true });
     mkdirSync(join(root, 'shared'), { recursive: true });
     const entry = join(root, 'packages/core/src/probe.ts');
     writeFileSync(entry, "export { reader } from '../../../shared/reader.ts';");
     writeFileSync(join(root, 'shared/reader.ts'),
-      "export const reader = () => import('../packages/legacy-converter/src/index.ts');");
-    writeFileSync(join(root, 'packages/legacy-converter/src/index.ts'), 'export const value = 1;');
+      "export const reader = () => import('../packages/legacy-office/src/index.ts');");
+    writeFileSync(join(root, 'packages/legacy-office/src/index.ts'), 'export const value = 1;');
     await assert.rejects(() => build({
       configFile: false,
       logLevel: 'silent',
@@ -231,7 +231,7 @@ test('guards source, parser and manifest files but not generated or private outp
   assert.equal(isGuardedPath('packages/node/package.json'), true);
   assert.equal(isGuardedPath('packages/xlsx/src/wasm/xlsx_parser.js'), false);
   assert.equal(isGuardedPath('packages/pptx/public/demo/readme.md'), false);
-  assert.equal(isGuardedPath('packages/legacy-converter/src/legacy-doc.ts'), false);
+  assert.equal(isGuardedPath('packages/legacy-office/src/legacy-doc.ts'), false);
 });
 
 // Both the factory graph and the opaque URL-loaded reader assets must keep
