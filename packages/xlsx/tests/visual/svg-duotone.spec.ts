@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
 
 // Exercise the real Window SVG rasterizer: Chromium cannot reliably decode an
@@ -6,8 +5,7 @@ import { test, expect } from '@playwright/test';
 test('SVG-only pictures retain duotone and alpha through browser rasterization', async ({ page }) => {
   await page.goto('/tests/visual/fixture.html?file=demo/sample-1.xlsx&sheet=0');
   const pixels = await page.evaluate(async () => {
-    const modulePath = '/src/render-orchestrator.ts';
-    const { decodeImageSource } = await import(/* @vite-ignore */ modulePath);
+    const { decodeImageSource } = await import('/src/render-orchestrator.ts');
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="1">'
       + '<path fill="black" d="M0 0h1v1H0z"/>'
       + '<path fill="white" d="M1 0h1v1H1z"/>'
@@ -31,11 +29,9 @@ test('SVG-only pictures retain duotone and alpha through browser rasterization',
 // worker bridge, including an aspect-mismatched full-source crop target.
 test('SVG duotone rasterizes at each display target in Window and worker bridge decoding', async ({ page }) => {
   await page.goto('/tests/visual/fixture.html?file=demo/sample-1.xlsx&sheet=0');
-  const bridgePath = '/@fs' + fileURLToPath(new URL('../../../core/src/worker/svg-decode-bridge.ts', import.meta.url));
-  const results = await page.evaluate(async (bridgePath) => {
-    const modulePath = '/src/render-orchestrator.ts';
-    const { decodeImageSource } = await import(/* @vite-ignore */ modulePath);
-    const { WorkerSvgDecodeClient, respondToWorkerSvgDecodeRequest } = await import(/* @vite-ignore */ bridgePath);
+  const results = await page.evaluate(async () => {
+    const { decodeImageSource } = await import('/src/render-orchestrator.ts');
+    const { WorkerSvgDecodeClient, respondToWorkerSvgDecodeRequest } = await import('/tests/visual/svg-decode-bridge-fixture.ts');
     const results = [];
     for (const mode of ['window', 'worker', 'viewBox-worker']) {
       const worker = mode !== 'window';
@@ -82,7 +78,7 @@ test('SVG duotone rasterizes at each display target in Window and worker bridge 
       client.dispose();
     }
     return results;
-  }, bridgePath);
+  });
   for (const result of results) {
     expect(result.sizes).toEqual([[300, 100], [600, 200], [300, 100], [900, 100]]);
     expect(result.reused).toBe(true);
