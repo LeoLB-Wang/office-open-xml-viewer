@@ -2,6 +2,9 @@ import {
   captureDecodedBitmapCacheEpoch,
   decodedBitmapTargetResizeOptions,
   duotoneImageData,
+  applyBlipPixelEffects,
+  assertBlipPixelEffectsBudget,
+  blipPixelEffectsKey,
   MAX_RASTER_PIXELS,
   dropCachedDerivedBitmapNamespace,
   getCachedBitmapByPath,
@@ -23,6 +26,7 @@ import {
 } from '@silurus/ooxml-core';
 import type {
   Duotone,
+  BlipEffect,
   ImageResourceOptions,
   OptionalImageCodecUnavailableError,
   TiffRenderer,
@@ -45,6 +49,7 @@ interface ImageDecodeRequest {
   svgImagePath?: string;
   colorReplaceFrom?: string;
   duotone?: Duotone;
+  blipEffects?: readonly BlipEffect[];
   widthPt: number;
   heightPt: number;
   hasCrop: boolean;
@@ -59,15 +64,18 @@ export function imageKey(
   imagePath: string,
   colorReplaceFrom?: string,
   duotone?: Duotone,
+  blipEffects?: readonly BlipEffect[],
 ): string {
   const clr = colorReplaceFrom ? `|clr:${colorReplaceFrom}` : '';
   const duo = duotone ? `|duo:${duotone.clr1}:${duotone.clr2}` : '';
-  return `${imagePath}${clr}${duo}`;
+  const effects = blipEffects?.length
+    ? `|effects:${blipPixelEffectsKey({ effects: blipEffects, duotone })}` : '';
+  return `${imagePath}${clr}${duo}${effects}`;
 }
 
 function requestKey(request: ImageDecodeRequest): string {
   return request.cacheKey
-    ?? imageKey(request.imagePath, request.colorReplaceFrom, request.duotone);
+    ?? imageKey(request.imagePath, request.colorReplaceFrom, request.duotone, request.blipEffects);
 }
 
 const DOCX_COLOR_EFFECT_CACHE_NAMESPACE = 'docx-color-effects';
@@ -95,13 +103,14 @@ async function applyColorEffects(
   duotone: Duotone | undefined,
   failClosedOnDuotoneFailure: boolean,
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
+  blipEffects?: readonly BlipEffect[],
 ): Promise<ImageBitmap | null> {
+  if (blipEffects?.length) {
+    assertBlipPixelEffectsBudget({ effects: blipEffects, duotone }, bitmap.width * bitmap.height);
+  }
   const unavailable = async (error?: unknown): Promise<ImageBitmap | null> => {
-    // clrChange has no compatibility pass-through: silently dropping its exact
-    // alpha transform would change authored content. Duotone-only consumers
-    // retain their established compatibility behavior, but at the requested
-    // display resolution; strict chart consumers still fail closed.
-    if (colorReplaceFrom) {
+    // Ordered blip effects must not fall back to an uncorrected picture. Legacy duotone-only callers retain their compatibility behavior.
+    if (colorReplaceFrom || blipEffects?.length) {
       throw error instanceof Error
         ? error
         : new Error('2D canvas is unavailable for image color effects');
@@ -136,8 +145,12 @@ async function applyColorEffects(
   } catch (error) {
     return unavailable(error);
   }
-  if (colorReplaceFrom) applyExactColorReplacement(imageData, colorReplaceFrom);
-  if (duotone) {
+  if (colorReplaceFrom && !blipEffects?.some(effect => effect.type === 'colorChange')) {
+    applyExactColorReplacement(imageData, colorReplaceFrom);
+  }
+  if (blipEffects?.length) {
+    applyBlipPixelEffects(imageData, { effects: blipEffects, duotone });
+  } else if (duotone) {
     try {
       duotoneImageData(imageData, duotone.clr1, duotone.clr2);
     } catch {
@@ -171,17 +184,17 @@ export async function decodeRaster(
   tiff?: TiffRenderer,
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
   plannedPixelLimit?: number,
+  blipEffects?: readonly BlipEffect[],
 ): Promise<ImageBitmap | null> {
-  // Pixel effects temporarily retain more than their cached input/output:
-  // source + offscreen backing + ImageData + result = four surfaces. clrChange
-  // and duotone mutate the same ImageData before the one final bitmap bake, so
-  // chaining them does not add another full-size intermediate.
-  const effectSurfaceCount = colorReplaceFrom || duotone ? 4 : 1;
+  // Source + offscreen backing + ImageData + result = four surfaces; all effects share the same ImageData before the final bitmap bake.
+  const hasEffects = colorReplaceFrom || duotone || blipEffects?.length;
+  if (blipEffects?.length) assertBlipPixelEffectsBudget({ effects: blipEffects, duotone }, 0);
+  const effectSurfaceCount = hasEffects ? 4 : 1;
   const effectPixelLimit = Math.floor(MAX_RASTER_PIXELS / effectSurfaceCount);
   const maxRetainedPixels = Number.isSafeInteger(plannedPixelLimit) && (plannedPixelLimit ?? 0) > 0
     ? Math.min(effectPixelLimit, plannedPixelLimit as number)
     : effectPixelLimit;
-  const epoch = colorReplaceFrom || duotone
+  const epoch = hasEffects
     ? captureDecodedBitmapCacheEpoch(fetchImage, DOCX_COLOR_EFFECT_CACHE_NAMESPACE)
     : undefined;
   const sourceBitmapOptions = {
@@ -200,7 +213,7 @@ export async function decodeRaster(
     ...sourceBitmapOptions,
   });
   if (!base) return null;
-  if (!colorReplaceFrom && !duotone) return base;
+  if (!hasEffects) return base;
   const resolvedBaseKey = await resolvedCachedBitmapVariantKey(
     imagePath,
     mimeType,
@@ -218,7 +231,7 @@ export async function decodeRaster(
   const resizeKey = resizeOptions
     ? `|resize:${resizeOptions.resizeWidth}x${resizeOptions.resizeHeight}`
     : '';
-  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone)}${resizeKey}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
+  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone, blipEffects)}${resizeKey}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
   return getCachedDerivedBitmap(
     DOCX_COLOR_EFFECT_CACHE_NAMESPACE,
     key,
@@ -230,6 +243,7 @@ export async function decodeRaster(
         duotone,
         failClosedOnDuotoneFailure,
         target,
+        blipEffects,
       );
       return { bitmap, owned: bitmap !== null && bitmap !== base };
     },
@@ -281,6 +295,7 @@ function imageDecodeRequests(
       ...(image.svgImagePath === undefined ? {} : { svgImagePath: image.svgImagePath }),
       ...(image.colorReplaceFrom === undefined ? {} : { colorReplaceFrom: image.colorReplaceFrom }),
       ...(image.duotone === undefined ? {} : { duotone: image.duotone as Duotone }),
+      ...(image.blipEffects?.length ? { blipEffects: image.blipEffects } : {}),
       widthPt: raster.widthPt,
       heightPt: raster.heightPt,
       hasCrop: image.srcRect != null,
@@ -422,7 +437,7 @@ export async function preloadPaintImages(
     // DrawingML pixel effects consume the authored source grid. They may
     // resample only after the exact transform, so an adaptive pre-decode target
     // would change semantics instead of merely reducing display quality.
-    if (request.colorReplaceFrom || request.duotone) return null;
+    if (request.colorReplaceFrom || request.duotone || request.blipEffects?.length) return null;
     const dataIsSvg = request.mimeType === 'image/svg+xml';
     const blip = { svgImagePath: request.svgImagePath, srcRect: request.hasCrop || null };
     if (dataIsSvg || preferVectorBlip(blip)) return null;
@@ -454,7 +469,7 @@ export async function preloadPaintImages(
   const plan = planDecodedImageTargets(demands, policy);
   for (const request of requests) {
     const dataIsSvg = request.mimeType === 'image/svg+xml';
-    const usesVector = dataIsSvg || (!request.colorReplaceFrom && !request.duotone
+    const usesVector = dataIsSvg || (!request.colorReplaceFrom && !request.duotone && !request.blipEffects?.length
       && preferVectorBlip({
         svgImagePath: request.svgImagePath,
         srcRect: request.hasCrop || null,
@@ -474,7 +489,7 @@ export async function preloadPaintImages(
       const dataIsSvg = request.mimeType === 'image/svg+xml';
       const blip = { svgImagePath: request.svgImagePath, srcRect: request.hasCrop || null };
       let image: DecodedImage | null;
-      if (preferVectorBlip(blip)) {
+      if (!request.blipEffects?.length && preferVectorBlip(blip)) {
         try {
           image = await decodeSvg(blip.svgImagePath, request);
         } catch (vectorError) {
@@ -494,11 +509,12 @@ export async function preloadPaintImages(
                   ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
                   : undefined,
                 request.plannedPixelLimit,
+                request.blipEffects,
               );
           if (!fallback) throw vectorError;
           image = fallback;
         }
-      } else if (dataIsSvg) {
+      } else if (dataIsSvg && !request.blipEffects?.length) {
         image = await decodeSvg(request.imagePath, request);
       } else {
         image = await decodeRaster(
@@ -515,6 +531,7 @@ export async function preloadPaintImages(
             ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
             : undefined,
           request.plannedPixelLimit,
+          request.blipEffects,
         );
       }
       return image == null

@@ -47,6 +47,68 @@ describe('docx lazy image bytes', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it('preloads distinct authored brightness effects without changing the raw picture', async () => {
+    const written: number[][] = [];
+    class PixelSurface {
+      constructor(readonly width: number, readonly height: number) {}
+      getContext() {
+        return {
+          drawImage() {},
+          getImageData: () => ({
+            data: new Uint8ClampedArray([0, 0, 0, 255, 128, 128, 128, 128]),
+            width: 2,
+            height: 1,
+          }),
+          putImageData: (image: ImageData) => written.push(Array.from(image.data)),
+        };
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', PixelSurface);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 2, height: 1, close() {} })));
+    const fetchImage = vi.fn(async () => new Blob([new Uint8Array([1])], { type: 'image/png' }));
+    const picture = {
+      type: 'image', imagePath: 'word/media/shared.png', mimeType: 'image/png',
+      widthPt: 24, heightPt: 12,
+    };
+    const doc = {
+      body: [{ type: 'paragraph', runs: [
+        picture,
+        { ...picture, blipEffects: [{ type: 'luminance', bright: .9, contrast: 0 }] },
+        { ...picture, blipEffects: [{ type: 'luminance', bright: 0, contrast: -.5 }] },
+        { ...picture, duotone: { clr1: '000000', clr2: 'FF0000' }, blipEffects: [
+          { type: 'luminance', bright: .9, contrast: 0 }, { type: 'duotone' },
+        ] },
+        { ...picture, duotone: { clr1: '000000', clr2: 'FF0000' }, blipEffects: [
+          { type: 'duotone' }, { type: 'luminance', bright: .9, contrast: 0 },
+        ] },
+      ] }], headers: {}, footers: {},
+    } as unknown as DocxDocumentModel;
+
+    const images = await preloadImages(doc, fetchImage);
+
+    expect(images.size).toBe(5);
+    expect(fetchImage).toHaveBeenCalledTimes(1);
+    expect(written).toEqual([
+      [230, 230, 230, 255, 255, 255, 255, 128],
+      [64, 64, 64, 255, 128, 128, 128, 128],
+      [230, 0, 0, 255, 255, 0, 0, 128],
+      [230, 230, 230, 255, 255, 230, 230, 128],
+    ]);
+  });
+
+  it('rejects excessive picture effects before fetching image bytes', async () => {
+    const fetchImage = vi.fn(async () => new Blob());
+    const effects = Array.from({ length: core.MAX_IMAGE_EFFECT_PASSES + 1 }, () => (
+      { type: 'luminance' as const, bright: .9, contrast: 0 }
+    ));
+
+    await expect(decodeRaster(
+      'word/media/effects.png', 'image/png', undefined, fetchImage,
+      0, 0, undefined, false, undefined, undefined, undefined, effects,
+    )).rejects.toThrow();
+    expect(fetchImage).not.toHaveBeenCalled();
+  });
+
   it('decodeRaster pulls bytes by path via fetchImage and passes the MIME through', async () => {
     const fetchImage = vi.fn(
       async (_path: string, mime: string) => new Blob([new Uint8Array([1, 2, 3])], { type: mime }),

@@ -1,6 +1,6 @@
 use ooxml_common::blip::{
-    blip_embed_rid, mime_from_ext, parse_blip_alpha, parse_blip_duotone, parse_src_rect,
-    svg_blip_rid, Duotone,
+    blip_embed_rid, mime_from_ext, parse_blip_alpha, parse_blip_duotone, parse_blip_effects,
+    parse_src_rect, svg_blip_rid, BlipEffect, Duotone,
 };
 use ooxml_common::depth::{parse_guarded, DepthGuard};
 use ooxml_common::drawing::{parse_xsd_bool, DrawingGroupSpec, DrawingGroupTransform, DrawingRect};
@@ -8544,6 +8544,7 @@ struct InlineBlip {
     /// ECMA-376 §20.1.8.23 `<a:duotone>` recolour resolved through the theme,
     /// or `None`.
     duotone: Option<Duotone>,
+    blip_effects: Vec<BlipEffect>,
     /// ECMA-376 §20.1.8.6 `<a:alphaModFix@amt>` opacity fraction (0.0–1.0), or
     /// `None` when opaque.
     alpha: Option<f64>,
@@ -8579,6 +8580,9 @@ fn resolve_inline_blip(
     let src_rect = blip_fill.and_then(parse_src_rect);
     // §20.1.8.23 duotone recolour, resolved through the document theme.
     let duotone = blip_fill.and_then(|bf| parse_blip_duotone_docx(bf, theme));
+    let blip_effects = blip_fill
+        .map(|bf| parse_blip_effects_docx(bf, theme))
+        .unwrap_or_default();
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
     let alpha = blip_fill.and_then(parse_blip_alpha);
     let (width_pt, height_pt) = drawing_extent_points(container)?;
@@ -8588,6 +8592,7 @@ fn resolve_inline_blip(
         svg_image_path,
         src_rect,
         duotone,
+        blip_effects,
         alpha,
         width_pt,
         height_pt,
@@ -9141,6 +9146,7 @@ fn parse_drawing_container(
             svg_image_path,
             src_rect,
             duotone,
+            blip_effects,
             alpha,
             width_pt,
             height_pt,
@@ -9169,6 +9175,7 @@ fn parse_drawing_container(
             anchor_y_from_para: false,
             color_replace_from: None,
             duotone,
+            blip_effects,
             alpha,
             wrap_mode: None,
             dist_top: 0.0,
@@ -9392,6 +9399,7 @@ fn parse_drawing_container(
         svg_image_path,
         src_rect,
         duotone,
+        blip_effects,
         alpha,
         width_pt,
         height_pt,
@@ -9420,6 +9428,7 @@ fn parse_drawing_container(
         anchor_y_from_para: y_from_para,
         color_replace_from: None,
         duotone,
+        blip_effects,
         alpha,
         wrap_mode: anchor_meta.wrap_mode.clone(),
         dist_top: anchor_meta.dist_top,
@@ -10462,6 +10471,10 @@ fn parse_group_pic(
     let duotone = blip
         .parent()
         .and_then(|bf| parse_blip_duotone_docx(bf, theme));
+    let blip_effects = blip
+        .parent()
+        .map(|bf| parse_blip_effects_docx(bf, theme))
+        .unwrap_or_default();
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
     let alpha = blip.parent().and_then(parse_blip_alpha);
 
@@ -10493,6 +10506,7 @@ fn parse_group_pic(
         anchor_y_from_para: y_from_para,
         color_replace_from,
         duotone,
+        blip_effects,
         alpha,
         wrap_mode: anchor_meta.wrap_mode.clone(),
         dist_top: anchor_meta.dist_top,
@@ -13240,6 +13254,7 @@ fn vml_image_run(
         anchor_y_from_para,
         color_replace_from: None,
         duotone: None,
+        blip_effects: Vec::new(),
         alpha: None,
         wrap_mode: None,
         dist_top: 0.0,
@@ -13873,6 +13888,17 @@ fn resolve_color_element_with_phclr(
 /// and group picture paths.
 fn parse_blip_duotone_docx(blip_fill: roxmltree::Node, theme: &ThemeColors) -> Option<Duotone> {
     parse_blip_duotone(
+        blip_fill,
+        &DocxSchemeResolver {
+            theme,
+            placeholder_color: None,
+        },
+        ooxml_common::color::TintMode::WordLiteral,
+    )
+}
+
+fn parse_blip_effects_docx(blip_fill: roxmltree::Node, theme: &ThemeColors) -> Vec<BlipEffect> {
+    parse_blip_effects(
         blip_fill,
         &DocxSchemeResolver {
             theme,
@@ -17830,6 +17856,7 @@ mod tests {
             anchor_y_from_para: false,
             color_replace_from: None,
             duotone: None,
+            blip_effects: Vec::new(),
             alpha: None,
             wrap_mode: None,
             dist_top: 0.0,
@@ -21214,6 +21241,7 @@ mod svg_blip_tests {
             anchor_y_from_para: false,
             color_replace_from: None,
             duotone: None,
+            blip_effects: Vec::new(),
             alpha: None,
             wrap_mode: None,
             dist_top: 0.0,
@@ -21777,6 +21805,45 @@ mod svg_blip_tests {
             .expect("a <a:duotone> must populate the duotone field");
         assert_eq!(duo.clr1, "000000", "clr1 = black prstClr (dark endpoint)");
         assert_eq!(duo.clr2, "DAB6BA", "clr2 = srgbClr (light endpoint)");
+    }
+
+    #[test]
+    fn picture_brightness_and_contrast_survive_parsing() {
+        for container in ["inline", "anchor"] {
+            let body = format!(
+                r#"<w:p><w:r><w:drawing>
+              <wp:{container} xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+                <wp:simplePos x="0" y="0"/>
+                <wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>
+                <wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>
+                <wp:extent cx="304800" cy="304800"/><wp:wrapNone/>
+                <a:graphic><a:graphicData>
+                  <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:blipFill><a:blip r:embed="rIdPng">
+                      <a:lum bright="90000" contrast="0"/>
+                      <a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FFFFFF"/></a:duotone>
+                      <a:lum bright="0" contrast="-50000"/>
+                    </a:blip><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                  </pic:pic>
+                </a:graphicData></a:graphic>
+              </wp:{container}>
+            </w:drawing></w:r></w:p>"#
+            );
+            let doc = parse_from_bytes(&build_docx_with_media(&body)).expect("parse must succeed");
+            let image = serde_json::to_value(only_image(&doc)).unwrap();
+            assert_eq!(
+                image["blipEffects"],
+                serde_json::json!([
+                    {"type": "luminance", "bright": 0.9, "contrast": 0.0},
+                    {"type": "duotone"},
+                    {"type": "luminance", "bright": 0.0, "contrast": -0.5}
+                ]),
+                "{container}"
+            );
+        }
     }
 
     /// A picture without a `<a:duotone>` leaves `duotone` None — guards the new

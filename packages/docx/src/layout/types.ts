@@ -501,6 +501,7 @@ export type ImagePaintResourceDescriptor = Readonly<{
   alpha?: number;
   colorReplaceFrom?: string;
   duotone?: DeepReadonly<Duotone>;
+  blipEffects?: DeepReadonly<import('@silurus/ooxml-core').BlipEffect[]>;
 }>;
 
 /** Exact accepted source facts, including decode-order/intrinsic ownership.

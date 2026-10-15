@@ -43,7 +43,7 @@ export function acquireNativeReadingImageBlockScene(
   catch { return fail('resource', 'image descriptor is unavailable for its source key'); }
   if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image' || descriptor.resourceKey !== key
     || descriptor.partPath !== run.imagePath || descriptor.mimeType !== run.mimeType) return fail('resource', 'image descriptor ownership mismatch');
-  if (run.svgImagePath != null || descriptor.svgImagePath !== undefined || run.duotone != null || descriptor.duotone !== undefined || run.colorReplaceFrom != null || descriptor.colorReplaceFrom !== undefined) return fail('resource', 'image substitution/color effects require their decoded-owner proof');
+  if (run.svgImagePath != null || descriptor.svgImagePath !== undefined || run.duotone != null || descriptor.duotone !== undefined || run.blipEffects?.length || descriptor.blipEffects !== undefined || run.colorReplaceFrom != null || descriptor.colorReplaceFrom !== undefined) return fail('resource', 'image substitution/color effects require their decoded-owner proof');
   for (const field of ['rotation', 'flipH', 'flipV', 'alpha'] as const) if (descriptor[field] !== run[field]) return fail('resource', `image ${field} descriptor mismatch`);
   if ((descriptor.srcRect === undefined) !== (run.srcRect == null)) return fail('resource', 'image crop presence mismatch');
   if (descriptor.srcRect && run.srcRect) for (const edge of ['l', 't', 'r', 'b'] as const) if (descriptor.srcRect[edge] !== run.srcRect[edge]) return fail('resource', 'image crop descriptor mismatch');

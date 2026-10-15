@@ -99,6 +99,10 @@ const SHARED_PAINT_IMPORTS = new Map([
   ['@silurus/ooxml-core', new Map([
     ['acquireBitmapCacheLease', 'value'],
     ['applyDuotone', 'value'],
+    // Pixel corrections, effect budgets and cache keys consume decoded resources without acquiring layout.
+    ['applyBlipPixelEffects', 'value'],
+    ['assertBlipPixelEffectsBudget', 'value'],
+    ['blipPixelEffectsKey', 'value'],
     ['autoContrastColor', 'value'],
     // A retained run-shading preset is rasterized as an 8x8 paint tile;
     // this helper cannot measure text or change the layout result.
@@ -189,6 +193,7 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['ChartExRenderer', 'type'],
     ['ChartImageLookup', 'type'],
     ['Duotone', 'type'],
+    ['BlipEffect', 'type'],
     ['ImageResourceOptions', 'type'],
     ['MathRenderer', 'type'],
     ['TiffRenderer', 'type'],

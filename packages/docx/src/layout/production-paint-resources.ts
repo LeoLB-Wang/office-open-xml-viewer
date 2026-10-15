@@ -46,6 +46,7 @@ function imageCandidate(
     // every authored string; only None/omission has no decoded effect owner.
     ...(run.colorReplaceFrom == null ? {} : { colorReplaceFrom: run.colorReplaceFrom }),
     ...(run.duotone === undefined ? {} : { duotone: { ...run.duotone } }),
+    ...(run.blipEffects?.length ? { blipEffects: run.blipEffects.map(effect => ({ ...effect })) } : {}),
   };
 }
 

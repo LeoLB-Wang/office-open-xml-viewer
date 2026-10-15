@@ -1695,6 +1695,7 @@ export interface ImageRun {
     anchorYFromPara?: boolean;
     colorReplaceFrom?: string;
     duotone?: Duotone;
+    blipEffects?: BlipEffect[];
     alpha?: number;
     wrapMode?: string;
     distTop?: number;

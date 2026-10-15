@@ -71,12 +71,22 @@ function storedZip(files: Record<string, string | Uint8Array>): Uint8Array {
 
 /** A `<w:drawing>` inline picture, optionally carrying a duotone and/or an
  *  alphaModFix on its blip. cx/cy in EMU (12700 EMU/pt). */
-function inlinePicXml(opts: { duotone?: boolean; alpha?: string }): string {
+interface PictureOptions {
+  duotone?: boolean;
+  alpha?: string;
+  bright?: string;
+  contrast?: string;
+  inHeader?: boolean;
+}
+
+function inlinePicXml(opts: PictureOptions): string {
   const cx = 200 * 12700; // 200pt square
   const effects =
     (opts.duotone
       ? '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="DAB6BA"/></a:duotone>'
-      : '') + (opts.alpha ? `<a:alphaModFix amt="${opts.alpha}"/>` : '');
+      : '') + (opts.alpha ? `<a:alphaModFix amt="${opts.alpha}"/>` : '')
+      + (opts.bright || opts.contrast
+        ? `<a:lum bright="${opts.bright ?? '0'}" contrast="${opts.contrast ?? '0'}"/>` : '');
   return (
     '<w:p><w:r><w:drawing>' +
     `<wp:inline><wp:extent cx="${cx}" cy="${cx}"/>` +
@@ -92,7 +102,7 @@ function inlinePicXml(opts: { duotone?: boolean; alpha?: string }): string {
   );
 }
 
-function buildDocx(pngBytes: Uint8Array, opts: { duotone?: boolean; alpha?: string }): Uint8Array {
+function buildDocx(pngBytes: Uint8Array, opts: PictureOptions): Uint8Array {
   const contentTypes =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
@@ -100,21 +110,27 @@ function buildDocx(pngBytes: Uint8Array, opts: { duotone?: boolean; alpha?: stri
     '<Default Extension="xml" ContentType="application/xml"/>' +
     '<Default Extension="png" ContentType="image/png"/>' +
     '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+    (opts.inHeader ? '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>' : '') +
     '</Types>';
   const rootRels =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
     '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
     '</Relationships>';
-  const docRels =
+  const imageRels =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
     '<Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>' +
     '</Relationships>';
+  const docRels = opts.inHeader
+    ? imageRels.replace('</Relationships>', '<Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>')
+    : imageRels;
   const document =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${NS}><w:body>` +
-    inlinePicXml(opts) +
-    '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>' +
+    (opts.inHeader ? '<w:p/>' : inlinePicXml(opts)) +
+    '<w:sectPr>' +
+    (opts.inHeader ? '<w:headerReference w:type="default" r:id="rIdHeader"/>' : '') +
+    '<w:pgSz w:w="12240" w:h="15840"/>' +
     '<w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="0" w:footer="0" w:gutter="0"/>' +
     '</w:sectPr></w:body></w:document>';
   return storedZip({
@@ -123,6 +139,10 @@ function buildDocx(pngBytes: Uint8Array, opts: { duotone?: boolean; alpha?: stri
     'word/_rels/document.xml.rels': docRels,
     'word/document.xml': document,
     'word/media/image1.png': pngBytes,
+    ...(opts.inHeader ? {
+      'word/header1.xml': `<w:hdr ${NS}>${inlinePicXml(opts)}</w:hdr>`,
+      'word/_rels/header1.xml.rels': imageRels,
+    } : {}),
   });
 }
 
@@ -180,6 +200,17 @@ function sampleInside(r: Rendered): [number, number, number] {
 }
 
 describe.skipIf(!skia || !docxMod || !rendererMod)('docx duotone + alphaModFix picture render', () => {
+  it('renders authored brightness and contrast through DOCX parsing and paint (§20.1.8.42)', async () => {
+    const black = await flatPngBytes(16, 16, '#000000');
+    expect(sampleInside(await render(buildDocx(black, {}), black))).toEqual([0, 0, 0]);
+    for (const inHeader of [false, true]) {
+      const bright = sampleInside(await render(buildDocx(black, { bright: '90000', inHeader }), black));
+      for (const channel of bright) expect(Math.abs(channel - 230)).toBeLessThanOrEqual(1);
+    }
+    const contrast = sampleInside(await render(buildDocx(black, { contrast: '-50000' }), black));
+    for (const channel of contrast) expect(Math.abs(channel - 64)).toBeLessThanOrEqual(1);
+  });
+
   it('duotone remaps a mid-grey picture along the clr1→clr2 ramp (§20.1.8.23)', async () => {
     const png = await flatPngBytes(16, 16, '#808080');
     const t = lum(128, 128, 128);
