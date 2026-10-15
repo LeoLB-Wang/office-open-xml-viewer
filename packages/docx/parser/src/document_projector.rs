@@ -25,7 +25,18 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::XmlVersion;
 
 const DOCUMENT_PART: &str = "word/document.xml";
-const STREAMED_XML_EVENT_BYTES: usize = 1024 * 1024;
+/// One lexical event (a start tag with all its attributes, a text node, a
+/// comment) may be as large as the logical body block that contains it, whose
+/// projection is already bounded by `HARD_MAX_DOCX_BODY_BLOCK_XML_BYTES`. A
+/// smaller per-event ceiling would reject blocks that ceiling admits, and Office
+/// writes such tokens: a legacy VML shape (ECMA-376 Part 4 §19.1.2) carries the
+/// DrawingML equivalent of the shape as a base64-encoded package in its
+/// `o:gfxdata` attribute, so a single start tag grows with the shape's content
+/// and the format sets no bound on it. The event reader still stops one hostile
+/// or unterminated token at this ceiling rather than at the part size, and it
+/// applies equally to events that are not retained (an unselected
+/// `mc:Fallback`, a comment).
+pub(crate) const STREAMED_XML_EVENT_BYTES: usize = HARD_MAX_DOCX_BODY_BLOCK_XML_BYTES as usize;
 const STREAMED_XML_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1698,6 +1709,36 @@ mod tests {
             Rc::default(),
         );
         assert!(projector.next_block().unwrap_err().contains("no <w:body>"));
+    }
+
+    #[test]
+    fn admits_one_start_tag_larger_than_a_mebibyte_within_the_block_ceiling() {
+        // A legacy VML shape carries its DrawingML twin as a base64 package in
+        // `o:gfxdata`, so one start tag grows with the shape's content.
+        let gfxdata = "A".repeat(2 * 1024 * 1024);
+        let xml = format!(
+            r#"<w:document xmlns:w="{W}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:body><w:p><w:r><w:pict><v:group o:gfxdata="{gfxdata}"/></w:pict></w:r></w:p></w:body></w:document>"#,
+        );
+        let (blocks, _) = project(&xml);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].xml.len() > gfxdata.len());
+    }
+
+    #[test]
+    fn rejects_one_unretained_event_larger_than_the_block_ceiling() {
+        let comment = "x".repeat(HARD_MAX_DOCX_BODY_BLOCK_XML_BYTES as usize);
+        let xml = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:p><!--{comment}--></w:p></w:body></w:document>"#,
+        );
+        let mut projector = DocumentBodyProjector::new(
+            BufReader::new(Cursor::new(xml.into_bytes())),
+            None,
+            Rc::default(),
+        );
+        assert!(projector
+            .next_block()
+            .unwrap_err()
+            .contains("limit exceeded"));
     }
 
     #[test]

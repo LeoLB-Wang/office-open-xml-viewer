@@ -119,7 +119,10 @@ impl<R: BufRead> BoundedXmlReader<R> {
         reader.config_mut().trim_text(false);
         Self {
             reader,
-            event_buf: Vec::with_capacity(event_limit),
+            // Grows to the largest event actually read. `event_limit` is a
+            // ceiling for hostile input, not an expected size, so reserving it
+            // would make every reader pay for the worst case.
+            event_buf: Vec::new(),
             label,
             terminal: None,
         }
