@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { resolveDrawingMLGeometry, type DrawingMLShapePaintPlan as GeometryFixtureInput } from '@silurus/ooxml-core';
 import { createPaintResourceRegistry } from './paint-resources.js';
 import { acquireNativeReadingImagePlan } from './native-reading-image-frame.js';

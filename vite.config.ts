@@ -215,6 +215,12 @@ export default defineConfig(({ command, mode }) => ({
         // Opt-in legacy Office model sources (ModelSource factories). Each
         // entry emits its reader's WASM and self-contained source module as
         // assets; nothing is fetched until a claimed input is loaded.
+        // Internal optional reading implementation, shared by browser and Node
+        // source loaders. Keep it an entry in both dispatch comparison builds:
+        // otherwise removing dispatch also re-factors dozens of shared geometry
+        // modules and charges chunk framing to the dispatch byte budget. This
+        // is not a package export and ordinary OOXML never imports it eagerly.
+        'docx-reading-source-runtime': resolve(__dirname, 'packages/docx/src/internal/native-reading-runtime.ts'),
         'legacy-doc': resolve(__dirname, 'src/legacy-doc.ts'),
         'legacy-ppt': resolve(__dirname, 'src/legacy-ppt.ts'),
         'legacy-xls': resolve(__dirname, 'src/legacy-xls.ts'),

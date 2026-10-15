@@ -1,4 +1,4 @@
-import { updateNativeReadingNotice, noReadingNotices } from './native-reading-notice.js';
+import { updateNativeReadingNotice, noReadingNotices } from './internal/reading-hooks.js';
 import { DocxDocument, docxViewerLoadSignal } from './document';
 import type { DocxViewerLoadControl, LoadOptions } from './document';
 import {

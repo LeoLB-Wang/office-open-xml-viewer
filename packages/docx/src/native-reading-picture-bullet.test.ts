@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { describe, expect, it } from 'vitest';
 import { acquireNativeReadingPictureBullet } from './native-reading-picture-bullet.js';
 import { paragraphAcquisitionInput } from './parser-model.js';

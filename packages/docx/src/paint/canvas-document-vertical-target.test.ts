@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { createPaintResourceRegistry } from '../layout/paint-resources.js';
 import { acquireNativeReadingImagePlan } from '../layout/native-reading-image-frame.js';
 import type { ParagraphLayout } from '../layout/types.js';

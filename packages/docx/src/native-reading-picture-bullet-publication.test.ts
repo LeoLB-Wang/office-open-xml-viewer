@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import type { ImagePaintResourceDescriptor } from './layout/types.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { syntheticDocxModel, installStubCanvas } from './testing/synthetic-document.js';

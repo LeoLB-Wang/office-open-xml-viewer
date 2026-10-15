@@ -125,6 +125,24 @@ export async function runModelSourceStages({
     explicit.document.destroy();
     assert(explicit.image === final.image, `${mode}: explicit showTrackedChanges:false was not honoured`);
 
+    // The optional implementation must activate in both realms, including in
+    // a re-bundled consumer with sideEffects:false. This fact changes only the
+    // disclosed reading policy; logical text and pixels remain identical.
+    let partials = 0, completions = 0;
+    const reading = await docxPage(DocxDocument, tracked, {
+      mode, progressiveLayout: true,
+      onLayoutPartial: () => { partials++; },
+      onLayoutComplete: () => { completions++; },
+      modelSources: [fakeSource('docx', { readingWordBreaking: true })],
+    });
+    try {
+      assert(reading.image === final.image, `${mode}: reading fact changed literal text painting`);
+      assert(reading.document.readingNotices.some(notice => notice.code === 'WORD_BREAKING_SIMPLIFIED_FOR_READING'),
+        `${mode}: optional reading runtime did not retain its source owner`);
+      assert(partials === 0 && completions === 1, `${mode}: reading publication must remain atomic`);
+    } finally { reading.document.destroy(); }
+
+
     document.body.dataset.stage = `model-source-xlsx-${mode}`;
     const plain = await xlsxView(XlsxWorkbook, bordered, { mode, useGoogleFonts: false });
     const noRequest = await xlsxView(XlsxWorkbook, bordered, {
