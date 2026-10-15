@@ -12,7 +12,8 @@ the corresponding minor release.
   with 8-bit grayscale, RGB, RGBA and CMYK images. Such pictures previously
   failed with a `TiffDecodeError` in DOCX, XLSX and PPTX documents. Other
   predictors, such as floating-point prediction, are still reported as
-  unsupported. No migration is required.
+  unsupported. Excessive LZW code reads and expansion report the new
+  `tiff-lzw-work` decoded-image limit metric. No migration is required.
 - **Excel pictures anchored to one cell:** pictures saved with a one-cell
   anchor (a top-left cell plus a fixed size, as written for example by
   openpyxl) are now displayed at that size. Previously such a picture was
