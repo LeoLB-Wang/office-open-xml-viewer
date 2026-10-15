@@ -89,6 +89,8 @@ export interface EmbeddedFontRef {
 }
 
 export interface DocSettings {
+  /** ECMA-376 Part 4 §14.8.3.38; applied by the parser to terminal page breaks. */
+  splitPgBreakAndParaMark?: boolean;
   /** ECMA-376 Part 4 §14.8.3.15 fixed HTML automatic paragraph margins. */
   doNotUseHtmlParagraphAutoSpacing?: boolean;
   /** §17.15.1.58 `w:kinsoku` — East-Asian line-breaking toggle. `undefined`

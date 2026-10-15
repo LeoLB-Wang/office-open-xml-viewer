@@ -2,7 +2,8 @@
 //! column breaks become body-level pieces; rendered-page cache hints are
 //! removed. Whitespace and line-break-only chunks are not visible paragraphs.
 //! Leading empty chunks are omitted, while trailing hard breaks are retained
-//! and marked as belonging to the source paragraph.
+//! and marked as belonging to the source paragraph. splitPgBreakAndParaMark
+//! additionally retains the final paragraph mark after a terminal page break.
 
 use crate::{BreakType, ComplexFieldBoundaryWire, DocParagraph, DocRun};
 
@@ -29,9 +30,12 @@ pub enum ParaPiece {
 /// Normalize hard page and column breaks into body-level pieces. Rendered-page
 /// hints are removed. Run payloads and field boundaries move once; only the
 /// paragraph metadata, with its owning vectors emptied, is cloned per chunk.
-pub fn split_para_on_page_breaks(para: DocParagraph) -> Vec<ParaPiece> {
+pub fn split_para_on_page_breaks(
+    para: DocParagraph,
+    split_pg_break_and_para_mark: bool,
+) -> Vec<ParaPiece> {
     let mut pieces = Vec::new();
-    let result = visit_para_on_page_breaks(para, |piece| {
+    let result = visit_para_on_page_breaks(para, split_pg_break_and_para_mark, |piece| {
         pieces.push(piece);
         Ok::<(), std::convert::Infallible>(())
     });
@@ -43,6 +47,7 @@ pub fn split_para_on_page_breaks(para: DocParagraph) -> Vec<ParaPiece> {
 
 pub fn visit_para_on_page_breaks<E>(
     mut para: DocParagraph,
+    split_pg_break_and_para_mark: bool,
     mut emit: impl FnMut(ParaPiece) -> Result<(), E>,
 ) -> Result<(), E> {
     let is_hard_break = |run: &DocRun| {
@@ -85,6 +90,24 @@ pub fn visit_para_on_page_breaks<E>(
         return Ok(());
     }
 
+    // ECMA-376 Part 4 §14.8.3.38: only a terminal page break moves the
+    // paragraph mark to a new line on the next page. Keep that final empty
+    // paragraph with the source paragraph's mark formatting and properties. Word
+    // 16 mode 11 also lets this line displace a following near-page-height
+    // table; ordinary empty-paragraph layout supplies that behavior unchanged.
+    // Rendered-page hints are ignored throughout normalization, not content.
+    let retain_mark = split_pg_break_and_para_mark
+        && matches!(
+            para.runs.iter().rev().find(|run| !matches!(
+                run,
+                DocRun::Break {
+                    break_type: BreakType::RenderedPage
+                }
+            )),
+            Some(DocRun::Break {
+                break_type: BreakType::Page
+            })
+        );
     let runs = std::mem::take(&mut para.runs);
     let boundaries = std::mem::take(&mut para.complex_field_boundaries);
     let run_count = runs.len();
@@ -208,7 +231,7 @@ pub fn visit_para_on_page_breaks<E>(
         })?;
         emitted = true;
     }
-    if !emitted {
+    if retain_mark || !emitted {
         emit(ParaPiece::Para(para))?;
     }
     Ok(())
@@ -223,6 +246,32 @@ mod tests {
         let result = operation();
         let work = WORK.with(|value| value.get());
         (result, work)
+    }
+
+    #[test]
+    fn split_mark_follows_only_the_last_page_break_and_leaves_columns_unchanged() {
+        for (last, paragraph_count) in [(BreakType::Page, 1), (BreakType::Column, 0)] {
+            let pieces = split_para_on_page_breaks(
+                DocParagraph {
+                    runs: vec![
+                        DocRun::Break {
+                            break_type: BreakType::Page,
+                        },
+                        DocRun::Break { break_type: last },
+                    ],
+                    ..Default::default()
+                },
+                true,
+            );
+            assert_eq!(pieces.len(), 2 + paragraph_count);
+            assert!(matches!(pieces[0], ParaPiece::PageBreak { .. }));
+            if paragraph_count == 1 {
+                assert!(matches!(pieces[1], ParaPiece::PageBreak { .. }));
+                assert!(matches!(&pieces[2], ParaPiece::Para(p) if p.runs.is_empty()));
+            } else {
+                assert!(matches!(pieces[1], ParaPiece::ColumnBreak));
+            }
+        }
     }
 
     #[test]
@@ -244,7 +293,7 @@ mod tests {
             ..Default::default()
         };
         let mut calls = 0;
-        let result = visit_para_on_page_breaks(para, |_| {
+        let result = visit_para_on_page_breaks(para, false, |_| {
             calls += 1;
             Err("stop")
         });
@@ -278,7 +327,7 @@ mod tests {
         }
         let mut count = 0;
         let (_, work) = measured(|| {
-            visit_para_on_page_breaks(para, |_| {
+            visit_para_on_page_breaks(para, false, |_| {
                 count += 1;
                 Ok::<(), ()>(())
             })
@@ -312,7 +361,7 @@ mod tests {
                     hyperlink_anchor: None,
                 });
         }
-        let (_, work) = measured(|| split_para_on_page_breaks(para));
+        let (_, work) = measured(|| split_para_on_page_breaks(para, false));
         assert_eq!(work, 40_000);
     }
 
@@ -333,7 +382,7 @@ mod tests {
                     hyperlink_anchor: None,
                 });
         }
-        let (_, work) = measured(|| split_para_on_page_breaks(para));
+        let (_, work) = measured(|| split_para_on_page_breaks(para, false));
         assert!(work <= 80_000, "work={work}");
     }
 }

@@ -61,6 +61,7 @@ pub(super) fn build(
         .map(|settings| DocumentSettings {
             default_tab_stop: Some(f64::from(settings.default_tab_twips) / 20.0),
             adjust_line_height_in_table: Some(settings.adjust_line_height_in_table),
+            split_pg_break_and_para_mark: settings.split_pg_break_and_para_mark,
             do_not_use_html_paragraph_auto_spacing: settings.do_not_use_html_paragraph_auto_spacing,
             balance_single_byte_double_byte_width: Some(
                 settings.balance_single_byte_double_byte_width,
@@ -163,6 +164,10 @@ pub(super) fn build(
             &mut budget,
             &mut body,
             ending.as_ref().map(|ending| ending.kind.as_str()),
+            settings
+                .as_ref()
+                .and_then(|settings| settings.split_pg_break_and_para_mark)
+                == Some(true),
             &mut table_sequence,
         )?;
         if super::character::Properties::unrenderable_east_asian_vertical(
@@ -645,6 +650,7 @@ pub(in crate::doc) fn project_story_for_test(
         &mut budget,
         &mut body,
         None,
+        false,
         &mut 0,
     )?;
     Ok(body)
@@ -2405,6 +2411,56 @@ mod tests {
         }
         append_table_part(&mut word, &mut table, 0x192, dop);
         build_scoped_cfb(&[("WordDocument", word), ("0Table", table)])
+    }
+
+    #[test]
+    fn split_page_break_paragraph_mark_uses_owned_copts() {
+        for (text, enabled_len) in [
+            ("\u{c}\rnext\r", 3),
+            ("before\u{c}\rnext\r", 4),
+            ("before\u{c}after\rnext\r", 4),
+        ] {
+            for (enabled, modern) in [(true, true), (false, true), (true, false)] {
+                let bytes = source_with_typography(
+                    text,
+                    &[(text.len(), 2, 12240, 15840, 1, 720)],
+                    None,
+                    Some(36),
+                    None,
+                    None,
+                );
+                let cfb = CompoundFile::open(&bytes).unwrap();
+                let mut word = cfb.stream("WordDocument").unwrap();
+                let mut table = cfb.stream("0Table").unwrap();
+                if modern {
+                    word[0x98..0x9a].copy_from_slice(&0x006cu16.to_le_bytes());
+                    word[0x3fa..0x3fc].copy_from_slice(&2u16.to_le_bytes());
+                    word[0x3fc..0x3fe].copy_from_slice(&0x00d9u16.to_le_bytes());
+                }
+                let dop = fib_dop_owner_dop(544, if enabled { 1 << 27 } else { 0 });
+                append_table_part(&mut word, &mut table, 0x192, &dop);
+                let bytes = build_scoped_cfb(&[("WordDocument", word), ("0Table", table)]);
+                let document =
+                    super::super::direct_model(&CompoundFile::open(&bytes).unwrap(), 1024 * 1024)
+                        .unwrap()
+                        .document;
+                let trailing = !text.contains("after");
+                let keep_mark = enabled && modern && trailing;
+                assert_eq!(
+                    document.body.len(),
+                    enabled_len - usize::from(trailing && !keep_mark),
+                    "{text:?} enabled={enabled} modern={modern}"
+                );
+                if keep_mark {
+                    let mark_index = if text.starts_with("before") { 2 } else { 1 };
+                    let BodyElement::Paragraph(mark) = &document.body[mark_index] else {
+                        panic!("paragraph after break")
+                    };
+                    assert!(mark.runs.is_empty());
+                    assert_eq!(mark.default_font_size, Some(18.0));
+                }
+            }
+        }
     }
 
     fn fib_dop_owner_dop(size: usize, flags: u32) -> Vec<u8> {

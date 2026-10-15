@@ -408,7 +408,7 @@ mod private_typography_wire_tests {
             &StyleMap::parse(""),
         );
 
-        let pieces = split_para_on_page_breaks(paragraph);
+        let pieces = split_para_on_page_breaks(paragraph, false);
         let paragraphs: Vec<&DocParagraph> = pieces
             .iter()
             .filter_map(|piece| match piece {
@@ -456,7 +456,7 @@ mod private_typography_wire_tests {
             &StyleMap::parse(""),
         );
 
-        let pieces = split_para_on_page_breaks(paragraph);
+        let pieces = split_para_on_page_breaks(paragraph, false);
         assert!(matches!(pieces.first(), Some(ParaPiece::PageBreak { .. })));
         let visible = pieces
             .iter()
@@ -1405,6 +1405,11 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
         rel_map,
         theme,
         &section_hf,
+        environment
+            .document_settings
+            .as_ref()
+            .and_then(|settings| settings.split_pg_break_and_para_mark)
+            == Some(true),
     );
     let final_section_ordinal = body
         .iter()
@@ -1547,6 +1552,11 @@ impl DocxBodyCursor {
                     error,
                     theme: Box::new(degraded_theme.clone()),
                 })?;
+        let split_pg_break_and_para_mark = environment
+            .document_settings
+            .as_ref()
+            .and_then(|settings| settings.split_pg_break_and_para_mark)
+            == Some(true);
         Ok(Self {
             environment: Some(environment),
             plan: preflight.plan,
@@ -1558,6 +1568,7 @@ impl DocxBodyCursor {
             body_footers,
             projector,
             semantic: BodyParseCursor {
+                split_pg_break_and_para_mark,
                 ref_leading_breaks: preflight.ref_leading_breaks,
                 ..BodyParseCursor::default()
             },
@@ -2284,6 +2295,7 @@ fn parse_notes(
             &HashMap::new(),
             TablePositioningContext::IgnoredStory,
             None,
+            false,
         );
         out.push(crate::types::DocxNote { id, content });
     }
@@ -3363,6 +3375,7 @@ fn parse_document_settings(settings_xml: &str) -> Option<crate::types::DocumentS
     let use_fe_layout = compat_bool("useFELayout");
     let balance_single_byte_double_byte_width = compat_bool("balanceSingleByteDoubleByteWidth");
     let adjust_line_height_in_table = compat_bool("adjustLineHeightInTable");
+    let split_pg_break_and_para_mark = compat_bool("splitPgBreakAndParaMark");
 
     // ECMA-376 §22.1.2.30 `m:mathPr/m:defJc@m:val` — document-wide default math
     // justification (math namespace, bare `val` fallback).
@@ -3388,6 +3401,7 @@ fn parse_document_settings(settings_xml: &str) -> Option<crate::types::DocumentS
         && enable_open_type_features.is_none()
         && use_fe_layout.is_none()
         && balance_single_byte_double_byte_width.is_none()
+        && split_pg_break_and_para_mark.is_none()
         && adjust_line_height_in_table.is_none()
         && compatibility_mode.is_none()
     {
@@ -3406,6 +3420,7 @@ fn parse_document_settings(settings_xml: &str) -> Option<crate::types::DocumentS
         use_fe_layout,
         balance_single_byte_double_byte_width,
         adjust_line_height_in_table,
+        split_pg_break_and_para_mark,
         compatibility_mode,
     })
 }
@@ -3935,6 +3950,7 @@ fn parse_body_elements(
         section_hf,
         TablePositioningContext::Normal,
         None,
+        false,
     )
 }
 
@@ -3948,6 +3964,7 @@ fn parse_body_elements_with_diagnostics(
     rel_map: &HashMap<String, String>,
     theme: &ThemeColors,
     section_hf: &HashMap<roxmltree::NodeId, ResolvedSectionHf>,
+    split_pg_break_and_para_mark: bool,
 ) -> (Vec<BodyElement>, Vec<ParseDiagnostic>) {
     let mut diagnostics = Vec::new();
     let body = parse_body_elements_in_story(
@@ -3961,6 +3978,7 @@ fn parse_body_elements_with_diagnostics(
         section_hf,
         TablePositioningContext::Normal,
         Some(&mut diagnostics),
+        split_pg_break_and_para_mark,
     );
     (body, diagnostics)
 }
@@ -4137,6 +4155,8 @@ fn logical_table_sequence_contexts(
 /// order, so neither belongs to a temporary per-block DOM arena.
 #[derive(Default)]
 struct BodyParseCursor {
+    // Body-only normalization; page stories keep their existing break policy.
+    split_pg_break_and_para_mark: bool,
     field: FieldState,
     section_ordinal: usize,
     ref_leading_breaks: HashMap<String, String>,
@@ -4225,6 +4245,12 @@ impl BodyParseCursor {
                                 parity: None,
                                 same_paragraph_as_previous: None,
                             });
+                            // §14.8.3.38: retain the mark only when the page
+                            // break is not subsumed by the section transition.
+                            if self.split_pg_break_and_para_mark {
+                                result.runs.clear();
+                                output.push(BodyElement::Paragraph(Box::new(result)));
+                            }
                         }
                         push_section_break(&mut output);
                     }
@@ -4233,7 +4259,9 @@ impl BodyParseCursor {
                         push_section_break(&mut output);
                     }
                     _ => {
-                        for piece in split_para_on_page_breaks(result) {
+                        for piece in
+                            split_para_on_page_breaks(result, self.split_pg_break_and_para_mark)
+                        {
                             match piece {
                                 ParaPiece::Para(paragraph) => {
                                     output.push(BodyElement::Paragraph(Box::new(paragraph)))
@@ -4305,9 +4333,13 @@ fn parse_body_elements_in_story(
     section_hf: &HashMap<roxmltree::NodeId, ResolvedSectionHf>,
     table_positioning_context: TablePositioningContext,
     mut diagnostics: Option<&mut Vec<ParseDiagnostic>>,
+    split_pg_break_and_para_mark: bool,
 ) -> Vec<BodyElement> {
     let mut body: Vec<BodyElement> = Vec::new();
-    let mut cursor = BodyParseCursor::default();
+    let mut cursor = BodyParseCursor {
+        split_pg_break_and_para_mark,
+        ..BodyParseCursor::default()
+    };
     // The body-level sectPr (the last element) defines the final section and
     // is not a page break. Mid-body sectPrs (nested in pPr) DO imply a page break.
     // The walk also flags the end of any "Cover Pages" building block so the
@@ -15538,7 +15570,7 @@ mod tests {
                     .into_iter()
                     .map(old_piece_shape)
                     .collect();
-                let actual: Vec<_> = split_para_on_page_breaks(para)
+                let actual: Vec<_> = split_para_on_page_breaks(para, false)
                     .into_iter()
                     .map(piece_shape)
                     .collect();
@@ -18749,6 +18781,82 @@ mod math_jc_tests {
                <m:oMath><m:r><m:t>α</m:t></m:r></m:oMath></m:oMathPara>"#,
         );
         assert_eq!(p.alignment, "left");
+    }
+}
+
+#[cfg(test)]
+mod split_page_break_mark_tests {
+    use super::*;
+
+    #[test]
+    fn split_page_break_paragraph_mark_uses_document_settings() {
+        use std::io::{Cursor, Write};
+        for (setting, tail, section, expected) in [
+            ("<w:splitPgBreakAndParaMark/>", "", "", 3),
+            ("<w:splitPgBreakAndParaMark w:val=\"0\"/>", "", "", 2),
+            ("", "", "", 2),
+            ("<w:splitPgBreakAndParaMark/>", "<w:t>after</w:t>", "", 3),
+            ("<w:splitPgBreakAndParaMark/>", "", "<w:sectPr/>", 2),
+        ] {
+            for prefix in ["", "<w:t>before</w:t>"] {
+                if !section.is_empty() && !prefix.is_empty() {
+                    continue;
+                }
+                let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                write_test_content_types(&mut writer);
+                for (path, xml) in [
+                    (
+                        "word/document.xml",
+                        format!(
+                            r#"<w:document xmlns:w="{W_NS}"><w:body><w:p><w:pPr>{section}<w:spacing w:after="140"/><w:ind w:left="240"/><w:rPr><w:sz w:val="36"/></w:rPr></w:pPr><w:r>{prefix}<w:br w:type="page"/>{tail}</w:r></w:p><w:p><w:r><w:t>next</w:t></w:r></w:p></w:body></w:document>"#
+                        ),
+                    ),
+                    (
+                        "word/settings.xml",
+                        format!(
+                            r#"<w:settings xmlns:w="{W_NS}"><w:compat>{setting}</w:compat></w:settings>"#
+                        ),
+                    ),
+                ] {
+                    writer
+                        .start_file(path, zip::write::SimpleFileOptions::default())
+                        .unwrap();
+                    writer.write_all(xml.as_bytes()).unwrap();
+                }
+                let bytes = writer.finish().unwrap().into_inner();
+                let document = parse_from_bytes(&bytes).unwrap();
+                let streamed =
+                    parse_from_bytes_streamed_with_limits(&bytes, None, None, "split-mark-test")
+                        .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&streamed).unwrap(),
+                    serde_json::to_value(&document).unwrap()
+                );
+                let offset = usize::from(!prefix.is_empty());
+                assert_eq!(
+                    document.body.len(),
+                    expected + offset,
+                    "{setting} / {prefix} / {tail}"
+                );
+                if !section.is_empty() {
+                    assert!(matches!(document.body[0], BodyElement::SectionBreak { .. }));
+                    continue;
+                }
+                assert!(matches!(
+                    document.body[offset],
+                    BodyElement::PageBreak { .. }
+                ));
+                if expected == 3 {
+                    let BodyElement::Paragraph(mark) = &document.body[offset + 1] else {
+                        panic!("paragraph after break")
+                    };
+                    assert_eq!(mark.runs.is_empty(), tail.is_empty());
+                    assert_eq!(mark.default_font_size, Some(18.0));
+                    assert_eq!(mark.space_after, 7.0);
+                    assert_eq!(mark.indent_left, 12.0);
+                }
+            }
+        }
     }
 }
 
