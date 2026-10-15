@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { layoutStackedText, type StackedParagraph, type StackedLayoutOptions } from './stacked.js';
 import {
-  stackedCellBoxOverride, stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph, STACKED_CELL_FACTOR,
+  stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph, STACKED_CELL_FACTOR,
 } from './stacked-faces.js';
 
 // Arial 24 pt at 1 px/pt: cell = 7/6 × usWin (1.1172 em) × 24 = 31.28.
@@ -127,13 +127,18 @@ describe('layoutStackedText input size', () => {
 });
 
 describe('stacked face and character tables', () => {
-  it('uses measured boxes for the faces that do not follow their font tables', () => {
-    expect(stackedCellBoxOverride('游ゴシック')).toBe(1.5084);
-    expect(stackedCellBoxOverride('SimSun')).toBe(1.038);
-    expect(stackedCellBoxOverride('Yu Mincho')).toBeUndefined();
+  it('uses usWin metrics even for formerly fitted faces and their aliases', () => {
+    expect(stackedFaceBox('游ゴシック', false, false)).toEqual({ ascent: 2017 / 2048, descent: 619 / 2048 });
+    expect(stackedFaceBox('SimSun', false, false)).toEqual({ ascent: 220 / 256, descent: 36 / 256 });
+    expect(stackedFaceBox('Yu Gothic', true, false)).toEqual({ ascent: 2024 / 2048, descent: 612 / 2048 });
     const light = stackedFaceBox('Yu Mincho Light', false, false);
     expect((light?.ascent ?? 0) + (light?.descent ?? 0)).toBeCloseTo(2636 / 2048, 6);
     expect(stackedFaceBox('No Such Face', false, false)).toBeUndefined();
+  });
+
+  it('uses typo metrics including lineGap when USE_TYPO_METRICS is set', () => {
+    // Gabriola's usWin box (7540 units) differs from its typo box (6963).
+    expect(stackedFaceBox('Gabriola', false, false)).toEqual({ ascent: (2800 + 2867) / 4096, descent: 1296 / 4096 });
   });
 
   it('turns only the measured set sideways and knows which faces have vertical glyphs', () => {

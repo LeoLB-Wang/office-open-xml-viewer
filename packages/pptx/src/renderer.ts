@@ -80,6 +80,7 @@ import {
   clampCanvasSize,
   MAX_CANVAS_DIMENSION,
   MAX_CANVAS_AREA,
+  findReferenceFontMetrics,
   classifyCjkFont,
   classifyFontGeneric,
   googleCjkFontAlias,
@@ -1055,13 +1056,21 @@ function hyperlinkKey(t: HyperlinkTarget | undefined): string {
 }
 
 /**
- * Preserve a weight encoded in a specific Office face name when that face is
- * unavailable and the canvas falls through to a generic/substitute family.
- * PowerPoint themes commonly name faces such as "Franklin Gothic Medium" with
- * no separate `b` attribute; treating the missing face as weight 400 makes the
- * fallback visibly lighter than the authored face.
+ * A named cut uses the reference catalog's OS/2.usWeightClass when unambiguous
+ * across its profiles. Otherwise CSS Fonts §3.2 / OpenType OS/2 weight names
+ * supply the fallback (Medium = 500), never a substitute's visual thickness.
+ * Ordinary family names keep the run's regular/bold selection; the first cut
+ * of a multi-weight catalog family does not define its default weight.
  */
 function namedFaceWeight(family: string): number | null {
+  const fallback = standardNamedFaceWeight(family);
+  if (fallback === null) return null;
+  const profiles = findReferenceFontMetrics(family);
+  const weight = profiles[0]?.weight;
+  return weight !== undefined && profiles.every((p) => p.weight === weight) ? weight : fallback;
+}
+
+function standardNamedFaceWeight(family: string): number | null {
   const name = family.toLowerCase();
   if (/\b(thin|hairline)\b/.test(name)) return 100;
   if (/\b(extra[- ]?light|ultra[- ]?light)\b/.test(name)) return 200;
@@ -1070,10 +1079,7 @@ function namedFaceWeight(family: string): number | null {
   if (/\b(extra[- ]?bold|ultra[- ]?bold)\b/.test(name)) return 800;
   if (/\b(semi[- ]?bold|demi[- ]?bold)\b/.test(name)) return 600;
   if (/\bbold\b/.test(name)) return 700;
-  // Office face names such as Franklin Gothic Medium refer to a distinct,
-  // visibly heavier cut. Libre Franklin 600 is the closest web substitute;
-  // 500 makes both the glyphs and their authored reflections too thin.
-  if (/\bmedium\b/.test(name)) return 600;
+  if (/\bmedium\b/.test(name)) return 500;
   return null;
 }
 

@@ -3,17 +3,21 @@ import { findReferenceFontMetrics } from '../fonts/reference-font-metrics.js';
 /**
  * Face and character data for stacked vertical text, `a:bodyPr@vert`
  * `wordArtVert` / `wordArtVertRtl` (ECMA-376 §20.1.10.83 ST_TextVerticalType:
- * "one letter on top of another"). The standard defines no metrics; every
- * value below is observed PowerPoint behaviour (issue #1626 control decks,
- * PowerPoint for Mac 16.x, reference "electronic distribution" PDF export).
+ * "one letter on top of another"). The standard defines no cell metrics.
+ * Library policy: use 7/6 × the font-table face box × size for every face:
+ * usWinAscent + usWinDescent, or sTypoAscender − sTypoDescender +
+ * sTypoLineGap under USE_TYPO_METRICS (OpenType OS/2.fsSelection bit 7).
  *
- * Cell. Each upright glyph takes a cell of 7/6 × the face box × size along
- * the column, where the face box is usWinAscent + usWinDescent, or
- * sTypoAscender − sTypoDescender + sTypoLineGap for a face that sets
- * USE_TYPO_METRICS (the #1610 glyph box). The rule fits 58 of 63 measured
- * faces (12 to 48 pt, regular and bold) to 0.03 %. Five face families do not follow any
- * font-table quantity (usWin, hhea with or without lineGap, typo, head bbox,
- * OS/2 version); their measured boxes are in STACKED_CELL_BOX_OVERRIDES.
+ * Evidence boundary: issue #1626 Mac PowerPoint 16.x PDF controls (12–48 pt,
+ * regular/bold) supported this factor for 58 of 63 measured faces. Yu Gothic,
+ * SimSun/NSimSun, MingLiU variants (including ExtB), Gulim/Dotum and STZhongsong
+ * had larger measured cells. Tests of usWin, hhea with/without lineGap, typo, head bbox
+ * and OS/2 version found no common metric explanation; Yu Mincho versus Yu
+ * Gothic and SimHei/KaiTi/FangSong versus SimSun provided equal-box
+ * counterexamples. Those Mac residuals are accepted differences, not font-name
+ * corrections or evidence of Windows Office behaviour. Windows Office remains
+ * the fidelity reference where platforms differ; this policy makes no claim
+ * of exact Office cell pitch for the exceptional faces.
  */
 
 /** 7/6: the ratio of a stacked cell to the face box. */
@@ -32,36 +36,6 @@ function canonicalFamily(family: string): string {
   const profiles = findReferenceFontMetrics(family);
   return normalizeFamily(profiles.length > 0 ? profiles[0].family : family);
 }
-
-/**
- * Measured face boxes (em, before the 7/6 cell factor) for the families whose
- * stacked cell is not their font-table box. Controls: wordartvert-supp
- * sandwich columns (20 pt) and wordartvert-supp2 cell columns (12, 18, 24, 32,
- * 48 pt, regular and bold), glyph pitch corrected for the export's 1.0015
- * vertical text scale.
- * - Yu Gothic Regular / Light / Medium / Bold: 1.5084 (usWin box 1.2871).
- *   Yu Mincho, with the same usWin/hhea/typo values, follows its usWin box.
- * - SimSun, NSimSun: 1.0380 (usWin 1.0). SimHei, KaiTi and FangSong carry the
- *   same tables and follow usWin.
- * - MingLiU, PMingLiU, MingLiU_HKSCS: 1.1132; MingLiU-ExtB and
- *   PMingLiU-ExtB: 1.1137 (usWin 1.0).
- * - Gulim, Dotum: 1.0481 (usWin 1.0); Batang, BatangChe and Gungsuh follow usWin.
- * - STZhongsong: 1.2165 (usWin 1.137).
- */
-const STACKED_CELL_BOX_OVERRIDES: ReadonlyMap<string, number> = new Map([
-  ['yu gothic', 1.5084],
-  ['yu gothic medium', 1.5084],
-  ['simsun', 1.038],
-  ['nsimsun', 1.038],
-  ['mingliu', 1.1132],
-  ['pmingliu', 1.1132],
-  ['mingliu_hkscs', 1.1132],
-  ['mingliu-extb', 1.1137],
-  ['pmingliu-extb', 1.1137],
-  ['gulim', 1.0481],
-  ['dotum', 1.0481],
-  ['stzhongsong', 1.2165],
-]);
 
 /**
  * The font-table face box (em) of `family`: usWin, or typo under
@@ -85,12 +59,6 @@ export function stackedFaceBox(
   }
   if (!profile.win) return undefined;
   return { ascent: profile.win[0] / profile.unitsPerEm, descent: profile.win[1] / profile.unitsPerEm };
-}
-
-/** The measured face box of `family` (em), or undefined to use its font tables. */
-export function stackedCellBoxOverride(family: string): number | undefined {
-  return STACKED_CELL_BOX_OVERRIDES.get(canonicalFamily(family))
-    ?? STACKED_CELL_BOX_OVERRIDES.get(normalizeFamily(family));
 }
 
 /**

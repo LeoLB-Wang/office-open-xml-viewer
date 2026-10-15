@@ -273,17 +273,26 @@ describe('buildFont — style encoded in a face name', () => {
     expect(font.endsWith('serif')).toBe(true);
   });
 
-  it('preserves a Medium theme face when the browser falls back', () => {
+  it('uses usWeightClass for a catalogued named cut when the browser falls back', () => {
     const font = buildFont(false, false, 48, 'Franklin Gothic Medium', {
       themeMajorFont: null,
       themeMinorFont: null,
       dpr: 1,
     });
-    expect(font).toMatch(/^600 48px "Franklin Gothic Medium"/);
+    expect(font).toMatch(/^400 48px "Franklin Gothic Medium"/);
     expect(font).not.toContain('"Libre Franklin"');
     expect(buildFont(false, false, 48, 'Franklin Gothic Medium', {
       themeMajorFont: null, themeMinorFont: null, dpr: 1, googleSubstitutes: true,
     })).toContain('"Libre Franklin"');
+  });
+
+  it('maps uncatalogued weight names to the CSS/OpenType classes', () => {
+    const rc = { themeMajorFont: null, themeMinorFont: null, dpr: 1 };
+    expect(buildFont(false, false, 24, 'Uncatalogued Medium', rc)).toMatch(/^500 24px /);
+    expect(buildFont(false, false, 24, 'Uncatalogued SemiBold', rc)).toMatch(/^600 24px /);
+    expect(buildFont(false, false, 24, 'Yu Gothic Medium', rc)).toMatch(/^500 24px /);
+    // An ordinary multi-weight family must not select its first catalog cut.
+    expect(buildFont(false, false, 24, 'Yu Gothic', rc)).toMatch(/^24px /);
   });
 
   it('lets an explicit bold run override a named Medium face', () => {
