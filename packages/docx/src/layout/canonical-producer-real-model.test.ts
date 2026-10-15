@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as paginationWorkBudget from './pagination-work-budget.js';
 import { bodyLayoutKernelOf, createParagraphAcquisitionCacheServicesView,
   createFieldAcquisitionServicesView, paragraphAcquisitionCacheOf, type PageFieldAcquisitionContext } from './runtime-state.js';
 import { createPaginationWorkBudget, MAX_PAGINATION_ACQUISITION_MISSES } from './pagination-work-budget.js';
@@ -1759,30 +1760,57 @@ it('admits page-story work before progressive acquisition crosses the initial al
   const { model } = storyCacheFixture();
   const source = layoutSourceStore({ ...model,
     // §17.6.11 signed top margin allows overlap, isolating work admission
-    // from reserve geometry. All 110 header paragraphs fit in the page band.
-    section: { ...model.section, pageHeight: 1500, marginTop: -10 },
-    body: Array.from({ length: 130 }, (_, index) => ({ ...ordinaryBodyParagraph('body'), pageBreakBefore: index > 0 })),
-    headers: { default: { body: Array.from({ length: 110 }, () => ordinaryBodyParagraph('h')) }, first: null, even: null },
+    // from reserve geometry. All four header paragraphs fit in the page band.
+    section: { ...model.section, marginTop: -10 },
+    body: Array.from({ length: 14 }, (_, index) => ({ ...ordinaryBodyParagraph('body'), pageBreakBefore: index > 0 })),
+    headers: { default: { body: Array.from({ length: 4 }, () => ordinaryBodyParagraph('h')) }, first: null, even: null },
+    // Unreferenced definitions cost no layout. They lift the source allowance
+    // above its 25,000 floor so even a small selected story earns more credit.
+    endnotes: Array.from({ length: 800 }, (_, index) => ({ id: String(index), content: [] })),
   });
-  const open = () => createLayoutServices(source, { measureContext: measureContext() });
-  const blocking = layoutDocument(source, open(), { currentDateMs: 0 });
-  expect(blocking.pages).toHaveLength(130);
-  let lastPreviewPages = 0;
-  const progressive = await layoutDocumentProgressively(source.bodyLayoutInput, open(), { currentDateMs: 0 }, {
-    onPreview: preview => { lastPreviewPages = preview.layout.pages.length; },
+  const budgets: { budget: ReturnType<typeof createPaginationWorkBudget>; initialLimit: number }[] = [];
+  const createBudget = createPaginationWorkBudget;
+  const factory = vi.spyOn(paginationWorkBudget, 'createPaginationWorkBudget').mockImplementation(source => {
+    const budget = createBudget(source);
+    const initialLimit = budget.limit;
+    // Seed earlier work through the internal factory seam, leaving 16 misses:
+    // the 14 body paragraphs fit, but their four-paragraph header needs credit.
+    // Keep the real ledger and failure latch: admission must precede preview
+    // acquisition, not repair exhaustion later.
+    for (let i = 0; i < initialLimit - 16; i++) budget.noteMiss();
+    budgets.push({ budget, initialLimit });
+    return budget;
   });
-  // Reaches the checkpoint that previously latched exhaustion at miss 25,001.
-  expect(lastPreviewPages).toBe(127);
-  expect(layoutFingerprint(progressive)).toBe(layoutFingerprint(blocking));
-}, 30000);
+  try {
+    const open = () => createLayoutServices(source, { measureContext: measureContext() });
+    const blocking = layoutDocument(source, open(), { currentDateMs: 0 });
+    expect(blocking.pages).toHaveLength(14);
+    let lastPreviewPages = 0;
+    let previewMisses = 0;
+    const progressive = await layoutDocumentProgressively(source.bodyLayoutInput, open(), { currentDateMs: 0 }, {
+      onPreview: preview => {
+        lastPreviewPages = preview.layout.pages.length;
+        previewMisses = budgets[1]!.budget.misses;
+      },
+    });
+    expect(budgets).toHaveLength(2);
+    expect(lastPreviewPages).toBe(7);
+    expect(previewMisses).toBeGreaterThan(budgets[1]!.initialLimit);
+    expect(layoutFingerprint(progressive)).toBe(layoutFingerprint(blocking));
+  } finally {
+    factory.mockRestore();
+  }
+});
 
 it.each(['footnote', 'endnote'] as const)('credits repeated whole %s acquisition before descendant debits', kind => {
   const { model } = storyCacheFixture();
   const source = layoutSourceStore({ ...model,
-    section: { ...model.section, pageHeight: 1500 },
+    section: { ...model.section, pageHeight: 100 },
     headers: { default: null, first: null, even: null },
     [kind === 'footnote' ? 'footnotes' : 'endnotes']: [
-      { id: '7', content: Array.from({ length: 110 }, () => ordinaryBodyParagraph('n')) },
+      // Lift the source allowance above its floor without acquiring unused notes.
+      ...Array.from({ length: 800 }, (_, index) => ({ id: `unused-${index}`, content: [] })),
+      { id: '7', content: Array.from({ length: 4 }, () => ordinaryBodyParagraph('n')) },
     ],
   });
   const services = createParagraphAcquisitionCacheServicesView(createLayoutServices(source, { measureContext: measureContext() }));
@@ -1790,16 +1818,22 @@ it.each(['footnote', 'endnote'] as const)('credits repeated whole %s acquisition
   const session = bodyLayoutKernelOf(services)!.openBodyLayoutSession({
     source: source.bodyLayoutInput.source, section,
     initialLocation: { pageIndex: 0, columnIndex: 0, flowDomainId: 'body', section,
-      cursorPt: { xPt: 10, yPt: 10 }, availableBounds: { xPt: 10, yPt: 10, widthPt: 180, heightPt: 1480 } },
+      cursorPt: { xPt: 10, yPt: 10 }, availableBounds: { xPt: 10, yPt: 10, widthPt: 180, heightPt: 80 } },
   }, services, { currentDateMs: 0 });
   const budget = paragraphAcquisitionCacheOf(services)!.workBudget;
-  expect(budget.limit).toBe(25_000);
-  for (let pageIndex = 0; pageIndex < 300; pageIndex++) {
+  const initialLimit = budget.limit;
+  expect(initialLimit).toBeGreaterThan(25_000);
+  // Two remaining misses cannot acquire even the first four-paragraph note
+  // unless its page credit is admitted before descendant paragraph debits.
+  for (let i = 0; i < initialLimit - 2; i++) budget.noteMiss();
+  for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
+    const before = budget.limit;
     const story = session.layoutStory!({ source: { story: kind, storyInstance: '7', path: [] },
       pageIndex, section, container: { id: `${kind}:${pageIndex}`, kind,
-        bounds: { xPt: 10, yPt: 0, widthPt: 180, heightPt: 1500 } } });
-    expect(story.blocks).toHaveLength(110);
+        bounds: { xPt: 10, yPt: 0, widthPt: 180, heightPt: 100 } } });
+    expect(story.blocks).toHaveLength(4);
+    expect(budget.limit).toBeGreaterThan(before);
   }
-  expect(budget.misses).toBeGreaterThan(25_000);
-  expect(budget.limit).toBe(MAX_PAGINATION_ACQUISITION_MISSES);
-}, 30000);
+  expect(budget.misses).toBeGreaterThan(initialLimit);
+  expect(budget.limit).toBeGreaterThan(initialLimit);
+});
