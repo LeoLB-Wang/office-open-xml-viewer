@@ -9,6 +9,31 @@ const rels = (entries: string) => `<Relationships xmlns="http://schemas.openxmlf
 const rel = (id: string, type: string, target: string) => `<Relationship Id="${id}" Type="${relationship}/${type}" Target="${target}"/>`;
 type Format = 'docx' | 'pptx' | 'xlsx';
 
+// Literal paths keep every dependency visible to the boundary check. Defer
+// evaluation until after resetModules and browser stubs install the worker realm.
+const workerEntries = {
+  docx: {
+    'render-worker': () => import('../../docx/src/render-worker.ts'),
+    worker: () => import('../../docx/src/worker.ts'),
+    'worker-source': () => import('../../docx/src/worker-source.ts'),
+  },
+  pptx: {
+    'render-worker': () => import('../../pptx/src/render-worker.ts'),
+    worker: () => import('../../pptx/src/worker.ts'),
+    'worker-source': () => import('../../pptx/src/worker-source.ts'),
+  },
+  xlsx: {
+    'render-worker': () => import('../../xlsx/src/render-worker.ts'),
+    worker: () => import('../../xlsx/src/worker.ts'),
+    'worker-source': () => import('../../xlsx/src/worker-source.ts'),
+  },
+};
+const wasmBindings = {
+  docx: () => import('../../docx/src/wasm/docx_parser.js'),
+  pptx: () => import('../../pptx/src/wasm/pptx_parser.js'),
+  xlsx: () => import('../../xlsx/src/wasm/xlsx_parser.js'),
+};
+
 // Synthetic, redistributable packages. The image is deliberately undecodable:
 // extraction must fail first, before a renderer can treat decoding as optional.
 function fixture(format: Format, fonts = false, empty = false): Uint8Array<ArrayBuffer> {
@@ -89,7 +114,7 @@ async function worker(format: Format, entry: 'render-worker' | 'worker' | 'worke
   });
   // Actual worker entry, actual parser, actual renderers; only browser surfaces
   // and font decoding are replaced. No replica of the worker's load logic.
-  await import(`../../${format}/src/${entry}.ts`);
+  await workerEntries[format][entry]();
   const dispatch = async (data: unknown) => { await scope.onmessage!({ data } as MessageEvent); };
   const wasm = readFileSync(new URL(`../../${format}/src/wasm/${format}_parser_bg.wasm`, import.meta.url));
   await dispatch({ [format === 'pptx' ? 'kind' : 'type']: 'init', wasmUrl: `data:application/wasm;base64,${wasm.toString('base64')}` });
@@ -184,13 +209,14 @@ describe.each<Format>(['pptx', 'docx', 'xlsx'])('%s real-WASM worker resource bo
 describe.each<Format>(['pptx', 'docx', 'xlsx'])('%s direct-WASM archive boundaries', format => {
   it.each(['worker-host', 'in-process-proxy'] as const)('normalizes extraction through %s', async boundary => {
     vi.resetModules();
-    const wasm = await import(`../../${format}/src/wasm/${format}_parser.js`);
-    const module = new WebAssembly.Module(readFileSync(new URL(`../../${format}/src/wasm/${format}_parser_bg.wasm`, import.meta.url)));
+    const wasm = await wasmBindings[format]();
+    const wasmModule = new WebAssembly.Module(readFileSync(new URL(`../../${format}/src/wasm/${format}_parser_bg.wasm`, import.meta.url)));
     const { WasmParserHost } = await import('@silurus/ooxml-core/worker');
     const { WasmRuntimeGenerationHost } = await import('@silurus/ooxml-core/internal/wasm-runtime-generation');
     const { OoxmlResourceLimitError } = await import('@silurus/ooxml-core');
     type Archive = { extract_image(path: string): Uint8Array; extract_media?(path: string): Uint8Array; extract_font?(path: string): Uint8Array; free(): void };
-    const Archive = wasm[`${format === 'docx' ? 'Docx' : format === 'pptx' ? 'Pptx' : 'Xlsx'}Archive`] as new (bytes: Uint8Array, entry: bigint | null, total: bigint | null) => Archive;
+    const Archive = 'DocxArchive' in wasm ? wasm.DocxArchive
+      : 'PptxArchive' in wasm ? wasm.PptxArchive : wasm.XlsxArchive;
     const prefix = format === 'docx' ? 'word' : format === 'pptx' ? 'ppt' : 'xl';
     const operations = [
       { method: 'extract_image' as const, path: `${prefix}/media/limit.png`, fonts: false, entry: null, total: 4000n, metric: 'distinct-inflated-bytes', observed: 4001 },
@@ -206,14 +232,14 @@ describe.each<Format>(['pptx', 'docx', 'xlsx'])('%s direct-WASM archive boundari
       let close: () => void;
       const create = () => new Archive(fixture(format, operation.fonts), operation.entry, operation.total);
       if (boundary === 'worker-host') {
-        const host = new WasmParserHost<Archive>(async () => wasm.initSync({ module }), { freeArchive: archive => archive.free() });
-        host.setWasmInput(module);
+        const host = new WasmParserHost<Archive>(async () => wasm.initSync({ module: wasmModule }), { freeArchive: archive => archive.free() });
+        host.setWasmInput(wasmModule);
         await host.ensureReady();
         host.setArchive(host.run(create));
         extract = () => host.run(() => host.archive![operation.method]!(operation.path));
         close = () => host.disposeArchive();
       } else {
-        const host = new WasmRuntimeGenerationHost<Archive>(wasm, module);
+        const host = new WasmRuntimeGenerationHost<Archive>(wasm, wasmModule);
         const handle = await host.open(create);
         extract = () => handle.proxy[operation.method]!(operation.path);
         close = () => handle.close(archive => archive.free());
