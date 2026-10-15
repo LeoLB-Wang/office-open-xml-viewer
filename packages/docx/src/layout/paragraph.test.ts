@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { snapshotPlainData } from './plain-data.js';
 import { createFontResolver } from './font-service.js';
 import { createTextLayoutService } from './text.js';

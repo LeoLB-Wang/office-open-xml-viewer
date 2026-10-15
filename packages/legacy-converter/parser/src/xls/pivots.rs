@@ -476,7 +476,7 @@ fn style(
                         (
                             preset.kind,
                             preset.size,
-                            xlsx_model::style_presets::preset_dxf(preset.dxf, &theme),
+                            xlsx_model::style_presets::preset_dxf(&preset.dxf, &theme),
                         )
                     })
                     .collect()

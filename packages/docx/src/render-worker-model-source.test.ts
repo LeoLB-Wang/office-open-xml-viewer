@@ -104,6 +104,38 @@ beforeEach(() => {
 });
 
 describe('DOCX render worker with a model source', () => {
+  it('activates reading before acquisition in fresh workers and after a source trap', async () => {
+    // Two cold module graphs represent initial startup and an RB6 respawn.
+    // Reparse each after a trap as well: neither lifetime may depend on an
+    // earlier main-thread activation or keep a poisoned source alive.
+    for (let realm = 0; realm < 2; realm++) {
+      const { dispatch, posts } = await loadWorker();
+      const readingBody = [{ type: 'paragraph', runs: [{
+        type: 'text', text: 'reading text',
+        __nativeReadingWordBreaking: { rawHres: 0, rawChHres: 1 },
+      }] }];
+      const first = modelSource({ body: structuredClone(readingBody) });
+      const next = modelSource({ body: structuredClone(readingBody) });
+      workerMocks.opens.push(vi.fn().mockResolvedValueOnce(first.opened).mockResolvedValueOnce(next.opened));
+      await dispatch({ data: { ...parseRequest(40), progressiveLayout: true } } as MessageEvent);
+      expect(posted(posts, 'error', 40)).toEqual([]);
+      expect(posted(posts, 'parsedMeta', 40)).toHaveLength(1);
+      expect(workerMocks.paginate).not.toHaveBeenCalled();
+
+      const trap = Object.assign(new Error('unreachable'), { name: 'RuntimeError' });
+      vi.mocked(first.opened.archive.assert_healthy).mockImplementationOnce(() => { throw trap; });
+      await dispatch({ data: { type: 'extractImage', id: 41, path: 'media/1' } } as MessageEvent);
+      expect(posted(posts, 'error', 41)).toHaveLength(1);
+      expect(first.close).toHaveBeenCalledOnce();
+
+      await dispatch({ data: { ...parseRequest(42), progressiveLayout: true } } as MessageEvent);
+      expect(posted(posts, 'error', 42)).toEqual([]);
+      expect(posted(posts, 'parsedMeta', 42)).toHaveLength(1);
+      expect(workerMocks.paginate).not.toHaveBeenCalled();
+      expect(next.close).not.toHaveBeenCalled();
+    }
+  });
+
   it('drains a model-source archive through the real pull consumer and keeps images readable', async () => {
     const source = modelSource({
       headers: { default: { body: [{ type: 'paragraph', runs: [] }] }, first: null, even: null },

@@ -1,6 +1,7 @@
+import { readingHooks } from './internal/reading-hooks.js';
+import { noReadingNotices, noNativeReadingRequests } from './internal/reading-hooks.js';
 import { isDocxCallerInputError } from './layout/caller-input-error.js';
-import { nativeReadingNotices, retainedReadingNotices, noReadingNotices, type DocxReadingNotice } from './native-reading-notice.js';
-import { hasNativeReadingRequests, nativeReadingRequests, noNativeReadingRequests, type NativeReadingRequests } from './native-reading-notice.js';
+import type { DocxReadingNotice, NativeReadingRequests } from './internal/reading-contract.js';
 import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
 import InlineWorker from './worker.ts?worker&inline';
 import wasmAssetUrl from './wasm/docx_parser_bg.wasm?url';
@@ -708,7 +709,7 @@ export class DocxDocument {
             )
             : undefined,
         };
-        if (deferrable && opts.progressiveLayout && !hasNativeReadingRequests(doc._source)) {
+        if (deferrable && opts.progressiveLayout && !readingHooks.requested(doc._source)) {
           const store = retained.layoutVariants;
           // Narrowed once: the closures below outlive this block's control flow.
           const progressiveDocument = doc;
@@ -1466,7 +1467,7 @@ export class DocxDocument {
   private _nativeReadingRequested = false;
   private _nativeReadingRequests: NativeReadingRequests = noNativeReadingRequests;
   private _captureNativeReadingRequests(source: LayoutSourceStore): void {
-    this._nativeReadingRequests = nativeReadingRequests(source);
+    this._nativeReadingRequests = readingHooks.requests(source);
     const requests = this._nativeReadingRequests;
     this._nativeReadingRequested = requests.contour || requests.wordBreaking || requests.pictureBullets;
   }
@@ -1514,9 +1515,9 @@ export class DocxDocument {
   /** Disclosures for the active retained layout in main and worker modes. */
   get readingNotices(): readonly DocxReadingNotice[] {
     if (this._readingLayoutFailed) return noReadingNotices;
-    if (this._meta) return retainedReadingNotices(this._meta.readingNotices);
+    if (this._meta) return readingHooks.retainNotices(this._meta.readingNotices);
     const layout = this._getLayout();
-    return layout ? nativeReadingNotices(layout, this._nativeReadingRequests) : noReadingNotices;
+    return layout ? readingHooks.notices(layout, this._nativeReadingRequests) : noReadingNotices;
   }
 
   /** @internal A late changed-layout failure revokes every page and disclosure. */

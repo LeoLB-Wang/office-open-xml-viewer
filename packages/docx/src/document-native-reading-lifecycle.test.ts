@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { subscribeDocxLayoutView } from './document-layout-view.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DocxDocument } from './document.js';

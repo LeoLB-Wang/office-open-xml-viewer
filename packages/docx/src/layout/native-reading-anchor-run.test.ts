@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { describe, expect, it } from 'vitest';
 import type { BodyElement, DocRun, SectionProps, ShapeRun } from '../types.js';
 import type { InternalShapeRun } from '../parser-model.js';

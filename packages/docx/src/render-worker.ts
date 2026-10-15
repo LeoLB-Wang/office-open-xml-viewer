@@ -1,4 +1,7 @@
-import { hasNativeReadingRequests } from './native-reading-notice.js';
+import { readingDefaultOwners } from './internal/reading-default-owners.js';
+import { readingPaintHooks } from './paint/reading-hooks.js';
+import { isOwnedPaintResourceSession, isUnavailablePaintResourceHandle } from './paint/resource-session.js';
+import { readingHooks } from './internal/reading-hooks.js';
 /**
  * Render-capable worker entry: parse → font preload → paginate, all
  * worker-side; renders pages into an OffscreenCanvas and replies with
@@ -17,6 +20,7 @@ import {
   unloadGoogleFonts,
   unregisterEmbeddedFonts,
   WasmParserHost,
+  imageNaturalSize,
   dropDecodedBitmapCache,
   dropSvgImageCache,
 } from '@silurus/ooxml-core';
@@ -233,7 +237,15 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       let viewDefaults: DocxModelSourceViewDefaults | undefined;
       if (req.source) {
         if (!req.sourceOwnerUrl) throw new TypeError('DOCX source owner URL is missing');
-        const { WorkerDocumentSourceOwner } = await import(/* @vite-ignore */ req.sourceOwnerUrl) as typeof import('./internal/worker-document-source.js');
+        const { WorkerDocumentSourceOwner, installNativeReadingWorkerRuntime } = await import(/* @vite-ignore */ req.sourceOwnerUrl) as typeof import('./internal/worker-document-source.js');
+        // Rebind on every selected-source parse, including a fresh RB6 worker
+        // realm. The self-contained sidecar must use this renderer's ownership
+        // identities and hooks before the pull consumer normalizes any facts.
+        installNativeReadingWorkerRuntime({
+          readingHooks, readingPaintHooks,
+          owners: readingDefaultOwners,
+          paintOwners: { isOwnedPaintResourceSession, isUnavailablePaintResourceHandle, imageNaturalSize },
+        });
         sourceOwner = new WorkerDocumentSourceOwner(host);
         viewDefaults = await sourceOwner.openModelSource(bytes, req.source, req.sourceTransfer);
         if (requestedGeneration !== parseGeneration) {
@@ -393,7 +405,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       // document is served a synthetic error page by the variant store's
       // builder, and neither previewing nor slicing may route around that.
       let unchangedPages: number | undefined;
-      if (req.progressiveLayout && source.fatalParse === null && !hasNativeReadingRequests(source)) {
+      if (req.progressiveLayout && source.fatalParse === null && !readingHooks.requested(source)) {
         // The parsed model is the source of review data, so the first
         // publication carries it: the host has nothing else to answer
         // `comments` / `revisions` from until `parsedMeta` arrives, and load()

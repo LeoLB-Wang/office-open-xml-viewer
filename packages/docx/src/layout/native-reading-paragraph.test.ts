@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { projectBodyOccurrence } from './occurrence-projection.js';
 import { buildPageLayers } from './page-graph.js';
 import { renderSelectedDocumentPage } from '../paint/canvas-document.js';
