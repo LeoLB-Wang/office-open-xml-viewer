@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { bodyLayoutKernelOf, createParagraphAcquisitionCacheServicesView,
+  createFieldAcquisitionServicesView, paragraphAcquisitionCacheOf, type PageFieldAcquisitionContext } from './runtime-state.js';
+import { createPaginationWorkBudget, MAX_PAGINATION_ACQUISITION_MISSES } from './pagination-work-budget.js';
 import { buildBookmarkPageMap } from '../bookmark-nav.js';
 import { createLayoutServices } from '../layout-runtime.js';
+import { layoutDocumentProgressively } from './progressive.js';
+import { layoutFingerprint } from './invariants.js';
 import { layoutDocument } from '../document-layout.js';
 import { layoutSourceStore } from '../layout-source-model-adapter.js';
 import { layoutDocumentInputAsync } from './document.js';
 import type { BodyElement, CellElement, DocParagraph, DocxDocumentModel, SectionProps } from '../types.js';
-import type { NoteLayout } from './types.js';
+import type { LayoutServices, NoteLayout } from './types.js';
 
 function measureContext(): CanvasRenderingContext2D {
   return {
@@ -1599,3 +1604,202 @@ it.each([
     createLayoutServices(model, { measureContext: measureContext() }), { currentDateMs: 0 });
   expect(layout.pages[0]?.layers.notes).toHaveLength(ids.length);
 });
+
+function storyCacheFixture(kind: 'header' | 'footer' = 'header') {
+  const header = ordinaryParagraph('');
+  header.runs = [{ type: 'field', fieldType: 'numPages', instruction: 'NUMPAGES',
+    fallbackText: '?', fontSize: 10, fontFamily: 'serif', bold: false, italic: false,
+    underline: false, strikethrough: false, color: null, background: null, vertAlign: null,
+  }] as unknown as DocParagraph['runs'];
+  const model = {
+    section: { pageWidth: 200, pageHeight: 100, marginTop: 10, marginRight: 10,
+      marginBottom: 10, marginLeft: 10, headerDistance: 5, footerDistance: 5,
+      titlePage: false, evenAndOddHeaders: false, sectionStart: 'nextPage', columns: null },
+    body: [ordinaryBodyParagraph('body')],
+    headers: { default: { body: [header] }, first: null, even: null },
+    footers: { default: null, first: null, even: null },
+    footnotes: [], endnotes: [], fontFamilyClasses: {},
+  } as unknown as DocxDocumentModel;
+  if (kind === 'footer') {
+    model.footers.default = model.headers.default;
+    model.headers.default = null;
+  }
+  const source = layoutSourceStore(model);
+  const services = createParagraphAcquisitionCacheServicesView(createLayoutServices(source, { measureContext: measureContext() }));
+  const section = source.bodyLayoutInput.initialSection.context;
+  const open = (totalPages: number, scope: LayoutServices = services, options = { currentDateMs: 0 }, destination?: PageFieldAcquisitionContext) => bodyLayoutKernelOf(scope)!.openBodyLayoutSession({
+    source: source.bodyLayoutInput.source, section,
+    initialLocation: { pageIndex: 0, columnIndex: 0, flowDomainId: 'body', section,
+      cursorPt: { xPt: 10, yPt: 10 },
+      availableBounds: { xPt: 10, yPt: 10, widthPt: 180, heightPt: 80 } },
+  }, createFieldAcquisitionServicesView(scope, { totalPages, resolveDestinationPage: () => destination }), options);
+  const request = (pageIndex: number) => ({
+    source: (kind === 'header' ? source.bodyLayoutInput.initialSection.headers : source.bodyLayoutInput.initialSection.footers).default!, pageIndex, section,
+    pageNumber: { displayNumber: pageIndex + 1, format: 'decimal' as const },
+    container: { id: `story:${kind}:page:${pageIndex}`, kind,
+      bounds: { xPt: 10, yPt: 0, widthPt: 180, heightPt: 100 } },
+  });
+  return { model, source, services, open, request };
+}
+
+it.each(['header', 'footer'] as const)('reuses complete %s stories across passes without paragraph acquisition and invalidates NUMPAGES', kind => {
+  const { services, open, request } = storyCacheFixture(kind);
+  const first = open(3);
+  const stories = [0, 1, 2].map(page => first.layoutStory!(request(page)));
+  const budget = paragraphAcquisitionCacheOf(services)!.workBudget;
+  const before = budget.misses;
+  expect(before).toBeGreaterThan(0);
+  const repeat = open(3);
+  [0, 1, 2].forEach(page => expect(repeat.layoutStory!(request(page))).toBe(stories[page]));
+  expect(budget.misses).toBe(before);
+  const changed = open(12).layoutStory!(request(0));
+  expect(changed).not.toBe(stories[0]);
+  expect(budget.misses).toBeGreaterThan(before);
+  const text = (story: NonNullable<typeof changed>) => story.blocks.flatMap(block => block.kind === 'paragraph'
+    ? block.lines.flatMap(line => line.placements.flatMap(p => p.kind === 'text' ? [p.text] : [])) : []).join('');
+  expect(text(stories[0]!)).toBe('3');
+  expect(text(changed)).toBe('12');
+  const nextScope = createParagraphAcquisitionCacheServicesView(services);
+  expect(open(3, nextScope).layoutStory!(request(0))).not.toBe(stories[0]);
+  expect(paragraphAcquisitionCacheOf(nextScope)!.workBudget.misses).toBeGreaterThan(0);
+});
+
+it('scales source work once, bounds aggregate misses and resets the next pagination ledger', () => {
+  const { source, services } = storyCacheFixture();
+  // Count source work without laying out 40,000 paragraphs. Reusing immutable
+  // paragraph definitions still represents 40,000 distinct source occurrences.
+  const body = Object.freeze(Array(40_000).fill(source.blocks.body[0]));
+  const larger = { ...source, blocks: { ...source.blocks, body,
+    storyRoot: (ref: Parameters<typeof source.blocks.storyRoot>[0]) =>
+      ref.story === 'body' ? body : source.blocks.storyRoot(ref),
+  } };
+  const capped = createPaginationWorkBudget(larger);
+  expect(capped.limit).toBe(MAX_PAGINATION_ACQUISITION_MISSES);
+  for (let i = 0; i < MAX_PAGINATION_ACQUISITION_MISSES; i++) capped.noteMiss();
+  expect(() => capped.noteMiss()).toThrow(/operational miss budget 1000000/);
+  const retry = createParagraphAcquisitionCacheServicesView(services);
+  expect(paragraphAcquisitionCacheOf(retry)!.workBudget.misses).toBe(0);
+});
+
+it('credits a selected page/owner once rather than once per convergence pass or miss', () => {
+  const { model } = storyCacheFixture();
+  const source = layoutSourceStore({ ...model, body: Array.from({ length: 1000 }, () => ordinaryBodyParagraph('x')),
+    footers: { default: { body: [ordinaryBodyParagraph('footer')] }, first: null, even: null },
+  });
+  const scoped = createParagraphAcquisitionCacheServicesView(createLayoutServices(source, { measureContext: measureContext() }));
+  const cache = paragraphAcquisitionCacheOf(scoped)!;
+  const budget = cache.workBudget;
+  const before = budget.limit;
+  expect(before).toBeGreaterThan(25_000);
+  expect(before).toBeLessThan(MAX_PAGINATION_ACQUISITION_MISSES);
+  // Exercise the runtime debit used by paragraph and nested-story acquisitions,
+  // past the former fixed ceiling, without retaining a 25,001-paragraph layout.
+  for (let i = 0; i < 25_001; i++) cache.noteMiss();
+  const ref = source.bodyLayoutInput.initialSection.headers.default;
+  budget.admitPageStories('owner', 0, [ref]);
+  const headerCredit = budget.limit;
+  // Header and footer can arrive separately, and a later pass can select a
+  // different slot. Deduplicate roots, not the first call for this page/owner.
+  const footer = source.bodyLayoutInput.initialSection.footers.default;
+  budget.admitPageStories('owner', 0, [footer]);
+  const credited = budget.limit;
+  expect(credited).toBeGreaterThan(headerCredit);
+  expect(headerCredit).toBeGreaterThan(before);
+  for (let pass = 0; pass < 10; pass++) {
+    budget.admitPageStories('owner', 0, [ref, footer, ref]);
+    budget.noteMiss();
+  }
+  expect(budget.limit).toBe(credited);
+  budget.admitPageStories('owner', 1, [ref]);
+  expect(budget.limit).toBeGreaterThan(credited);
+  const finalLimit = budget.limit;
+  while (budget.misses < finalLimit) cache.noteMiss();
+  expect(() => cache.noteMiss()).toThrow(/operational miss budget/);
+  budget.admitPageStories('owner', 2, [ref]);
+  expect(budget.limit).toBe(finalLimit);
+  expect(() => cache.noteMiss()).toThrow(/operational miss budget/);
+});
+
+it.each(['section', 'container', 'band', 'frames', 'page-number', 'destination-number', 'destination-format', 'options'] as const)(
+  'invalidates a page story when its %s context changes', axis => {
+    const { services, open, request } = storyCacheFixture();
+    const original = request(0);
+    const destination = { pageIndex: 0, displayPageNumber: 1, pageNumberFormat: 'decimal' as const };
+    const first = open(3, services, { currentDateMs: 0 }, destination).layoutStory!(original);
+    const changed = axis === 'section' ? { ...original, section: { ...original.section, verticalAlignment: 'center' } }
+      : axis === 'container' ? { ...original, container: { ...original.container,
+        bounds: { ...original.container.bounds, widthPt: 90 } } }
+      : axis === 'band' ? { ...original, bandTranslationPt: { xPt: 0, yPt: 0 } }
+      : axis === 'frames' ? { ...original, pageFrames: { page: original.container.bounds, margin: original.container.bounds } }
+      : axis === 'page-number' ? { ...original, pageNumber: { displayNumber: 12, format: 'upperRoman' as const } }
+      : original;
+    const result = open(3, services, { currentDateMs: axis === 'options' ? 1 : 0 },
+      axis === 'destination-number' ? { ...destination, displayPageNumber: 12 }
+        : axis === 'destination-format' ? { ...destination, pageNumberFormat: 'upperRoman' } : destination,
+    ).layoutStory!(changed);
+    expect(result).not.toBe(first);
+  },
+);
+
+it.each(['reserved-note', 'textbox'] as const)('counts detached %s definitions in the pagination allowance', kind => {
+  const { source } = storyCacheFixture();
+  const ref = { story: kind === 'textbox' ? 'textbox' as const : 'footnote' as const,
+    storyInstance: 'detached-work-root', path: [] };
+  const root = Object.freeze(Array(1000).fill(source.blocks.body[0]));
+  const extended = { ...source, blocks: { ...source.blocks,
+    reservedNoteRoots: kind === 'reserved-note' ? [ref] : source.blocks.reservedNoteRoots,
+    sources: kind === 'textbox' ? [...source.blocks.sources, { ...ref, path: [0] }] : source.blocks.sources,
+    storyRoot: (request: typeof ref) => request.storyInstance === ref.storyInstance
+      ? root : source.blocks.storyRoot(request),
+  } };
+  expect(createPaginationWorkBudget(extended).limit).toBeGreaterThan(createPaginationWorkBudget(source).limit);
+});
+
+it('admits page-story work before progressive acquisition crosses the initial allowance', async () => {
+  const { model } = storyCacheFixture();
+  const source = layoutSourceStore({ ...model,
+    // §17.6.11 signed top margin allows overlap, isolating work admission
+    // from reserve geometry. All 110 header paragraphs fit in the page band.
+    section: { ...model.section, pageHeight: 1500, marginTop: -10 },
+    body: Array.from({ length: 130 }, (_, index) => ({ ...ordinaryBodyParagraph('body'), pageBreakBefore: index > 0 })),
+    headers: { default: { body: Array.from({ length: 110 }, () => ordinaryBodyParagraph('h')) }, first: null, even: null },
+  });
+  const open = () => createLayoutServices(source, { measureContext: measureContext() });
+  const blocking = layoutDocument(source, open(), { currentDateMs: 0 });
+  expect(blocking.pages).toHaveLength(130);
+  let lastPreviewPages = 0;
+  const progressive = await layoutDocumentProgressively(source.bodyLayoutInput, open(), { currentDateMs: 0 }, {
+    onPreview: preview => { lastPreviewPages = preview.layout.pages.length; },
+  });
+  // Reaches the checkpoint that previously latched exhaustion at miss 25,001.
+  expect(lastPreviewPages).toBe(127);
+  expect(layoutFingerprint(progressive)).toBe(layoutFingerprint(blocking));
+}, 30000);
+
+it.each(['footnote', 'endnote'] as const)('credits repeated whole %s acquisition before descendant debits', kind => {
+  const { model } = storyCacheFixture();
+  const source = layoutSourceStore({ ...model,
+    section: { ...model.section, pageHeight: 1500 },
+    headers: { default: null, first: null, even: null },
+    [kind === 'footnote' ? 'footnotes' : 'endnotes']: [
+      { id: '7', content: Array.from({ length: 110 }, () => ordinaryBodyParagraph('n')) },
+    ],
+  });
+  const services = createParagraphAcquisitionCacheServicesView(createLayoutServices(source, { measureContext: measureContext() }));
+  const section = source.bodyLayoutInput.initialSection.context;
+  const session = bodyLayoutKernelOf(services)!.openBodyLayoutSession({
+    source: source.bodyLayoutInput.source, section,
+    initialLocation: { pageIndex: 0, columnIndex: 0, flowDomainId: 'body', section,
+      cursorPt: { xPt: 10, yPt: 10 }, availableBounds: { xPt: 10, yPt: 10, widthPt: 180, heightPt: 1480 } },
+  }, services, { currentDateMs: 0 });
+  const budget = paragraphAcquisitionCacheOf(services)!.workBudget;
+  expect(budget.limit).toBe(25_000);
+  for (let pageIndex = 0; pageIndex < 300; pageIndex++) {
+    const story = session.layoutStory!({ source: { story: kind, storyInstance: '7', path: [] },
+      pageIndex, section, container: { id: `${kind}:${pageIndex}`, kind,
+        bounds: { xPt: 10, yPt: 0, widthPt: 180, heightPt: 1500 } } });
+    expect(story.blocks).toHaveLength(110);
+  }
+  expect(budget.misses).toBeGreaterThan(25_000);
+  expect(budget.limit).toBe(MAX_PAGINATION_ACQUISITION_MISSES);
+}, 30000);

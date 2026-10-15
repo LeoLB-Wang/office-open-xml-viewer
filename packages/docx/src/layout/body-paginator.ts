@@ -2850,7 +2850,9 @@ function headerFooterReserves(
       // The reserve measures the story exactly as composition lays it out.
       const { story } = layoutBandStory((band) => layoutStory({
         source,
+        pageStoryOwner: owner.sectionOccurrenceId,
         pageIndex: page.pageIndex,
+        pageNumber: { displayNumber: page.pageNumber.displayNumber, format: page.pageNumber.format },
         section: page.section,
         container: {
           id: `story:${kind}:page:${page.pageIndex}`,
@@ -2939,7 +2941,9 @@ function composePageStories(
       if (source === null) return null;
       const { story, translation } = layoutBandStory((band) => session.layoutStory!({
         source,
+        pageStoryOwner: owner.sectionOccurrenceId,
         pageIndex: page.pageIndex,
+        pageNumber: { displayNumber: page.pageNumber.displayNumber, format: page.pageNumber.format },
         section: pageStorySection,
         container: {
           id: `story:${kind}:page:${page.pageIndex}`,
