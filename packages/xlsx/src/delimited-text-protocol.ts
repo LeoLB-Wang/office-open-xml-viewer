@@ -13,6 +13,8 @@ export type DelimitedTextParseRequest = {
   readonly options: ResolvedDelimitedTextOptions;
   readonly worksheetPolicy?: NormalizedXlsxWorksheetPolicy;
   readonly useGoogleFonts?: boolean;
+  /** Caller-owned load-time cell-font language gate, shared with main layout. */
+  readonly japaneseCellFonts?: boolean;
   readonly cjkFallback?: import('@silurus/ooxml-core').CjkLang;
   readonly renderers?: WorkerRendererDescriptors;
 };

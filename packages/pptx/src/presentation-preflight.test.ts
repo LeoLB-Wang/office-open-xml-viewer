@@ -204,7 +204,7 @@ describe('PresentationPreflightBuilder', () => {
       operationInflatedBytes: 100,
     };
     const limited = new PresentationPreflightBuilder(bootstrap, {
-      hardLimitForTesting: crossingLimit,
+      maxProjectionBytes: crossingLimit,
     });
     const retainedBeforeFailure = limited.projectedBytes;
     try {

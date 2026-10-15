@@ -515,6 +515,10 @@ pub struct EmbeddedFont {
 #[derive(Serialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSettings {
+    /// ECMA-376 Part 4 §14.8.3.38: preserve the paragraph mark after a terminal
+    /// page break. Applied during body normalization, before layout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split_pg_break_and_para_mark: Option<bool>,
     /// ECMA-376 Part 4 §14.8.3.15: fixed 5pt/10pt automatic paragraph margins.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub do_not_use_html_paragraph_auto_spacing: Option<bool>,

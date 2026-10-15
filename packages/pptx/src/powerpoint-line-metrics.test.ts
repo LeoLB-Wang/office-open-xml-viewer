@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TextRunData } from '@silurus/ooxml-core';
 import { renderTextBody } from './renderer.js';
 import {
-  powerPointAscentShare, powerPointShareCacheSize, SHARE_CACHE_LIMIT,
+  powerPointAscentShare, SHARE_CACHE_LIMIT,
 } from './powerpoint-line-metrics.js';
 import type { Paragraph, TextBody } from './types.js';
 
@@ -192,11 +192,19 @@ describe('PowerPoint text-box line metrics (#1610)', () => {
   });
 
   it('bounds the share cache while many distinct face names are queried', () => {
-    for (let i = 0; i < SHARE_CACHE_LIMIT * 4; i++) {
-      powerPointAscentShare(`Unresolved Face ${i}`, i % 2 === 0, i % 3 === 0);
-      expect(powerPointShareCacheSize()).toBeLessThanOrEqual(SHARE_CACHE_LIMIT);
-    }
-    expect(powerPointShareCacheSize()).toBe(SHARE_CACHE_LIMIT);
+    let cache: Map<unknown, unknown> | undefined;
+    const set = Map.prototype.set;
+    const insertions = vi.spyOn(Map.prototype, 'set').mockImplementation(function (this: Map<unknown, unknown>, key, value) {
+      if (typeof key === 'string' && key.startsWith('unresolved face ')) cache = this;
+      return set.call(this, key, value);
+    });
+    try {
+      for (let i = 0; i < SHARE_CACHE_LIMIT * 4; i++) {
+        powerPointAscentShare(`Unresolved Face ${i}`, i % 2 === 0, i % 3 === 0);
+        expect(cache?.size).toBeLessThanOrEqual(SHARE_CACHE_LIMIT);
+      }
+      expect(cache?.size).toBe(SHARE_CACHE_LIMIT);
+    } finally { insertions.mockRestore(); }
     // Known faces still resolve after eviction.
     expect(powerPointAscentShare('Arial', false, false)).toBeCloseTo(1854 / 2288, 12);
   });
