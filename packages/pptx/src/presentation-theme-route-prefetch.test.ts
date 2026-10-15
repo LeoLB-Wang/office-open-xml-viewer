@@ -59,6 +59,25 @@ describe('PptxPresentation theme Calibri route prefetch', () => {
     await vi.waitFor(() => expect(core.unloadOfficeFontFallbacks).toHaveBeenCalledWith([{ tag: 'prefetch' }]));
   });
 
+  it('retries on first use when the speculative load timed out or failed', async () => {
+    for (const first of [
+      () => Promise.resolve({ faces: [{ tag: 'timeout' }], routes: {}, checked: [] }),
+      () => Promise.reject(new Error('local() failed')),
+    ]) {
+      const fonts = {} as FontFaceSet;
+      core.loadOfficeFontFallbacks.mockReset();
+      core.loadOfficeFontFallbacks.mockImplementationOnce(first).mockResolvedValueOnce(route('retry'));
+      const p = presentation(fonts);
+      p._prefetchThemeOfficeRoute(bootstrap());
+      await expect(p._officeRoutesForRequests([REGULAR], fonts)).resolves.toEqual({ calibri: { tag: 'retry' } });
+      expect(core.loadOfficeFontFallbacks).toHaveBeenCalledTimes(2);
+      // A later render reuses the retried load.
+      await expect(p._officeRoutesForRequests([REGULAR], fonts)).resolves.toEqual({ calibri: { tag: 'retry' } });
+      expect(core.loadOfficeFontFallbacks).toHaveBeenCalledTimes(2);
+    }
+    expect(core.unloadOfficeFontFallbacks).toHaveBeenCalledWith([{ tag: 'timeout' }]);
+  });
+
   it('starts nothing while an application face covers the tuple, so a later uncovered render loads fresh', async () => {
     const fonts = {} as FontFaceSet;
     core.loadOfficeFontFallbacks.mockResolvedValue(route('fresh'));

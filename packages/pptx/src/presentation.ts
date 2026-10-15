@@ -1098,6 +1098,19 @@ export class PptxPresentation {
           loads.delete(key);
           void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces), () => undefined);
           pending = undefined;
+        } else {
+          // A speculative load that failed or hit the preflight deadline is
+          // not this render's answer: retry once, as a render-time load would.
+          const speculative = pending;
+          pending = speculative.then(
+            (loaded) => {
+              if (loaded.checked.length > 0) return loaded;
+              unloadOfficeFontFallbacks(loaded.faces);
+              return loadOfficeFontFallbacks([request], fontSet);
+            },
+            () => loadOfficeFontFallbacks([request], fontSet),
+          );
+          loads.set(key, pending);
         }
       }
       if (!pending) {
