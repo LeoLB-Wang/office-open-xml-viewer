@@ -5,6 +5,7 @@ import { resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { readFile } from 'fs/promises';
 import { rolldown } from 'rolldown';
+import { docxCompatibilityMetadata } from './scripts/docx-compatibility-build.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -134,6 +135,7 @@ export function legacyBundleBoundary(): Plugin {
 async function bundleSelfContainedModule(entry: string): Promise<string> {
   const bundle = await rolldown({
     input: entry,
+    plugins: [docxCompatibilityMetadata()],
     platform: 'neutral',
     resolve: {
       alias: {
@@ -166,6 +168,7 @@ export default defineConfig(({ command, mode }) => ({
   // package below a subpath or from a CDN.
   base: './',
   plugins: [
+    docxCompatibilityMetadata(),
     wasmAssetUrl(),
     wasm(),
     legacyBundleBoundary(),
@@ -246,7 +249,7 @@ export default defineConfig(({ command, mode }) => ({
     // Built-in worker renderers lazy-import the same optional math engine. Keep
     // its ~3 MB `?url` asset external in nested worker builds too; otherwise
     // library mode base64-inlines one copy into every format worker chunk.
-    plugins: () => [wasmAssetUrl(), wasm(), legacyBundleBoundary()],
+    plugins: () => [docxCompatibilityMetadata(), wasmAssetUrl(), wasm(), legacyBundleBoundary()],
     rollupOptions: {
       output: {
         assetFileNames: '[name][extname]',
