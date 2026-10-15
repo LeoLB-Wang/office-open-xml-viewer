@@ -84,7 +84,7 @@ pub fn pivot_style_elements(
             .map(|element| PivotTableStyleElement {
                 kind: element.kind.to_string(),
                 size: element.size,
-                dxf: preset_dxf(element.dxf, theme_colors),
+                dxf: preset_dxf(&element.dxf, theme_colors),
             })
             .collect(),
     )
