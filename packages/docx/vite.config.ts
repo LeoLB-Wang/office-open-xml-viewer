@@ -4,13 +4,14 @@ import topLevelAwait from 'vite-plugin-top-level-await';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { legacyBundleBoundary, wasmAssetUrl } from '../../vite.config';
+import { docxCompatibilityMetadata } from '../../scripts/docx-compatibility-build.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   define: { __OOXML_MODEL_SOURCES__: 'true' },
   root: __dirname,
-  plugins: [wasmAssetUrl(), wasm(), topLevelAwait(), legacyBundleBoundary()],
+  plugins: [docxCompatibilityMetadata(), wasmAssetUrl(), wasm(), topLevelAwait(), legacyBundleBoundary()],
   resolve: {
     alias: {
       '@ooxml-test-three-d-renderer': resolve(__dirname, '../../src/three-d.ts'),
@@ -38,7 +39,7 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
-    plugins: () => [wasmAssetUrl(), wasm(), legacyBundleBoundary()],
+    plugins: () => [docxCompatibilityMetadata(), wasmAssetUrl(), wasm(), legacyBundleBoundary()],
     rollupOptions: {
       output: { assetFileNames: '[name][extname]' },
     },
