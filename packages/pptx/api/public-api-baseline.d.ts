@@ -1031,6 +1031,7 @@ export interface Duotone {
     clr2: string;
 }
 export interface EquationRun {
+    fallbackText?: string;
     type: 'math';
     nodes: MathNode[];
     display: boolean;
@@ -1955,6 +1956,11 @@ export interface Shadow {
     rotWithShape?: boolean;
 }
 export interface ShapeElement {
+    mathFallback?: {
+        elements: SlideElement[];
+        before: number;
+        after: number;
+    };
     type: 'shape';
     x: number;
     y: number;
@@ -1995,6 +2001,12 @@ export interface ShapeElement {
     hyperlinkAction?: string;
 }
 export interface Slide {
+    theme?: {
+        defaultTextColor: string | null;
+        majorFont: string | null;
+        minorFont: string | null;
+        hlinkColor: string | null;
+    };
     index: number;
     slideNumber: number;
     partName?: string;

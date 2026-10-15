@@ -48,9 +48,21 @@ pub struct Presentation {
     pub fol_hlink_color: Option<String>,
 }
 
+/// Part-local renderer defaults after theme and color-map inheritance.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SlideTheme {
+    pub default_text_color: Option<String>,
+    pub major_font: Option<String>,
+    pub minor_font: Option<String>,
+    pub hlink_color: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Slide {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<SlideTheme>,
     pub index: usize,
     /// 1-based slide number (index + 1); used for slidenum field rendering
     pub slide_number: usize,
@@ -449,9 +461,23 @@ pub struct Sp3d {
     pub bevel_b: Option<Bevel3d>,
 }
 
+/// One equation MCE branch's emitted element range and parsed preview.
+/// Counts are relative to the owning shape in the flattened spTree stream.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EquationShapeFallback {
+    pub elements: Vec<SlideElement>,
+    pub before: usize,
+    pub after: usize,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ShapeElement {
+    /// Part 3 §9.3: retained equation preview for a runtime conversion failure.
+    /// The live Choice is authoritative while its equations render successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub math_fallback: Option<EquationShapeFallback>,
     pub x: i64,
     pub y: i64,
     pub width: i64,
@@ -1221,6 +1247,9 @@ pub enum TextRun {
     /// for `m:oMathPara` (block) math, false for inline `m:oMath`.
     #[serde(rename_all = "camelCase")]
     Math {
+        /// Text in an inline mc:Fallback, retained until rendering succeeds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback_text: Option<String>,
         nodes: Vec<MathNode>,
         display: bool,
         /// Paragraph default run size (pt) if declared; None → renderer inherits.
@@ -1458,6 +1487,11 @@ impl GroupTransform {
 pub fn apply_group_transform_to_element(el: &mut SlideElement, gt: &GroupTransform) {
     match el {
         SlideElement::Shape(s) => {
+            if let Some(fallback) = &mut s.math_fallback {
+                for element in &mut fallback.elements {
+                    apply_group_transform_to_element(element, gt);
+                }
+            }
             let t = Transform {
                 x: s.x,
                 y: s.y,

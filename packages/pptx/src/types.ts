@@ -179,6 +179,9 @@ export interface Presentation {
 }
 
 export interface Slide {
+  /** Effective part-local defaults after layout/slide theme overrides. */
+  theme?: { defaultTextColor: string | null; majorFont: string | null;
+    minorFont: string | null; hlinkColor: string | null };
   index: number;
   /** 1-based slide number (index + 1); used to render slidenum fields */
   slideNumber: number;
@@ -329,6 +332,8 @@ export interface MediaElement {
 }
 
 export interface ShapeElement {
+  /** Equation Choice preview retained for runtime conversion failures (MCE §9.3). */
+  mathFallback?: { elements: SlideElement[]; before: number; after: number };
   type: 'shape';
   x: number;
   y: number;

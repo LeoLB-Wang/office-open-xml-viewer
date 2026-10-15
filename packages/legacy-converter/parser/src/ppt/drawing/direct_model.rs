@@ -340,6 +340,7 @@ impl Context<'_> {
         };
         let view = local.view(self.backing)?;
         Ok(Slide {
+            theme: None,
             index: self.index,
             slide_number: usize::from(self.presentation.first_slide_number) + self.index,
             part_name: None,
@@ -717,6 +718,7 @@ impl Context<'_> {
             .transpose()?;
         let fill = gradient_fill.or(fill);
         let element = ShapeElement {
+            math_fallback: None,
             x: transform.x,
             y: transform.y,
             width: transform.cx,

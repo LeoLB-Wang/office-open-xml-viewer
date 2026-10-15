@@ -237,3 +237,18 @@ it('keeps the union of stable per-slide preferences during progressive preflight
   expect(pptxSlideCjkFallback(kana, 'Calibri', 'Calibri', 'sc')).toBe('jp');
   expect(pptxSlideCjkFallback(korean, 'Calibri', 'Calibri', 'sc')).toBe('kr');
 });
+
+it('preloads slide override defaults and equation preview fonts in both render modes', () => {
+  const slide = {
+    theme: { majorFont: 'Override Heading', minorFont: 'Override Body', defaultTextColor: null, hlinkColor: null },
+    elements: [{ type: 'shape', textBody: null, mathFallback: { before: 0, after: 0,
+      elements: [{ type: 'shape', textBody: { paragraphs: [{ bullet: { type: 'none' },
+        runs: [{ type: 'text', text: 'Preview', fontFamily: 'Calibri', bold: true }] }] } }],
+    } }],
+  } as unknown as Slide;
+  const accumulator = new PptxFontPreloadAccumulator('Parent Heading', 'Parent Body');
+  accumulator.addSlide(slide);
+  expect(accumulator.names()).toEqual(expect.arrayContaining(['Override Heading', 'Override Body', 'Calibri']));
+  expect(pptxSlideOfficeFontRequests(slide, 'Parent Heading', 'Parent Body'))
+    .toEqual([{ family: 'Calibri', weight: 700, style: 'normal' }]);
+});

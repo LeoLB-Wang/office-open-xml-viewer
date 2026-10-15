@@ -1820,6 +1820,7 @@ pub(crate) fn push_math_runs(
             let nodes = parse_omath_nodes(node);
             if !nodes.is_empty() {
                 runs.push(TextRun::Math {
+                    fallback_text: None,
                     nodes,
                     display: false,
                     font_size: math_run_size(node).or(font_size),
@@ -1835,6 +1836,7 @@ pub(crate) fn push_math_runs(
                 let nodes = parse_omath_nodes(om);
                 if !nodes.is_empty() {
                     runs.push(TextRun::Math {
+                        fallback_text: None,
                         nodes,
                         display: true,
                         font_size: math_run_size(om).or(font_size),
@@ -1851,7 +1853,24 @@ pub(crate) fn push_math_runs(
                 &crate::shape::pptx_understands_ns,
             ) {
                 for c in sel.children().filter(|n| n.is_element()) {
+                    let first = runs.len();
                     push_math_runs(c, font_size, theme, runs);
+                    let fallback_text = child(node, "Fallback")
+                        .map(|fallback| {
+                            fallback
+                                .descendants()
+                                .filter(|n| n.is_element() && n.tag_name().name() == "t")
+                                .filter_map(|n| n.text())
+                                .collect::<String>()
+                        })
+                        .filter(|text| !text.is_empty());
+                    if let Some(TextRun::Math {
+                        fallback_text: retained,
+                        ..
+                    }) = runs.get_mut(first)
+                    {
+                        *retained = fallback_text;
+                    }
                 }
             }
         }

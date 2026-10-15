@@ -238,7 +238,6 @@ describe('PPTX ordinary-shape image fills', () => {
 
   it.each([
     { sx: Number.POSITIVE_INFINITY, sy: 1, flip: 'none' },
-    { sx: 1_000_000, sy: 1_000_000, flip: 'xy' },
   ])('rejects an unbounded tile auxiliary and restores caller state: %o', (tile) => {
     const { ctx, calls, state } = recordingCanvas();
     expect(paintPreparedShapeImageFill(ctx, {
@@ -249,29 +248,77 @@ describe('PPTX ordinary-shape image fills', () => {
     expect(state.globalAlpha).toBe(1);
   });
 
-  it('checks the rounded tile scratch allocation at the area boundary', () => {
+  it('bounds tile rasters at native resolution while retaining the logical repetition scale', () => {
     const allocations: Array<[number, number]> = [];
+    const patternScales: number[][] = [];
     class ScratchCanvas {
       constructor(width: number, height: number) { allocations.push([width, height]); }
       getContext() { return recordingCanvas().ctx; }
     }
     vi.stubGlobal('OffscreenCanvas', ScratchCanvas);
-    const paint = (sx: number) => {
-      const { ctx } = recordingCanvas();
+    const paint = (sx: number, intrinsicSize?: { width: number; height: number }) => {
+      const { ctx, calls } = recordingCanvas();
       ctx.createPattern = () => ({ setTransform() {} }) as unknown as CanvasPattern;
-      return paintPreparedShapeImageFill(ctx, {
+      const painted = paintPreparedShapeImageFill(ctx, {
         fillType: 'image', imagePath: 'ppt/media/boundary.png', mimeType: 'image/png',
         dpi: 96,
         tile: { algn: 'tl', tx: 0, ty: 0, sx, sy: 4096.1, flip: 'none' },
-      }, { image: mocks.image }, { x: 0, y: 0, w: 100, h: 100 }, 1 / 9525);
+      }, { image: mocks.image, intrinsicSize }, { x: 0, y: 0, w: 100, h: 100 }, 1 / 9525);
+      patternScales.push(calls.find(([name]) => name === 'scale')!.slice(1) as number[]);
+      return painted;
     };
 
-    expect(paint(2047.05)).toBe(true); // cell 4094.1×4096.1 → alloc 4095×4097
-    expect(allocations).toEqual([[4095, 4097]]);
-    expect(paint(2047.55)).toBe(false); // cell 4095.1×4096.1 → alloc 4096×4097
-    expect(allocations).toEqual([[4095, 4097]]);
+    expect(paint(2047.05)).toBe(true); // authored cell 4094.1×4096.1 uses a native 2×1 raster
+    expect(allocations).toEqual([[2, 1]]);
+    expect(paint(2047.55)).toBe(true); // a larger logical cell keeps the same native allocation
+    expect(allocations).toHaveLength(2);
+    expect(allocations[1][0] * allocations[1][1]).toBeLessThanOrEqual(16_777_216);
+    expect(paint(1_000_000)).toBe(true);
+    expect(allocations[2]).toEqual([2, 1]);
+    expect(allocations[2][0] * patternScales[2][0]).toBeCloseTo(2_000_000);
+    expect(allocations[2][1] * patternScales[2][1]).toBeCloseTo(4096.1);
+    // A cropped/outset native source can itself cross the budget only after
+    // independent rounding: 4095.1×4096.1 would ceil to 4096×4097.
+    expect(paint(1, { width: 4095.1, height: 4096.1 })).toBe(true);
+    expect(allocations[3][0] * allocations[3][1]).toBeLessThanOrEqual(16_777_216);
     vi.unstubAllGlobals();
   });
 
-  it.todo('counter-positions rotWithShape=false image frames under rotated/flipped shapes');
+  it.each([false, true])('counter-rotates an image fill after clipping (flipped=%s)', (flipH) => {
+    const { ctx, calls } = recordingCanvas();
+    expect(paintPreparedShapeImageFill(ctx, {
+      fillType: 'image', imagePath: 'ppt/media/image.png', mimeType: 'image/png',
+      stretch: true, rotWithShape: false,
+    }, { image: mocks.image }, { x: 10, y: 20, w: 100, h: 50 }, 1, false,
+    { rotation: 90, flipH, flipV: false })).toBe(true);
+    const clip = calls.findIndex(([name]) => name === 'clip');
+    const rotate = calls.findIndex(([name]) => name === 'rotate');
+    expect(rotate).toBeGreaterThan(clip);
+    expect(calls[rotate][1]).toBeCloseTo((flipH ? 1 : -1) * Math.PI / 2);
+    expect(calls).toContainEqual(['translate', 60, 45]);
+    expect(calls.some(([name]) => name === 'drawImage')).toBe(true);
+  });
+});
+
+
+it('selects the complete authored equation fallback branch before planning image decodes', async () => {
+  mocks.decode.mockClear();
+  const first = shape('ppt/media/first.png', 0, true);
+  const equation = { ...shape('ppt/media/live.png', 0, true),
+    textBody: { ...first.textBody!, paragraphs: [{ ...first.textBody!.paragraphs[0], runs: [
+      { type: 'math', nodes: [{ kind: 'run', text: 'x', style: 'roman' }], display: false, fontSize: 18 },
+    ] }] },
+    mathFallback: { before: 1, after: 1, elements: [shape('ppt/media/preview.png', 0, true)] },
+  };
+  const slide = { index: 0, slideNumber: 1, background: null,
+    elements: [first, equation, shape('ppt/media/last.png', 0, true)] } as unknown as Slide;
+  const text = vi.fn();
+  await renderSlide(recordingCanvas().canvas, slide, 9_144_000, 6_858_000, {
+    width: 960, dpr: 1,
+    fetchImage: async () => new Blob([pngHeader(2, 1) as BlobPart], { type: 'image/png' }),
+    math: { loadMathJax: async () => {}, mathMLToSvg: async () => { throw new Error('conversion'); } },
+  }, text);
+  expect(mocks.decode.mock.calls.map(args => args[0])).toEqual(['ppt/media/preview.png']);
+  expect(text.mock.calls.map(([run]) => run.text).join('')).toBe('Picture fill text');
+  expect(slide.elements).toHaveLength(3); // rendering never rewrites caller-owned input
 });

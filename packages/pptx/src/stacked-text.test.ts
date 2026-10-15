@@ -275,7 +275,8 @@ it.each(['cached', 'no engine', 'conversion', 'rasterization'] as const)('%s pre
             expect(image.x + image.w / 2 - calls[0].x).toBeCloseTo(display ? sign * (CELL + image.w) / 2 : 0);
             expect(image.y).toBeCloseTo(3.6 + (display ? 0 : CELL));
           }
-        } else {
+        } else if (failure === 'no engine') {
+          // Explicit engine opt-out preserves the existing empty geometry.
           // Horizontal reserves a blank display line, but no inline advance.
           // Its stacked counterpart uses the mark cell for that blank column.
           const control = mockCtx();
@@ -296,9 +297,14 @@ it.each(['cached', 'no engine', 'conversion', 'rasterization'] as const)('%s pre
             expect(calls[1].y - calls[0].y).toBeCloseTo(display ? 2 * (24 * 1.1 - 1.2) : 0);
           }
         }
+        if (failure === 'conversion' || failure === 'rasterization') {
+          expect(images).toHaveLength(0);
+          expect(calls.map(c => c.text)).toEqual(['A', 'Equation unavailable', 'B']);
+          expect(calls[2].x !== calls[0].x || calls[2].y !== calls[0].y).toBe(true);
+        }
         const outcome = { text: calls.map((c) => c.text).join(''), images: images.length,
           warnings: [...warn.mock.calls], errors: [...error.mock.calls] };
-        expect(outcome).toEqual({ text: 'AB', images: failure === 'cached' ? 1 : 0, warnings: [], errors: [] });
+        expect(outcome).toEqual({ text: failure === 'conversion' || failure === 'rasterization' ? 'AEquation unavailableB' : 'AB', images: failure === 'cached' ? 1 : 0, warnings: [], errors: [] });
         outcomes.push(outcome);
       }
       expect(outcomes.slice(1)).toEqual([outcomes[0], outcomes[0]]);
@@ -306,4 +312,41 @@ it.each(['cached', 'no engine', 'conversion', 'rasterization'] as const)('%s pre
   } finally {
     vi.mocked(rasterizeMathSvg).mockResolvedValue({ source: {} as CanvasImageSource, widthPx: 3, heightPx: 2 });
   }
+});
+
+
+it.each(['wordArtVert', 'wordArtVertRtl'])('paints stacked underline and double strike in %s', (vert) => {
+  const b = body('A', vert);
+  Object.assign(b.paragraphs[0].runs[0], { underline: true, underlineStyle: 'dbl',
+    underlineColor: 'FF0000', strikethrough: true, strikeDouble: true });
+  const { ctx } = mockCtx();
+  const stroke = vi.spyOn(ctx, 'stroke');
+  const move = vi.spyOn(ctx, 'moveTo');
+  renderTextBody(ctx, b, 0, 0, 200, 200, SCALE);
+  expect(stroke).toHaveBeenCalledTimes(2);
+  expect(move).toHaveBeenCalledTimes(4); // two underline rules and two strike rules
+});
+
+it.each(['wordArtVert', 'wordArtVertRtl'])('draws one marker per paragraph across wrapped %s columns', (vert) => {
+  const b = body('AB', vert);
+  const para = b.paragraphs[0];
+  Object.assign(para, { marL: 20 * 12700, indent: -10 * 12700,
+    bullet: { type: 'autoNum', numType: 'arabicPeriod', startAt: 3, sizePct: 75, color: 'FF0000' } });
+  b.paragraphs.push({ ...para, runs: [{ ...(para.runs[0] as TextRunData), text: 'C' }] });
+  const { ctx, calls } = mockCtx();
+  renderTextBody(ctx, b, 0, 0, 200, 80, SCALE);
+  expect(calls.filter(c => /[34]\./.test(c.text)).map(c => c.text)).toEqual(['3.', '4.']);
+  expect(calls.find(c => c.text === '3.')?.y).toBeCloseTo(13.6);
+  expect(calls.find(c => c.text === 'A')?.y).toBeGreaterThan(calls.find(c => c.text === '3.')!.y);
+});
+
+it.each(['horz', 'wordArtVert', 'wordArtVertRtl'])('uses retained equation fallback text in %s', async (vert) => {
+  const b = body('', vert);
+  b.paragraphs[0].runs = [{ type: 'math', nodes: [{ kind: 'run', text: 'x', style: 'roman' }], display: false,
+    fontSize: 18, fallbackText: 'authored preview' }];
+  await prepareSlideMath({ elements: [{ type: 'shape', textBody: b }] } as unknown as import('./types.js').Slide,
+    { loadMathJax: async () => {}, mathMLToSvg: async () => { throw new Error('conversion'); } });
+  const { ctx, calls } = mockCtx();
+  renderTextBody(ctx, b, 0, 0, 200, 200, SCALE);
+  expect(calls.map(c => c.text)).toEqual(['authored preview']);
 });

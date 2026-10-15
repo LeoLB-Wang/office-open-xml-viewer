@@ -382,6 +382,7 @@ impl ooxml_common::chart::ChartReferenceResolver for XlsxChartReferenceResolver<
 /// has no chartStyle relationship or the part cannot be read (the chartEx
 /// title then falls back to its inline size, or the renderer's default).
 struct ChartRelatedParts {
+    theme_override_xml: Option<String>,
     style_xml: Option<String>,
     color_style_xml: Option<String>,
     image_relationships: ooxml_common::chart::ChartImageRelationships,
@@ -389,6 +390,7 @@ struct ChartRelatedParts {
 
 fn load_chart_related_parts(archive: &mut crate::XlsxZip, chart_path: &str) -> ChartRelatedParts {
     let mut result = ChartRelatedParts {
+        theme_override_xml: None,
         style_xml: None,
         color_style_xml: None,
         image_relationships: Default::default(),
@@ -412,6 +414,11 @@ fn load_chart_related_parts(archive: &mut crate::XlsxZip, chart_path: &str) -> C
                     .is_some_and(|kind| kind.ends_with(suffix))
         })
     };
+    if let Some(relationship) = internal_target("/themeOverride") {
+        if let Some(path) = relationship.resolve_part(chart_path) {
+            result.theme_override_xml = read_zip_string(archive, &path).ok();
+        }
+    }
     let style_relationship = relationships.values().find(|relationship| {
         relationship.mode == ooxml_common::rels::TargetMode::Internal
             && relationship
@@ -734,6 +741,32 @@ pub(crate) fn load_sheet_charts_observing_frames(
                 // (before the chart doc is parsed, since both borrow `archive`);
                 // legacy `<c:>` charts ignore it (their title size is inline).
                 let related_parts = load_chart_related_parts(archive, &chart_path);
+                // CT_BaseStylesOverride (§20.1.6.12) is chart-local: only
+                // present schemes replace the workbook's inherited schemes.
+                let schemes = related_parts
+                    .theme_override_xml
+                    .as_deref()
+                    .map(ooxml_common::theme::ThemeOverride::parse)
+                    .unwrap_or_default();
+                let local_colors = schemes.colors.as_ref().map(|colors| {
+                    colors
+                        .slots_in_order()
+                        .map(|hex| hex.map(|hex| format!("#{hex}")).unwrap_or_default())
+                        .to_vec()
+                });
+                let theme_colors = local_colors.as_deref().unwrap_or(theme_colors);
+                let theme_fonts = schemes
+                    .fonts
+                    .as_ref()
+                    .map(|fonts| (fonts.major.latin.as_deref(), fonts.minor.latin.as_deref()))
+                    .unwrap_or(theme_fonts);
+                let theme_format_scheme = schemes.format.as_ref().or(theme_format_scheme);
+                let empty_theme_images = ooxml_common::chart::ChartImageRelationships::default();
+                let theme_images = if schemes.format.is_some() {
+                    &empty_theme_images
+                } else {
+                    theme_images
+                };
                 let image_resolver = ooxml_common::chart::ChartImageResolverChain::new(
                     &related_parts.image_relationships,
                     theme_images,
@@ -2218,6 +2251,12 @@ mod chartex_tests {
     }
 
     fn archive_with_classic_chart_style() -> crate::XlsxZip {
+        archive_with_classic_chart_style_and_override(None)
+    }
+
+    fn archive_with_classic_chart_style_and_override(
+        theme_override: Option<&str>,
+    ) -> crate::XlsxZip {
         let mut buf = Vec::new();
         {
             let mut zw = zip::ZipWriter::new(Cursor::new(&mut buf));
@@ -2247,6 +2286,17 @@ mod chartex_tests {
                 ),
             ] {
                 zw.start_file(path, o).unwrap();
+                let xml = if theme_override.is_some() && path.ends_with("chart1.xml.rels") {
+                    xml.replace("</Relationships>", r#"<Relationship Id="override" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride" Target="../theme/chartOverride.xml"/></Relationships>"#)
+                } else {
+                    xml.to_owned()
+                };
+                zw.write_all(xml.as_bytes()).unwrap();
+            }
+            if let Some(xml) = theme_override {
+                // Use a separate chart relationship part in this fixture when
+                // probing an override, retaining the style/color sidecars.
+                zw.start_file("xl/theme/chartOverride.xml", o).unwrap();
                 zw.write_all(xml.as_bytes()).unwrap();
             }
             zw.finish().unwrap();
@@ -2446,6 +2496,26 @@ mod chartex_tests {
             &ooxml_common::chart::ChartImageRelationships::default(),
         );
         assert!(charts.is_empty());
+    }
+
+    #[test]
+    fn chart_theme_override_is_local_to_chart_resolution() {
+        let xml = r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:clrScheme name="Chart"><a:accent1><a:srgbClr val="123456"/></a:accent1></a:clrScheme><a:fontScheme name="F"><a:majorFont><a:latin typeface="Chart Major"/></a:majorFont><a:minorFont><a:latin typeface="Chart Minor"/></a:minorFont></a:fontScheme></a:themeOverride>"#;
+        let mut archive = archive_with_classic_chart_style_and_override(Some(xml));
+        let colors = theme();
+        let charts = load_sheet_charts_with_theme_images(
+            &mut archive,
+            "worksheets/sheet1.xml",
+            None,
+            &colors,
+            (Some("Parent Major"), Some("Parent Minor")),
+            None,
+            &ooxml_common::chart::ChartImageRelationships::default(),
+        );
+        assert_eq!(charts.len(), 1);
+        // Numeric style 2's first series uses accent1 from the chart override.
+        assert_eq!(charts[0].chart.series[0].color.as_deref(), Some("123456"));
+        assert_ne!(colors[4], "#123456");
     }
 
     #[test]

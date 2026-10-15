@@ -20,8 +20,8 @@
 // inside its 1 em cell, which is how those faces design the remaining forms
 // (ー ～ ＝ ＿ ￣ ｜ … ‥ ‐ arrows ― ∥).
 //
-// Decorations (underline, strike, highlight, glyph effects) of a stacked body
-// are not painted: no control measured them.
+// Underline and strike use the column reading frame; glyph orientation does
+// not change the direction of a run decoration (§20.1.10.82).
 
 import {
   layoutStackedText,
@@ -60,6 +60,9 @@ export interface StackedSegmentStyle {
 export interface StackedParagraphInput<T extends StackedSegmentStyle> {
   runs: readonly DrawingMlInputRun<T>[];
   alignment?: string;
+  marginStart?: number;
+  marginEnd?: number;
+  firstLineIndent?: number;
   lineSpacing?: DrawingMlLineSpacing;
   spaceBefore?: DrawingMlLineSpacing;
   spaceAfter?: DrawingMlLineSpacing;
@@ -80,6 +83,9 @@ export interface StackedBodyInput<T extends StackedSegmentStyle> {
   paragraphs: readonly StackedParagraphInput<T>[];
   /** Existing equation painter, supplied by the renderer's math-resource owner. */
   drawObject?(style: T, x: number, y: number): void;
+  /** Paint run decorations in a +90° reading frame, at baseline (0,0). */
+  drawDecorations?(style: T, width: number): void;
+  drawMarker?(paragraph: number, axisX: number, top: number): void;
   sameStyle?(a: T, b: T): boolean;
 }
 
@@ -194,6 +200,9 @@ export function renderStackedText<T extends StackedSegmentStyle>(
     runs: p.runs.map((run) => run.type === 'object' && run.style.math
       ? { ...run, width: run.style.math.ascent + run.style.math.descent } : run),
     alignment: p.alignment,
+    marginStart: p.marginStart,
+    marginEnd: p.marginEnd,
+    firstLineIndent: p.firstLineIndent,
     lineSpacing: p.lineSpacing,
     spaceBefore: p.spaceBefore,
     spaceAfter: p.spaceAfter,
@@ -218,6 +227,15 @@ export function renderStackedText<T extends StackedSegmentStyle>(
         space: false, box: { ascent: 0, descent: 0 }, cell: height };
     },
   });
+  if (body.drawMarker) {
+    let previous = -1;
+    for (const column of layout.columns) {
+      if (column.paragraph !== previous) {
+        body.drawMarker(column.paragraph, column.axisX, body.rect.top);
+        previous = column.paragraph;
+      }
+    }
+  }
   const runs: StackedGlyphRun[] = [];
   const prevAlign = ctx.textAlign;
   const prevBaseline = ctx.textBaseline;
@@ -234,6 +252,16 @@ export function renderStackedText<T extends StackedSegmentStyle>(
       x: placed.axisX - g.thickness / 2, y: placed.cellTop, w: g.thickness, h: g.advance,
       ...(style.hyperlink ? { hyperlink: style.hyperlink } : {}),
     });
+    if (body.drawDecorations) {
+      // Reuse the horizontal painter in the column reading frame. Its rule
+      // offsets are existing library paint policy, not an Office-measured
+      // WordArt decoration-position compatibility claim.
+      ctx.save();
+      ctx.translate(placed.axisX - (box.ascent - box.descent) * size / 2, placed.cellTop);
+      ctx.rotate(Math.PI / 2);
+      body.drawDecorations(style, g.advance);
+      ctx.restore();
+    }
     if (g.space || style.noFill) continue;
     ctx.font = style.font;
     ctx.fillStyle = style.color;

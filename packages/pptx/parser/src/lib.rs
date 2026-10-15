@@ -1849,6 +1849,12 @@ fn parse_slide(
     );
 
     Ok(Slide {
+        theme: (!theme.is_empty()).then(|| SlideTheme {
+            default_text_color: theme.get("dk1").cloned(),
+            major_font: theme.get("+mj-lt").cloned(),
+            minor_font: theme.get("+mn-lt").cloned(),
+            hlink_color: theme.get("hlink").cloned(),
+        }),
         index,
         slide_number: index + 1,
         // Stamped by the build loop, which owns the resolved slide part path.
@@ -1868,6 +1874,7 @@ fn parse_slide(
 /// (e.g. `ppt/slides/slide3.xml`) so the message pinpoints which slide broke.
 fn broken_slide(index: usize, part: &str, detail: &str) -> Slide {
     Slide {
+        theme: None,
         index,
         slide_number: index + 1,
         // `part` IS the slide part path here (broken_slide is called with it), so
@@ -1891,6 +1898,8 @@ fn load_notes_slide(
     slide_part: &str,
     rels: &HashMap<String, String>,
 ) -> Option<String> {
+    // Notes are projected to plain text only (no color/font/format model).
+    // Their §14.2.8 theme override therefore has no observable style to resolve.
     // rels here is the slide's _rels map (rId → Target) parsed by the caller.
     // The relationship Type ends with "/notesSlide". The cleanest way to find
     // the right entry is to look at every value in the map and pick the one
@@ -2487,6 +2496,7 @@ struct LayoutSource {
     rels: HashMap<String, String>,
     dir: String,
     master_path: Option<String>,
+    theme_override_xml: Option<String>,
 }
 
 /// Owned presentation-wide bootstrap state. XML trees are intentionally not
@@ -2861,7 +2871,9 @@ fn produce_slide_unit_with_journal<T>(
                 let rels = parse_rels(&rels_xml);
                 let master_path = find_rel_target_by_type(&rels_xml, "/slideMaster")
                     .map(|target| resolve_path(path, &target));
+                let theme_override_xml = load_theme_override(path, &rels_xml, zip);
                 let source = LayoutSource {
+                    theme_override_xml,
                     xml,
                     rels,
                     dir,
@@ -2932,8 +2944,13 @@ fn produce_slide_unit_with_journal<T>(
         let bundle: &ParsedMaster = match resolved_master_path {
             Some(master_path) => {
                 if !master_cache.contains_key(master_path) {
-                    let candidate =
-                        build_master_bundle(master_path, theme, default_text_style.as_deref(), zip);
+                    let candidate = build_master_bundle(
+                        master_path,
+                        theme,
+                        None,
+                        default_text_style.as_deref(),
+                        zip,
+                    );
                     zip.assert_healthy()?;
                     let reporter = zip.operation()?.limit_reporter()?;
                     observe_shared_cache_candidate(
@@ -2953,7 +2970,7 @@ fn produce_slide_unit_with_journal<T>(
             None => {
                 if no_master_bundle.is_none() {
                     let candidate =
-                        build_master_bundle("", theme, default_text_style.as_deref(), zip);
+                        build_master_bundle("", theme, None, default_text_style.as_deref(), zip);
                     zip.assert_healthy()?;
                     let reporter = zip.operation()?.limit_reporter()?;
                     observe_shared_cache_candidate(
@@ -2970,6 +2987,35 @@ fn produce_slide_unit_with_journal<T>(
                     .expect("fallback master initialized above")
             }
         };
+
+        // §14.2.8 / §20.1.6.12: layout schemes inherit the master;
+        // slide schemes replace the layout's present schemes. Rebuild all
+        // theme-dependent inheritance, including fonts and matrix recipes.
+        // Keep this slide-owned bundle outside the shared master/layout caches.
+        let slide_override = load_theme_override(&raw.slide_part, &raw.slide_rels_xml, zip);
+        let layout_override = raw
+            .layout_source
+            .as_ref()
+            .and_then(|source| source.theme_override_xml.as_deref());
+        let override_bundle = if layout_override.is_some() || slide_override.is_some() {
+            let mut effective_theme = bundle.theme.clone();
+            if let Some(xml) = layout_override {
+                apply_theme_override(&mut effective_theme, xml);
+            }
+            if let Some(xml) = slide_override.as_deref() {
+                apply_theme_override(&mut effective_theme, xml);
+            }
+            Some(build_master_bundle(
+                resolved_master_path.unwrap_or(""),
+                theme,
+                Some(&effective_theme),
+                default_text_style.as_deref(),
+                zip,
+            ))
+        } else {
+            None
+        };
+        let bundle = override_bundle.as_ref().unwrap_or(bundle);
 
         // Per-slide color-mapping override (ECMA-376 §19.3.1.7 clrMapOvr).
         // Precedence: the slide's own `<a:overrideClrMapping>` wins; else the
@@ -3160,7 +3206,7 @@ fn produce_slide_unit_with_journal<T>(
         // slide on this layout shares). Otherwise build a fresh, uncached one
         // (override slide, or the rare no-layout-path case).
         let fresh_layout: Option<ParsedLayout> = match (
-            effective_master.is_none(),
+            effective_master.is_none() && override_bundle.is_none(),
             layout_xml,
             raw.layout_path.as_deref(),
         ) {
@@ -7373,6 +7419,10 @@ mod tests {
                 assert!(*display, "oMathPara → display math");
                 assert_eq!(*font_size, Some(18.0));
                 assert_eq!(nodes_to_text(nodes), "x");
+                let TextRun::Math { fallback_text, .. } = &runs[0] else {
+                    unreachable!()
+                };
+                assert_eq!(fallback_text.as_deref(), Some("fallback"));
             }
             other => panic!("expected math run, got {other:?}"),
         }
@@ -7404,6 +7454,7 @@ mod tests {
                 font_size,
                 nodes,
                 color,
+                ..
             } => {
                 assert!(!*display, "bare a14:m with m:oMath → inline");
                 assert_eq!(*font_size, Some(28.0), "size read from math run rPr sz");
@@ -10958,6 +11009,90 @@ mod tests {
         buf
     }
 
+    #[test]
+    fn theme_override_replaces_layout_then_slide_schemes() {
+        use std::io::{Read, Write};
+        let input = build_clr_map_ovr_pptx("");
+        let mut archive = zip::ZipArchive::new(Cursor::new(input)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        let mut ordinary_slide = String::new();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().to_owned();
+            let mut xml = String::new();
+            entry.read_to_string(&mut xml).unwrap();
+            if name == "ppt/presentation.xml" {
+                xml = xml.replace(
+                    "</p:sldIdLst>",
+                    r#"<p:sldId id="257" r:id="second"/></p:sldIdLst>"#,
+                );
+            }
+            if name == "ppt/_rels/presentation.xml.rels" {
+                xml = xml.replace("</Relationships>", r#"<Relationship Id="second" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/></Relationships>"#);
+            }
+            let target = match name.as_str() {
+                "ppt/slides/_rels/slide1.xml.rels" => Some("slide"),
+                "ppt/slideLayouts/_rels/slideLayout1.xml.rels" => Some("layout"),
+                _ => None,
+            };
+            if let Some(target) = target {
+                xml = xml.replace("</Relationships>", &format!(r#"<Relationship Id="override" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride" Target="../theme/{target}.xml"/></Relationships>"#));
+            }
+            if name == "ppt/slides/slide1.xml" {
+                xml = xml.replace("</p:sp>", r#"<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr><a:latin typeface="+mn-lt"/></a:rPr><a:t>Theme text</a:t></a:r></a:p></p:txBody></p:sp>"#);
+            }
+            if name == "ppt/slides/slide1.xml" {
+                ordinary_slide = xml.clone();
+            }
+            output.start_file(name, options).unwrap();
+            output.write_all(xml.as_bytes()).unwrap();
+        }
+        output.start_file("ppt/slides/slide2.xml", options).unwrap();
+        output.write_all(ordinary_slide.as_bytes()).unwrap();
+        output
+            .start_file("ppt/slides/_rels/slide2.xml.rels", options)
+            .unwrap();
+        output.write_all(br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="layout" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>"#).unwrap();
+        for (part, xml) in [
+            (
+                "layout",
+                r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:clrScheme name="C"><a:dk1><a:srgbClr val="123456"/></a:dk1></a:clrScheme><a:fontScheme name="F"><a:majorFont><a:latin typeface="Override Major"/></a:majorFont><a:minorFont><a:latin typeface="Override Minor"/></a:minorFont></a:fontScheme></a:themeOverride>"#,
+            ),
+            (
+                "slide",
+                r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:fmtScheme name="S"><a:fillStyleLst><a:solidFill><a:srgbClr val="ABCDEF"/></a:solidFill></a:fillStyleLst><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeOverride>"#,
+            ),
+        ] {
+            output
+                .start_file(format!("ppt/theme/{part}.xml"), options)
+                .unwrap();
+            output.write_all(xml.as_bytes()).unwrap();
+        }
+        let bytes = output.finish().unwrap().into_inner();
+        let parsed = parse_presentation_from_bytes(&bytes).unwrap();
+        let slide = &parsed.slides[0];
+        assert_eq!(
+            slide.theme.as_ref().unwrap().default_text_color.as_deref(),
+            Some("123456")
+        );
+        let SlideElement::Shape(shape) = &slide.elements[0] else {
+            panic!("shape")
+        };
+        let TextRun::Text(run) = &shape.text_body.as_ref().unwrap().paragraphs[0].runs[0] else {
+            panic!("text")
+        };
+        assert_eq!(run.font_family.as_deref(), Some("Override Minor"));
+        assert_eq!(
+            shape_fill_color_by_name(slide, "Tx1Rect").as_deref(),
+            Some("ABCDEF")
+        );
+        assert_eq!(
+            shape_fill_color_by_name(&parsed.slides[1], "Tx1Rect").as_deref(),
+            Some("123456")
+        );
+    }
+
     /// §19.3.1.7 clrMapOvr / §20.1.6.8 overrideClrMapping: a slide whose
     /// `<p:clrMapOvr>` carries `<a:overrideClrMapping>` with bg1/tx1 swapped
     /// (bg1="dk1", tx1="lt1") must use that mapping IN PLACE OF the master's.
@@ -12147,7 +12282,7 @@ mod tests {
             retained_ptr,
             "prepared bytes move; they are not cloned"
         );
-        const FIXED_SLIDE_3: &str = r#"{"index":2,"slideNumber":3,"partName":"ppt/slides/slide3.xml","background":null,"elements":[{"type":"shape","x":0,"y":0,"width":1000000,"height":1000000,"rotation":0.0,"flipH":false,"flipV":false,"geometry":"rect","fill":null,"stroke":null,"textBody":{"verticalAnchor":"t","paragraphs":[{"alignment":"l","marL":0,"marR":0,"indent":0,"spaceBefore":null,"spaceAfter":null,"spaceLine":null,"lvl":0,"bullet":{"type":"inherit"},"defFontSize":18.0,"defColor":null,"defBold":null,"defItalic":null,"defFontFamily":"Arial","tabStops":[],"eaLnBrk":true,"runs":[{"type":"text","text":"slide 3","bold":null,"italic":null,"underline":false,"strikethrough":false,"fontSize":18.0,"color":null,"fontFamily":"Arial","fieldType":null}]}],"defaultFontSize":18.0,"defaultBold":null,"defaultItalic":null,"lIns":91440,"rIns":91440,"tIns":45720,"bIns":45720,"wrap":"square","vert":"horz","autoFit":"none"},"defaultTextColor":null,"custGeom":null,"adj":null,"adj2":null,"adj3":null,"adj4":null,"adj5":null,"adj6":null,"adj7":null,"adj8":null,"shadow":null,"id":"2","name":"T"}],"elementSources":[{"origin":"slide"}]}"#;
+        const FIXED_SLIDE_3: &str = r#"{"theme":{"defaultTextColor":"000000","majorFont":"Arial","minorFont":"Arial","hlinkColor":"000000"},"index":2,"slideNumber":3,"partName":"ppt/slides/slide3.xml","background":null,"elements":[{"type":"shape","x":0,"y":0,"width":1000000,"height":1000000,"rotation":0.0,"flipH":false,"flipV":false,"geometry":"rect","fill":null,"stroke":null,"textBody":{"verticalAnchor":"t","paragraphs":[{"alignment":"l","marL":0,"marR":0,"indent":0,"spaceBefore":null,"spaceAfter":null,"spaceLine":null,"lvl":0,"bullet":{"type":"inherit"},"defFontSize":18.0,"defColor":null,"defBold":null,"defItalic":null,"defFontFamily":"Arial","tabStops":[],"eaLnBrk":true,"runs":[{"type":"text","text":"slide 3","bold":null,"italic":null,"underline":false,"strikethrough":false,"fontSize":18.0,"color":null,"fontFamily":"Arial","fieldType":null}]}],"defaultFontSize":18.0,"defaultBold":null,"defaultItalic":null,"lIns":91440,"rIns":91440,"tIns":45720,"bIns":45720,"wrap":"square","vert":"horz","autoFit":"none"},"defaultTextColor":null,"custGeom":null,"adj":null,"adj2":null,"adj3":null,"adj4":null,"adj5":null,"adj6":null,"adj7":null,"adj8":null,"shadow":null,"id":"2","name":"T"}],"elementSources":[{"origin":"slide"}]}"#;
         assert_eq!(bytes, FIXED_SLIDE_3.as_bytes());
         let legacy: serde_json::Value =
             serde_json::from_str(&parse_pptx_native(&legacy_data).unwrap()).unwrap();

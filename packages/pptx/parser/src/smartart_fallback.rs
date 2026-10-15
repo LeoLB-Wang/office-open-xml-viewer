@@ -408,6 +408,7 @@ fn emit_placeholder(gf_xfrm: &Transform, out: &mut Vec<SlideElement>) -> bool {
 /// like a plain transparent text container.
 fn text_list_shape(gf_xfrm: &Transform, body: TextBody) -> ShapeElement {
     ShapeElement {
+        math_fallback: None,
         x: gf_xfrm.x,
         y: gf_xfrm.y,
         width: gf_xfrm.cx,

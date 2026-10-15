@@ -30,11 +30,28 @@ export const PPTX_GOOGLE_FONTS: Record<string, FontPreloadEntry> = {
   ...SCRIPT_GOOGLE_FONTS,
 };
 
+/** Include authored equation previews in font preparation, so runtime recovery
+ * uses the same fonts in main-thread and worker rendering. Iterators retain
+ * only the branch stack rather than flattening a second slide model. */
+function* fontElements(elements: readonly SlideElement[]): Generator<SlideElement> {
+  const pending: Iterator<SlideElement>[] = [elements[Symbol.iterator]()];
+  while (pending.length) {
+    const next = pending[pending.length - 1].next();
+    if (next.done) { pending.pop(); continue; }
+    const element = next.value;
+    yield element;
+    if (element.type === 'shape' && element.mathFallback) {
+      pending.push(element.mathFallback.elements[Symbol.iterator]());
+    }
+  }
+}
+
 /** Yield every painted text string in a text body (paragraph runs). */
 function* textBodyRuns(body: TextBody | null | undefined): Generator<string> {
   for (const p of body?.paragraphs ?? []) {
     for (const r of p.runs) {
       if (r.type === 'text') yield r.text;
+      if (r.type === 'math' && r.fallbackText) yield r.fallbackText;
     }
   }
 }
@@ -60,7 +77,7 @@ function* textBodyFontFamilies(body: TextBody | null | undefined): Generator<str
  *  cell text and chart labels across all slides. Speaker notes and comments are
  *  not painted on the slide, so they are excluded (the renderer ignores them). */
 export function* pptxSlideTextRuns(slide: Slide): Generator<string> {
-  for (const el of slide.elements as SlideElement[]) {
+  for (const el of fontElements(slide.elements)) {
     if (el.type === 'shape') {
       yield* textBodyRuns(el.textBody);
     } else if (el.type === 'table') {
@@ -96,14 +113,17 @@ export class PptxFontPreloadAccumulator {
   }
 
   addSlide(slide: Slide): void {
+    if (slide.theme?.majorFont) this.families.add(slide.theme.majorFont);
+    if (slide.theme?.minorFont) this.families.add(slide.theme.minorFont);
     this.scripts.addText(pptxSlideTextRuns(slide));
     // Keep the union of per-slide choices: later kana must not remove a Han-only
     // slide's SC preload after that slide has already been published.
     for (const name of scriptPreloadNamesForText(pptxSlideTextRuns(slide),
-      classifyCjkFont(this.majorFont) ?? classifyCjkFont(this.minorFont) ?? this.fallback ?? null)) {
+      classifyCjkFont(slide.theme ? slide.theme.majorFont : this.majorFont)
+        ?? classifyCjkFont(slide.theme ? slide.theme.minorFont : this.minorFont) ?? this.fallback ?? null)) {
       this.scriptNames.add(name);
     }
-    for (const el of slide.elements as SlideElement[]) {
+    for (const el of fontElements(slide.elements)) {
       if (el.type === 'shape') {
         for (const family of textBodyFontFamilies(el.textBody)) this.families.add(family);
       } else if (el.type === 'table') {
@@ -169,6 +189,7 @@ export function pptxSlideOfficeFontRequests(
   majorFont: string | null,
   minorFont: string | null,
 ): OfficeFontFallbackRequest[] {
+  if (slide.theme) { majorFont = slide.theme.majorFont; minorFont = slide.theme.minorFont; }
   const requests = new Map<string, OfficeFontFallbackRequest>();
   const resolved = (family: string | null | undefined): string | null => {
     // A missing family has no authored or inherited font resource. The theme
@@ -207,7 +228,7 @@ export function pptxSlideOfficeFontRequests(
       }
     }
   };
-  for (const element of slide.elements) {
+  for (const element of fontElements(slide.elements)) {
     if (element.type === 'shape') body(element.textBody);
     if (element.type === 'table') {
       for (const row of element.rows) for (const cell of row.cells) body(cell.textBody);

@@ -1,3 +1,4 @@
+import { counterRotatedFillTransform } from './fill-frame';
 import type { GradientFill, GradientStop } from '../types/common';
 import { createAuxCanvasForContext } from '../canvas/aux-canvas';
 
@@ -464,6 +465,7 @@ export function resolvePathShade(
   frame: ShadeBox, shapeBox: ShadeBox, outline?: FillOutline,
   paintBounds?: ShadeBox,
   work?: ShadeWork,
+  rotation = 0,
 ): CanvasPattern | null {
   if (hasInvertedPathShadeFocus(fill)) return null;
   const focus = pathShadeFocusRect(fill);
@@ -509,7 +511,19 @@ export function resolvePathShade(
   // The authored shade frame stays separate from these raster bounds.
   const painted = boundsOf([...coverageField.flat(), ...rectangle(fieldFrame)]
     .map(p => apply(user, p[0], p[1])));
-  const device = paintBounds ? boundsOf([...rectangle(painted), ...rectangle(paintBounds)]) : painted;
+  let device = paintBounds ? boundsOf([...rectangle(painted), ...rectangle(paintBounds)]) : painted;
+  if (rotation !== 0) {
+    // The non-repeating brush must cover the clipped shape after its paint
+    // frame counter-rotates. Include the inverse-rotated coverage; outside
+    // the authored shade contour the field already uses the final stop.
+    const expanded = rectangle(device).map(point => {
+      const local = apply(userInverse, point[0], point[1]);
+      const turned = counterRotatedFillTransform({ e: local[0], f: local[1] },
+        -rotation, shapeBox.x + shapeBox.w / 2, shapeBox.y + shapeBox.h / 2);
+      return apply(user, turned.e ?? local[0], turned.f ?? local[1]);
+    });
+    device = boundsOf([...rectangle(device), ...expanded]);
+  }
   if (![device.x, device.y, device.w, device.h].every(Number.isFinite)) return null;
   const k = Math.min(1, (MAX_EDGE - 2 * MARGIN - 1) / Math.max(device.w, 1e-9),
     (MAX_EDGE - 2 * MARGIN - 1) / Math.max(device.h, 1e-9));
@@ -663,8 +677,8 @@ export function resolvePathShade(
   const pattern = ctx.createPattern(surface, 'no-repeat');
   if (!pattern || typeof pattern.setTransform !== 'function') return null;
   const auxToUser = multiply(userInverse, auxToDevice);
-  pattern.setTransform({
+  pattern.setTransform(counterRotatedFillTransform({
     a: auxToUser[0], b: auxToUser[1], c: auxToUser[2], d: auxToUser[3], e: auxToUser[4], f: auxToUser[5],
-  });
+  }, rotation, shapeBox.x + shapeBox.w / 2, shapeBox.y + shapeBox.h / 2));
   return pattern;
 }

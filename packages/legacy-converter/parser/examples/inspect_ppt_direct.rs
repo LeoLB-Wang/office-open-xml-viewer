@@ -112,6 +112,7 @@ mod tests {
     #[test]
     fn typed_collection_ignores_resource_looking_text_and_keeps_image_fill() {
         let slide = Slide {
+            theme: None,
             index: 0,
             slide_number: 1,
             part_name: None,
