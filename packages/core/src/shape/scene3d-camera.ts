@@ -9,9 +9,9 @@
  * Fidelity boundary: ECMA-376 names presets and authored FOV/zoom/rotation,
  * but does not supply a numerical preset table or a complete projection matrix.
  * MS-OI29500 §2.1.1270 says non-perspective cameras ignore FOV. This module's
- * shape-local pinhole, rotation composition and incomplete orientation table are
- * legacy rendering approximations; they are not normative Office definitions.
- * See LEGACY_PERSP_FOV for the full-control evidence and accepted residuals.
+ * shape-local distance and incomplete orientation table are legacy rendering
+ * approximations; they are not normative Office definitions. See
+ * LEGACY_PERSP_FOV for the complete-control investigation and unresolved framing.
  *
  * Phase A scope: we model the shape as a flat z=0 rectangle (the picture / 2D
  * drawing) and compute the 2D homography that maps the un-projected rectangle
@@ -98,22 +98,40 @@ interface PresetDef {
   fovDeg: number;
 }
 
-// Retained legacy lens; NOT a measured per-preset FOV table.
-// Windows PowerPoint 16.0 controls-auditc-camera/manifest.json covers all 62
-// presets with omitted/zero/combined rotation, every perspective preset at FOV
-// 5/15/26/45/75/115 degrees and three aspects/rotations, plus zoom and non-
-// perspective FOV counterexamples (1,572 controls). Modern omitted-lens responses
-// are near authored 45 degrees except the two heroic-extreme presets; legacy
-// perspective also has an off-axis response. That is evidence AGAINST sharing
-// one calibrated lens, not sufficient evidence for a complete camera model.
-// Even the explicit-lens controls (which never use this default) disagree with
-// the current framing: max corner error 451.57pt. Accepted maxima for presets,
-// non-perspective FOV controls and zoom are 39.61/11.74/35.97pt respectively
-// (conservative extraction uncertainty 0.75pt). No FOV-only refit can fix this.
-// Keep the existing fallback until rotation, projection/framing, omitted preset
-// orientation and physical size dependence can be identified together. The
-// controls vary aspect but keep width fixed; an absolute camera distance cannot
-// be inferred as scale-independent from them. Do not extrapolate a fitted table.
+// Retained legacy lens; NOT an Office default or a calibrated preset table.
+// Windows PowerPoint 16.0 synthetic camera controls cover all 62 presets with
+// omitted/zero/combined rotation, all 24 perspective names at FOV 5/15/26/45/75/
+// 115 degrees, three aspects and three rotations, plus zoom 0.5/1/1.5 (1,572
+// cases; rotations (0,30,0), (30,0,0), (25,35,17) degrees; conservative PDF
+// corner uncertainty 0.75pt). A complete-corpus investigation, rather than a
+// FOV-only fit, established these bounded results:
+// - For all 810 modern explicit-lens cases, the existing Rz(-rev) Rx(-lat)
+//   Ry(-lon) rotation and centre-preserving pinhole fit within 0.56pt when the
+//   distance numerator is 452.16 PDF points instead of the larger half-extent.
+//   Microsoft Open Specifications support (2022-03-23, question 769795) gives
+//   d = 6.28 / tan(fov/2) in scene units, explicitly leaving their mapping to
+//   document units dependent on scene size. It does NOT specify a fixed inch.
+//   These controls hold width at 95.76pt: a fixed 452.16pt numerator and one
+//   proportional to width are indistinguishable. No scale law is established.
+// - Conditional on that distance, omitted modern lenses are consistent with
+//   45 degrees for thirteen presets and 80 for both heroic-extreme presets;
+//   all 45 modern zoom cases fit centre scaling within 0.51pt. These are bounded
+//   observations, not a normative or independently scale-validated FOV table.
+// - Legacy perspective requires ignoring rev and an off-axis numerator. A
+//   candidate with signed offsets (half-width + 100pt, half-height + 100pt),
+//   the same distance law and a 65-degree omitted lens still misses by 41.43pt.
+//   Original/rotated-box fits and diagonal fits also fail across all 486 legacy
+//   explicit-lens cases. A diagnostic FREE per-case scale reduces those errors
+//   below 0.58pt, locating the missing framing scale; fitting that scale per
+//   case/preset would not identify its rule and is deliberately not implemented.
+// The whole-corpus candidate fails 73 cases at a 2pt target (presets/explicit
+// lens/parallel-FOV/zoom maxima 3.04/41.43/0.50/4.24pt). Do not adopt only its
+// successful subset or call the remaining model error an unbridgeable Office
+// difference. Resolve legacy framing and scene-unit mapping before replacement.
+// Current production maxima remain 39.61/451.57/11.74/35.97pt respectively;
+// these are unresolved fidelity defects, not passing tolerances. Parallel/shear
+// and omitted-orientation controls do not establish arbitrary rotations, shape
+// sizes, extrusion, group cameras or near-plane behavior.
 const LEGACY_PERSP_FOV = 26;
 
 /**
@@ -203,10 +221,10 @@ function applyMat3(m: Mat3, x: number, y: number, z: number): [number, number, n
 }
 
 /**
- * Legacy object rotation Rz(-rev) · Rx(-lat) · Ry(-lon), with explicit rot
- * replacing the modeled preset orientation. ECMA-376 §§20.1.5.5/.11 describe
- * rotation overrides but do not establish this entire matrix. Keep it stable
- * while the full camera response, rather than a FOV-only fit, is unresolved.
+ * Object rotation Rz(-rev) · Rx(-lat) · Ry(-lon), with explicit rot replacing
+ * the modeled preset orientation. ECMA-376 §§20.1.5.5/.11 describe overrides;
+ * the modern-camera controls above support this matrix for their tested angles.
+ * It is not a complete legacy camera model (legacy perspective ignores rev).
  */
 function buildRotation(preset: PresetDef, rot: RotInput | undefined): Mat3 {
   const lat = rot ? rot.lat : preset.baseLat;
