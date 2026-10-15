@@ -1,7 +1,6 @@
-import { imageNaturalSize } from '@silurus/ooxml-core';
 import { readingPaintOwners } from './reading-owners.js';
 import type { LayoutRect, NativeReadingImagePlan } from '../layout/types.js';
-import { isUnavailablePaintResourceHandle, type PaintResourceSession, type ResolvedPaintResource } from './resource-session.js';
+import type { PaintResourceSession, ResolvedPaintResource } from './resource-session.js';
 
 /** Identity/admission only. Source sealing and geometry are acquired and
  * validated by layout; paint cannot re-import that authority or dry-render a
@@ -38,10 +37,10 @@ export function assertNativeReadingImageAvailable(
   const resource = session.resolve(plan.source.resourceKey, 'image');
   assertNativeReadingImageBinding(resource, plan, rect);
   const image = resource.handle;
-  if (isUnavailablePaintResourceHandle(image) || typeof ImageBitmap === 'undefined' || !(image instanceof ImageBitmap)) {
+  if (readingPaintOwners.isUnavailablePaintResourceHandle(image) || typeof ImageBitmap === 'undefined' || !(image instanceof ImageBitmap)) {
     throw new Error('Native reading image requires an available immutable decoded ImageBitmap');
   }
-  const { w, h } = imageNaturalSize(image);
+  const { w, h } = readingPaintOwners.imageNaturalSize(image);
   if (!Number.isSafeInteger(w) || !Number.isSafeInteger(h) || w <= 0 || h <= 0) throw new Error('Native reading image drawable has invalid or closed dimensions');
   const crop = plan.projection.crop;
   if (crop && crop.sourceWidth > 0 && crop.sourceHeight > 0 && crop.dwFraction > 0 && crop.dhFraction > 0

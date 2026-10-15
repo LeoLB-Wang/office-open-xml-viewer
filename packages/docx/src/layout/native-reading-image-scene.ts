@@ -3,7 +3,6 @@ import type { ImagePaintResourceDescriptor, PaintResourceRegistry, SourceRef } f
 import type { NativeReadingBlockScene } from './native-reading-block-scene.js';
 import { NativeReadingSceneError } from './native-reading-block-scene.js';
 import { nativeReadingOwners } from '../internal/native-reading-owners.js';
-import { imageResourceKey } from './source-key.js';
 import { acquireNativeReadingImagePlan, nativeReadingImageFrame } from './native-reading-image-frame.js';
 
 /** Complete standalone native image scene. The registry owns the exact source
@@ -38,7 +37,7 @@ export function acquireNativeReadingImageBlockScene(
   if (input.extent.widthStatus !== 'valid' || input.extent.heightStatus !== 'valid' || width === null || height === null
     || width <= 0 || height <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) return fail('geometry', 'invalid image allocation');
   const imageSource = { ...source, path: [...source.path, memberIndex] };
-  const key = imageResourceKey(imageSource, run.imagePath);
+  const key = nativeReadingOwners.imageResourceKey(imageSource, run.imagePath);
   let descriptor: ImagePaintResourceDescriptor;
   try { descriptor = registry.resolve(key, 'image') as ImagePaintResourceDescriptor; }
   catch { return fail('resource', 'image descriptor is unavailable for its source key'); }

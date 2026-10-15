@@ -8,8 +8,10 @@ describe('optional reading runtime', () => {
     vi.resetModules();
     const { readingHooks } = await import('./internal/reading-hooks.js');
     const { readingPaintHooks } = await import('./paint/reading-hooks.js');
-    const { nativeReadingOwners: owners } = await import('./internal/native-reading-owners.js');
-    const { readingPaintOwners: paintOwners } = await import('./paint/reading-owners.js');
+    const { readingDefaultOwners: owners } = await import('./internal/reading-default-owners.js');
+    const { isOwnedPaintResourceSession, isUnavailablePaintResourceHandle } = await import('./paint/resource-session.js');
+    const { imageNaturalSize } = await import('@silurus/ooxml-core');
+    const paintOwners = { isOwnedPaintResourceSession, isUnavailablePaintResourceHandle, imageNaturalSize };
     const { createPaintResourceRegistry } = await import('./layout/paint-resources.js');
     const { createPaintResourceSession } = await import('./paint/resource-session.js');
     const registry = createPaintResourceRegistry([{
@@ -28,13 +30,13 @@ describe('optional reading runtime', () => {
     }] }, 'reading worker paragraph');
     // Isolate every sidecar module, as the self-contained production ESM does.
     vi.resetModules();
-    const { installNativeReadingRuntime } = await import('./internal/native-reading-runtime.js');
+    const { installNativeReadingWorkerRuntime } = await import('./internal/native-reading-worker-runtime.js');
     const { imageResourceKey } = await import('./layout/source-key.js');
     const source = { story: 'body' as const, storyInstance: 'body', path: [0] };
     const key = imageResourceKey({ ...source, path: [0, 1] }, 'reading.png');
     const descriptor = { ...registry.descriptors[0], resourceKey: key };
     const rendererRegistry = createPaintResourceRegistry([descriptor]);
-    installNativeReadingRuntime({ readingHooks, readingPaintHooks, owners, paintOwners });
+    installNativeReadingWorkerRuntime({ readingHooks, readingPaintHooks, owners, paintOwners });
     const scenes = readingHooks.scenes(paragraph as unknown as ParagraphAcquisitionInput,
       source, 'p', 'body', rendererRegistry);
     expect(scenes).toHaveLength(1);

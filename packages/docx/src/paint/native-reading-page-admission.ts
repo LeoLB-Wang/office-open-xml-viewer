@@ -1,7 +1,8 @@
+import { readingPaintOwners } from './reading-owners.js';
 import type { DeepReadonly, LayoutPage } from '../layout/types.js';
 import { readingPictureBulletKeys } from './reading-picture-bullets.js';
 import { assertNativeReadingImageAvailable } from './native-reading-image-availability.js';
-import { isUnavailablePaintResourceHandle, type PaintResourceSession } from './resource-session.js';
+import type { PaintResourceSession } from './resource-session.js';
 
 type ReadingPage = LayoutPage | DeepReadonly<LayoutPage>;
 interface ReadingPageAdmission { readonly pictureBulletKeys: readonly string[] }
@@ -39,7 +40,7 @@ export function assertReadingPageImages(
   // selected marker before clearing the caller's existing surface.
   for (const key of admission.pictureBulletKeys) {
     const resource = session.resolve(key, 'picture-bullet');
-    if (isUnavailablePaintResourceHandle(resource.handle)) {
+    if (readingPaintOwners.isUnavailablePaintResourceHandle(resource.handle)) {
       throw new Error('Reading picture bullet has no decoded owned image');
     }
   }

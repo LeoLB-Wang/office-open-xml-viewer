@@ -1,4 +1,4 @@
-import { drawingMLGeometryBounds, requireResolvedDrawingMLGeometry, type DrawingMLShapePaintPlan } from '@silurus/ooxml-core';
+import type { DrawingMLShapePaintPlan } from '@silurus/ooxml-core';
 import type { DrawingLayout, LayoutRect } from './types.js';
 import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 export class NativeWrapPaintBudgetError extends RangeError {}
@@ -33,13 +33,13 @@ export function deriveNativeWrapPaintExtent(drawing: DrawingLayout, maximumOpera
     work += units;
     if (work > maximumOperations) throw new NativeWrapPaintBudgetError('Native wrap paint budget exceeded');
     assertSolidPlan(command.plan);
-    requireResolvedDrawingMLGeometry(command.plan, 1);
+    nativeReadingOwners.requireResolvedDrawingMLGeometry(command.plan, 1);
   }
   let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
   for (const command of drawing.commands) {
     if (command.kind === 'noop') continue;
     if (command.kind !== 'drawingml-shape') throw new Error('Unproved native wrap command');
-    const box = drawingMLGeometryBounds(command.plan, drawing.transform);
+    const box = nativeReadingOwners.drawingMLGeometryBounds(command.plan, drawing.transform);
     if (box) { left = Math.min(left, box.x); top = Math.min(top, box.y); right = Math.max(right, box.x + box.w); bottom = Math.max(bottom, box.y + box.h); }
   }
   if (work > maximumOperations) throw new NativeWrapPaintBudgetError('Native wrap paint budget exceeded');

@@ -10,6 +10,7 @@ import { parse } from '@babel/parser';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
+import { gzipSync } from 'node:zlib';
 import { createTypeScriptResolver } from './check-core-legacy-boundary.mjs';
 
 const resolveModule = createTypeScriptResolver();
@@ -39,6 +40,19 @@ export const SOURCE_DISPATCH = new Map([
 // eagerly retained byte that disappears when selected-source dispatch is
 // compiled out, even if preparation was moved into another static module.
 const DISPATCH_COST_BUDGET = Object.freeze({ docx: 2_500, xlsx: 3_000, pptx: 2_500, node: 4_500 });
+
+// Independent sidecar compression plus registration/owner bindings adds a
+// small overhead to the reading code moved out of the eager worker. This
+// budget allows that code, not another copy of shared geometry or layout.
+const DOCX_SOURCE_SIDECAR_GZIP_BUDGET = 16 * 1024;
+
+function assertSidecarBudget(file) {
+  const bytes = gzipSync(readFileSync(file), { level: 9 }).length;
+  if (bytes > DOCX_SOURCE_SIDECAR_GZIP_BUDGET) {
+    throw new Error(`${file} exceeds ${DOCX_SOURCE_SIDECAR_GZIP_BUDGET}-byte gzip sidecar budget: ${bytes}`);
+  }
+  console.log(`${file}: ${bytes}/${DOCX_SOURCE_SIDECAR_GZIP_BUDGET} gzip bytes`);
+}
 
 export function checkSourceDispatchImports(files) {
   for (const { path, text } of files) {
@@ -154,6 +168,21 @@ export function assertLazySourceOwner(entry, owner) {
   if (modules.has(resolve(owner))) throw new Error(`${entry} statically reaches ${owner}`);
 }
 
+/** The URL-loaded DOCX sidecar cannot share emitted chunks with its worker.
+ * Bind ordinary layout/paint implementations from the worker instead of
+ * bundling them again. Reading-only modules and the tiny hook contracts stay
+ * local; type-only owner contracts do not add runtime edges. */
+export function assertInjectedReadingOwners(entry = 'packages/docx/src/internal/worker-document-source.ts') {
+  for (const module of eagerModules(entry)) {
+    const path = relative(process.cwd(), module).replaceAll('\\', '/');
+    if ((path.startsWith('packages/docx/src/layout/')
+      && !/\/(?:native-reading-[^/]+|native-wrap-paint-bounds|reading-scene-error)\.ts$/.test(path))
+      || path === 'packages/docx/src/paint/resource-session.ts') {
+      throw new Error(`${entry} duplicates renderer implementation ${path}; inject its owner`);
+    }
+  }
+}
+
 function bundleGraph(entry) {
   const visited = new Set();
   const pending = [resolve(entry)];
@@ -249,6 +278,7 @@ export function checkBuiltBundles(dist = 'dist', { packages = false, disabledDis
       if (!existsSync(sidecar)) throw new Error(`Missing optional source sidecar ${sidecar}`);
       const sidecarImports = staticSpecifiers(parse(readFileSync(sidecar, 'utf8'), { sourceType: 'module' }));
       if (sidecarImports.length > 0) throw new Error(`${sidecar} is not self-contained`);
+      if (format === 'docx') assertSidecarBudget(sidecar);
       const packageSidecar = join('packages', format, 'dist', `${format}-source-worker.mjs`);
       if (packages && !existsSync(packageSidecar)) {
         throw new Error(`Missing optional package source sidecar ${packageSidecar}`);
@@ -257,6 +287,7 @@ export function checkBuiltBundles(dist = 'dist', { packages = false, disabledDis
         && staticSpecifiers(parse(readFileSync(packageSidecar, 'utf8'), { sourceType: 'module' })).length > 0) {
         throw new Error(`${packageSidecar} is not self-contained`);
       }
+      if (packages && format === 'docx') assertSidecarBudget(packageSidecar);
       const packageEntry = join('packages', format, 'dist', 'index.mjs');
       if (packages) {
         if (!existsSync(packageEntry)) throw new Error(`Missing package entry ${packageEntry}`);
@@ -299,6 +330,7 @@ export function assertEagerSourceEntries(entries, forbidden = []) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   checkSourceDispatchImports(trackedSourceFiles());
+  assertInjectedReadingOwners();
   const forbidden = [
     'packages/core/src/source/model-source.ts',
     ...['docx', 'xlsx', 'pptx'].map((format) => `packages/${format}/src/internal/worker-${format === 'docx' ? 'document' : format === 'xlsx' ? 'worksheet' : 'presentation'}-source.ts`),

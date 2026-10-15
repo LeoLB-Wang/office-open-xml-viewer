@@ -4,9 +4,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { build } from 'vite';
-import { eagerModules, assertDispatchCost, assertLazySourceOwner, assertNoTopLevelModelImport, assertEagerSourceEntries, assertNoSourceRuntime, checkSourceDispatchImports } from './check-model-source-lazy-graph.mjs';
+import { eagerModules, assertDispatchCost, assertLazySourceOwner, assertNoTopLevelModelImport, assertEagerSourceEntries, assertNoSourceRuntime, checkSourceDispatchImports, assertInjectedReadingOwners } from './check-model-source-lazy-graph.mjs';
 
 const tempRoot = process.platform === 'darwin' ? '/private/tmp' : tmpdir();
+
+test('DOCX source sidecar binds shared renderer implementations instead of bundling copies', () => {
+  assert.doesNotThrow(() => assertInjectedReadingOwners());
+});
 
 test('a static owner import in the worker graph fails, while a selected-source import stays lazy', () => {
   const root = mkdtempSync(join(tempRoot, 'ooxml-source-graph-'));
@@ -112,6 +116,6 @@ test('ordinary DOCX entry and worker exclude reading implementations; selected-s
   }
   for (const entry of ['packages/docx/src/internal/document-model-source.ts',
     'packages/docx/src/internal/worker-document-source.ts']) {
-    assert([...eagerModules(entry)].some(module => module.endsWith('/internal/native-reading-runtime.ts')));
+    assert([...eagerModules(entry)].some(module => module.endsWith('/internal/native-reading-worker-runtime.ts')));
   }
 });

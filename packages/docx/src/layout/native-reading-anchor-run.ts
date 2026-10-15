@@ -1,14 +1,10 @@
-import { drawingMLGeometryBounds } from '@silurus/ooxml-core';
 import type { BodyLayoutInput, BodyParagraphSourceInput } from './body-layout-input.js';
 import type { ParagraphAcquisitionInput } from './text.js';
 import type { AnchorReferenceFramesInput } from './anchor-frame.js';
-import { resolveAnchorPlacement } from './anchor-frame.js';
 import { NativeReadingSceneError } from './native-reading-block-scene.js';
-import { endnoteIdsInRetainedSlice, footnoteIdsInRetainedSlice } from './note-reference-ownership.js';
 import type { acquireParagraphAnchorRunStage } from './paragraph.js';
 import type { LayoutRect, PaintResourceRegistry, ParagraphLayout, DrawingLayout, ImagePaintResourceDescriptor } from './types.js';
 import { nativeReadingOwners } from '../internal/native-reading-owners.js';
-import { translateDrawing, translateParagraphLayout } from './retained-geometry-translation.js';
 import { acquireNativeReadingImagePlan, nativeReadingImageFrame } from './native-reading-image-frame.js';
 
 const MAX_RUN_WORK = 16384;
@@ -76,7 +72,7 @@ function completeDrawing(d: DrawingLayout, registry: PaintResourceRegistry | und
       const units = command.plan.resolvedGeometry?.workUnits;
       if (!Number.isSafeInteger(units) || units === undefined || units < 1) fail('ordinary peer numeric geometry is unresolved');
       debit(units);
-      const box = drawingMLGeometryBounds(command.plan,d.transform);
+      const box = nativeReadingOwners.drawingMLGeometryBounds(command.plan,d.transform);
       if (box) boxes.push({xPt:box.x,yPt:box.y,widthPt:box.w,heightPt:box.h});
       return command;
     }
@@ -196,7 +192,7 @@ export function composeNativeReadingAnchorRun(
       const first = paragraph.runs.find(r => (r.type === 'shape' || r.type === 'image')
         && r.anchorAcquisitionInput?.occurrenceId === scene.occurrenceId);
       if (!first || (first.type !== 'shape' && first.type !== 'image') || !first.anchorAcquisitionInput) fail('scene source owner is missing');
-      const resolved = resolveAnchorPlacement({acquisition:first.anchorAcquisitionInput,
+      const resolved = nativeReadingOwners.resolveAnchorPlacement({acquisition:first.anchorAcquisitionInput,
         frames:{...frames,paragraph:layout.flowBounds,line:null,character:null}});
       const h = resolved.axes.horizontal,v = resolved.axes.vertical;
       // Completed scenes already own full paint geometry. This acquisition is
@@ -205,7 +201,7 @@ export function composeNativeReadingAnchorRun(
         fail('scene authored origin is unresolved');
       const behavior = first.anchorAcquisitionInput.behavior;
       if (typeof behavior.behindDoc !== 'boolean' || typeof behavior.relativeHeight !== 'number') fail('scene stacking owner is unresolved');
-      const d = {...translateDrawing(scene.drawing,{xPt:h.resolvedOriginPt,yPt:v.resolvedOriginPt}),
+      const d = {...nativeReadingOwners.translateDrawing(scene.drawing,{xPt:h.resolvedOriginPt,yPt:v.resolvedOriginPt}),
         anchorLayer:{occurrenceId:scene.occurrenceId,behindDoc:behavior.behindDoc,
           relativeHeight:behavior.relativeHeight,
           sourceOrder:scene.memberRunIndices[0],horizontalOwnership:'host' as const,verticalOwnership:'host' as const}};
@@ -240,8 +236,8 @@ export function composeNativeReadingAnchorRun(
           fail('anchor run contains unsupported owned textbox content');
         // Atom admission does not commit notes from independent member stories.
         // Their authority is retained on placements, independently of events.
-        if (block.events.length || footnoteIdsInRetainedSlice(block).length
-          || endnoteIdsInRetainedSlice(block).length
+        if (block.events.length || nativeReadingOwners.footnoteIdsInRetainedSlice(block).length
+          || nativeReadingOwners.endnoteIdsInRetainedSlice(block).length
           || block.lines.some(line=>line.placements.some(p=>p.kind === 'text' && p.dependency !== undefined)))
           fail('anchor run textbox requires independent note/event acquisition');
       }
@@ -285,7 +281,7 @@ export function composeNativeReadingAnchorRun(
   const extent = all.yPt+dy+all.heightPt-start;
   if (!Number.isFinite(extent) || extent < 0 || extent > column.heightPt) fail('complete anchor run exceeds a full column');
   const placed = prepared.map(m=> {
-    const translated = translateParagraphLayout(m.layout,{xPt:dx,yPt:dy});
+    const translated = nativeReadingOwners.translateParagraphLayout(m.layout,{xPt:dx,yPt:dy});
     // Canonical translation moves all commands, glyphs, owned stories and
     // anchor diagnostics together. The logical paragraph column allocation
     // remains horizontally authoritative; only its vertical mark origin moves.

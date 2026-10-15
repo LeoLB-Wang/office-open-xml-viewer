@@ -3,17 +3,13 @@ import type { ParagraphAcquisitionInput } from './text.js';
 import type { DrawingLayout, DrawingPaintCommand, LayoutRect, SourceRef } from './types.js';
 import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 import type { ShapeDrawingPlanResult } from './shape-drawing-plan.js';
-import { retainedAnchorChildFrame } from './retained-anchor-child-frame.js';
 import { NativeWrapPaintBudgetError, deriveNativeWrapPaintExtent } from './native-wrap-paint-bounds.js';
-import { translateDrawing } from './retained-geometry-translation.js';
 
 export { NativeReadingSceneError, type NativeReadingSceneBlocker } from './reading-scene-error.js';
 import { NativeReadingSceneError, type NativeReadingSceneBlocker } from './reading-scene-error.js';
 function fail(blocker: NativeReadingSceneBlocker, message: string): never {
   throw new NativeReadingSceneError(blocker, message);
 }
-
-export { planRetainedAnchorShape } from './retained-anchor-shape.js';
 
 export interface NativeReadingBlockScene {
   readonly occurrenceId: string;
@@ -96,7 +92,7 @@ export function acquireNativeReadingBlockScene(
     if (work + resolvedWork + commands.length >= maximumWork) fail('budget', 'shape source allowance exceeded');
     if (run.subpathPaint && run.subpathPaint.length !== run.subpaths.length) fail('paint', 'per-path paint ownership mismatch');
     let planned: ShapeDrawingPlanResult;
-    try { planned = nativeReadingOwners.planRetainedAnchorShape(run, acquisition, retainedAnchorChildFrame(acquisition, outer), undefined, undefined, maximumWork - work - resolvedWork - commands.length - 1); }
+    try { planned = nativeReadingOwners.planRetainedAnchorShape(run, acquisition, nativeReadingOwners.retainedAnchorChildFrame(acquisition, outer), undefined, undefined, maximumWork - work - resolvedWork - commands.length - 1); }
     catch (error) { fail(error instanceof nativeReadingOwners.GeometryWorkBudgetError ? 'budget' : 'paint', error instanceof Error ? error.message : 'geometry resolution failed'); }
     if (planned.status !== 'planned' || planned.command.kind !== 'drawingml-shape') fail('paint', `member ${index} cannot retain a vector command`);
     resolvedWork += planned.command.plan.resolvedGeometry.workUnits;
@@ -133,7 +129,7 @@ export function placeNativeReadingBlockScene(scene: NativeReadingBlockScene, slo
   if (!Object.values(slot).every(Number.isFinite) || slot.widthPt < 0 || slot.heightPt < 0) fail('placement', 'invalid resolved flow slot');
   const bounds = scene.drawing.flowBounds;
   if (bounds.widthPt > slot.widthPt || bounds.heightPt > slot.heightPt) fail('placement', 'complete scene exceeds the resolved flow slot');
-  const placed = translateDrawing(scene.drawing, { xPt: slot.xPt - bounds.xPt, yPt: slot.yPt - bounds.yPt });
+  const placed = nativeReadingOwners.translateDrawing(scene.drawing, { xPt: slot.xPt - bounds.xPt, yPt: slot.yPt - bounds.yPt });
   if (!Object.values(placed.flowBounds).every(Number.isFinite) || !Object.values(placed.inkBounds).every(Number.isFinite)) fail('placement', 'translated scene overflow');
   return nativeReadingOwners.snapshotPlainData(placed, 'placed native reading scene', scene);
 }
