@@ -7477,6 +7477,61 @@ mod tests {
     }
 
     #[test]
+    fn inline_math_preview_applies_inherited_ignorable_and_process_content() {
+        for (outer_process, local_process, expected) in [
+            ("", "", "beforeafter"),
+            (
+                r#"mc:ProcessContent="u:wrap""#,
+                "",
+                "beforekeptselectedafter",
+            ),
+            (
+                "",
+                r#"mc:ProcessContent="u:wrap""#,
+                "beforekeptselectedafter",
+            ),
+            (
+                r#"mc:ProcessContent="u:*""#,
+                "",
+                "beforekeptselectedsiblingafter",
+            ),
+        ] {
+            let xml = format!(
+                r#"<a:p xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"
+                xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+                xmlns:u="urn:unsupported" mc:Ignorable="u a a14" {outer_process}>
+                <mc:AlternateContent>
+                  <mc:Choice Requires="a14"><a14:m><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></a14:m></mc:Choice>
+                  <mc:Fallback><a:r><a:t>before</a:t></a:r>
+                    <u:wrap {local_process}><a:r><a:t>kept</a:t></a:r>
+                      <mc:AlternateContent>
+                        <mc:Choice Requires="a14"><a:r><a:t>selected</a:t></a:r></mc:Choice>
+                        <mc:Fallback><a:r><a:t>unselected</a:t></a:r></mc:Fallback>
+                      </mc:AlternateContent>
+                    </u:wrap>
+                    <u:other><a:r><a:t>sibling</a:t></a:r></u:other>
+                    <v:wrap xmlns:v="urn:local" mc:Ignorable="v"><a:r><a:t>locally ignored</a:t></a:r></v:wrap>
+                    <a:r><a:t>after</a:t></a:r>
+                  </mc:Fallback>
+                </mc:AlternateContent></a:p>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let ac = doc.root_element().first_element_child().unwrap();
+            let mut runs = Vec::new();
+            let mut fallbacks = Vec::new();
+            push_math_runs(ac, None, &HashMap::new(), &mut runs, &mut fallbacks);
+            assert_eq!(runs.len(), 1);
+            assert_eq!(fallbacks.len(), 1);
+            assert_eq!(
+                fallbacks[0].text, expected,
+                "{outer_process} / {local_process}"
+            );
+        }
+    }
+
+    #[test]
     fn inline_math_retains_one_fallback_for_the_complete_choice_range() {
         let equation = "<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>";
         for (choice, expected_previews) in [

@@ -1810,20 +1810,52 @@ pub(crate) fn math_run_color(
 }
 
 /// Conversion-failure recovery is library policy, but the retained authored
-/// preview still obeys ECMA-376 Part 3 §§9.3–9.4: recursively replace each
-/// AlternateContent with its first understood Choice (or Fallback), discarding
-/// every unselected branch. Only DrawingML/OMML text contributes to the preview.
+/// preview still obeys ECMA-376 Part 3 §§9.2–9.4: remove ignored subtrees,
+/// unwrap ProcessContent elements, and recursively select AlternateContent.
+/// Only DrawingML/OMML text contributes to the preview.
 fn inline_math_preview_text(fallback: roxmltree::Node<'_, '_>) -> String {
     let mut text = String::new();
-    // Keep traversal iterative and in document order without cloning subtrees.
-    let mut pending = vec![fallback];
-    while let Some(node) = pending.pop() {
+    // Scope can originate outside the retained Fallback. Resolve it at each
+    // physical ancestor before walking selected preview nodes in document order.
+    let ancestors: Vec<_> = fallback
+        .ancestors()
+        .skip(1)
+        .filter(|n| n.is_element())
+        .collect();
+    let mut inherited = ooxml_common::bounded_xml::MceScope::root();
+    for ancestor in ancestors.into_iter().rev() {
+        inherited = ooxml_common::mce::derive_scope(ancestor, &inherited);
+    }
+    let mut pending = vec![(fallback, inherited)];
+    while let Some((node, inherited)) = pending.pop() {
+        let scope = ooxml_common::mce::derive_scope(node, &inherited);
+        let ns = node.tag_name().namespace();
+        // The existing Choice predicate lists extensions; DrawingML, OMML and
+        // PresentationML are also understood even if declared Ignorable.
+        let understood = ooxml_common::ns::is_a_ns(ns)
+            || ooxml_common::ns::is_m_ns(ns)
+            || ooxml_common::ns::is_p_ns(ns)
+            || ns.is_some_and(crate::shape::pptx_understands_ns)
+            || ns == Some(ooxml_common::bounded_xml::MCE_NS);
+        if !understood && ns.is_some_and(|ns| scope.is_ignorable(ns)) {
+            if ns.is_some_and(|ns| scope.processes_content(ns, node.tag_name().name())) {
+                pending.extend(
+                    node.children()
+                        .rev()
+                        .filter(|n| n.is_element())
+                        .map(|n| (n, scope.clone())),
+                );
+            }
+            // §9.4 removes the entire ignored subtree, including selected
+            // nested alternatives; ProcessContent alone retains its children.
+            continue;
+        }
         if node.has_tag_name((ooxml_common::bounded_xml::MCE_NS, "AlternateContent")) {
             if let Some(selected) = ooxml_common::mce::select_alternate_content(
                 node,
                 &crate::shape::pptx_understands_ns,
             ) {
-                pending.push(selected);
+                pending.push((selected, scope));
             }
         } else if node.tag_name().name() == "t" {
             let ns = node.tag_name().namespace();
@@ -1833,7 +1865,12 @@ fn inline_math_preview_text(fallback: roxmltree::Node<'_, '_>) -> String {
                 }
             }
         } else {
-            pending.extend(node.children().rev().filter(|n| n.is_element()));
+            pending.extend(
+                node.children()
+                    .rev()
+                    .filter(|n| n.is_element())
+                    .map(|n| (n, scope.clone())),
+            );
         }
     }
     text
