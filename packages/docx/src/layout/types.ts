@@ -1,5 +1,5 @@
 import type { SectionLayoutContext } from '../layout-context.js';
-import type { DocxStorySource, FramePr } from '../types.js';
+import type { DocxDiagnostic, DocxDiagnosticCode, DocxStorySource, FramePr } from '../types.js';
 import type {
   GlyphInkBounds,
   TextFontSlotPresence,
@@ -1203,23 +1203,10 @@ export interface LayoutPage {
   readonly changeBars?: readonly ChangeBarLayout[];
 }
 
-export type LayoutDiagnosticCode =
-  | 'FLOW_OVERLAP'
-  | 'BOTTOM_MARGIN_INVASION'
-  | 'FLOW_DOMAIN_INVASION'
-  | 'INVALID_REFERENCE'
-  | 'INVALID_GEOMETRY'
-  | 'INVALID_VALUE'
-  | 'MISSING_RESOURCE'
-  | 'NON_CONVERGENCE'
-  | 'UNSUPPORTED_FEATURE';
-
-export interface LayoutDiagnostic {
-  readonly code: LayoutDiagnosticCode;
-  readonly severity: 'warning' | 'error';
-  readonly source?: SourceRef;
-  readonly message: string;
-}
+// Layout and resource acquisition share the public diagnostic value contract.
+// Keeping aliases here does not expose the retained layout implementation.
+export type LayoutDiagnosticCode = DocxDiagnosticCode;
+export type LayoutDiagnostic = DocxDiagnostic;
 
 export interface DocumentLayout {
   readonly pages: readonly LayoutPage[];

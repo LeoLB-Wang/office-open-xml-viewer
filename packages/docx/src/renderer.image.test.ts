@@ -136,7 +136,6 @@ describe('docx lazy image bytes', () => {
       0,
       0,
       undefined,
-      false,
       undefined,
       { targetWidthPx: 1, targetHeightPx: 1 },
     );
@@ -203,7 +202,7 @@ describe('docx lazy image bytes', () => {
     vi.stubGlobal('createImageBitmap', createBitmap);
     const args = [
       'word/media/chained-effects.png', 'image/png', 'FFFFFF', fetchImage,
-      0, 0, { clr1: '000000', clr2: 'FF0000' }, false, undefined,
+      0, 0, { clr1: '000000', clr2: 'FF0000' }, undefined,
     ] as const;
 
     const wide = await decodeRaster(...args, { targetWidthPx: 4, targetHeightPx: 1 });
@@ -236,7 +235,7 @@ describe('docx lazy image bytes', () => {
     ]);
   });
 
-  it('resamples the clrChange result when chained duotone fails, while strict mode returns null', async () => {
+  it('rejects a failed chained duotone instead of painting only clrChange', async () => {
     const written: Uint8ClampedArray[] = [];
     class FallbackSurface {
       constructor(readonly width: number, readonly height: number) {}
@@ -275,28 +274,10 @@ describe('docx lazy image bytes', () => {
 
     try {
       await expect(decodeRaster(
-        ...args,
-        false,
-        undefined,
-        { targetWidthPx: 1, targetHeightPx: 1 },
-      )).resolves.toBe(fallback);
-      await expect(decodeRaster(
-        ...args,
-        true,
-        undefined,
-        { targetWidthPx: 1, targetHeightPx: 1 },
-      )).resolves.toBeNull();
-
-      expect([...written[0].slice(0, 8)]).toEqual([
-        255, 255, 255, 0,
-        128, 128, 128, 255,
-      ]);
-      expect(createBitmap).toHaveBeenCalledTimes(2);
-      expect(createBitmap).toHaveBeenNthCalledWith(2, expect.any(FallbackSurface), {
-        resizeWidth: 1,
-        resizeHeight: 1,
-        resizeQuality: 'high',
-      });
+        ...args, undefined, { targetWidthPx: 1, targetHeightPx: 1 },
+      )).rejects.toThrow('duotone transform unavailable');
+      expect(written).toEqual([]);
+      expect(createBitmap).toHaveBeenCalledTimes(1);
     } finally {
       duotoneTransform.mockRestore();
       dropColorReplacedCache(fetchImage);
@@ -342,7 +323,6 @@ describe('docx lazy image bytes', () => {
       0,
       0,
       { clr1: '000000', clr2: 'FFFFFF' },
-      false,
       undefined,
       { targetWidthPx: 300, targetHeightPx: 250 },
     )).resolves.toMatchObject({ width: 300, height: 250 });
@@ -390,7 +370,6 @@ describe('docx lazy image bytes', () => {
       0,
       0,
       { clr1: '000000', clr2: 'FFFFFF' },
-      false,
       undefined,
       { targetWidthPx: 300, targetHeightPx: 250 },
     )).resolves.toMatchObject({ width: 300, height: 250 });
@@ -659,7 +638,6 @@ describe('docx lazy image bytes', () => {
       0,
       0,
       undefined,
-      false,
       { render },
     )).resolves.toBe(bitmap);
 

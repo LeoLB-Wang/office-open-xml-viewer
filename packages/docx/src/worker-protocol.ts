@@ -1,3 +1,4 @@
+import type { LayoutDiagnostic } from './layout/types.js';
 import type { DocxReadingNotice } from './native-reading-notice.js';
 import type { DocComment, DocNote, DocRevision, RenderPageOptions, WorkerResponse } from './types';
 import type { CommentAnchorRange } from './comments';
@@ -18,6 +19,8 @@ import type { DocxElementContext, DocxPagePoint } from './selection-context';
  *  the main-thread proxy needs for its synchronous getters. The full model
  *  stays in the worker. */
 export interface DocumentMeta {
+  diagnostics?: readonly LayoutDiagnostic[];
+  resourceDiagnostics?: readonly LayoutDiagnostic[];
   /** Document-level source requests own publication even when this view has no relocated scenes. */
   nativeReadingRequested?: true;
   /** Changed-layout disclosure for this exact retained variant. */
@@ -54,6 +57,7 @@ export interface DocumentMeta {
  * can change. */
 export type DocumentLayoutMeta = Pick<
   DocumentMeta,
+  | 'diagnostics'
   | 'pageCount'
   | 'pageSizes'
   | 'bookmarkPages'
@@ -72,6 +76,7 @@ export type DocumentLayoutMeta = Pick<
  * bookmark, comment and tracked-change capabilities in main and worker modes.
  */
 export interface DocumentLayoutPartial {
+  diagnostics?: readonly LayoutDiagnostic[];
   /** Pages published so far — NOT the document's total. */
   pageCount: number;
   /** Per-page size (pt) for the published pages, index-aligned with `pageCount`. */
@@ -95,7 +100,7 @@ export interface DocumentLayoutPartial {
    *  to produce — but re-cloning it on every publication would be real wire
    *  bandwidth on a heavily reviewed document. The host seeds its metadata from
    *  this and keeps it across later publications. */
-  review?: Pick<DocumentMeta, 'revisions' | 'comments' | 'footnotes' | 'endnotes'>;
+  review?: Pick<DocumentMeta, 'revisions' | 'comments' | 'footnotes' | 'endnotes' | 'resourceDiagnostics'>;
 }
 
 /** Serializable subset of RenderPageOptions (callbacks cannot cross the wire). */
@@ -190,7 +195,7 @@ export type RenderWorkerResponse =
     } & PullSessionIdentity<number>)
   // The worker projects structured-clone-safe run geometry from the same
   // retained layout variant it paints and ships it beside the bitmap.
-  | { type: 'pageRendered'; id: number; bitmap: ImageBitmap; runs: DocxTextRunInfo[] }
+  | { type: 'pageRendered'; id: number; bitmap: ImageBitmap; runs: DocxTextRunInfo[]; diagnostics?: readonly LayoutDiagnostic[] }
   | { type: 'runsCollected'; id: number; runs: DocxTextRunInfo[] }
   // Progressive layout in worker mode: the worker publishes its provisional
   // prefixes as they are primed, then answers the original `parse` with the

@@ -1,4 +1,10 @@
 import {
+  applyImageDataTransform,
+  decodeSvgBlobOnMainThread,
+  OoxmlDecodedImageLimitError,
+  OoxmlResourceLimitError,
+  isOoxmlDecodedImageLimitError,
+  isTiffDecodeError,
   captureDecodedBitmapCacheEpoch,
   decodedBitmapTargetResizeOptions,
   duotoneImageData,
@@ -34,8 +40,15 @@ import type {
   RasterPaintOccurrence,
 } from '../layout/types.js';
 
+/** Resource ceilings and recognized TIFF decode failures stay terminal even
+ * when an SVG alternative or a chart's remaining content could be displayed. */
+export function isTerminalImageAcquisitionError(error: unknown): boolean {
+  return error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)
+    || isTiffDecodeError(error);
+}
+
 export type DecodedImage = ImageBitmap | HTMLImageElement;
-export type DecodedPaintImage = DecodedImage | OptionalImageCodecUnavailableError;
+export type DecodedPaintImage = DecodedImage | OptionalImageCodecUnavailableError | null;
 export type DocxFetchImage = (path: string, mime: string) => Promise<Blob>;
 
 interface ImageDecodeRequest {
@@ -52,7 +65,7 @@ interface ImageDecodeRequest {
   targetHeightPx?: number;
   /** Set only for browser-resizable rasters admitted by the shared plan. */
   plannedPixelLimit?: number;
-  failClosedOnDuotoneFailure?: boolean;
+  chartPictureFill?: boolean;
 }
 
 export function imageKey(
@@ -93,70 +106,30 @@ async function applyColorEffects(
   bitmap: ImageBitmap,
   colorReplaceFrom: string | undefined,
   duotone: Duotone | undefined,
-  failClosedOnDuotoneFailure: boolean,
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
 ): Promise<ImageBitmap | null> {
-  const unavailable = async (error?: unknown): Promise<ImageBitmap | null> => {
-    // clrChange has no compatibility pass-through: silently dropping its exact
-    // alpha transform would change authored content. Duotone-only consumers
-    // retain their established compatibility behavior, but at the requested
-    // display resolution; strict chart consumers still fail closed.
-    if (colorReplaceFrom) {
-      throw error instanceof Error
-        ? error
-        : new Error('2D canvas is unavailable for image color effects');
-    }
-    if (failClosedOnDuotoneFailure) return null;
-    const resizeOptions = decodedBitmapTargetResizeOptions(
-      bitmap.width,
-      bitmap.height,
-      target?.targetWidthPx,
-      target?.targetHeightPx,
-    );
-    if (!resizeOptions) return bitmap;
-    if (typeof createImageBitmap === 'undefined') {
-      throw new Error('createImageBitmap is unavailable for duotone fallback resampling');
-    }
-    return createImageBitmap(bitmap, resizeOptions);
-  };
-  if (typeof OffscreenCanvas === 'undefined') return unavailable();
-  let offscreen: OffscreenCanvas;
-  let context: OffscreenCanvasRenderingContext2D | null;
-  try {
-    offscreen = new OffscreenCanvas(bitmap.width, bitmap.height);
-    context = offscreen.getContext('2d');
-  } catch (error) {
-    return unavailable(error);
-  }
-  if (!context) return unavailable();
-  context.drawImage(bitmap, 0, 0);
-  let imageData: ImageData;
-  try {
-    imageData = context.getImageData(0, 0, bitmap.width, bitmap.height);
-  } catch (error) {
-    return unavailable(error);
-  }
-  if (colorReplaceFrom) applyExactColorReplacement(imageData, colorReplaceFrom);
-  if (duotone) {
-    try {
-      duotoneImageData(imageData, duotone.clr1, duotone.clr2);
-    } catch {
-      // The exact clrChange mutation already lives in this one source-grid
-      // buffer. Compatibility mode preserves and resamples that current result;
-      // strict chart consumers must not draw it without the authored duotone.
-      if (failClosedOnDuotoneFailure) return null;
-    }
-  }
-  context.putImageData(imageData, 0, 0);
-  const resizeOptions = decodedBitmapTargetResizeOptions(
-    bitmap.width,
-    bitmap.height,
-    target?.targetWidthPx,
-    target?.targetHeightPx,
-  );
-  return resizeOptions
-    ? createImageBitmap(offscreen, resizeOptions)
-    : createImageBitmap(offscreen);
+  // Reuse the shared source-grid transform used by PPTX/XLSX. DOCX combines
+  // exact clrChange alpha replacement and §20.1.8.23 duotone in one buffer.
+  // A DOM surface supports browsers without OffscreenCanvas. Returning the
+  // source would drop an authored effect, so unavailable readback is explicit.
+  const transformed = await applyImageDataTransform(bitmap, data => {
+    if (colorReplaceFrom) applyExactColorReplacement(data, colorReplaceFrom);
+    if (duotone) duotoneImageData(data, duotone.clr1, duotone.clr2);
+  }, {
+    width: bitmap.width,
+    height: bitmap.height,
+    ...target,
+    offscreenFactory: (width, height) => {
+      if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(width, height);
+      if (typeof document === 'undefined') return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      return canvas;
+    },
+  });
+  if (transformed === bitmap) throw new Error('2D canvas is unavailable for image color effects');
+  return transformed as ImageBitmap;
 }
 
 export async function decodeRaster(
@@ -167,10 +140,10 @@ export async function decodeRaster(
   widthPt = 0,
   heightPt = 0,
   duotone?: Duotone,
-  failClosedOnDuotoneFailure = false,
   tiff?: TiffRenderer,
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
   plannedPixelLimit?: number,
+  svgDecoder?: import('@silurus/ooxml-core').SvgBlobDecoder,
 ): Promise<ImageBitmap | null> {
   // Pixel effects temporarily retain more than their cached input/output:
   // source + offscreen backing + ImageData + result = four surfaces. clrChange
@@ -188,6 +161,8 @@ export async function decodeRaster(
     widthPt,
     heightPt,
     suppressBoundaryFrame: true,
+    svgDecoder: svgDecoder ?? (mimeType === 'image/svg+xml' && typeof Image !== 'undefined'
+      ? decodeSvgBlobOnMainThread : undefined),
     tiff,
     maxRetainedPixels,
     // The shared decoder preserves the native grid while it fits the explicit
@@ -201,6 +176,12 @@ export async function decodeRaster(
   });
   if (!base) return null;
   if (!colorReplaceFrom && !duotone) return base;
+  // Injected SVG decoders share the decoded owner but can return a larger
+  // vector raster than the effect's four-surface working-set allowance.
+  const pixels = base.width * base.height;
+  if (pixels > maxRetainedPixels) {
+    throw new OoxmlDecodedImageLimitError('image-pixels', maxRetainedPixels, pixels);
+  }
   const resolvedBaseKey = await resolvedCachedBitmapVariantKey(
     imagePath,
     mimeType,
@@ -218,7 +199,7 @@ export async function decodeRaster(
   const resizeKey = resizeOptions
     ? `|resize:${resizeOptions.resizeWidth}x${resizeOptions.resizeHeight}`
     : '';
-  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone)}${resizeKey}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
+  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone)}${resizeKey}`;
   return getCachedDerivedBitmap(
     DOCX_COLOR_EFFECT_CACHE_NAMESPACE,
     key,
@@ -228,7 +209,6 @@ export async function decodeRaster(
         base,
         colorReplaceFrom,
         duotone,
-        failClosedOnDuotoneFailure,
         target,
       );
       return { bitmap, owned: bitmap !== null && bitmap !== base };
@@ -356,7 +336,7 @@ function imageDecodeRequests(
           widthPt: raster.widthPt,
           heightPt: raster.heightPt,
           hasCrop: fill.srcRect != null,
-          failClosedOnDuotoneFailure: true,
+          chartPictureFill: true,
           ...(!usage.preserveNaturalSize && size.targetWidthPx && size.targetHeightPx
             ? { targetWidthPx: size.targetWidthPx, targetHeightPx: size.targetHeightPx }
             : {}),
@@ -399,6 +379,7 @@ export async function preloadPaintImages(
   devicePixelsPerPoint?: number,
   svgDecoder?: import('@silurus/ooxml-core').SvgBlobDecoder,
   imageResources?: ImageResourceOptions,
+  onDiagnostic?: (diagnostic: import('../layout/types.js').LayoutDiagnostic) => void,
 ): Promise<Map<string, DecodedPaintImage>> {
   if (!fetchImage) return new Map();
   const policy = normalizeImageResourceOptions(imageResources);
@@ -474,10 +455,11 @@ export async function preloadPaintImages(
       const dataIsSvg = request.mimeType === 'image/svg+xml';
       const blip = { svgImagePath: request.svgImagePath, srcRect: request.hasCrop || null };
       let image: DecodedImage | null;
-      if (preferVectorBlip(blip)) {
+      if (preferVectorBlip(blip) && !request.colorReplaceFrom && !request.duotone) {
         try {
           image = await decodeSvg(blip.svgImagePath, request);
         } catch (vectorError) {
+          if (isTerminalImageAcquisitionError(vectorError)) throw vectorError;
           const fallback = dataIsSvg
             ? await decodeSvg(request.imagePath, request)
             : await decodeRaster(
@@ -488,41 +470,52 @@ export async function preloadPaintImages(
                 request.widthPt,
                 request.heightPt,
                 request.duotone,
-                request.failClosedOnDuotoneFailure ?? false,
                 tiff,
                 request.targetWidthPx && request.targetHeightPx
                   ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
                   : undefined,
                 request.plannedPixelLimit,
+                svgDecoder,
               );
           if (!fallback) throw vectorError;
           image = fallback;
         }
-      } else if (dataIsSvg) {
+      } else if (dataIsSvg && !request.colorReplaceFrom && !request.duotone) {
         image = await decodeSvg(request.imagePath, request);
       } else {
-        image = await decodeRaster(
-          request.imagePath,
-          request.mimeType,
-          request.colorReplaceFrom,
-          fetchImage,
-          request.widthPt,
-          request.heightPt,
-          request.duotone,
-          request.failClosedOnDuotoneFailure ?? false,
-          tiff,
+        const decodeEffect = (path: string, mime: string) => decodeRaster(
+          path, mime, request.colorReplaceFrom, fetchImage,
+          request.widthPt, request.heightPt, request.duotone, tiff,
           request.targetWidthPx && request.targetHeightPx
             ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
             : undefined,
-          request.plannedPixelLimit,
+          request.plannedPixelLimit, svgDecoder,
         );
+        if (preferVectorBlip(blip)) {
+          try { image = await decodeEffect(blip.svgImagePath, 'image/svg+xml'); }
+          catch (error) {
+            if (isTerminalImageAcquisitionError(error)) throw error;
+            image = await decodeEffect(request.imagePath, request.mimeType);
+          }
+        } else {
+          image = await decodeEffect(request.imagePath, request.mimeType);
+        }
       }
-      return image == null
-        ? null
-        : [requestKey(request), image] as const;
+      if (image == null && request.chartPictureFill) {
+        onDiagnostic?.({ code: 'MISSING_RESOURCE', severity: 'warning',
+          message: 'A chart picture fill produced no drawable output; the remaining chart content is rendered' });
+        return [requestKey(request), null] as const;
+      }
+      return image == null ? null : [requestKey(request), image] as const;
     } catch (error) {
       if (isOptionalImageCodecUnavailableError(error, 'tiff')) {
         return [requestKey(request), error] as const;
+      }
+      if (isTerminalImageAcquisitionError(error)) throw error;
+      if (request.chartPictureFill) {
+        onDiagnostic?.({ code: 'MISSING_RESOURCE', severity: 'warning',
+          message: 'A chart picture fill could not be acquired; the remaining chart content is rendered' });
+        return [requestKey(request), null] as const;
       }
       throw error;
     }

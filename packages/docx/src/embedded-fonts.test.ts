@@ -316,7 +316,6 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
       activeLoads--;
       return face;
     });
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const refs = Array.from({ length: 80 }, (_, index): EmbeddedFontRef => ({
       fontName: `Face ${index}`, style: 'regular',
       partPath: `word/fonts/font${index}.ttf`, fontKey: '',
@@ -338,12 +337,11 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
     expect(activeLoads).toBe(0);
     expect(added).toHaveLength(64);
     expect(loaded.faces).toHaveLength(64);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('skipped 16 embedded font face(s)'));
+    expect(loaded.diagnostics).toEqual([expect.objectContaining({ code: 'MISSING_RESOURCE', message: expect.stringContaining('Skipped 16 embedded font face(s)') })]);
   });
 
   it('admits faces in document order under the aggregate decoded-byte ceiling', async () => {
     const added = installFontFaceSet();
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const refs = Array.from({ length: 5 }, (_, index): EmbeddedFontRef => ({
       fontName: `Large Face ${index}`, style: 'regular',
       partPath: `word/fonts/large${index}.ttf`, fontKey: '',
@@ -361,7 +359,7 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
     expect(fetchFontBytes).toHaveBeenCalledTimes(5);
     expect(added.map((face) => face.family)).toEqual(loaded.routes.map((route) => route.resolvedFamily));
     expect(loaded.faces).toHaveLength(4);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('skipped 1 embedded font face(s)'));
+    expect(loaded.diagnostics).toEqual([expect.objectContaining({ code: 'MISSING_RESOURCE', message: expect.stringContaining('Skipped 1 embedded font face(s)') })]);
   });
 
   it('maps a 4-slot font to 4 faces with the correct weight/style descriptors', async () => {

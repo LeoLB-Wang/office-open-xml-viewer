@@ -14,6 +14,26 @@ import type {
   WorkerErrorPayload,
 } from '@silurus/ooxml-core/worker';
 
+/** A parser/layout limitation or resource acquisition failure. These immutable
+ * values use the same contract in main-thread and worker rendering. */
+export type DocxDiagnosticCode =
+  | 'FLOW_OVERLAP'
+  | 'BOTTOM_MARGIN_INVASION'
+  | 'FLOW_DOMAIN_INVASION'
+  | 'INVALID_REFERENCE'
+  | 'INVALID_GEOMETRY'
+  | 'INVALID_VALUE'
+  | 'MISSING_RESOURCE'
+  | 'NON_CONVERGENCE'
+  | 'UNSUPPORTED_FEATURE';
+
+export interface DocxDiagnostic {
+  readonly code: DocxDiagnosticCode;
+  readonly severity: 'warning' | 'error';
+  readonly source?: Readonly<DocxStorySource>;
+  readonly message: string;
+}
+
 export interface DocxDocumentModel {
   section: SectionProps;
   body: BodyElement[];

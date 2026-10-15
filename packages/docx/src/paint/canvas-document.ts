@@ -4,8 +4,6 @@ import {
   clampCanvasSize,
   defaultDpr,
   isHTMLCanvas,
-  isOoxmlDecodedImageLimitError,
-  isTiffDecodeError,
   isOptionalImageCodecUnavailableError,
   PT_TO_PX,
   chartImageFillKey,
@@ -27,6 +25,7 @@ import type {
 } from '../layout/types.js';
 import {
   decodeRaster,
+  isTerminalImageAcquisitionError,
   preloadPaintImages,
   imageKey,
   type DocxFetchImage,
@@ -53,6 +52,7 @@ interface PrivatePaintResourceLookup {
 }
 
 export interface CanvasDocumentPaintOptions<TTextRun> {
+  readonly onDiagnostic?: (diagnostic: import('../layout/types.js').LayoutDiagnostic) => void;
   /** Internal document ownership check after every async acquisition, before
    * the first clear/paint. It is not serialized or exposed as authored facts. */
   readonly assertPublicationCurrent?: () => void;
@@ -227,6 +227,7 @@ async function preparePageImages<TTextRun>(
       scale * effectiveDpr,
       options.svgDecoder,
       options.imageResources,
+      options.onDiagnostic,
     );
   } catch (error) {
     // A superseded render never reported an image preload failure.
@@ -378,33 +379,40 @@ async function resolveChartImages<TTextRun>(
               workerDecoder: options.svgDecoder,
             })
           : getCachedSvgImageByPath(path, fetchImage);
-        const decodeFallback = () => fill.mimeType === 'image/svg+xml'
-          ? fill.duotone ? Promise.resolve(null) : decodeSvg(fill.imagePath)
+        const decodePath = (path: string, mime: string) => mime === 'image/svg+xml' && !fill.duotone
+          ? decodeSvg(path)
           : decodeRaster(
-              fill.imagePath, fill.mimeType, undefined, fetchImage as DocxFetchImage,
-              widthPt, heightPt, fill.duotone, true, options.tiff, target,
+              path, mime, undefined, fetchImage as DocxFetchImage,
+              widthPt, heightPt, fill.duotone, options.tiff, target,
+              undefined, options.svgDecoder,
             );
         let image: CanvasImageSource | null;
-        const blip = {
-          svgImagePath: fill.svgImagePath,
-          srcRect: hasSourceCrop ? true : null,
-        };
-        if (!fill.duotone && preferVectorBlip(blip)) {
+        const blip = { svgImagePath: fill.svgImagePath, srcRect: hasSourceCrop ? true : null };
+        if (preferVectorBlip(blip)) {
           try {
-            image = await decodeSvg(blip.svgImagePath);
-          } catch {
-            image = await decodeFallback();
+            image = await decodePath(blip.svgImagePath, 'image/svg+xml');
+          } catch (error) {
+            if (isTerminalImageAcquisitionError(error)) throw error;
+            image = await decodePath(fill.imagePath, fill.mimeType);
           }
         } else {
-          image = await decodeFallback();
+          image = await decodePath(fill.imagePath, fill.mimeType);
         }
         chartImages.set(key, image);
+        if (!image) options.onDiagnostic?.({
+          code: 'MISSING_RESOURCE', severity: 'warning',
+          message: 'A chart picture fill produced no drawable output; the remaining chart content is rendered',
+        });
       } catch (error) {
         if (isOptionalImageCodecUnavailableError(error, 'tiff')) {
           chartImages.set(key, null);
           return;
         }
-        if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+        if (isTerminalImageAcquisitionError(error)) throw error;
+        options.onDiagnostic?.({
+          code: 'MISSING_RESOURCE', severity: 'warning',
+          message: 'A chart picture fill could not be acquired; the remaining chart content is rendered',
+        });
         chartImages.set(key, null);
       }
     }));

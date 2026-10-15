@@ -1235,7 +1235,15 @@ export interface DocxCommentsOptions extends ViewerCommentsOptions {
     readonly markers?: boolean;
     readonly connectors?: ViewerCommentConnectorOptions;
 }
+export interface DocxDiagnostic {
+    readonly code: DocxDiagnosticCode;
+    readonly severity: 'warning' | 'error';
+    readonly source?: Readonly<DocxStorySource>;
+    readonly message: string;
+}
+export type DocxDiagnosticCode = 'FLOW_OVERLAP' | 'BOTTOM_MARGIN_INVASION' | 'FLOW_DOMAIN_INVASION' | 'INVALID_REFERENCE' | 'INVALID_GEOMETRY' | 'INVALID_VALUE' | 'MISSING_RESOURCE' | 'NON_CONVERGENCE' | 'UNSUPPORTED_FEATURE';
 export class DocxDocument {
+    get diagnostics(): readonly DocxDiagnostic[];
     static load(source: string | ArrayBuffer, opts?: LoadOptions): Promise<DocxDocument>;
     destroy(): void;
     getImage(imagePath: string, mimeType: string): Promise<Blob>;

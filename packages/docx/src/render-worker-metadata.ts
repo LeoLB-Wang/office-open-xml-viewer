@@ -39,6 +39,7 @@ export function projectRenderWorkerLayoutMeta(
   return {
     ...(readingRequested ? { nativeReadingRequested: true as const } : {}),
     ...(notices.length ? { readingNotices: notices } : {}),
+    diagnostics: layout.diagnostics,
     pageCount: layout.pages.length,
     pageSizes: layout.pages.map((page) => ({
       widthPt: page.geometry.widthPt,
