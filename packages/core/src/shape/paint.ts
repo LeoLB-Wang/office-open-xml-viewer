@@ -254,7 +254,7 @@ function resolveFillImpl(
     const tileH = h * (1 - (tile?.t ?? 0) - (tile?.b ?? 0));
     if (pathShading && usesPathShade(fill)) {
       // Canvas has no shape-following shade; resolvePathShade rasterizes it.
-      // Unsupported topology, resource limits and allocation-unavailable
+      // Unsupported topology and allocation-unavailable
       // hosts retain main's path-specific native approximation. Its midpoint focus
       // is unchanged: the Office fallback classifier is outside this feature.
       return resolvePathShade(
