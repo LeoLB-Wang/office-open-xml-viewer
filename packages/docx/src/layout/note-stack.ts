@@ -7,7 +7,7 @@
  * The terminal prefix is both the area's advance and its final bottom offset.
  * Acquisition appends advances as they become known; composition can rebase the
  * same prefixes without changing their reduction order. This is numerical
- * consistency policy, not an Office compatibility rule or a fit tolerance.
+ * consistency policy; it adds no layout rule and no fit tolerance.
  */
 export class NoteStack {
   private readonly prefixAdvancesPt: number[] = [0];
