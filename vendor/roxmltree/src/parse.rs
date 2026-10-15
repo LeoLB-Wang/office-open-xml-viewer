@@ -3,6 +3,11 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::ops::Range;
 
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeMap as ValidationMap;
+#[cfg(feature = "std")]
+use std::collections::HashMap as ValidationMap;
+
 use crate::{
     AttributeData, Document, ExpandedNameIndexed, NamespaceIdx, Namespaces, NodeData, NodeId,
     NodeKind, ShortRange, StringStorage, TextPos, NS_XMLNS_URI, NS_XML_PREFIX, NS_XML_URI, PI,
@@ -501,18 +506,79 @@ impl LoopDetector {
 // Streaming validation uses exactly the DOM's event handlers. Completed nodes
 // and attributes are discarded; only the open ancestors and namespace tables
 // survive. Distinct namespace values keep the DOM's existing u16 ceiling.
+// In the std builds used by all OOXML parsers (native and WASM), randomized
+// hash maps give expected O(input bytes) validation: no work per element scans
+// ancestors, earlier attributes or the namespace-value table. The alloc-only
+// upstream DOM remains buildable; its map fallback uses O(log n) operations.
 #[derive(Default)]
-struct Validation {
+struct Validation<'input> {
     namespace_frames: Vec<usize>,
-    current_namespace_start: usize,
+    bindings: ValidationMap<Option<&'input str>, Binding>,
+    namespace_undo: Vec<(Option<&'input str>, Option<Binding>)>,
+    uris: ValidationMap<ValidationString<'input>, usize>,
+    namespace_values: ValidationMap<(Option<&'input str>, usize), NamespaceIdx>,
+    namespace_uris: Vec<usize>,
     max_depth: u32,
     seen_root: bool,
     nodes: usize,
     attributes: usize,
 }
 
+// Hash normalized URI contents once per declaration, never once per use of a
+// prefix. Attributes compare URI IDs (not namespace indices: aliases with the
+// same URI are equal). StringStorage clones share normalized allocations.
+#[derive(Eq, PartialEq)]
+struct ValidationString<'input>(StringStorage<'input>);
+
+impl core::hash::Hash for ValidationString<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.0.as_str().hash(state);
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl PartialOrd for ValidationString<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl Ord for ValidationString<'_> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.0.as_str().cmp(other.0.as_str())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Binding {
+    tree_index: usize,
+    namespace: NamespaceIdx,
+}
+
+impl<'input> Validation<'input> {
+    fn uri_id(&mut self, uri: StringStorage<'input>) -> usize {
+        let next = self.uris.len();
+        *self.uris.entry(ValidationString(uri)).or_insert(next)
+    }
+
+    fn restore_namespaces(&mut self, start: usize, namespaces: &mut Namespaces<'input>) {
+        // One undo entry per declaration, including repeated default declarations.
+        // Each entry is pushed and popped once across the complete document.
+        while namespaces.tree_order.len() > start {
+            namespaces.tree_order.pop();
+            let (prefix, previous) = self.namespace_undo.pop().unwrap();
+            if let Some(previous) = previous {
+                self.bindings.insert(prefix, previous);
+            } else {
+                self.bindings.remove(&prefix);
+            }
+        }
+    }
+}
+
 struct Context<'input> {
-    validation: Option<Validation>,
+    validation: Option<Validation<'input>>,
     opt: ParsingOptions,
     namespace_start_idx: usize,
     current_attributes: Vec<TempAttributeData<'input>>,
@@ -588,6 +654,54 @@ impl<'input> Context<'input> {
         Ok(new_child_id)
     }
 
+    fn push_namespace(
+        &mut self,
+        name: Option<&'input str>,
+        uri: StringStorage<'input>,
+    ) -> Result<()> {
+        let validation = match &mut self.validation {
+            Some(validation) => validation,
+            None => return self.doc.namespaces.push_ns(name, uri),
+        };
+        let uri_id = validation.uri_id(uri.clone());
+        let namespace = match validation.namespace_values.get(&(name, uri_id)) {
+            Some(idx) => *idx,
+            None => {
+                // Preserve the DOM's insertion order and exact u16 ceiling,
+                // without its sorted Vec's O(unique namespaces) insertion.
+                if self.doc.namespaces.values.len() > u16::MAX as usize {
+                    return Err(Error::NamespacesLimitReached);
+                }
+                let idx = NamespaceIdx(self.doc.namespaces.values.len() as u16);
+                self.doc
+                    .namespaces
+                    .values
+                    .push(crate::Namespace { name, uri });
+                validation.namespace_uris.push(uri_id);
+                validation.namespace_values.insert((name, uri_id), idx);
+                idx
+            }
+        };
+        let tree_index = self.doc.namespaces.tree_order.len();
+        self.doc.namespaces.tree_order.push(namespace);
+        let previous = validation.bindings.get(&name).copied();
+        validation.namespace_undo.push((name, previous));
+        // Upstream accepts repeated default declarations: the FIRST on the
+        // nearest declaring element wins. Named duplicates are rejected earlier.
+        if previous.map_or(true, |binding| {
+            binding.tree_index < self.namespace_start_idx
+        }) {
+            validation.bindings.insert(
+                name,
+                Binding {
+                    tree_index,
+                    namespace,
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn err_pos_at(&self, pos: usize) -> TextPos {
         self.doc.text_pos_at(pos)
     }
@@ -601,6 +715,12 @@ fn parse(text: &str, opt: ParsingOptions) -> Result<Document<'_>> {
 /// retained DOM or recursing per element. DTDs are disabled, as in the default
 /// DOM parser. Returns maximum non-empty element nesting only after full success.
 /// Empty elements do not open a content frame.
+///
+/// DTDs are rejected before any entity declaration is stored, so entity lookup
+/// sees an empty table (predefined references use the tokenizer's fixed rules).
+/// End tags compare only the immediate parent's prefix and local name. Text
+/// normalization and scope/node cleanup visit each byte/record a bounded number
+/// of times; error positions scan input only on the first, terminal error.
 pub fn validate(text: &str) -> Result<u32> {
     parse_mode(
         text,
@@ -613,11 +733,11 @@ pub fn validate(text: &str) -> Result<u32> {
     .map(|(_, depth)| depth)
 }
 
-fn parse_mode(
-    text: &str,
+fn parse_mode<'input>(
+    text: &'input str,
     opt: ParsingOptions,
-    validation: Option<Validation>,
-) -> Result<(Document<'_>, u32)> {
+    validation: Option<Validation<'input>>,
+) -> Result<(Document<'input>, u32)> {
     // Trying to guess rough nodes and attributes amount.
     let nodes_capacity = if validation.is_some() {
         0
@@ -666,6 +786,13 @@ fn parse_mode(
         loop_detector: LoopDetector::default(),
         doc,
     };
+    if let Some(validation) = &mut ctx.validation {
+        let uri_id = validation.uri_id(StringStorage::Borrowed(NS_XML_URI));
+        validation
+            .namespace_values
+            .insert((Some(NS_XML_PREFIX), uri_id), NamespaceIdx(0));
+        validation.namespace_uris.push(uri_id);
+    }
     ctx.parent_prefixes.push("");
 
     tokenizer::parse(text, opt.allow_dtd, &mut ctx)?;
@@ -727,9 +854,6 @@ impl<'input> tokenizer::XmlEvents<'input> for Context<'input> {
             }
             tokenizer::Token::ElementEnd(end, range) => {
                 let namespace_start = self.namespace_start_idx;
-                if let Some(validation) = &mut self.validation {
-                    validation.current_namespace_start = namespace_start;
-                }
                 process_element(end, range, self)?;
                 if let Some(validation) = &mut self.validation {
                     match end {
@@ -746,7 +870,8 @@ impl<'input> tokenizer::XmlEvents<'input> for Context<'input> {
                             } else {
                                 validation.namespace_frames.pop().unwrap_or(1)
                             };
-                            self.doc.namespaces.tree_order.truncate(namespace_start);
+                            validation
+                                .restore_namespaces(namespace_start, &mut self.doc.namespaces);
                             self.namespace_start_idx = namespace_start;
                             self.doc.nodes.truncate(self.parent_id.get_usize() + 1);
                             self.awaiting_subtree.clear();
@@ -806,18 +931,26 @@ fn process_attribute<'input>(
         }
 
         // Check for duplicated namespaces.
-        if ctx
-            .doc
-            .namespaces
-            .exists(ctx.namespace_start_idx, Some(local))
-        {
+        let duplicated = if let Some(validation) = &ctx.validation {
+            validation
+                .bindings
+                .get(&Some(local))
+                .map_or(false, |binding| {
+                    binding.tree_index >= ctx.namespace_start_idx
+                })
+        } else {
+            ctx.doc
+                .namespaces
+                .exists(ctx.namespace_start_idx, Some(local))
+        };
+        if duplicated {
             let pos = ctx.err_pos_at(range.start);
             return Err(Error::DuplicatedNamespace(local.to_string(), pos));
         }
 
         // Xml namespace should not be added to the namespaces.
         if !is_xml_ns_uri {
-            ctx.doc.namespaces.push_ns(Some(local), value)?;
+            ctx.push_namespace(Some(local), value)?;
         }
     } else if local == XMLNS {
         // The xml namespace MUST NOT be declared as the default namespace.
@@ -832,7 +965,7 @@ fn process_attribute<'input>(
             return Err(Error::UnexpectedXmlnsUri(pos));
         }
 
-        ctx.doc.namespaces.push_ns(None, value)?;
+        ctx.push_namespace(None, value)?;
     } else {
         ctx.current_attributes.push(TempAttributeData {
             prefix,
@@ -998,6 +1131,8 @@ fn resolve_attributes(namespaces: ShortRange, ctx: &mut Context) -> Result<Short
     }
     let start_idx = ctx.doc.attributes.len();
 
+    let mut seen: Option<ValidationMap<_, ()>> =
+        ctx.validation.as_ref().map(|_| ValidationMap::default());
     let current_attributes = core::mem::take(&mut ctx.current_attributes);
     for attr in current_attributes {
         let namespace_idx = if attr.prefix == NS_XML_PREFIX {
@@ -1019,9 +1154,16 @@ fn resolve_attributes(namespaces: ShortRange, ctx: &mut Context) -> Result<Short
         };
 
         // Check for duplicated attributes.
-        if ctx.doc.attributes[start_idx..].iter().any(|attr| {
-            attr.name.as_expanded_name(&ctx.doc) == attr_name.as_expanded_name(&ctx.doc)
-        }) {
+        let duplicated = if let Some(seen) = &mut seen {
+            let validation = ctx.validation.as_ref().unwrap();
+            let uri_id = namespace_idx.map(|idx| validation.namespace_uris[idx.0 as usize]);
+            seen.insert((uri_id, attr.local), ()).is_some()
+        } else {
+            ctx.doc.attributes[start_idx..].iter().any(|attr| {
+                attr.name.as_expanded_name(&ctx.doc) == attr_name.as_expanded_name(&ctx.doc)
+            })
+        };
+        if duplicated {
             let pos = ctx.err_pos_at(attr.range.start);
             return Err(Error::DuplicatedAttribute(attr.local.to_string(), pos));
         }
@@ -1310,28 +1452,10 @@ fn get_ns_idx_by_prefix(
     };
 
     let idx = if let Some(validation) = &ctx.validation {
-        // Search inner scopes first, with declaration order preserved within a
-        // scope, exactly like the DOM's child-first flattened namespace list.
-        // This also preserves roxmltree 0.20's treatment of repeated default
-        // declarations; validation must not silently tighten DOM acceptance.
-        let bindings = &ctx.doc.namespaces.tree_order;
-        bindings[1..]
-            .iter()
-            .rposition(|idx| ctx.doc.namespaces.get(*idx).name == prefix_opt)
-            .and_then(|offset| {
-                let last = offset + 1;
-                let start = if last >= validation.current_namespace_start {
-                    validation.current_namespace_start
-                } else {
-                    let frame = validation
-                        .namespace_frames
-                        .partition_point(|start| *start <= last);
-                    validation.namespace_frames[frame - 1]
-                };
-                bindings[start..=last]
-                    .iter()
-                    .find(|idx| ctx.doc.namespaces.get(**idx).name == prefix_opt)
-            })
+        validation
+            .bindings
+            .get(&prefix_opt)
+            .map(|binding| &binding.namespace)
     } else {
         ctx.doc.namespaces.tree_order[namespaces.to_urange()]
             .iter()
