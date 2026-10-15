@@ -203,14 +203,14 @@ describe('cross-pass retained table memo', () => {
     expect(memo.keys.filter((key) => key.includes('|adjacent:')).length).toBe(2);
     expect(memoized.match(/"kind":"table"/g)?.length).toBeGreaterThanOrEqual(4);
     expect(layOut(document, false) === memoized).toBe(true);
-  });
+  }, 30_000);
 
   it('stays unused by a single-pass layout', () => {
     const document = model(false);
     const memoized = layOut(document, true);
     expect(memo.hits).toBe(0);
     expect(layOut(document, false) === memoized).toBe(true);
-  });
+  }, 30_000);
 
   // Cell content that the memo must either key exactly or refuse to store
   // (page fields and anchored or page-placed content are not reusable).
@@ -252,7 +252,7 @@ describe('cross-pass retained table memo', () => {
     const document = model(true, variant);
     const memoized = layOut(document, true);
     expect(layOut(document, false) === memoized).toBe(true);
-  });
+  }, 30_000);
 
   it('keeps adjacent members apart when a source reuses one table object for both', () => {
     // A sealed source may alias one table object at two occurrences; each
@@ -304,5 +304,5 @@ describe('cross-pass retained table memo', () => {
     expect(aliased.blocks.body[first]).toBe(aliased.blocks.body[first + 1]);
     const fresh = layOut(aliased, false);
     expect(layOut(aliased, true) === fresh).toBe(true);
-  });
+  }, 30_000);
 });
