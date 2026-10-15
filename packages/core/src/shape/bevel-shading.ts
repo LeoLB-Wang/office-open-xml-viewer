@@ -1,150 +1,60 @@
-/**
- * DrawingML 3D bevel shading (Phase B) — Canvas 2D, no WebGL.
- *
- * ECMA-376 references:
- *   - §20.1.5.12 `sp3d` (CT_Shape3D): bevelT / bevelB / extrusionH / contour.
- *   - §20.1.5.3–4 `bevelB/T` (CT_Bevel): bevel width `w`, height `h`, preset `prst`.
- *   - §20.1.10.9 ST_BevelPresetType: the bevel cross-section profiles
- *     (relaxedInset, circle, slope, cross, angle, softRound, convex, coolSlant,
- *     divot, riblet, hardEdge, artDeco).
- *   - §20.1.5.9  `lightRig` (CT_LightRig): rig preset + `dir` (ST_LightRigDirection).
- *
- * ## Method (Canvas 2D, skia-canvas compatible — no WebGL per renderer constraints)
- * A bevel is a raised lip running along the shape's silhouette. We synthesise it
- * as a height field driven by the *distance to the silhouette boundary*:
- *
- *   1. Euclidean distance transform (EDT) of the shape's alpha mask gives, for
- *      every interior pixel, the distance `d` (px) to the nearest boundary pixel.
- *   2. A per-preset 1-D cross-section `height(d/w)` maps that distance to a
- *      surface height in [0,1]: 0 at the rim (d=0), 1 once `d ≥ w` (the flat top).
- *      `circle` is a quarter-circle (rounded lip), `hardEdge` a linear chamfer,
- *      etc. (§20.1.10.9).
- *   3. The surface normal combines two sources, both grounded in the exact EDT
- *      distance (see `computeBevelNormals`): its TILT MAGNITUDE comes from the
- *      profile's local slope at the exact distance, and its in-plane AZIMUTH from
- *      the gradient of a Gaussian-blurred copy of that same distance field. The
- *      distance is exact; the direction is analytically smooth at every raster scale
- *      AND free of the high-curvature "apex plateau" a blurred-coverage gradient
- *      suffers (#418). On the flat interior the tilt is zero → n = (0,0,1); on the
- *      lip it tilts outward toward the rim along the silhouette's outward normal.
- *   4. Lambert diffuse + a weak specular term against the light-rig direction
- *      give a per-pixel brightness factor, applied as a multiply/screen over the
- *      already-painted body.
- *
- * Fidelity boundary: ECMA-376 §20.1.10.50 gives reference material behavior;
- * MS-OI29500 §§2.1.1274, 2.1.1316, 2.1.1324 and 2.1.1334 additionally define
- * Office light vectors/colors, bevel curves, legacy rigs and material tables.
- * This height-field + scalar multiply/screen shader does NOT implement those
- * tables. Its legacy profile substitutions, two material classes and two white
- * lights are rendering approximations, not specification defaults. See the
- * audit boundary beside LEGACY_KEY_ELEVATION before changing their parameters.
+/** DrawingML bevels: ECMA-376 §§20.1.5.3–4/.9/.11/.12, 20.1.10.9/.50;
+ * MS-OI29500 §§2.1.1274/.1316/.1324/.1334 define profiles, rigs and materials.
+ * Shared Canvas implementation: region-local O(pixels) EDT and normal field,
+ * fixed-size profile lookup, at most four lights, no per-pixel allocations.
+ * This reference shader replaces the old fitted multiply/screen appearance.
+ * See bevel-lighting.ts for the remaining Office photometric fidelity boundary.
+ * Control audit: 6,051 Windows PowerPoint front-view rectangle/ellipse controls,
+ * all 12 profiles, 27 rigs and 15 material names (wireframe needs mesh geometry),
+ * eight directions, five fill colors and explicit single/combined light rotations.
+ * Sampled RGB mean error improves 59.83→37.96, max 242→238; profile/rotation/
+ * repeat maxima worsen. This is a closer reference model, not an Office match.
+ * Literal curve coordinates/visibility and the rotation convention remain
+ * unresolved alongside Fresnel/compositing; large residuals are not raster AA.
+ * Arbitrary backgrounds, camera-rotated normals and bottom/mesh visibility are
+ * not established by these controls. No per-case fit or scalar gain is used.
  */
+import { profileHeight, profileSlope } from './bevel-profiles';
+import {
+  presetMaterial,
+  prepareLighting,
+  rigVector,
+  shadeSurface,
+  type PresetMaterial,
+} from './bevel-lighting';
 
 export interface Vec3 {
   x: number;
   y: number;
   z: number;
 }
-
-/** Surface material reflectivity class we distinguish in Phase B. */
-export type BevelMaterial = 'matte' | 'plastic';
-
-/**
- * In-plane revolution (latitude/longitude are not implemented) of a light rig, in
- * DEGREES. 1:1 with the parser's Rot3d (§20.1.5.11 CT_SphereCoords).
- */
+export type BevelMaterial = PresetMaterial;
+/** ECMA §20.1.5.11 sphere coordinates, in degrees. */
 export interface LightRigRot {
-  /** Latitude — rotation about the horizontal (X) axis, degrees. */
   lat: number;
-  /** Longitude — rotation about the vertical (Y) axis, degrees. */
   lon: number;
-  /** Revolution — in-plane rotation about the view (Z) axis, degrees. */
   rev: number;
 }
-
+/** Retained scalar helper contract; full-color shading uses the rig/material tables. */
 export interface BevelShadeParams {
-  /** Unit KEY light direction (points FROM surface TOWARD the light). */
   light: Vec3;
   material: BevelMaterial;
-  /** Ambient term — base brightness factor where no light reaches. */
   ambient: number;
-  /** Diffuse weight (Lambert) of the KEY light. */
   diffuse: number;
-  /** Specular weight (Blinn-Phong-ish; 0 for pure matte). */
   specular: number;
-  /** Specular exponent. */
   shininess: number;
-  /**
-   * Optional FILL light of a threePt rig (§20.1.5.9). A softer light roughly
-   * opposite the key that lifts surfaces facing away from the key out of the pure
-   * ambient floor. Omitted → single-key behaviour (the legacy model).
-   */
   fillLight?: Vec3;
-  /** Diffuse weight of the fill light. 0 / omitted → no fill. */
   fillDiffuse?: number;
 }
-
-/**
- * 1-D bevel cross-section. Returns the surface height in [0,1] for a pixel at
- * distance `d` (px) from the silhouette boundary, given the bevel band width `w`
- * (px). h(0)=0 (rim, fully turned-down), h(w)=1 (flat top). Beyond the band the
- * height stays 1 (the flat interior of the shape).
- *
- * Legacy height-field approximations. MS-OI29500 §2.1.1316 supplies the actual
- * line/quadratic/cubic curves for all twelve presets, including nonmonotone and
- * overhanging sections. These functions are not those curves. Unsupported names
- * retain the generic smoothstep lip; the schema default for an omitted bevel
- * preset is circle (CT_Bevel), not relaxedInset.
+/** Visible front-view height from the documented parametric profile. Overhangs
+ * use the nearest surface along the viewing ray. Unknown presets use circle,
+ * the CT_Bevel schema default. Width zero has no lip.
  */
-export function bevelHeightProfile(prst: string, w: number): (d: number) => number {
-  if (w <= 0) {
-    // No bevel band — everything is flat top.
-    return () => 1;
-  }
-  const norm = (d: number) => Math.max(0, Math.min(1, d / w));
-  switch (prst) {
-    case 'hardEdge': {
-      // Legacy monotone shelf approximation, not the documented Office curve:
-      // MS-OI29500 §2.1.1316 hardEdge rises near the rim and then descends again.
-      // Replacing only this shelf would leave the other profiles and lighting
-      // inconsistent; a complete curve/surface model is required.
-      const shelf = HARD_EDGE_SHELF_FRACTION;
-      return (d) => {
-        const u = Math.min(1, norm(d) / shelf);
-        return u * u * (3 - 2 * u); // smoothstep 0→1 within the shelf, flat after
-      };
-    }
-    case 'angle':
-    case 'slope':
-      // Straight chamfer: linear ramp from rim to top.
-      return (d) => norm(d);
-    case 'circle':
-    case 'convex':
-    case 'softRound': {
-      // Quarter-circle lip: h = sqrt(1 - (1-t)^2). Convex (bulges up early),
-      // tangent to the flat top at t=1 → smooth meeting with the interior.
-      return (d) => {
-        const t = norm(d);
-        const u = 1 - t;
-        return Math.sqrt(Math.max(0, 1 - u * u));
-      };
-    }
-    case 'coolSlant':
-    case 'divot':
-    case 'riblet':
-    case 'cross':
-    case 'artDeco':
-    case 'relaxedInset':
-    default: {
-      // Generic smoothstep stand-in for the presets not modeled individually;
-      // this is library fallback policy, not an OOXML default. Tangent-flat at
-      // both ends, so the lip eases out of the rim and into the top.
-      return (d) => {
-        const t = norm(d);
-        return t * t * (3 - 2 * t);
-      };
-    }
-  }
+export function bevelHeightProfile(
+  prst: string,
+  w: number,
+): (d: number) => number {
+  return w > 0 ? (d) => profileHeight(prst, d / w) : () => 1;
 }
 
 /**
@@ -164,8 +74,7 @@ export function edt1d(f: ArrayLike<number>): Float64Array {
   z[0] = -Infinity;
   z[1] = Infinity;
   for (let q = 1; q < n; q++) {
-    let s =
-      (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
     while (s <= z[k]) {
       k--;
       s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
@@ -343,110 +252,14 @@ export function distanceToEdge(
   return f;
 }
 
-/**
- * Fraction of the band width used as the σ of the Gaussian applied to the EXACT
- * EDT distance field before its gradient is taken for the lip azimuth. A quarter
- * of the band is large enough to wash out the per-pixel EDT quantisation (the raw
- * `∇dist` Voronoi facets) yet small enough to keep the gradient local to one rim.
- * See `computeBevelNormals` for why the azimuth comes from ∇(blurred DISTANCE) and
- * not ∇(blurred coverage) — the latter plateaus at a high-curvature apex (#418).
- */
-const DISTANCE_SIGMA_FRACTION = 0.25;
-
-/**
- * Fraction of the band width over which the lip's shading eases back to the flat
- * top at the INNER crease (d → bandPx). Without it the band→top transition is a
- * hard 0/1 step in `bandMask`: every band pixel is fully shaded, the next pixel
- * inward is the untouched face, so a visible brightness discontinuity traces the
- * band's inner boundary. For an ellipse that inner boundary is the exact Euclidean
- * inward offset, which is naturally *flatter than the silhouette at the major-axis
- * tips* (the offset of a high-curvature convex arc recedes faster) — so the hard
- * step reads as the "flat-top + 45° chamfer" cut users reported on slide 6, even
- * though the boundary curve itself is smooth and correct.
- *
- * PowerPoint fillets the bevel/face junction, so the lip fades into the top rather
- * than ending on a crisp edge. We reproduce that by ramping the lip's coverage —
- * and hence its shading weight — from 1 to 0 over the inner `BEVEL_INNER_FEATHER`
- * of the band with a smoothstep (tangent-flat at both ends). The geometry of the
- * band (the EDT iso-distance set) is unchanged; only the *visibility* of the lip
- * tapers, removing the discontinuity that was the visible artifact. `circle` and
- * the smoothstep presets already have slope → 0 at the inner edge so their shading
- * was near-zero there anyway — the feather is (correctly) almost a no-op for them
- * and the PDF-calibrated slide-3 `circle` brightness is preserved. It is the
- * straight-chamfer presets (`angle`/`slope`) and the rim-shelf `hardEdge`, whose
- * shading does NOT vanish at the inner edge, that the feather rescues.
- */
-const BEVEL_INNER_FEATHER = 0.35;
-
-/**
- * `hardEdge` rises to full height within this fraction of the band: a short, sharp
- * turned-down shelf at the rim, flat thereafter. See `bevelHeightProfile`.
- */
-const HARD_EDGE_SHELF_FRACTION = 0.5;
-
-/**
- * Compute per-pixel surface normals for the bevel lip of a silhouette.
- *
- * @param alpha     W·H alpha mask of the painted body (≥128 = inside).
- * @param w,h       mask dimensions.
- * @param bandPx    bevel band width in px (the EMU `w` scaled to device px).
- * @param prst      bevel preset (ST_BevelPresetType) → cross-section profile.
- * @param heightPx  bevel height in px (the EMU `h` scaled). Controls how steeply
- *                  the lip rises: the height field is `bevelH/bevelW · profile`,
- *                  so a taller bevel tilts the normals more (stronger shading).
- *
- * Returns `normals` (W·H·3 floats, unit vectors, +Z toward viewer) and
- * `bandMask` (W·H of 0/1; 1 where the pixel is inside the shape and within the
- * bevel band, i.e. where shading should be applied).
- *
- * ## Distance-gradient azimuth (issue lineage #410→#413→#415→#416→#417→#418)
- *
- * The lip normal has two parts derived from two INDEPENDENT sources so each is
- * correct on its own terms, BOTH ultimately grounded in the exact EDT distance:
- *
- *   • TILT MAGNITUDE (how steeply the lip rises) — from the cross-section profile's
- *     local slope at the EXACT EDT distance `d`. Distance is the geometrically
- *     meaningful quantity for the height (a `circle` lip at d=band/2 is at a precise
- *     height), and the EDT gives it exactly. The PDF-calibrated slide-3 brightness
- *     curve depends on this, so it is preserved.
- *
- *   • IN-PLANE AZIMUTH (which way the lip faces) — from −∇C where C is the EDT
- *     distance itself, Gaussian-blurred by σ = 0.25·bandPx. The distance field's
- *     level sets ARE the silhouette's offset curves, so −∇C is the true outward
- *     radial normal everywhere; the blur is a smooth (C^∞) convolution, so the
- *     direction rotates continuously and is scale-invariant (σ and the geometry
- *     scale with devScale together).
- *
- * ### Why each prior fix was insufficient (the history this comment preserves)
- *
- *  - #410 (first bevel): azimuth from the 1px finite-difference gradient of the EDT
- *    HEIGHT field. ∇(distance-to-point-set) is piecewise-constant — each band pixel's
- *    nearest boundary sample dominates, so the direction snaps to that sample's
- *    Voronoi-cell direction and chords the lip into facets (worse as the shape grows).
- *  - #413: box-blurred the scalar HEIGHT → smoothed gradient MAGNITUDE, not
- *    direction. Fixed devScale ≤ 2 only.
- *  - #415: tangential low-pass of the normal VECTOR (radius 0.25·band, gated ≥24px).
- *    Fixed devScale 4, REGRESSED at devScale 8 — every band-proportional post-blur
- *    chases a Voronoi cell whose angular width grows with the band.
- *  - #416: moved the azimuth source to −∇(blurred COVERAGE) `G_σ * alpha`. This
- *    killed the Voronoi facets (no discrete cell field left) and the scale sweep
- *    went green — BUT coverage FLAT-TOPS at a high-curvature convex apex: the blur
- *    of a sharply curved tip plateaus, so ∇C there is near-constant over a wide
- *    angular span. The azimuth rotated TOO SLOWLY across the apex → the lit factor
- *    went flat → the "flat horizontal cut" at the top of the slide-6 ellipse. The
- *    ring/ellipse scale-sweep (a JUMP detector) never caught it because a plateau is
- *    a SMOOTH error, not a jump.
- *  - #417: corrected the `hardEdge` profile (rim shelf) and added the inner-crease
- *    feather. Necessary for the band GEOMETRY, but orthogonal to the azimuth — the
- *    flat cut persisted because its cause was the coverage plateau, not the profile.
- *  - #418 (this): source the azimuth from −∇(blurred DISTANCE). Distance does NOT
- *    plateau (it grows linearly inward with the same radial direction at the apex),
- *    so the lit factor follows the true elliptical curve; the blur still removes the
- *    raw-EDT Voronoi facets, keeping the scale-sweep green. One field, both
- *    pathologies gone.
- *
- * The distance blur is O(N) (three cascaded box passes, running-sum, independent of
- * σ), runs once per bevel on the device offscreen — same order as the EDT beside it.
+/** Front-view bevel normals. The documented curves have real creases and
+ * overhangs; do not feather them into an unchanged face. Their visible envelope
+ * supplies the tilt, while the EDT's blurred gradient supplies azimuth. The
+ * quarter-band Gaussian is the existing raster regularization policy, not an
+ * Office fillet or a fitted lighting parameter. Subtract half a pixel from the
+ * center-to-transparent-center EDT to approximate the silhouette boundary.
+ * Full camera-dependent tessellation, self-shadowing and back-face occlusion
+ * are outside this bitmap surface model.
  */
 export function computeBevelNormals(
   alpha: ArrayLike<number>,
@@ -455,281 +268,100 @@ export function computeBevelNormals(
   bandPx: number,
   prst: string,
   heightPx: number,
-): { normals: Float32Array; bandMask: Uint8Array; bandWeight: Float32Array } {
-  const normals = new Float32Array(w * h * 3);
-  const bandMask = new Uint8Array(w * h);
-  // Feathered shading weight in [0,1]: 1 over the outer band, easing to 0 at the
-  // inner crease so the lip's brightness change fades into the flat top instead of
-  // ending on a hard step. `bandMask` stays a crisp 0/1 membership for callers that
-  // need the band footprint; `bandWeight` is what the compositor multiplies the
-  // shade excess by. See BEVEL_INNER_FEATHER.
-  const bandWeight = new Float32Array(w * h);
+): {
+  normals: Float32Array;
+  bandMask: Uint8Array;
+  bandWeight: Float32Array;
+} {
+  const normals = new Float32Array(w * h * 3),
+    bandMask = new Uint8Array(w * h),
+    bandWeight = new Float32Array(w * h);
   if (w <= 0 || h <= 0) return { normals, bandMask, bandWeight };
   const dist = distanceToEdge(alpha, w, h);
-  const profile = bevelHeightProfile(prst, bandPx);
-  const inside = (x: number, y: number) => (alpha[y * w + x] ?? 0) >= 128;
-
-  // Height-field aspect scale: the lip rises `heightPx` over `bandPx` of run, so a
-  // unit of profile change maps to heightScale·bandPx of surface height (the same
-  // mapping the old height field used — preserves the calibrated tilt magnitude).
-  const heightScale = bandPx > 0 ? heightPx / bandPx : 0;
-  const tiltScale = heightScale * bandPx;
-
-  // ── Azimuth source: gradient of a Gaussian-blurred EXACT DISTANCE field ─────
-  // The lip azimuth is the silhouette's outward normal. We read it from ∇C where C
-  // is the EDT distance `dist` smoothed by σ = 0.25·band (a fraction of the bevel's
-  // own length scale). Two pathologies are avoided BY CONSTRUCTION:
-  //   • Voronoi facets (raw ∇dist): the EDT's nearest-seed direction is piecewise
-  //     constant, so a 1px finite difference of the bare distance snaps to facet
-  //     directions. The blur is a smooth (C^∞) convolution, so ∇C rotates
-  //     continuously around the rim — no facets at any raster scale.
-  //   • Apex plateau (∇ of blurred COVERAGE, the #416 design): coverage `G_σ*alpha`
-  //     FLAT-TOPS at a high-curvature convex apex, so its gradient points near-
-  //     constant over a wide angular span there and the lit factor goes flat — the
-  //     "flat horizontal cut" users reported at the top of the slide-6 ellipse. The
-  //     DISTANCE field does NOT plateau: its level sets are the silhouette's offset
-  //     curves, so it keeps growing linearly inward with the SAME radial direction
-  //     everywhere, apex included. Blurring distance therefore preserves the true
-  //     normal direction while only removing the per-pixel quantisation.
-  // σ stays local to a single rim (a larger σ would blur a thin ring's inner and
-  // outer rims together and flip the azimuth at the medial axis). The spatial
-  // STRUCTURE of the shading (band membership, the inner-crease feather, the tilt
-  // magnitude) is taken from the exact `dist` below; only the DIRECTION uses C.
-  // See DISTANCE_SIGMA_FRACTION.
-  const sigma = Math.max(1, bandPx * DISTANCE_SIGMA_FRACTION);
-  const C = gaussianBlur(dist, w, h, sigma);
-
-  // Local profile slope dh/dd at distance d (per px), via a centred 1px difference
-  // of the profile. Drives the lip's tilt magnitude; the height stays distance-exact.
-  const slopeAt = (d: number): number => {
-    const a = profile(Math.max(0, d - 0.5));
-    const b = profile(d + 0.5);
-    return b - a; // change in profile over 1 px of distance
-  };
-
-  for (let y = 0; y < h; y++) {
+  const C =
+    bandPx > 0 ? gaussianBlur(dist, w, h, Math.max(1, bandPx * 0.25)) : dist;
+  for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      if (!inside(x, y)) {
-        normals[i * 3 + 2] = 1; // flat ground outside the silhouette
-        continue;
-      }
-      const d = dist[i];
-      const inBand = d > 0 && d < bandPx;
-      bandMask[i] = inBand ? 1 : 0;
-      if (!inBand) {
-        normals[i * 3 + 2] = 1; // flat top of the shape
-        continue;
-      }
-      // Inner-crease feather: t01 is the fractional distance across the band
-      // (0 at the rim, 1 at the inner edge). Over the inner BEVEL_INNER_FEATHER of
-      // the band the shading weight smoothsteps from 1 down to 0 so the lip eases
-      // into the flat top with no hard discontinuity (the visible "flat cut").
-      const t01 = d / bandPx;
-      const fadeStart = 1 - BEVEL_INNER_FEATHER;
-      let weight = 1;
-      if (t01 > fadeStart) {
-        const u = Math.min(1, (t01 - fadeStart) / BEVEL_INNER_FEATHER);
-        weight = 1 - u * u * (3 - 2 * u); // 1→0 smoothstep
-      }
-      bandWeight[i] = weight;
-      // Outward azimuth = −∇C/|∇C|. C is the blurred DISTANCE, which DECREASES
-      // toward the rim (distance 0 at the boundary), so −∇C points outward along
-      // the silhouette's outward normal — the same sign the blurred-coverage field
-      // used (coverage also decreases outward), so only the SOURCE of C changed.
-      const xl = x > 0 ? x - 1 : x;
-      const xr = x < w - 1 ? x + 1 : x;
-      const yu = y > 0 ? y - 1 : y;
-      const yd = y < h - 1 ? y + 1 : y;
-      const gx = (C[y * w + xr] - C[y * w + xl]) / (xr - xl || 1);
-      const gy = (C[yd * w + x] - C[yu * w + x]) / (yd - yu || 1);
+      normals[i * 3 + 2] = 1;
+      if ((alpha[i] ?? 0) < 128 || bandPx <= 0 || heightPx <= 0) continue;
+      const d = Math.max(0, dist[i] - 0.5);
+      if (d >= bandPx) continue;
+      bandMask[i] = 1;
+      bandWeight[i] = 1;
+      const xl = Math.max(0, x - 1),
+        xr = Math.min(w - 1, x + 1),
+        yu = Math.max(0, y - 1),
+        yd = Math.min(h - 1, y + 1);
+      const gx = (C[y * w + xr] - C[y * w + xl]) / (xr - xl || 1),
+        gy = (C[yd * w + x] - C[yu * w + x]) / (yd - yu || 1);
       const gm = Math.hypot(gx, gy);
-      let ax = 0;
-      let ay = 0;
-      if (gm > 1e-9) {
-        ax = -gx / gm;
-        ay = -gy / gm;
-      }
-      // Tilt magnitude from the exact-distance profile slope; azimuth from ∇C.
-      const s = slopeAt(d) * tiltScale;
-      let nx = s * ax;
-      let ny = s * ay;
-      let nz = 1;
-      const m = Math.hypot(nx, ny, nz) || 1;
-      nx /= m;
-      ny /= m;
-      nz /= m;
-      normals[i * 3] = nx;
-      normals[i * 3 + 1] = ny;
-      normals[i * 3 + 2] = nz;
+      const slope = (profileSlope(prst, d / bandPx) * heightPx) / bandPx;
+      const nx = gm > 1e-9 ? (-slope * gx) / gm : 0,
+        ny = gm > 1e-9 ? (-slope * gy) / gm : 0;
+      const m = Math.hypot(nx, ny, 1);
+      normals[i * 3] = nx / m;
+      normals[i * 3 + 1] = ny / m;
+      normals[i * 3 + 2] = 1 / m;
     }
-  }
   return { normals, bandMask, bandWeight };
 }
-
-// ── Light rig ───────────────────────────────────────────────────────────────
-//
-// Audit boundary (Windows PowerPoint 16.0, controls-auditc-bevel/manifest.json):
-// 6,051 controls cover all 12 profiles, 15 materials, 27 rigs, eight directions,
-// width/height/scale/silhouette boundaries, fill colors and explicit rotations.
-// The current model has maximum 8-bit RGB-channel residuals of 113 (profiles),
-// 232 (rig/material/direction), 242 (colors), 165 (rotations), and 69 (repeats),
-// including the unchanged flat face. These are accepted limitations, NOT fit
-// tolerances. Inputs collapsed to identical material-class/direction parameters
-// differ by as much as 250 channel levels in Office: no choice of these scalar
-// weights can achieve error below 125 levels. Do not refit a subset.
-//
-// Retain the legacy appearance until the documented colored multi-light rigs,
-// all material/Fresnel/alpha responses and full bevel surfaces can be modeled
-// together. MS-OI29500 §2.1.1274 also requires rot to override dir, and defines
-// a coordinate transform; this fallback only composes rev with dir and ignores
-// lat/lon. Neither its angles nor its fill are the Office threePt definition.
-const LEGACY_KEY_ELEVATION = (35 * Math.PI) / 180;
-const LEGACY_FILL_ELEVATION = (12 * Math.PI) / 180;
-
-/** Screen-plane azimuth (x,y) per ST_LightRigDirection octant. y is screen-down. */
-const DIR_AZIMUTH: Record<string, { x: number; y: number }> = {
-  t: { x: 0, y: -1 },
-  b: { x: 0, y: 1 },
-  l: { x: -1, y: 0 },
-  r: { x: 1, y: 0 },
-  tl: { x: -1, y: -1 },
-  tr: { x: 1, y: -1 },
-  bl: { x: -1, y: 1 },
-  br: { x: 1, y: 1 },
-};
-
-/**
- * Rotate a screen-plane azimuth (screen +Y down) by `revDeg` degrees about the
- * view (+Z) axis (§20.1.5.9 `<a:rot rev>`), using the standard 2-D rotation matrix
- *   x' = x·cosθ − y·sinθ
- *   y' = x·sinθ + y·cosθ
- * This is the legacy screen-plane convention. The Office rig transform and
- * full rotation override remain outside this scalar fallback (see above).
+export function lightDirFromRig(
+  rig: string,
+  dir: string,
+  rot?: LightRigRot,
+): Vec3 {
+  return rigVector(rig, dir, rot);
+}
+/** Preserve every material name through the historical adapter signature. */
+export function materialClass(name: string | undefined): BevelMaterial {
+  return presetMaterial(name);
+}
+/** Scalar compatibility helpers for callers supplying explicit scalar weights.
+ * They do not govern the full-color production compositor below.
  */
-function rotateAzimuth(ax: number, ay: number, revDeg: number): { x: number; y: number } {
-  const th = (revDeg * Math.PI) / 180;
-  const c = Math.cos(th);
-  const s = Math.sin(th);
-  return { x: ax * c - ay * s, y: ax * s + ay * c };
-}
-
-/**
- * Unit KEY light direction (FROM surface TOWARD light) for a light rig. `dir` sets
- * the screen-plane azimuth; `rot.rev` rotates that azimuth in-plane; the light is
- * lifted toward the viewer (+Z) by the legacy elevation. All rig presets currently
- * share this fallback; latitude/longitude and the Office rot/dir override are
- * unsupported, as documented at the audit boundary above.
- */
-export function lightDirFromRig(_rig: string, dir: string, rot?: LightRigRot): Vec3 {
-  let az = DIR_AZIMUTH[dir] ?? DIR_AZIMUTH.t;
-  if (rot && rot.rev) az = rotateAzimuth(az.x, az.y, rot.rev);
-  return liftAzimuth(az.x, az.y, LEGACY_KEY_ELEVATION);
-}
-
-/**
- * Build the FILL light of a threePt rig from the key's screen azimuth: it sits
- * opposite the key on the screen plane. This is the legacy fill approximation,
- * not one of the three documented Office light vectors.
- */
-export function fillDirFromKey(key: Vec3): Vec3 {
-  // Project the key onto the screen plane and negate to get the fill azimuth.
-  const plen = Math.hypot(key.x, key.y) || 1;
-  return liftAzimuth(-key.x / plen, -key.y / plen, LEGACY_FILL_ELEVATION);
-}
-
-/** Lift a (normalised-or-not) screen azimuth to a unit 3-D light at `elev` rad. */
-function liftAzimuth(ax: number, ay: number, elev: number): Vec3 {
-  const planeLen = Math.hypot(ax, ay) || 1;
-  const cosE = Math.cos(elev);
-  const sinE = Math.sin(elev);
-  const x = (ax / planeLen) * cosE;
-  const y = (ay / planeLen) * cosE;
-  const z = sinE;
-  const m = Math.hypot(x, y, z) || 1;
-  return { x: x / m, y: y / m, z: z / m };
-}
-
-/** Retained scalar shader parameters. These are library compatibility defaults,
- * not the material values in ECMA-376 §20.1.10.50 / MS-OI29500 §2.1.1334.
- * The full-control rejection and accepted residuals are recorded above. */
-const LEGACY_SCREEN_GAIN = 2.0;
-const LEGACY_MATERIAL: Record<BevelMaterial, { ambient: number; diffuse: number; specular: number; shininess: number }> = {
-  matte: { ambient: 0.62, diffuse: 0.45, specular: 0.0, shininess: 8 },
-  plastic: { ambient: 0.55, diffuse: 0.5, specular: 0.35, shininess: 22 },
-};
-const LEGACY_FILL_DIFFUSE = 0.8;
-
-/** Map a ST_PresetMaterialType name to the matte/plastic class. */
-export function materialClass(prstMaterial: string | undefined): BevelMaterial {
-  switch (prstMaterial) {
-    case 'plastic':
-    case 'metal':
-    case 'clear':
-    case 'softEdge':
-    case 'shiny':
-    case 'softmetal':
-      return 'plastic';
-    case 'matte':
-    case 'warmMatte':
-    case 'flat':
-    case 'dkEdge':
-    case 'powder':
-    default:
-      return 'matte';
-  }
-}
-
-/**
- * Build shade params for a material + KEY light. When `fill` is true (the threePt
- * fallback) a fill opposite the key is added at the legacy fill weight. This
- * lifts surfaces backing the key out of pure ambient. Pass fill=false for a
- * single-key shader. Neither setting claims to reproduce an Office rig.
- */
-export function shadeParamsFor(material: BevelMaterial, light: Vec3, fill = true): BevelShadeParams {
-  const m = LEGACY_MATERIAL[material];
-  const params: BevelShadeParams = {
-    light,
+export function shadeParamsFor(
+  material: BevelMaterial,
+  light: Vec3,
+  fill = true,
+): BevelShadeParams {
+  const p = prepareLighting(material, light),
+    m = p.material;
+  return {
     material,
-    ambient: m.ambient,
-    diffuse: m.diffuse,
-    specular: m.specular,
-    shininess: m.shininess,
+    light,
+    ambient: p.ambient,
+    diffuse: m.diffuseShape,
+    specular: m.specularShape + m.specularWhite,
+    shininess: m.power,
+    fillLight: fill && p.lights[1] ? p.lights[1] : undefined,
+    fillDiffuse: fill && p.lights[1]?.diffuse ? p.lights[1].rgb[0] : 0,
   };
-  if (fill) {
-    params.fillLight = fillDirFromKey(light);
-    params.fillDiffuse = params.diffuse * LEGACY_FILL_DIFFUSE;
-  }
-  return params;
 }
-
-/**
- * Brightness multiplier for a surface normal under the light. Lambert diffuse from
- * the KEY light, an optional softer Lambert term from the threePt FILL light (lifts
- * surfaces backing the key), and (for plastic) a Blinn-Phong specular against the
- * half-vector with the view direction (0,0,1). Returns a factor ≥ 0 to multiply the
- * body colour by (1.0 = unchanged; >1 brightens via the screen-side blend the
- * caller applies).
- */
 export function shadePixel(n: Vec3, p: BevelShadeParams): number {
-  const ndotl = n.x * p.light.x + n.y * p.light.y + n.z * p.light.z;
-  const diff = p.diffuse * Math.max(0, ndotl);
-  let fill = 0;
-  if (p.fillLight && p.fillDiffuse) {
-    const ndotf = n.x * p.fillLight.x + n.y * p.fillLight.y + n.z * p.fillLight.z;
-    fill = p.fillDiffuse * Math.max(0, ndotf);
-  }
-  let spec = 0;
-  if (p.specular > 0) {
-    // Half-vector between light and view (view = +Z).
-    const hx = p.light.x;
-    const hy = p.light.y;
-    const hz = p.light.z + 1;
-    const hm = Math.hypot(hx, hy, hz) || 1;
-    const ndoth = (n.x * hx + n.y * hy + n.z * hz) / hm;
-    spec = p.specular * Math.pow(Math.max(0, ndoth), p.shininess);
-  }
-  return Math.max(0, p.ambient + diff + fill + spec);
+  let value =
+    p.ambient +
+    p.diffuse *
+      Math.max(0, n.x * p.light.x + n.y * p.light.y + n.z * p.light.z);
+  if (p.fillLight && p.fillDiffuse)
+    value +=
+      p.fillDiffuse *
+      Math.max(
+        0,
+        n.x * p.fillLight.x + n.y * p.fillLight.y + n.z * p.fillLight.z,
+      );
+  const hm = Math.hypot(p.light.x, p.light.y, p.light.z + 1) || 1;
+  if (p.specular > 0)
+    value +=
+      p.specular *
+      Math.pow(
+        Math.max(
+          0,
+          (n.x * p.light.x + n.y * p.light.y + n.z * (p.light.z + 1)) / hm,
+        ),
+        p.shininess,
+      );
+  return Math.max(0, value);
 }
 
 /** A minimal 2D context surface the bevel compositor needs. */
@@ -776,115 +408,76 @@ function clampRegion(
 }
 
 export interface BevelInput {
-  /** Bevel band width in device px (EMU `w` × scale × devScale). */
   widthPx: number;
-  /** Bevel height in device px (EMU `h` × scale × devScale). */
   heightPx: number;
-  /** Bevel preset (ST_BevelPresetType). */
   prst: string;
-  /** Surface material class. */
   material: BevelMaterial;
-  /** Light direction (FROM surface TOWARD light), already built from the rig. */
   light: Vec3;
-  /**
-   * When true the bevel runs along the BOTTOM face (bevelB): the height field is
-   * the same but the light hits the underside, so we flip the normal's screen-Y
-   * and Z handling by treating the lip as facing away from the viewer. In Phase
-   * B we approximate bevelB as bevelT with an inverted vertical light response
-   * (the lip on a back face catches the opposite side of the key light).
-   */
+  /** The underside requires a separate surface/visibility pass. A front-view
+   * bitmap cannot expose it: skip it rather than relight the top face twice. */
   bottom?: boolean;
 }
-
-/**
- * Bake bevel shading into an already-painted body bitmap held in `ctx`.
- *
- * Reads the body's pixels, computes the lip normals from its alpha silhouette,
- * and multiplies the RGB of each band pixel by the per-pixel light factor
- * (factors >1 brighten the lit edge, <1 darken the shadowed edge). The shading
- * is baked into the same bitmap so that, when the caller later warps the bitmap
- * through the scene3d camera, the bevel rides the projection automatically.
- *
- * No-op when the band is sub-pixel (nothing visible to shade).
+/** Shade the entire painted surface, including the flat face. Region callers
+ * must include the whole silhouette plus the spatial reach (see BevelRegion).
+ * Direct calls with zero/subpixel bevels still shade the flat face. The PPTX
+ * adapter currently omits those inputs, so scenes without a nonzero bevel need
+ * a separate flat-surface pass in that adapter; this API cannot create a call.
+ * Bottom bevels require a depth-aware back surface; shading this front bitmap
+ * again would incorrectly apply the material to its face twice.
+ * Wireframe has no surface material and requires wire geometry from the painter;
+ * leave its bitmap untouched rather than invent an opaque material for it.
  */
-export function applyBevelShading(ctx: BevelCtx, input: BevelInput, region?: BevelRegion): void {
-  const canvasW = ctx.canvas.width;
-  const canvasH = ctx.canvas.height;
-  if (canvasW <= 0 || canvasH <= 0) return;
-  const bandPx = input.widthPx;
-  if (bandPx < 0.75) return; // sub-pixel lip — skip.
-
-  // Restrict the distance-transform + normal loop to the region the lip can
-  // occupy (perf: A3). Equivalent to the full canvas because the region contains
-  // the silhouette ⊕ bandPx, so every band pixel (dist < bandPx) is inside it and
-  // the region edge sits in transparent territory — matching `distanceToEdge`'s
-  // out-of-bounds-is-transparent boundary. See BevelRegion.
-  const { x: rx, y: ry, w, h } = clampRegion(region, canvasW, canvasH);
+export function applyBevelShading(
+  ctx: BevelCtx,
+  input: BevelInput,
+  region?: BevelRegion,
+): void {
+  if (
+    ctx.canvas.width <= 0 ||
+    ctx.canvas.height <= 0 ||
+    input.bottom ||
+    input.material === 'legacyWireframe'
+  )
+    return;
+  const {
+    x: rx,
+    y: ry,
+    w,
+    h,
+  } = clampRegion(region, ctx.canvas.width, ctx.canvas.height);
   if (w <= 0 || h <= 0) return;
-
-  const img = ctx.getImageData(rx, ry, w, h);
-  const px = img.data;
-  // Alpha plane for the distance transform.
+  const img = ctx.getImageData(rx, ry, w, h),
+    px = img.data;
   const alpha = new Uint8ClampedArray(w * h);
   for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
-
-  const { bandMask, bandWeight, normals } = computeBevelNormals(
+  const { normals } = computeBevelNormals(
     alpha,
     w,
     h,
-    bandPx,
+    input.widthPx,
     input.prst,
     input.heightPx,
   );
-  const params = shadeParamsFor(input.material, input.light);
-
-  // Reference brightness of the FLAT top face (normal = +Z). The flat interior
-  // of the shape is left untouched (multiplier 1.0), so we divide every band
-  // pixel's absolute shade by this reference: the lip's lit side then comes out
-  // > 1 (brighter than the face) and the shadowed side < 1, reproducing the
-  // raised-relief look. Without this normalisation the whole band would read as
-  // a *darker* outline because the flat-face Lambert term (ambient + diffuse·L.z)
-  // is < 1 yet we never applied it to the face.
-  const faceFactor = shadePixel({ x: 0, y: 0, z: 1 }, params) || 1;
-
+  const params = prepareLighting(input.material, input.light),
+    out = new Float64Array(4);
   for (let i = 0; i < w * h; i++) {
-    if (bandMask[i] === 0) continue;
-    const wt = bandWeight[i];
-    if (wt <= 0) continue; // fully faded inner crease — leave the face untouched.
-    let nx = normals[i * 3];
-    let ny = normals[i * 3 + 1];
-    const nz = normals[i * 3 + 2];
-    // bevelB: the lip belongs to the back face, lit from the opposite vertical
-    // sense — mirror the in-plane normal so the light/shadow sides swap.
-    if (input.bottom) {
-      nx = -nx;
-      ny = -ny;
-    }
-    // Per-pixel shade factor, then ease it back toward 1.0 (no change) by the
-    // inner-crease feather weight so the lip fades into the flat top with no hard
-    // step. wt=1 keeps the full lip near the rim; wt→0 at the inner edge.
-    const fRaw = shadePixel({ x: nx, y: ny, z: nz }, params) / faceFactor;
-    const f = 1 + (fRaw - 1) * wt;
     const o = i * 4;
-    if (f >= 1) {
-      // Lit lip: a chamfer facing the light reads as a bright highlight even
-      // over a dark texture (in PowerPoint the bevel is a separate lit surface,
-      // not a darkened copy of the front-face image). Multiply alone can only
-      // brighten a dark pixel a little, so we ALSO screen-blend toward white by
-      // the excess over the face brightness — the multiply/screen composite the
-      // brief calls for. `hi` is the screen weight, capped so a strong lit lip
-      // approaches (but doesn't blow past) white.
-      const hi = Math.min(1, (f - 1) * LEGACY_SCREEN_GAIN);
-      for (let c = 0; c < 3; c++) {
-        const base = Math.min(255, px[o + c] * f);
-        px[o + c] = base + (255 - base) * hi;
-      }
-    } else {
-      // Shadowed lip: straight multiply darkening.
-      px[o] = Math.max(0, px[o] * f);
-      px[o + 1] = Math.max(0, px[o + 1] * f);
-      px[o + 2] = Math.max(0, px[o + 2] * f);
-    }
+    if (px[o + 3] === 0) continue;
+    shadeSurface(
+      out,
+      px[o],
+      px[o + 1],
+      px[o + 2],
+      px[o + 3],
+      normals[i * 3],
+      normals[i * 3 + 1],
+      normals[i * 3 + 2],
+      params,
+    );
+    px[o] = out[0];
+    px[o + 1] = out[1];
+    px[o + 2] = out[2];
+    px[o + 3] = out[3];
   }
   ctx.putImageData(img, rx, ry);
 }
@@ -913,7 +506,11 @@ export interface ExtrusionInput {
  * extrusion under a strong perspective. When the offset is sub-pixel (face-on
  * camera) there is no visible wall and this is a no-op.
  */
-export function applyExtrusion(ctx: BevelCtx, input: ExtrusionInput, region?: BevelRegion): void {
+export function applyExtrusion(
+  ctx: BevelCtx,
+  input: ExtrusionInput,
+  region?: BevelRegion,
+): void {
   const canvasW = ctx.canvas.width;
   const canvasH = ctx.canvas.height;
   if (canvasW <= 0 || canvasH <= 0) return;
