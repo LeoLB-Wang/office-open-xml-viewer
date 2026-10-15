@@ -127,6 +127,7 @@ impl<'a, 'h> Resolver<'a, 'h> {
             budget,
             &mut body,
             None,
+            false, // Page-story breaks do not advance body pages.
             table_sequence,
         )?;
         if body.iter().any(|element| {

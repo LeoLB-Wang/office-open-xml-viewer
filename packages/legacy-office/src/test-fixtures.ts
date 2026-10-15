@@ -1,6 +1,6 @@
 // Synthetic, redistributable Office binary fixtures for reader integration tests.
 export interface BinaryNoteFixture { cp: number; text: string; automatic?: boolean }
-export function buildDocFixture(options: { text?: string; paragraphProperties?: Uint8Array; characterProperties?: Uint8Array; formattingRuns?: readonly { end: number; properties: Uint8Array }[]; paragraphMarks?: readonly { end: number; properties: Uint8Array }[]; numbering?: { definitions: Uint8Array; definitionHeaderBytes: number; overrides: Uint8Array }; fonts?: readonly { name: string; charset: number }[]; data?: Uint8Array; defaultTabTwips?: number; sectionProperties?: Uint8Array | readonly Uint8Array[]; sectionEnds?: readonly number[]; floatingAnchors?: Uint8Array; drawingGroupData?: Uint8Array; headers?: readonly string[]; footnotes?: readonly BinaryNoteFixture[]; endnotes?: readonly BinaryNoteFixture[]; noteSeparators?: readonly [string, string, string, string, string, string]; comments?: string; facingPages?: boolean; lockedHeaderFields?: boolean } = {}): Uint8Array {
+export function buildDocFixture(options: { text?: string; paragraphProperties?: Uint8Array; characterProperties?: Uint8Array; formattingRuns?: readonly { end: number; properties: Uint8Array }[]; paragraphMarks?: readonly { end: number; properties: Uint8Array }[]; numbering?: { definitions: Uint8Array; definitionHeaderBytes: number; overrides: Uint8Array }; fonts?: readonly { name: string; charset: number }[]; data?: Uint8Array; defaultTabTwips?: number; sectionProperties?: Uint8Array | readonly Uint8Array[]; sectionEnds?: readonly number[]; floatingAnchors?: Uint8Array; drawingGroupData?: Uint8Array; headers?: readonly string[]; footnotes?: readonly BinaryNoteFixture[]; endnotes?: readonly BinaryNoteFixture[]; noteSeparators?: readonly [string, string, string, string, string, string]; comments?: string; facingPages?: boolean; lockedHeaderFields?: boolean; splitPgBreakAndParaMark?: boolean } = {}): Uint8Array {
   const text = options.text ?? 'Hello 日本語\rSecond paragraph';
   const sectionEnds = options.sectionEnds ?? [text.length];
   if (options.headers && options.headers.length !== sectionEnds.length * 6) throw new Error('Expected six header/footer variants per section');
@@ -28,6 +28,13 @@ export function buildDocFixture(options: { text?: string; paragraphProperties?: 
   view.setUint16(32, 0x000e, true);
   view.setUint16(62, 0x0016, true);
   view.setUint16(152, 0x005d, true);
+  if (options.splitPgBreakAndParaMark !== undefined) {
+    // MS-DOC 2.5.1/2.5.11: a Word 2000 extension owns Dop2000.Copts;
+    // bytes beyond Dop97 alone must not enable compatibility settings.
+    view.setUint16(152, 0x006c, true);
+    view.setUint16(0x3fa, 2, true);
+    view.setUint16(0x3fc, 0x00d9, true);
+  }
   view.setUint32(0x4c, text.length, true);
   view.setUint32(0x50, footnotes.length, true);
   view.setUint32(0x54, headerText.length, true);
@@ -58,12 +65,17 @@ export function buildDocFixture(options: { text?: string; paragraphProperties?: 
     );
   }
   view.setUint32(0x1a6, table.length, true);
-  const dop = options.defaultTabTwips === undefined && !hasNotes ? new Uint8Array() : new Uint8Array(500);
+  const dop = options.splitPgBreakAndParaMark !== undefined ? new Uint8Array(544)
+    : options.defaultTabTwips === undefined && !hasNotes ? new Uint8Array() : new Uint8Array(500);
   if (dop.length) {
     const dopView = new DataView(dop.buffer);
     dop[0] = options.facingPages ? 1 : 0;
     // MS-DOC 2.7.2: DopBase.dxaTab at byte 10 of the Dop97 prefix.
     dopView.setUint16(10, options.defaultTabTwips ?? 720, true);
+    if (options.splitPgBreakAndParaMark) {
+      // MS-DOC 2.7.13 Copts.b (ECMA-376 Part 4 14.8.3.38).
+      dopView.setUint32(512, 1 << 27, true);
+    }
     if (hasNotes) {
       // MS-DOC 2.7.2/2.7.4: bottom-of-page footnotes (fpc 1), continuous
       // numbering from 1, end-of-document endnotes (epc 3), Arabic footnote
