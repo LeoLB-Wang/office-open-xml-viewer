@@ -1,4 +1,5 @@
 import type { StorybookConfig } from '@storybook/html-vite';
+import { docxCompatibilityMetadata } from '../scripts/docx-compatibility-build.mjs';
 
 const config: StorybookConfig = {
   stories: [
@@ -25,9 +26,10 @@ const config: StorybookConfig = {
       // workflow sets STORYBOOK_BASE=/storybook/ to nest it under the site.
       base: process.env.STORYBOOK_BASE ?? '/',
       plugins: [...(config.plugins ?? []), wasm()],
+      // Main plugins inherit the root Vite transform; worker plugins replace it.
       worker: {
         format: 'es' as const,
-        plugins: () => [wasm()],
+        plugins: () => [docxCompatibilityMetadata(), wasm()],
         // Inline parser workers cannot resolve relative chunks from Blob URLs.
         rolldownOptions: { output: { codeSplitting: false } },
       },

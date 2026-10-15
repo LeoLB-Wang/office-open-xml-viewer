@@ -12,6 +12,9 @@ const { checkDocxCompatibilityEvidence } = await import(
 const require = createRequire(import.meta.url);
 const ts = require('typescript-compiler-api');
 const root = resolve(import.meta.dirname, '..');
+// Filesystem reads keep native paths; all module-ID comparisons use Vite's
+// forward-slash spelling on Windows as well as POSIX hosts.
+const modulePath = (file) => file.replaceAll('\\', '/');
 
 function literalMembers(object, names, file) {
   if (!object || !ts.isObjectLiteralExpression(object)) {
@@ -97,9 +100,10 @@ export function docxCompatibilityMetadata() {
   function prepare() {
     // Also rejects factory aliases/re-exports and declarations outside the
     // source authority, so a new spelling or module cannot silently escape.
-    files = new Set(checkDocxCompatibilityEvidence(root).map((rule) => resolve(root, rule.file)));
+    const sourceFiles = new Set(checkDocxCompatibilityEvidence(root).map((rule) => resolve(root, rule.file)));
+    files = new Set([...sourceFiles].map(modulePath));
     descriptions = new Set();
-    for (const file of files) {
+    for (const file of sourceFiles) {
       for (const description of stripDocxCompatibilityMetadata(readFileSync(file, 'utf8'), file).descriptions) {
         descriptions.add(description);
       }
@@ -114,24 +118,32 @@ export function docxCompatibilityMetadata() {
       descriptions = undefined;
     },
     transform(code, id) {
-      const file = id.split('?')[0];
-      // No DOCX rule work in XLSX/PPTX-only graphs. The owner necessarily
+      const file = modulePath(id.split('?')[0]);
+      // Defer source validation until a rule owner is visited. It necessarily
       // contains the factory name even if a caller aliases it; prepare() then
       // checks the entire authority before transforming any rule module.
-      if (!files && file.startsWith(resolve(root, 'packages/docx/src') + '/')
+      if (!files && file.startsWith(modulePath(resolve(root, 'packages/docx/src')) + '/')
         && code.includes('defineCompatibilityRule')) prepare();
       if (!files?.has(file)) return null;
       return { code: stripDocxCompatibilityMetadata(code, id).code, map: null };
     },
-    generateBundle(_options, bundle) {
-      if (!descriptions) return;
-      for (const output of Object.values(bundle)) {
-        if (output.type === 'chunk') {
-          assertNoDocxCompatibilityDescriptions(output.code, descriptions, output.fileName);
-        } else if (/\.[cm]?js$/.test(output.fileName) && typeof output.source === 'string') {
-          assertNoDocxCompatibilityDescriptions(output.source, descriptions, output.fileName);
+    generateBundle: {
+      // Vite emits worker assets in its normal generateBundle hook, after pre
+      // plugins. Validate last, including worker-only graphs whose main bundle
+      // never transformed a rule module, and decode binary asset sources too.
+      order: 'post',
+      handler(_options, bundle) {
+        if (!descriptions) prepare();
+        for (const output of Object.values(bundle)) {
+          if (output.type === 'chunk') {
+            assertNoDocxCompatibilityDescriptions(output.code, descriptions, output.fileName);
+          } else if (/\.[cm]?js$/.test(output.fileName)) {
+            const code = typeof output.source === 'string'
+              ? output.source : new TextDecoder().decode(output.source);
+            assertNoDocxCompatibilityDescriptions(code, descriptions, output.fileName);
+          }
         }
-      }
+      },
     },
   };
 }

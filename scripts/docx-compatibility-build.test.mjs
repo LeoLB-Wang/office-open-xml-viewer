@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { rolldown } from 'rolldown';
+import { build } from 'vite';
 import { checkDocxCompatibilityEvidence } from './check-docx-compatibility-evidence.mjs';
 import {
   assertNoDocxCompatibilityDescriptions,
@@ -61,4 +62,66 @@ test('bundle guard detects escaped descriptions and leaves unrelated strings alo
     'export const leak = "Evidence from \\u0057ord";', descriptions, 'built.mjs'));
   assert.doesNotThrow(() => assertNoDocxCompatibilityDescriptions(
     'export const id = "word-test";', descriptions, 'built.mjs'));
+});
+
+test('transforms Windows-style module IDs including query suffixes', () => {
+  const rule = checkDocxCompatibilityEvidence(root)[0];
+  const file = resolve(root, rule.file);
+  const code = readFileSync(file, 'utf8');
+  const plugin = docxCompatibilityMetadata();
+  plugin.buildStart();
+  const result = plugin.transform(code, file.replaceAll('/', '\\') + '?source');
+  assert.ok(result, 'Windows module must initialize and match the source authority');
+  assert.doesNotThrow(() => assertNoDocxCompatibilityDescriptions(
+    result.code, new Set(stripDocxCompatibilityMetadata(code, file).descriptions), file));
+});
+
+test('guards Vite worker assets emitted after the main bundle, including worker-only graphs', async () => {
+  const fixture = mkdtempSync(resolve(tmpdir(), 'docx-compatibility-worker-'));
+  try {
+    writeFileSync(resolve(fixture, 'entry.js'),
+      `export const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });`);
+    writeFileSync(resolve(fixture, 'worker.js'),
+      `import { WORD_SECTION_BTLR_TBRL_PAGE_FRAME as rule } from ${JSON.stringify(
+        resolve(root, 'packages/docx/src/layout/compatibility.ts'))}; postMessage(rule);`);
+    const options = (stripWorker) => ({
+      configFile: false,
+      root: fixture,
+      logLevel: 'silent',
+      plugins: [docxCompatibilityMetadata()],
+      worker: { format: 'es', plugins: () => stripWorker ? [docxCompatibilityMetadata()] : [] },
+      build: { write: false, target: 'esnext',
+        lib: { entry: resolve(fixture, 'entry.js'), formats: ['es'] } },
+    });
+    await assert.rejects(build(options(false)), /bundled DOCX compatibility description/);
+    const result = await build(options(true));
+    const output = [result].flat().flatMap((bundle) => bundle.output);
+    assert.ok(output.some((item) => item.type === 'asset' && /worker-.*\.js$/.test(item.fileName)),
+      'the successful build must include an emitted worker asset');
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('guards JavaScript assets emitted as bytes by a later generateBundle hook', async () => {
+  const fixture = mkdtempSync(resolve(tmpdir(), 'docx-compatibility-bytes-'));
+  let bundle;
+  try {
+    const rule = checkDocxCompatibilityEvidence(root)[0];
+    const file = resolve(root, rule.file);
+    const [description] = stripDocxCompatibilityMetadata(readFileSync(file, 'utf8'), file).descriptions;
+    const entry = resolve(fixture, 'entry.js');
+    writeFileSync(entry, 'export const value = 1;');
+    bundle = await rolldown({ input: entry, plugins: [docxCompatibilityMetadata(), {
+      name: 'late-byte-asset',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'leak.mjs',
+          source: new TextEncoder().encode(`export const leak = ${JSON.stringify(description)};`) });
+      },
+    }] });
+    await assert.rejects(bundle.generate({ format: 'es' }), /bundled DOCX compatibility description/);
+  } finally {
+    await bundle?.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
