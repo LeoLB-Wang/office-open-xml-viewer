@@ -732,7 +732,9 @@ pub(super) fn master_shapes(
         text_budget: &mut usize,
     ) -> Result<(), String> {
         if depth >= MAX_DEPTH {
-            return Err(unsupported("PowerPoint master drawing depth exceeded"));
+            return Err(crate::rejection::resource(
+                "PowerPoint master drawing depth exceeded",
+            ));
         }
         let viewed = record.view(backing)?;
         if viewed.kind == 0xf003 {
@@ -1682,25 +1684,51 @@ mod tests {
             .unwrap_err()
             .contains("missing PowerPoint shape anchor"));
         let child_space = record(1, 0xf009, &ints(&[0, 0, 576, 576]));
-        let mut group = sp(0x202, vec![record(0, 0xf00f, &ints(&[0, 0, 576, 576]))]);
-        for _ in 0..=MAX_DEPTH {
-            let head = sp(
-                0x203,
-                vec![
-                    record(0, 0xf00f, &ints(&[0, 0, 576, 576])),
-                    child_space.clone(),
-                ],
+        let unique = |mut shape: Vec<u8>, id: u32| {
+            // The helper's first child is the FSP atom (8-byte headers).
+            shape[16..20].copy_from_slice(&id.to_le_bytes());
+            shape
+        };
+        let mut group = unique(
+            sp(0x202, vec![record(0, 0xf00f, &ints(&[0, 0, 576, 576]))]),
+            1,
+        );
+        for level in 0..=MAX_DEPTH {
+            let head = unique(
+                sp(
+                    0x203,
+                    vec![
+                        record(0, 0xf00f, &ints(&[0, 0, 576, 576])),
+                        child_space.clone(),
+                    ],
+                ),
+                level as u32 + 2,
             );
             group = record(15, 0xf003, &[head, group].concat());
         }
-        let head = sp(
-            0x201,
-            vec![record(0, 0xf010, &ints(&[0, 0, 576, 576])), child_space],
+        let head = unique(
+            sp(
+                0x201,
+                vec![record(0, 0xf010, &ints(&[0, 0, 576, 576])), child_space],
+            ),
+            MAX_DEPTH as u32 + 3,
         );
         let outer = record(15, 0xf003, &[head, group].concat());
-        assert!(project(&drawing(vec![outer]))
+        let tree = drawing(vec![outer]);
+        assert!(project(&tree)
             .unwrap_err()
-            .contains("nesting"));
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+        let (bytes, span) = slide_span(&tree);
+        let error = master_shapes(
+            &bytes,
+            &span,
+            None,
+            &mut shape_master::Resolver::default(),
+            &mut 100_000,
+            &mut 100_000,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
     }
 
     #[test]

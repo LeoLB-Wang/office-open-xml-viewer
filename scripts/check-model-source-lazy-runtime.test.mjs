@@ -45,7 +45,7 @@ test('a renamed source module still fails when its runtime marker is loaded', ()
   const temp = mkdtempSync(join(tempRoot, 'ooxml-renamed-source-probe-'));
   try {
     writeFileSync(join(temp, 'optional.mjs'),
-      "export const marker = 'ooxml-model-source-module/v1';\n");
+      "export const marker = 'ooxml-model-source-module/v2';\n");
     const script = join(temp, 'probe.mjs');
     writeFileSync(script, "await import('./optional.mjs');\n");
     assert.throws(() => runSourceRequestProbe({ script }),

@@ -45,7 +45,7 @@ class ProtocolWorker {
 const globals = globalThis as Record<string, unknown>;
 const originals = { Worker: globals.Worker, location: globals.location };
 const descriptor: ModelSourceModuleDescriptor = {
-  protocol: 'ooxml-model-source-module/v1',
+  protocol: 'ooxml-model-source-module/v2',
   target: 'xlsx',
   moduleUrl: 'https://example.test/source.mjs',
   config: {},

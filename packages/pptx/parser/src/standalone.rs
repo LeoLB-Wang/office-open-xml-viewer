@@ -42,10 +42,13 @@ pub fn parse_standalone_shape_part(
     )?;
     zip.run_operation("standalone-shape", |zip| {
         let xml = read_zip_str(zip, part).map_err(|e| e.to_string())?;
+        standalone_xml_limits(zip, &xml, Some(part))?;
         let doc = parse_preflighted_pptx_xml(&xml).map_err(|e| e.to_string())?;
         let root = doc.root_element();
+        standalone_xml_limits(zip, theme_xml, None)?;
         let mut theme = PptxTheme::from_xml(theme_xml);
         if let Some(map_xml) = clr_map_xml {
+            standalone_xml_limits(zip, map_xml, None)?;
             let map_doc = parse_preflighted_pptx_xml(map_xml).map_err(|e| e.to_string())?;
             let node = map_doc.root_element();
             // Slide masters carry p:clrMap (ECMA-376 §19.3.1.6), while
@@ -107,6 +110,34 @@ pub fn parse_standalone_shape_part(
             relationship_references,
         }))
     })
+}
+
+/// Resource policy shared with ordinary package XML reads. Supplied theme and
+/// color-map XML bypass archive preflight; the DOM parser's depth error and
+/// theme fallback must not erase a quota failure. Report it before parsing,
+/// with the current operation's measured usage and without inventing a part
+/// path for context XML supplied separately from the package.
+fn standalone_xml_limits(zip: &mut PptxZip, xml: &str, part: Option<&str>) -> Result<(), String> {
+    use ooxml_common::depth::{xml_too_deep, MAX_XML_DEPTH};
+    let reporter = zip.operation()?.limit_reporter()?;
+    if xml_too_deep(xml.as_bytes()) {
+        reporter.observe_hard_limit(
+            HardResourceLimitKind::XmlNestingDepth,
+            part,
+            u64::from(MAX_XML_DEPTH),
+            u64::from(MAX_XML_DEPTH) + 1,
+        )?;
+    }
+    let limit = pptx_internal_limits().xml_dom_complexity;
+    if xml_dom_complexity_exceeds(xml, limit) {
+        reporter.observe_hard_limit(
+            HardResourceLimitKind::XmlDomComplexity,
+            part,
+            limit,
+            limit + 1,
+        )?;
+    }
+    Ok(())
 }
 
 fn theme_style_has_relationship(root: roxmltree::Node<'_, '_>, theme: &PptxTheme) -> bool {

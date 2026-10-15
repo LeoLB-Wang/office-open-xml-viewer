@@ -94,7 +94,7 @@ it('direct rejects a start-overridden LFO whose ancestor level only another LFO 
     multilevel: true, formats: [1, 0], overrides: [
       { listId: 42, level: 1, start: 7 }, { listId: 42, level: 1, start: 11 },
     ],
-  }), formattingRuns: [[1, 0], [1, 1], [2, 1]].map(([id, level], i) => ({ end: (i + 1) * 2, properties: reference(id, level) })) }))).rejects.toThrow(new Error('UNSUPPORTED:missing prior Word list ancestor level'));
+  }), formattingRuns: [[1, 0], [1, 1], [2, 1]].map(([id, level], i) => ({ end: (i + 1) * 2, properties: reference(id, level) })) }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it.each([
@@ -134,7 +134,7 @@ it.each([
   { formats: [1, 4], legal: [0] },
 ])('direct rejects a legal level with a non-Arabic current format: $formats legal=$legal', async ({ formats, legal }) => {
   await expect(load(buildDocFixture({ text: 'A\rB\r',
-    numbering: listData({ multilevel: true, formats, legalLevels: legal }), formattingRuns: levelRuns([0, 1]) }))).rejects.toThrow(new Error('UNSUPPORTED:legal Word list level with a non-Arabic current format'));
+    numbering: listData({ multilevel: true, formats, legalLevels: legal }), formattingRuns: levelRuns([0, 1]) }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('lets direct paragraph indentation override the list level', async () => {
@@ -192,7 +192,7 @@ it.each([
 });
 
 it('direct rejects an XML-control bullet instead of dropping the marker', async () => {
-  await expect(load(buildDocFixture({ text: 'Body\r', numbering: listData({ bullet: '\u0001' }), paragraphProperties: reference(1) }))).rejects.toThrow(new Error('UNSUPPORTED:invalid Word numbering text Unicode'));
+  await expect(load(buildDocFixture({ text: 'Body\r', numbering: listData({ bullet: '\u0001' }), paragraphProperties: reference(1) }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('scopes numbering to each note/header without restarting the main story', async () => {
@@ -232,5 +232,5 @@ it('rejects a numbered continuation notice in native short/short footnotes', asy
       { end: headerStart + 7, properties: reference(1) },
       { end: headerStart + 9, properties: new Uint8Array() },
     ],
-  }))).rejects.toThrow('UNSUPPORTED:custom Word note separators are not supported');
+  }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
