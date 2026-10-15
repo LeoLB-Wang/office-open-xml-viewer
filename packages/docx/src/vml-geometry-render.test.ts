@@ -61,6 +61,34 @@ function counter(pixels: Uint8ClampedArray) {
   return count;
 }
 
+it('paints equivalent textpath font shorthand, longhands and template overrides identically', async () => {
+  const normal = "font-family:'Times New Roman';font-size:24pt;font-weight:normal;font-style:normal";
+  const draw = (template: string, style: string, grouped = true) => {
+    const content = `<v:shapetype id="font"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" style="${template}"/></v:shapetype><v:shape type="#font" style="position:absolute;width:100pt;height:50pt" fillcolor="red" stroked="f"><v:textpath string="Fjp" style="${style}"/></v:shape>`;
+    return renderVml(grouped ? `<v:group style="position:absolute;width:100pt;height:50pt" coordsize="100,50">${content}</v:group>` : content);
+  };
+  const reference = await draw('', normal);
+  expect(counter(reference.pixels)(255, 0, 0)).toBeGreaterThan(100);
+  expect(reference.diagnostics).toEqual([]);
+  for (const [template, style] of [
+    ['font-weight:bold;font-style:italic', "font:normal normal normal 24pt 'Times New Roman'"],
+    ["font:24pt 'Times New Roman'", ''],
+    ['', "font-weight:bold;font-style:italic;font:24pt / 28pt Times New Roman"],
+    ["font:italic bold 24pt 'Times New Roman'", 'font-weight:normal;font-style:normal'],
+    ['', `font:italic bold 12pt Arial;${normal}`],
+  ]) {
+    const result = await draw(template, style);
+    expect(result.diagnostics, `${template} / ${style}`).toEqual([]);
+    expect(result.pixels, `${template} / ${style}`).toEqual(reference.pixels);
+  }
+  const standalone = await draw('', normal, false);
+  expect(standalone.diagnostics).toEqual([]);
+  expect(standalone.pixels).toEqual(reference.pixels);
+  const bold = await draw('', "font:italic bold 24pt 'Times New Roman'");
+  expect(bold.diagnostics).toEqual([]);
+  expect(bold.pixels).not.toEqual(reference.pixels);
+});
+
 it('paints custom and inherited paths, primitives, cropped pixels and leaf shadows from a VML group', async () => {
   const { pixels, diagnostics } = await renderVml(`      <v:group style="width:140pt;height:120pt" coordsize="140,120">
         <v:shapetype id="triangle" coordsize="100,100" adj="100" path="m0,0l@0,0,0,100xe"><v:formulas><v:f eqn="val #0"/></v:formulas></v:shapetype>

@@ -54,6 +54,7 @@ mod vml_geometry;
 #[path = "parser/vml_group.rs"]
 mod vml_group;
 mod vml_image;
+mod vml_text_style;
 
 const DEFAULT_FONT_SIZE: f64 = 10.0; // pt fallback
 
@@ -13385,22 +13386,8 @@ fn parse_vml_opacity(raw: &str) -> Option<f64> {
     raw.parse::<f64>().ok()
 }
 
-/// Parse a `<v:textpath>` (§19.1.2.23) into a `TextPath`: its `string` (the
-/// WordArt text) plus the font family / weight / style extracted from the
-/// element's CSS `style` (`font-family`, `font-weight`, `font-style`, and the
-/// `bold`/`italic` keywords of the `font` shorthand). Quotes around the family
-/// are stripped. Returns `None` when the element carries no `string`.
-fn vml_font_shorthand_size(raw: &str) -> Option<f64> {
-    raw.split_whitespace()
-        .filter_map(|token| token.split('/').next())
-        .find(|token| {
-            ["pt", "px", "in", "cm", "mm", "pc"]
-                .iter()
-                .any(|unit| token.ends_with(unit))
-        })
-        .and_then(parse_vml_length_pt)
-}
-
+/// Resolve `<v:textpath>` text and controls (Part 4 §19.1.2.23), including
+/// effective CSS font declarations from the instance and its shapetype.
 fn parse_vml_textpath(
     textpath: roxmltree::Node,
     inherited: Option<roxmltree::Node>,
@@ -13416,52 +13403,13 @@ fn parse_vml_textpath(
         .and_then(|node| node.attribute("style"))
         .unwrap_or("");
 
-    // font-family: prefer the explicit property, else the last token of the
-    // `font` shorthand (`style variant weight size/line family`). Strip quotes.
-    let strip_quotes = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
-    let font_family = vml_css_str(style, "font-family")
-        .map(strip_quotes)
-        .or_else(|| {
-            vml_css_str(style, "font").and_then(|shorthand| {
-                // The family is everything after the size token; a simple,
-                // robust take is the substring after the last size-like token.
-                // Fall back to the last whitespace-delimited token.
-                shorthand
-                    .rsplit(|c: char| c.is_whitespace())
-                    .find(|t| !t.is_empty())
-                    .map(strip_quotes)
-            })
-        })
-        .or_else(|| vml_css_str(inherited_style, "font-family").map(strip_quotes))
-        .or_else(|| {
-            vml_css_str(inherited_style, "font").and_then(|shorthand| {
-                shorthand
-                    .rsplit(|c: char| c.is_whitespace())
-                    .find(|t| !t.is_empty())
-                    .map(strip_quotes)
-            })
-        })
-        .filter(|f| !f.is_empty());
-
-    let style_property =
-        |name| vml_css_str(style, name).or_else(|| vml_css_str(inherited_style, name));
-    let font_lc = style_property("font").unwrap_or("").to_ascii_lowercase();
-    let bold = style_property("font-weight")
-        .map(|w| matches!(w, "bold" | "bolder") || w.trim().parse::<u32>().is_ok_and(|n| n >= 500))
-        .unwrap_or_else(|| font_lc.split_whitespace().any(|t| t == "bold"));
-    let italic = style_property("font-style")
-        .map(|s| s.eq_ignore_ascii_case("italic") || s.eq_ignore_ascii_case("oblique"))
-        .unwrap_or_else(|| {
-            font_lc
-                .split_whitespace()
-                .any(|t| t == "italic" || t == "oblique")
-        });
+    let font = vml_text_style::resolve(style, inherited_style);
 
     Some(TextPath {
         string,
-        font_family,
-        bold,
-        italic,
+        font_family: font.family.map(str::to_string),
+        bold: font.bold.unwrap_or(false),
+        italic: font.italic.unwrap_or(false),
         vml: VmlTextPathFacts {
             text_path_ok: Some(text_path_ok.unwrap_or(false)),
             on: Some(resolved_vml_textpath_bool(textpath, inherited, "on").unwrap_or(false)),
@@ -13475,10 +13423,7 @@ fn parse_vml_textpath(
             x_scale: Some(
                 resolved_vml_textpath_bool(textpath, inherited, "xscale").unwrap_or(false),
             ),
-            font_size_pt: vml_css_length_pt(style, "font-size")
-                .or_else(|| vml_css_str(style, "font").and_then(vml_font_shorthand_size))
-                .or_else(|| vml_css_length_pt(inherited_style, "font-size"))
-                .or_else(|| vml_css_str(inherited_style, "font").and_then(vml_font_shorthand_size)),
+            font_size_pt: font.size_pt,
         },
     })
 }
@@ -31873,6 +31818,58 @@ mod vml_pict_tests {
             assert_eq!(wire[key], false, "{key} must materialize its false default");
         }
         assert_eq!(wire["fontSizePt"], 14.0, "font size is authored input");
+    }
+
+    #[test]
+    fn textpath_font_declarations_expand_before_template_cascade() {
+        let parse = |template: &str, instance: &str| {
+            let xml = format!(
+                r#"<root><textpath style="{template}"/><textpath style="{instance}" string="Fjp"/></root>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let mut children = doc.root_element().children().filter(|n| n.is_element());
+            let inherited = children.next().unwrap();
+            parse_vml_textpath(children.next().unwrap(), Some(inherited), Some(true)).unwrap()
+        };
+        let inherited = "font-family:Arial;font-size:12pt;font-weight:bold;font-style:italic";
+        for style in [
+            "font:normal normal normal 24pt 'Times New Roman'",
+            "font:24pt &quot;Times New Roman&quot;",
+            "font-weight:bold;font-style:italic;font-size:8pt;font:24pt/1.2 'Times New Roman'",
+            "font:italic bold 8pt Arial;font:24pt / 28pt Times New Roman",
+        ] {
+            let text = parse(inherited, style);
+            assert_eq!(
+                text.font_family.as_deref(),
+                Some("Times New Roman"),
+                "{style}"
+            );
+            assert_eq!(text.vml.font_size_pt, Some(24.0), "{style}");
+            assert!(!text.bold && !text.italic, "shorthand resets both: {style}");
+        }
+        let text = parse(
+            "font:italic bold 24pt 'Times New Roman'",
+            "font-weight:normal",
+        );
+        assert_eq!(text.font_family.as_deref(), Some("Times New Roman"));
+        assert_eq!(text.vml.font_size_pt, Some(24.0));
+        assert!(
+            !text.bold && text.italic,
+            "only the authored longhand overrides"
+        );
+        let text = parse(inherited, "font:24pt Arial;font-family:'Times New Roman';font-size:18pt;font-weight:bold;font-style:oblique");
+        assert_eq!(text.font_family.as_deref(), Some("Times New Roman"));
+        assert_eq!(text.vml.font_size_pt, Some(18.0));
+        assert!(
+            text.bold && text.italic,
+            "later longhands win over shorthand"
+        );
+        let text = parse("", "font:italic bold medium Arial");
+        assert_eq!(text.font_family.as_deref(), Some("Arial"));
+        assert!(
+            text.bold && text.italic,
+            "keep existing fitted-font facts even without a point metric"
+        );
     }
 
     /// §19.1.2.5 opacity — the "52429f" form (1/65536-ths, trailing `f`) decodes

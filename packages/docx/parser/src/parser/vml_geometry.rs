@@ -1168,6 +1168,11 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
     }
     for host in std::iter::once(shape).chain(definition) {
         if let Some(text) = vml_direct_child(host, "textpath") {
+            // Part 4 §19.1.2.23 also defines decorations and per-letter
+            // rotation. Neither standalone nor grouped glyph acquisition
+            // retains these modes yet; keep active values on the existing
+            // incomplete-content path rather than claiming font-only parity
+            // implements those additional text effects.
             if text.attribute("style").is_some_and(|style| {
                 style
                     .split(';')

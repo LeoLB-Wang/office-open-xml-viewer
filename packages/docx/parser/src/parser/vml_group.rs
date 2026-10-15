@@ -696,6 +696,11 @@ mod tests {
             ),
             (
                 "",
+                "<v:textpath string=\"text\" style=\"v-rotate-letters:true\"/>",
+                true,
+            ),
+            (
+                "",
                 "<v:textpath string=\"text\" style=\"text-decoration:none\"/>",
                 false,
             ),
