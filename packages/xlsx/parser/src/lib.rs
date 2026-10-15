@@ -756,18 +756,95 @@ fn finalize_projected_sheet(
     parsed: (Worksheet, HyperlinkRids, String),
     current_lookup: CurrentSheetLookup,
 ) -> Result<Worksheet, String> {
+    finalize_projected_sheet_reusing(
+        archive,
+        shared,
+        sheet_index,
+        name,
+        sheet_path,
+        parsed,
+        current_lookup,
+        None,
+    )
+    .map(|(worksheet, _)| worksheet)
+}
+
+/// The cell-independent parts of a worksheet that the cursor preview has
+/// already finalized. Each is a function of the package, the sheet path, the
+/// theme and the parsed sheet shell only, so the terminal product of the same
+/// cursor reuses them instead of reading and parsing the same drawing,
+/// comment, table, slicer and pivot parts a second time. Charts and
+/// sparklines resolve cell references and are rebuilt with the complete
+/// current-sheet lookup, except that a drawing without any graphic frame
+/// yields no chart for any lookup.
+struct FinalizedSheetParts {
+    hyperlink_rids: HyperlinkRids,
+    sheet_shell_xml: String,
+    images: Vec<ImageAnchor>,
+    shape_groups: Vec<ShapeAnchor>,
+    hyperlinks: Vec<Hyperlink>,
+    comments: Vec<XlsxComment>,
+    comment_refs: Vec<String>,
+    tables: Vec<TableInfo>,
+    slicers: Vec<SlicerAnchor>,
+    pivot_tables: Vec<PivotTableMetadata>,
+    pivot_diagnostics: Vec<PivotDiagnostic>,
+    charts_without_frames: Option<Vec<ChartAnchor>>,
+}
+
+impl FinalizedSheetParts {
+    /// Move the reusable parts out of a finalized worksheet. `saw_chart_frame`
+    /// is the chart loader's report for that same finalization.
+    fn take_from(
+        worksheet: &mut Worksheet,
+        hyperlink_rids: HyperlinkRids,
+        sheet_shell_xml: String,
+        saw_chart_frame: bool,
+    ) -> Self {
+        Self {
+            hyperlink_rids,
+            sheet_shell_xml,
+            images: std::mem::take(&mut worksheet.images),
+            shape_groups: std::mem::take(&mut worksheet.shape_groups),
+            hyperlinks: std::mem::take(&mut worksheet.hyperlinks),
+            comments: std::mem::take(&mut worksheet.comments),
+            comment_refs: std::mem::take(&mut worksheet.comment_refs),
+            tables: std::mem::take(&mut worksheet.tables),
+            slicers: std::mem::take(&mut worksheet.slicers),
+            pivot_tables: std::mem::take(&mut worksheet.pivot_tables),
+            pivot_diagnostics: std::mem::take(&mut worksheet.pivot_diagnostics),
+            charts_without_frames: (!saw_chart_frame)
+                .then(|| std::mem::take(&mut worksheet.charts)),
+        }
+    }
+}
+
+/// Finalize a projected sheet, reusing `reuse` when it was finalized from the
+/// same sheet shell. Also returns whether the chart loader saw a graphic frame.
+#[allow(clippy::too_many_arguments)]
+fn finalize_projected_sheet_reusing(
+    archive: &mut XlsxZip,
+    shared: &WorkbookShared,
+    sheet_index: u32,
+    name: &str,
+    sheet_path: &str,
+    parsed: (Worksheet, HyperlinkRids, String),
+    current_lookup: CurrentSheetLookup,
+    reuse: Option<FinalizedSheetParts>,
+) -> Result<(Worksheet, bool), String> {
     let wb_doc = parse_guarded(&shared.workbook_xml).map_err(|e| e.to_string())?;
     let rels_doc = parse_guarded(&shared.rels_xml).map_err(|e| e.to_string())?;
     let theme_colors = shared.theme_colors.as_ref();
     let (mut ws, hyperlink_rids, sheet_shell_xml) = parsed;
+    let mut reuse = reuse.filter(|parts| {
+        parts.hyperlink_rids == hyperlink_rids && parts.sheet_shell_xml == sheet_shell_xml
+    });
 
-    // Attach any drawing-anchored images and charts for this sheet
-    ws.images = load_sheet_images(archive, sheet_path, theme_colors);
-    // Embedded OLE object previews (the `<oleObjects>` collection, §18.3.1.60)
-    // draw through the same image
-    // list; their preview parts are referenced from the worksheet XML + rels.
-    ws.images
-        .extend(load_sheet_ole_images(archive, sheet_path, &sheet_shell_xml));
+    // The picture, chart and shape loaders share one read and parse of each
+    // drawing part. Reused parts may leave no loader that needs them.
+    let needs_drawings = reuse
+        .as_ref()
+        .is_none_or(|parts| parts.charts_without_frames.is_none());
     let mut reference_session = WorksheetReferenceSession::default();
     let materialized_rows = match current_lookup {
         CurrentSheetLookup::BuildFromMaterializedRows => Some(ws.rows.as_slice()),
@@ -777,44 +854,78 @@ fn finalize_projected_sheet(
         }
     };
     let defined_names = parse_defined_names_for_sheet(&wb_doc, sheet_index);
-    let charts = load_sheet_charts_with_theme_images(
-        archive,
-        sheet_path,
-        Some(ChartReferenceContext {
-            materialized_rows,
-            materialized_col_hidden: Some(&ws.col_hidden),
-            sheet_name: name,
-            sheets: &shared.sheets,
-            workbook_rels: &rels_doc,
-            shared_strings: shared.shared_strings.as_ref(),
-            defined_names: &defined_names,
-            number_formats: &shared.chart_number_formats,
-            session: &mut reference_session,
-        }),
-        theme_colors,
-        (
-            shared.theme_fonts.0.as_deref(),
-            shared.theme_fonts.1.as_deref(),
-        ),
-        shared
-            .theme_format_scheme_present
-            .then_some(shared.theme_format_scheme.as_ref()),
-        shared.theme_chart_images.as_ref(),
-    );
+    let mut saw_chart_frame = false;
+    let reused_charts = reuse
+        .as_mut()
+        .and_then(|parts| parts.charts_without_frames.take());
+    let mut charts = reused_charts.unwrap_or_default();
+    if needs_drawings {
+        for_each_sheet_drawing(archive, sheet_path, |archive, drawing| {
+            let drawings = std::slice::from_ref(drawing);
+            if reuse.is_none() {
+                ws.images
+                    .extend(load_sheet_images(archive, drawings, theme_colors));
+            }
+            charts.extend(load_sheet_charts_observing_frames(
+                archive,
+                drawings,
+                Some(ChartReferenceContext {
+                    materialized_rows,
+                    materialized_col_hidden: Some(&ws.col_hidden),
+                    sheet_name: name,
+                    sheets: &shared.sheets,
+                    workbook_rels: &rels_doc,
+                    shared_strings: shared.shared_strings.as_ref(),
+                    defined_names: &defined_names,
+                    number_formats: &shared.chart_number_formats,
+                    session: &mut reference_session,
+                }),
+                theme_colors,
+                (
+                    shared.theme_fonts.0.as_deref(),
+                    shared.theme_fonts.1.as_deref(),
+                ),
+                shared
+                    .theme_format_scheme_present
+                    .then_some(shared.theme_format_scheme.as_ref()),
+                shared.theme_chart_images.as_ref(),
+                &mut saw_chart_frame,
+            ));
+            if reuse.is_none() {
+                ws.shape_groups.extend(load_sheet_shape_groups(
+                    archive,
+                    drawings,
+                    theme_colors,
+                    shared.theme_format_scheme.as_ref(),
+                ));
+            }
+        });
+    }
     ws.charts = charts;
-    ws.shape_groups = load_sheet_shape_groups(
-        archive,
-        sheet_path,
-        theme_colors,
-        shared.theme_format_scheme.as_ref(),
-    );
-    ws.hyperlinks = load_hyperlinks(archive, sheet_path, hyperlink_rids);
-    ws.comments = load_sheet_comments(archive, sheet_path, &shared.rels_xml);
-    ws.comment_refs = ws.comments.iter().map(|c| c.cell_ref.clone()).collect();
-    ws.defined_names = defined_names;
-    ws.tables = load_sheet_tables(archive, sheet_path, theme_colors);
-    ws.slicers = load_sheet_slicers(archive, sheet_path, theme_colors);
-    (ws.pivot_tables, ws.pivot_diagnostics) = load_sheet_pivots(archive, sheet_path, theme_colors);
+    if let Some(parts) = reuse {
+        ws.images = parts.images;
+        ws.shape_groups = parts.shape_groups;
+        ws.hyperlinks = parts.hyperlinks;
+        ws.comments = parts.comments;
+        ws.comment_refs = parts.comment_refs;
+        ws.defined_names = defined_names;
+        ws.tables = parts.tables;
+        ws.slicers = parts.slicers;
+        ws.pivot_tables = parts.pivot_tables;
+        ws.pivot_diagnostics = parts.pivot_diagnostics;
+    } else {
+        // OLE previews (§18.3.1.60) follow drawing images in the wire order.
+        ws.images
+            .extend(load_sheet_ole_images(archive, sheet_path, &sheet_shell_xml));
+        ws.hyperlinks = load_hyperlinks(archive, sheet_path, hyperlink_rids);
+        ws.comments = load_sheet_comments(archive, sheet_path, &shared.rels_xml);
+        ws.comment_refs = ws.comments.iter().map(|c| c.cell_ref.clone()).collect();
+        ws.defined_names = defined_names;
+        ws.tables = load_sheet_tables(archive, sheet_path, theme_colors);
+        ws.slicers = load_sheet_slicers(archive, sheet_path, theme_colors);
+        (ws.pivot_tables, ws.pivot_diagnostics) =
+            load_sheet_pivots(archive, sheet_path, theme_colors);
+    }
     let sparkline_groups = load_sheet_sparklines(
         archive,
         &sheet_shell_xml,
@@ -840,7 +951,7 @@ fn finalize_projected_sheet(
     // (ECMA-376 §18.2.28 / §18.17.4.1).
     ws.date1904 = shared.date1904;
 
-    Ok(ws)
+    Ok((ws, saw_chart_frame))
 }
 
 fn parse_xlsx_inner_with(
@@ -3939,6 +4050,8 @@ pub struct XlsxArchive {
 struct ActiveWorksheetCursor {
     source: ActiveWorksheetSource,
     preview: Option<Vec<u8>>,
+    /// Parts the preview finalized; the terminal product reuses them.
+    preview_parts: Option<FinalizedSheetParts>,
     sheet_index: u32,
     name: String,
     sheet_path: String,
@@ -4006,7 +4119,7 @@ fn build_cursor_preview(
     name: &str,
     sheet_path: &str,
     part: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, Option<FinalizedSheetParts>), String> {
     let scanned = zip.scan_worksheet_preview(
         part,
         Rc::clone(&shared.shared_strings),
@@ -4018,13 +4131,16 @@ fn build_cursor_preview(
     let ordered_rows = scanned.ordered_rows;
     let reporter = zip.active_operation()?.limit_reporter()?;
     let Some(tail) = scanned.tail else {
-        return serialize_cursor_preview(None, Some("metadata-unavailable"), 0, 0, &reporter, part);
+        return serialize_cursor_preview(None, Some("metadata-unavailable"), 0, 0, &reporter, part)
+            .map(|bytes| (bytes, None));
     };
     let parsed = parse_projected_worksheet_tail(tail, shared.theme_colors.as_ref(), name)?;
     if let Some(reason) = cursor_preview_blocker(has_row_outline, ordered_rows, &parsed.0)? {
-        return serialize_cursor_preview(None, Some(reason), max_row, max_col, &reporter, part);
+        return serialize_cursor_preview(None, Some(reason), max_row, max_col, &reporter, part)
+            .map(|bytes| (bytes, None));
     }
-    let worksheet = finalize_projected_sheet(
+    let (hyperlink_rids, sheet_shell_xml) = (parsed.1.clone(), parsed.2.clone());
+    let (mut worksheet, saw_chart_frame) = finalize_projected_sheet_reusing(
         zip,
         shared,
         sheet_index,
@@ -4032,8 +4148,17 @@ fn build_cursor_preview(
         sheet_path,
         parsed,
         CurrentSheetLookup::Seed(None),
+        None,
     )?;
-    serialize_cursor_preview(Some(&worksheet), None, max_row, max_col, &reporter, part)
+    let bytes =
+        serialize_cursor_preview(Some(&worksheet), None, max_row, max_col, &reporter, part)?;
+    let parts = FinalizedSheetParts::take_from(
+        &mut worksheet,
+        hyperlink_rids,
+        sheet_shell_xml,
+        saw_chart_frame,
+    );
+    Ok((bytes, Some(parts)))
 }
 
 enum ActiveWorksheetSource {
@@ -4214,6 +4339,7 @@ impl XlsxArchive {
             let zip = &mut self.archive;
             let sheet_part_kind = resolve_sheet_part_kind(&rels_doc, &sheet.r_id);
             let mut preview = None;
+            let mut preview_parts = None;
             let source = match sheet_part_kind {
                 SheetPartKind::ChartSheet => {
                     match parse_chart_sheet_shell(zip, &part, name).and_then(|parsed| {
@@ -4245,8 +4371,9 @@ impl XlsxArchive {
                     let preview_result =
                         build_cursor_preview(zip, shared, sheet_index, name, &sheet_path, &part);
                     match preview_result {
-                        Ok(bytes) => {
+                        Ok((bytes, parts)) => {
                             preview = Some(bytes);
+                            preview_parts = parts;
                         }
                         Err(_) if zip.assert_healthy().is_ok() => {
                             let reporter = zip.active_operation()?.limit_reporter()?;
@@ -4282,6 +4409,7 @@ impl XlsxArchive {
             Ok(ActiveWorksheetCursor {
                 source,
                 preview,
+                preview_parts,
                 sheet_index,
                 name: name.to_string(),
                 sheet_path,
@@ -4453,7 +4581,7 @@ impl XlsxArchive {
                         Some(builder.finish())
                     });
                     let zip = &mut self.archive;
-                    let worksheet = finalize_projected_sheet(
+                    let (worksheet, _) = finalize_projected_sheet_reusing(
                         zip,
                         shared,
                         active.sheet_index,
@@ -4461,6 +4589,7 @@ impl XlsxArchive {
                         &active.sheet_path,
                         parsed,
                         CurrentSheetLookup::Seed(current_index),
+                        active.preview_parts.take(),
                     )?;
                     // Ancillary parsers intentionally degrade malformed parts to
                     // placeholders, but a resource-limit violation is terminal
@@ -8360,6 +8489,74 @@ mod rb7_partial_degradation_tests {
             serde_json::from_str(&parse_sheet_native(&data, 0, "Sheet1").unwrap()).unwrap();
         assert_eq!(drain_cursor_model(data), legacy);
         assert!(!legacy["parseError"].is_null());
+    }
+
+    /// The terminal product reuses the drawing, hyperlink and comment parts the
+    /// preview already finalized, and still equals a full parse.
+    #[test]
+    fn wasm_cursor_terminal_reuses_preview_parts_with_full_parse_parity() {
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2"><v>2</v></c></row></sheetData><hyperlinks><hyperlink ref="A1" r:id="rLink"/></hyperlinks><drawing r:id="rDrawing"/></worksheet>"#;
+        let sheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rDrawing" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/><Relationship Id="rLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/" TargetMode="External"/><Relationship Id="rComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/></Relationships>"#;
+        let drawing = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:twoCellAnchor><xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:sp><xdr:nvSpPr><xdr:cNvPr id="2" name="Box"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></xdr:spPr><xdr:txBody><a:bodyPr/><a:p><a:r><a:t>Note</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"#;
+        let comments = r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>A</author></authors><commentList><comment ref="A2" authorId="0"><text><t>Hello</t></text></comment></commentList></comments>"#;
+        let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+        let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+        let mut data = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut data));
+            let options = zip::write::SimpleFileOptions::default();
+            for (path, body) in [
+                ("xl/workbook.xml", workbook),
+                ("xl/_rels/workbook.xml.rels", workbook_rels),
+                ("xl/worksheets/sheet1.xml", sheet),
+                ("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels),
+                ("xl/drawings/drawing1.xml", drawing),
+                ("xl/comments1.xml", comments),
+            ] {
+                writer.start_file(path, options).unwrap();
+                writer.write_all(body.as_bytes()).unwrap();
+            }
+            crate::write_test_content_types(&mut writer);
+            writer.finish().unwrap();
+        }
+
+        let mut archive = XlsxArchive::new(data.clone(), None, None, None).unwrap();
+        archive.open_sheet_cursor(0, "Sheet1").unwrap();
+        let parts = archive
+            .active_worksheet
+            .as_ref()
+            .and_then(|active| active.preview_parts.as_ref())
+            .expect("the preview finalized reusable parts");
+        assert_eq!(parts.shape_groups.len(), 1);
+        assert_eq!(parts.hyperlinks.len(), 1);
+        assert_eq!(parts.comments.len(), 1);
+        assert_eq!(
+            parts.charts_without_frames.as_deref().map(<[_]>::len),
+            Some(0)
+        );
+        let preview: serde_json::Value =
+            serde_json::from_slice(&archive.pull_sheet_cursor_inner(128).unwrap()).unwrap();
+        assert_eq!(preview["kind"], "preview");
+        loop {
+            let payload = archive.pull_sheet_cursor_inner(128).unwrap();
+            if archive.sheet_cursor_pull_finished() {
+                let terminal: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                assert_eq!(
+                    terminal["worksheet"]["shapeGroups"],
+                    preview["worksheet"]["shapeGroups"]
+                );
+                break;
+            }
+        }
+        assert!(archive
+            .active_worksheet
+            .as_ref()
+            .is_some_and(|active| active.preview_parts.is_none()));
+
+        let model = assert_cursor_parity(data);
+        assert_eq!(model["shapeGroups"].as_array().map(Vec::len), Some(1));
+        assert_eq!(model["hyperlinks"].as_array().map(Vec::len), Some(1));
+        assert_eq!(model["comments"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]

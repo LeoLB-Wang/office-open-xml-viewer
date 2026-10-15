@@ -143,6 +143,7 @@
     "lint:test": "ast-grep test --skip-snapshot-tests",
     "test:docx-boundaries": "node --test scripts/check-docx-layout-boundaries.test.mjs",
     "test:docx-compatibility": "node --test scripts/check-docx-compatibility-evidence.test.mjs",
+    "test:docx-compatibility-build": "node --test scripts/docx-compatibility-build.test.mjs",
     "test:docx-public-api": "node --test scripts/check-public-api.test.mjs",
     "generate:resource-policy": "node scripts/generate-ooxml-resource-policy.mjs --write",
     "check:resource-policy": "node scripts/generate-ooxml-resource-policy.mjs",
