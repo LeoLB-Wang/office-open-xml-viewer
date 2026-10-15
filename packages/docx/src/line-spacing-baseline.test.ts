@@ -179,6 +179,33 @@ describe('inline objects on a line grid', () => {
 });
 
 describe('line-grid page-bottom admission', () => {
+  it.each([[40, 2], [41, 2], [41.5, 1]])('keeps the grid caption bottom-border stroke inside body bottom %s', (bodyBottom, pages) => {
+    const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
+    caption.defaultFontSize = 16;
+    caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 }];
+    caption.borders = {
+      top: null, left: null, right: null, between: null,
+      bottom: { style: 'single', color: '000000', width: 1, space: 1 },
+    };
+    const model = docWith(paragraph('Preceding', exact(20)), caption);
+    model.section.pageHeight = bodyBottom;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    // Text ends at 38pt, but the retained border center is at 41pt and
+    // its 1pt stroke ends at 41.5pt. Grid leading cannot exempt that ink.
+    expect(layout.pages).toHaveLength(pages);
+    const retained = layout.pages[pages - 1].layers.body.at(-1);
+    if (retained?.kind !== 'paragraph') throw new Error('expected caption paragraph');
+    const bottom = retained.borders.find(border => border.edge === 'bottom');
+    if (!bottom) throw new Error('expected bottom border');
+    expect(bottom.to.yPt + bottom.widthPt / 2).toBeLessThanOrEqual(bodyBottom);
+  });
+
   it('preserves authored atLeast spacing at the page bottom on a grid', () => {
     const model = docWith(paragraph('Preceding', exact(20)), paragraph('Minimum', atLeast(60)));
     model.section.pageHeight = 70;
@@ -210,11 +237,17 @@ describe('line-grid page-bottom admission', () => {
     expect(layout.pages).toHaveLength(pages);
   });
 
-  it.each([false, true])('admits a heading and grid caption together with keepNext=%s', keepNext => {
+  it.each([
+    [false, false], [true, false], [true, true],
+  ])('admits a heading and grid caption together with keepNext=%s, border=%s', (keepNext, bordered) => {
     const heading = { ...paragraph('Heading', exact(20)), keepNext } as BodyElement;
     const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
     caption.defaultFontSize = 16;
     caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 }];
+    if (bordered) caption.borders = {
+      top: null, left: null, right: null, between: null,
+      bottom: { style: 'single', color: '000000', width: 1, space: 1 },
+    };
     const model = docWith(paragraph('Preceding', exact(20)), heading, caption);
     model.section.pageHeight = 58;
     model.section.docGridType = 'lines';
@@ -224,9 +257,12 @@ describe('line-grid page-bottom admission', () => {
       localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
       measureContext: canvas.getContext('2d'),
     }));
-    // The caption's natural box ends at 58pt; only its grid cell ends at 60pt.
-    expect(layout.pages).toHaveLength(1);
-    expect(layout.pages[0].layers.body.map(block => block.flowBounds.yPt)).toEqual([0, 20, 40]);
+    // Natural content ends at 58pt; a bottom border ends at 61.5pt, so
+    // keepNext must move both the heading and caption when decorated.
+    expect(layout.pages).toHaveLength(bordered ? 2 : 1);
+    expect(layout.pages[0].layers.body.map(block => block.flowBounds.yPt))
+      .toEqual(bordered ? [0] : [0, 20, 40]);
+    if (bordered) expect(layout.pages[1].layers.body.map(block => block.flowBounds.yPt)).toEqual([0, 20]);
   });
 
   it.each([

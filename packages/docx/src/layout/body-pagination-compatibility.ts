@@ -5,7 +5,6 @@ import type {
 } from './body-layout-input.js';
 import { defineCompatibilityRule } from './compatibility.js';
 import type {
-  LineLayout,
   ParagraphLayout,
   ParagraphPlacement,
   RetainedGlyphPaintOperation,
@@ -121,11 +120,24 @@ export const WORD_GRID_LINE_CONTENT_FIT_ADMISSION = defineCompatibilityRule({
  * and all retained placement/paint geometry. Applies to complete and continuing
  * fragments; earlier lines still consume their full grid cells. */
 export function wordGridLineAdmissionExtentPt(
-  terminalLine: LineLayout | undefined,
+  paragraph: ParagraphLayout,
   logicalLineBoxExtentPt: number,
 ): number {
   void WORD_GRID_LINE_CONTENT_FIT_ADMISSION;
-  return Math.max(0, logicalLineBoxExtentPt - (terminalLine?.gridAfterLeadingPt ?? 0));
+  const leadingPt = paragraph.lines.at(-1)?.gridAfterLeadingPt ?? 0;
+  if (leadingPt === 0) return logicalLineBoxExtentPt;
+  // §17.3.1.7/24 borders (including their authored spacing) and §17.3.1.31
+  // shading retain their acquired paint geometry. The observed grid-leading
+  // allowance exempts blank leading only, never decoration ink. Measure its
+  // block end relative to the fragment origin, including the border stroke.
+  let decorationExtentPt = paragraph.shading
+    ? paragraph.inkBounds.yPt + paragraph.inkBounds.heightPt - paragraph.flowBounds.yPt
+    : 0;
+  for (const border of paragraph.borders) {
+    decorationExtentPt = Math.max(decorationExtentPt,
+      Math.max(border.from.yPt, border.to.yPt) + border.widthPt / 2 - paragraph.flowBounds.yPt);
+  }
+  return Math.max(0, logicalLineBoxExtentPt - leadingPt, decorationExtentPt);
 }
 
 export const WORD_VERTICAL_RL_FINAL_LINE_BASELINE_ADMISSION = defineCompatibilityRule({

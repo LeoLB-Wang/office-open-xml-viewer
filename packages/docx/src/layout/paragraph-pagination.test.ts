@@ -112,10 +112,12 @@ describe('paragraph page-local reserve selection', () => {
     expect(selected.nextCursor).toBeNull();
   });
 
-  it('admits a continuing grid line by its natural box while charging preceding cells', () => {
+  it.each([false, true])('admits a continuing grid line while retaining preceding cells and shading=%s', shaded => {
     const retained = paragraph();
     const selected = selectParagraphFragment(
-      { ...retained, lines: retained.lines.map(line => ({ ...line, gridAfterLeadingPt: 2 })) },
+      { ...retained,
+        ...(shaded ? { shading: { color: '#EEEEEE' } } : {}),
+        lines: retained.lines.map(line => ({ ...line, gridAfterLeadingPt: 2 })) },
       { boundary: null },
       splittable([
         { segIndex: 0, charOffset: 1 },
@@ -125,10 +127,11 @@ describe('paragraph page-local reserve selection', () => {
       18, 40, true,
       { keepLines: false, widowControl: false },
     );
-    expect(selected.fragment?.lines).toHaveLength(2);
-    expect(selected.fragment?.advancePt).toBe(20);
-    expect(selected.admissionExtentPt).toBe(18);
-    expect(selected.nextCursor?.boundary).toEqual({ segIndex: 0, charOffset: 2 });
+    // Shading paints the complete retained cell, even across a continuation.
+    expect(selected.fragment?.lines).toHaveLength(shaded ? 1 : 2);
+    expect(selected.fragment?.advancePt).toBe(shaded ? 10 : 20);
+    expect(selected.admissionExtentPt).toBe(shaded ? 10 : 18);
+    expect(selected.nextCursor?.boundary).toEqual({ segIndex: 0, charOffset: shaded ? 1 : 2 });
   });
 
   it('fails closed when a splittable retained paragraph lacks a continuation boundary', () => {
