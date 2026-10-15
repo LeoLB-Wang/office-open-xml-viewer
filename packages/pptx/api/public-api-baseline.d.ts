@@ -1030,6 +1030,11 @@ export interface Duotone {
     clr1: string;
     clr2: string;
 }
+export interface EquationBranchFallback {
+    elements: SlideElement[];
+    before: number;
+    after: number;
+}
 export interface EquationRun {
     fallbackText?: string;
     type: 'math';
@@ -1723,6 +1728,7 @@ export interface PptxSlidePoint {
     readonly y: number;
 }
 export interface PptxTextRunInfo {
+    renderElementIndex?: number;
     elementIndex?: number;
     origin?: SlideElementOrigin;
     shapeId?: string;
@@ -1956,11 +1962,7 @@ export interface Shadow {
     rotWithShape?: boolean;
 }
 export interface ShapeElement {
-    mathFallback?: {
-        elements: SlideElement[];
-        before: number;
-        after: number;
-    };
+    mathFallback?: EquationBranchFallback;
     type: 'shape';
     x: number;
     y: number;
@@ -2096,6 +2098,7 @@ export interface TableCell {
     vMerge: boolean;
 }
 export interface TableElement {
+    mathFallback?: EquationBranchFallback;
     background?: Fill;
     type: 'table';
     id?: string;

@@ -250,6 +250,9 @@ pub struct ChartElement {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TableElement {
+    /// Part 3 §9.3: whole-branch recovery also applies to equations in table cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub math_fallback: Option<EquationBranchFallback>,
     /// ECMA-376 §20.1.4.2.25 `tblBg`: painted once below cell fills so
     /// transparent bands reveal the theme background rather than the slide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -462,10 +465,11 @@ pub struct Sp3d {
 }
 
 /// One equation MCE branch's emitted element range and parsed preview.
-/// Counts are relative to the owning shape in the flattened spTree stream.
+/// Counts are relative to a text-bearing anchor in the flattened spTree stream.
+/// Recovery replaces the complete branch, independently of the anchor kind.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct EquationShapeFallback {
+pub struct EquationBranchFallback {
     pub elements: Vec<SlideElement>,
     pub before: usize,
     pub after: usize,
@@ -477,7 +481,7 @@ pub struct ShapeElement {
     /// Part 3 §9.3: retained equation preview for a runtime conversion failure.
     /// The live Choice is authoritative while its equations render successfully.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub math_fallback: Option<EquationShapeFallback>,
+    pub math_fallback: Option<EquationBranchFallback>,
     pub x: i64,
     pub y: i64,
     pub width: i64,
@@ -1549,6 +1553,11 @@ pub fn apply_group_transform_to_element(el: &mut SlideElement, gt: &GroupTransfo
             p.flip_v = nt.flip_v;
         }
         SlideElement::Table(tbl) => {
+            if let Some(fallback) = &mut tbl.math_fallback {
+                for element in &mut fallback.elements {
+                    apply_group_transform_to_element(element, gt);
+                }
+            }
             // If the table has no xfrm (zero dimensions), it fills the group's child space.
             let (ex, ey, ecx, ecy) = if tbl.width == 0 && tbl.height == 0 {
                 (gt.ch_x, gt.ch_y, gt.ch_cx, gt.ch_cy)

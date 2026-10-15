@@ -40,7 +40,7 @@ function* fontElements(elements: readonly SlideElement[]): Generator<SlideElemen
     if (next.done) { pending.pop(); continue; }
     const element = next.value;
     yield element;
-    if (element.type === 'shape' && element.mathFallback) {
+    if ((element.type === 'shape' || element.type === 'table') && element.mathFallback) {
       pending.push(element.mathFallback.elements[Symbol.iterator]());
     }
   }

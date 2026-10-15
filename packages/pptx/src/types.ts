@@ -331,9 +331,17 @@ export interface MediaElement {
   mimeType: string;
 }
 
+/** Parsed MCE alternative and complete selected-branch range for equation recovery.
+ * Counts are relative to the shape or table anchor in the flattened element stream. */
+export interface EquationBranchFallback {
+  elements: SlideElement[];
+  before: number;
+  after: number;
+}
+
 export interface ShapeElement {
   /** Equation Choice preview retained for runtime conversion failures (MCE §9.3). */
-  mathFallback?: { elements: SlideElement[]; before: number; after: number };
+  mathFallback?: EquationBranchFallback;
   type: 'shape';
   x: number;
   y: number;
@@ -522,6 +530,8 @@ export interface Sp3d {
 }
 
 export interface TableElement {
+  /** Whole MCE branch recovery, including equations in table cells (Part 3 §9.3). */
+  mathFallback?: EquationBranchFallback;
   /** Optional `a:tblBg` fill across the entire table beneath cell fills.
    * Resolved from the active theme matrix; omitted means no background paint.
    * Existing model producers may omit it. */

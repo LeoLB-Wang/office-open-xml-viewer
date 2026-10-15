@@ -239,7 +239,11 @@ export interface RenderContext {
 
 /** Information about a rendered text segment for building a transparent selection overlay. */
 export interface PptxTextRunInfo {
-  /** Paint-order element index in the rendered slide snapshot. */
+  /** Paint-order index for distinguishing displayed text containers, including
+   * recovery previews. This is not a source-model locator for hit testing. */
+  renderElementIndex?: number;
+  /** Original slide-model element index. Absent for recovery-preview text,
+   * which has no element in the source tree used by hit testing. */
   elementIndex?: number;
   /** Provenance of that rendered element. */
   origin?: import('./types.js').SlideElementOrigin;
@@ -634,9 +638,9 @@ function slideMayDecodeImages(slide: Slide): boolean {
     if (element.type === 'media') return !!element.posterPath;
     if (element.type === 'chart') return collectChartImageFillUsages(element.chart).length > 0;
     if (!elementImageFillUsages(element).next().done) return true;
+    if ((element.type === 'shape' || element.type === 'table') && element.mathFallback?.elements.length) return true;
     return element.type === 'shape' && (
-      !!element.mathFallback?.elements.length
-      || element.fill?.fillType === 'image'
+      element.fill?.fillType === 'image'
       || !!element.textBody?.paragraphs.some(paragraph => asBullet(paragraph.bullet).type === 'blip')
     );
   });
@@ -795,21 +799,22 @@ function tintedMathImage(render: MathRender, color: string): CanvasImageSource {
   return tinted;
 }
 
+/** All currently supported text-bearing slide elements, including table cells. */
+function* elementTextBodies(element: SlideElement): Generator<TextBody> {
+  if (element.type === 'shape' && element.textBody) yield element.textBody;
+  else if (element.type === 'table') {
+    for (const row of element.rows) for (const cell of row.cells) {
+      if (cell.textBody) yield cell.textBody;
+    }
+  }
+}
+
 /** Gather every math run reachable from a slide's shapes and table cells. */
 function collectSlideMathRuns(slide: Slide): { nodes: MathNode[]; display: boolean }[] {
   const found: { nodes: MathNode[]; display: boolean }[] = [];
-  const fromBody = (body: TextBody | null) => {
-    if (!body) return;
-    for (const para of body.paragraphs) {
-      for (const run of para.runs) {
-        if (run.type === 'math') found.push({ nodes: run.nodes, display: run.display });
-      }
-    }
-  };
-  for (const el of slide.elements) {
-    if (el.type === 'shape') fromBody(el.textBody);
-    else if (el.type === 'table') {
-      for (const row of el.rows) for (const cell of row.cells) fromBody(cell.textBody);
+  for (const element of slide.elements) for (const body of elementTextBodies(element)) {
+    for (const para of body.paragraphs) for (const run of para.runs) {
+      if (run.type === 'math') found.push({ nodes: run.nodes, display: run.display });
     }
   }
   return found;
@@ -2322,7 +2327,9 @@ export function tileSourceExtent(
  * `DOMMatrix` translate on the pattern transform.
  *
  * The caller has already clipped to the fill box and set globalAlpha. Background
- * callers omit `dpi` and preserve their prior 96-DPI behavior.
+ * callers omit `dpi` and preserve their prior 96-DPI behavior. `coverage` can
+ * extend beyond this alignment box when the caller counter-rotates the brush;
+ * expanding coverage must not shift the tile registration or phase.
  */
 function paintTiledBackground(
   ctx: CanvasRenderingContext2D,
@@ -2334,6 +2341,7 @@ function paintTiledBackground(
   srcRect?: PictureElement['srcRect'],
   intrinsicSize?: Readonly<{ width: number; height: number }>,
   dpi = 96,
+  coverage = { x: 0, y: 0, w: canvasW, h: canvasH },
 ): boolean {
   // Native tile size in slide px: image px → EMU @96dpi → × sx/sy → × scale.
   // §20.1.8.55 applies before the fill mode: for tile mode the cropped source
@@ -2415,14 +2423,15 @@ function paintTiledBackground(
   if (typeof pattern.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
     pattern.setTransform(new DOMMatrix().translateSelf(px, py).scaleSelf(1 / rasterScaleX, 1 / rasterScaleY));
     ctx.fillStyle = pattern;
-    ctx.fillRect(0, 0, canvasW, canvasH);
+    ctx.fillRect(coverage.x, coverage.y, coverage.w, coverage.h);
   } else {
     // Fallback: bake the phase into the fill origin by translating the context.
     ctx.save();
     ctx.translate(px, py);
     ctx.scale(1 / rasterScaleX, 1 / rasterScaleY);
     ctx.fillStyle = pattern;
-    ctx.fillRect(-px * rasterScaleX, -py * rasterScaleY, canvasW * rasterScaleX, canvasH * rasterScaleY);
+    ctx.fillRect((coverage.x - px) * rasterScaleX, (coverage.y - py) * rasterScaleY,
+      coverage.w * rasterScaleX, coverage.h * rasterScaleY);
     ctx.restore();
   }
   return true;
@@ -2478,17 +2487,27 @@ export function paintPreparedShapeImageFill(
     // but cancel its rotation about the fill-box centre. A reflected local
     // frame reverses the rotation sign (R F R = F); the reflection itself is
     // retained because rotWithShape controls rotation, not flips.
+    let fillRotation = 0;
     if (fill.rotWithShape === false && shapeTransform.rotation !== 0) {
       const sign = shapeTransform.flipH !== shapeTransform.flipV ? 1 : -1;
       ctx.translate(x + w / 2, y + h / 2);
-      ctx.rotate(sign * shapeTransform.rotation * Math.PI / 180);
+      fillRotation = sign * shapeTransform.rotation * Math.PI / 180;
+      ctx.rotate(fillRotation);
       ctx.translate(-(x + w / 2), -(y + h / 2));
     }
     if (fill.tile) {
+      // §20.1.8.58 repeats across the entire clipped shape. Counter-rotation
+      // changes the clip's extent in the brush frame, not the tile's phase or
+      // its alignment box. Cover the inverse-rotated box about the same centre.
+      const cos = Math.abs(Math.cos(fillRotation));
+      const sin = Math.abs(Math.sin(fillRotation));
+      const coverW = w * cos + h * sin;
+      const coverH = w * sin + h * cos;
       ctx.translate(x, y);
       return paintTiledBackground(
         ctx, prepared.image, fill.tile, w, h, scale, fill.srcRect, prepared.intrinsicSize,
         fill.dpi && fill.dpi > 0 ? fill.dpi : 96,
+        { x: (w - coverW) / 2, y: (h - coverH) / 2, w: coverW, h: coverH },
       );
     }
     const rect = fill.fillRect ?? {};
@@ -8006,6 +8025,10 @@ async function renderSlideLeased(
     await prepareSlideMath(slide, opts.math);
     if (superseded()) return canvas;
   }
+  // Keep model locators separate from paint-order indices. Preview elements
+  // exist only in this projection; source hit testing still uses the input slide.
+  let sourceIndices: (number | undefined)[] | undefined;
+  const sourceSlide = slide;
   if (opts.math) {
     // Resolve whole MCE branches atomically, including branches that emit more
     // than one shape. A prefix count keeps failure checks linear in the slide's
@@ -8013,12 +8036,17 @@ async function renderSlideLeased(
     const failures = [0];
     const previews = new Map<number, { end: number; elements: SlideElement[] }>();
     for (const element of slide.elements) {
-      const failed = element.type === 'shape' && element.textBody?.paragraphs.some(para =>
-        para.runs.some(run => run.type === 'math' && failedMath.has(run.nodes)));
+      let failed = false;
+      for (const body of elementTextBodies(element)) {
+        if (body.paragraphs.some(para => para.runs.some(run => run.type === 'math' && failedMath.has(run.nodes)))) {
+          failed = true;
+          break;
+        }
+      }
       failures.push(failures[failures.length - 1] + (failed ? 1 : 0));
     }
     slide.elements.forEach((element, index) => {
-      if (element.type !== 'shape' || !element.mathFallback) return;
+      if ((element.type !== 'shape' && element.type !== 'table') || !element.mathFallback) return;
       const fallback = element.mathFallback;
       const start = index - fallback.before;
       const end = index + fallback.after + 1;
@@ -8028,13 +8056,19 @@ async function renderSlideLeased(
       }
     });
     const elements: SlideElement[] = [];
+    sourceIndices = [];
     for (let i = 0; i < slide.elements.length;) {
       const preview = previews.get(i);
       if (preview) {
-        for (const element of preview.elements) elements.push(element);
+        for (const element of preview.elements) {
+          elements.push(element);
+          sourceIndices.push(undefined);
+        }
         i = preview.end;
+      } else {
+        sourceIndices.push(i);
+        elements.push(slide.elements[i++]);
       }
-      else elements.push(slide.elements[i++]);
     }
     slide = { ...slide, elements };
   }
@@ -8536,14 +8570,30 @@ async function renderSlideLeased(
     // A text-run callback may start a newer render of this canvas; stop so we
     // don't paint this (now stale) slide over the newer one.
     if (superseded()) return canvas;
+    const sourceIndex = sourceIndices ? sourceIndices[elementIndex] : elementIndex;
+    const elementTextRun: TextRunCallback | undefined = onTextRun
+      ? (run) => {
+          if (sourceIndex === undefined) {
+            // Preview ids belong to the unselected MCE branch, so neither its
+            // shape id nor a projected array index can address the source model.
+            onTextRun({
+              ...run,
+              renderElementIndex: elementIndex,
+              elementIndex: undefined,
+              origin: undefined,
+              shapeId: undefined,
+            });
+          } else {
+            onTextRun({
+              ...run,
+              renderElementIndex: elementIndex,
+              elementIndex: sourceIndex,
+              origin: sourceSlide.elementSources?.[sourceIndex]?.origin ?? 'slide',
+            });
+          }
+        }
+      : undefined;
     if (el.type === 'shape') {
-      const elementTextRun: TextRunCallback | undefined = onTextRun
-        ? (run) => onTextRun({
-            ...run,
-            elementIndex,
-            origin: slide.elementSources?.[elementIndex]?.origin ?? 'slide',
-          })
-        : undefined;
       withPatternCoordinateSpace(ctx, slidePatternFrame, () =>
         renderShape(ctx, el, scale, themeDefaultColor, slideNumber, rc, elementTextRun, opts.fetchImage));
     } else if (el.type === 'picture' || el.type === 'media') {
@@ -8553,13 +8603,6 @@ async function renderSlideLeased(
         if (step.failure) throw step.failure.error;
       }
     } else if (el.type === 'table') {
-      const elementTextRun: TextRunCallback | undefined = onTextRun
-        ? (run) => onTextRun({
-            ...run,
-            elementIndex,
-            origin: slide.elementSources?.[elementIndex]?.origin ?? 'slide',
-          })
-        : undefined;
       withPatternCoordinateSpace(ctx, slidePatternFrame, () =>
         renderTable(ctx, el, scale, slideNumber, rc, elementTextRun));
     } else if (el.type === 'chart') {

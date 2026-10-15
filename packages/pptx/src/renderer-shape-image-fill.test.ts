@@ -322,3 +322,55 @@ it('selects the complete authored equation fallback branch before planning image
   expect(text.mock.calls.map(([run]) => run.text).join('')).toBe('Picture fill text');
   expect(slide.elements).toHaveLength(3); // rendering never rewrites caller-owned input
 });
+
+function equationTable(body: unknown, mathFallback?: unknown) {
+  return { type: 'table', x: 0, y: 0, width: 914_400, height: 914_400,
+    rotation: 0, flipH: false, flipV: false, cols: [914_400],
+    rows: [{ height: 914_400, cells: [{ textBody: body, gridSpan: 1, rowSpan: 1 }] }], mathFallback };
+}
+
+it.each(['table', 'mixed'])('selects a complete %s equation Choice after a table-cell conversion failure', async (kind) => {
+  mocks.decode.mockClear();
+  const live = shape('ppt/media/live.png', 0, true);
+  const body = { ...live.textBody!, paragraphs: [{ ...live.textBody!.paragraphs[0], runs: [
+    { type: 'math', nodes: [{ kind: 'run', text: 'x', style: 'roman' }], display: false, fontSize: 18 },
+  ] }] };
+  const preview = shape('ppt/media/preview.png', 0, true);
+  const fallback = { before: 0, after: kind === 'mixed' ? 1 : 0, elements: [preview] };
+  const elements = kind === 'table'
+    ? [equationTable(body, fallback)]
+    : [{ ...live, mathFallback: fallback }, equationTable(body)];
+  const text = vi.fn();
+  await renderSlide(recordingCanvas().canvas, { index: 0, slideNumber: 1, background: null, elements } as unknown as Slide,
+    9_144_000, 6_858_000, { width: 960, dpr: 1,
+      fetchImage: async () => new Blob([pngHeader(2, 1) as BlobPart], { type: 'image/png' }),
+      math: { loadMathJax: async () => {}, mathMLToSvg: async () => { throw new Error('conversion'); } },
+    }, text);
+  expect(mocks.decode.mock.calls.map(args => args[0])).toEqual(['ppt/media/preview.png']);
+  expect(text.mock.calls.map(([run]) => run.text).join('')).toBe('Picture fill text');
+});
+
+it('preserves source locators after preview replacement across master, layout and slide origins', async () => {
+  const live = shape('ppt/media/live.png', 0, true);
+  const equation = { ...live, textBody: { ...live.textBody!, paragraphs: [{ ...live.textBody!.paragraphs[0], runs: [
+    { type: 'math', nodes: [{ kind: 'run', text: 'x', style: 'roman' }], display: false, fontSize: 18 },
+  ] }] }, mathFallback: { before: 1, after: 1, elements: [{ ...live, id: 'preview' }] } };
+  const slide = { index: 0, slideNumber: 1, background: null,
+    elements: [live, equation, live, { ...equationTable(live.textBody), id: 'layout' }, { ...live, id: 'slide' }],
+    elementSources: ['master', 'master', 'master', 'layout', 'slide'].map(origin => ({ origin })),
+  } as unknown as Slide;
+  const text = vi.fn();
+  await renderSlide(recordingCanvas().canvas, slide, 9_144_000, 6_858_000, { width: 960, dpr: 1,
+    fetchImage: async () => new Blob([pngHeader(2, 1) as BlobPart], { type: 'image/png' }),
+    math: { loadMathJax: async () => {}, mathMLToSvg: async () => { throw new Error('conversion'); } },
+  }, text);
+  const runs = text.mock.calls.map(([run]) => run);
+  // A preview is display text outside the source element tree: no invented
+  // element/shape locator. Unchanged content retains its original model index.
+  expect([...new Map(runs.map(run => [JSON.stringify([run.elementIndex, run.origin, run.shapeId]),
+    [run.elementIndex, run.origin, run.shapeId]])).values()]).toEqual([
+    [undefined, undefined, undefined], [3, 'layout', 'layout'], [4, 'slide', 'slide'],
+  ]);
+  expect([...new Set(runs.map(run => run.renderElementIndex))]).toEqual([0, 1, 2]);
+  expect(slide.elements).toHaveLength(5);
+});
