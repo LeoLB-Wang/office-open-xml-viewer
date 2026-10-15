@@ -36,24 +36,19 @@ fn group_spec(group: roxmltree::Node, root: bool) -> Option<DrawingGroupSpec> {
     let width = vml_css_length_pt(style, "width")?;
     let height = vml_css_length_pt(style, "height")?;
     let flip = vml_css_str(style, "flip").unwrap_or_default();
-    // Part 4 §§19.1.2.7/.19: nested-group margins use the parent's
-    // coordinate space, just like leaf offsets. Match standalone acquisition's
-    // margin-before-left/top resolution, including an explicitly zero margin.
+    // Part 4 §§19.1.2.7/.19: combine nested-group numeric offsets in the
+    // parent's coordinate space, using the same authority as leaf/page anchors.
     // The root's placement is owned separately by its retained story wrapper.
     let spec = DrawingGroupSpec {
         off_x: if root {
             0.0
         } else {
-            vml_css_length_pt(style, "margin-left")
-                .or_else(|| vml_css_length_pt(style, "left"))
-                .unwrap_or(0.0)
+            vml_numeric_offset_pt(style, "left", "margin-left")
         },
         off_y: if root {
             0.0
         } else {
-            vml_css_length_pt(style, "margin-top")
-                .or_else(|| vml_css_length_pt(style, "top"))
-                .unwrap_or(0.0)
+            vml_numeric_offset_pt(style, "top", "margin-top")
         },
         ext_x: width,
         ext_y: height,
@@ -514,7 +509,7 @@ fn acquire_leaf<'a, 'input>(
         &mut shape.flip_h,
         &mut shape.flip_v,
     );
-    // parse_vml_shape already resolves margins/left/top (or primitive bounds).
+    // parse_vml_shape already combines numeric offsets (or owns primitive bounds).
     // These are parent-group coordinates under Part 4 §19.1.2.19; preserve
     // that resolved placement and apply the containing transform exactly once.
     let rect = transform.apply_rect(DrawingRect {
@@ -593,7 +588,11 @@ mod tests {
                 "left:0;top:0;margin-left:60pt;margin-top:50pt",
                 (120.0, 150.0),
             ),
-            ("left:60;top:50;margin-left:0;margin-top:0", (0.0, 0.0)),
+            ("left:60;top:50;margin-left:0;margin-top:0", (120.0, 150.0)),
+            (
+                "left:10;top:20;margin-left:60;margin-top:50",
+                (140.0, 210.0),
+            ),
             ("left:60;top:50", (120.0, 150.0)),
         ] {
             let (group, diagnostics) = parse(&format!(
@@ -623,9 +622,9 @@ mod tests {
     fn nested_group_margins_compose_with_origins_and_leaf_margins() {
         let (group, diagnostics) = parse(
             r#"<v:group style="width:150pt;height:150pt" coordsize="300,300" coordorigin="10,20">
-              <v:group style="left:0;top:0;margin-left:100;margin-top:80;width:80;height:40" coordsize="40,20">
-                <v:rect style="left:0;top:0;margin-left:10;margin-top:5;width:10;height:5"/>
-                <v:shape style="left:0;top:0;margin-left:10;margin-top:5;width:10;height:5"><v:imagedata r:id="pic"/></v:shape>
+              <v:group style="left:20;top:10;margin-left:100;margin-top:80;width:80;height:40" coordsize="40,20">
+                <v:rect style="left:2;top:3;margin-left:10;margin-top:5;width:10;height:5"/>
+                <v:shape style="left:2;top:3;margin-left:10;margin-top:5;width:10;height:5"><v:imagedata r:id="pic"/></v:shape>
               </v:group>
             </v:group>"#,
         );
@@ -635,8 +634,8 @@ mod tests {
             let DocRun::Shape(shape) = run else {
                 panic!("shape or picture")
             };
-            // Outer scale 1/2: ((100,80) + 2*(10,5) - (10,20))/2.
-            assert_eq!((shape.anchor_x_pt, shape.anchor_y_pt), (55.0, 35.0));
+            // Outer scale 1/2: ((20+100,10+80) + 2*(2+10,3+5) - (10,20))/2.
+            assert_eq!((shape.anchor_x_pt, shape.anchor_y_pt), (67.0, 43.0));
             assert_eq!((shape.width_pt, shape.height_pt), (10.0, 5.0));
         }
     }

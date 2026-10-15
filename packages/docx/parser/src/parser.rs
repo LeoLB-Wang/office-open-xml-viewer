@@ -12469,28 +12469,18 @@ fn parse_vml_shape(
         parsed_legacy_blocks
     };
 
-    // §19.1.2.19: Word's absolute VML text boxes encode their numeric
-    // position in margin-left / margin-top even when `left:0` is also present.
-    // Preserve those authored offsets instead of collapsing every box to the
-    // anchor paragraph's leading corner.
+    // Primitive endpoints own their bounds; other numeric boxes use the same
+    // combined offsets as retained Word anchors and nested VML groups.
     let anchor_x_pt = primitive
         .as_ref()
         .map(|(_, (x, _, _, _))| *x)
         .or_else(|| line_points.map(|(from, to)| from.0.min(to.0)))
-        .unwrap_or_else(|| {
-            vml_css_length_pt(style, "margin-left")
-                .or_else(|| vml_css_length_pt(style, "left"))
-                .unwrap_or(0.0)
-        });
+        .unwrap_or_else(|| vml_numeric_offset_pt(style, "left", "margin-left"));
     let anchor_y_pt = primitive
         .as_ref()
         .map(|(_, (_, y, _, _))| *y)
         .or_else(|| line_points.map(|(from, to)| from.1.min(to.1)))
-        .unwrap_or_else(|| {
-            vml_css_length_pt(style, "margin-top")
-                .or_else(|| vml_css_length_pt(style, "top"))
-                .unwrap_or(0.0)
-        });
+        .unwrap_or_else(|| vml_numeric_offset_pt(style, "top", "margin-top"));
     let style_flip = vml_css_str(style, "flip").unwrap_or_default();
     let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0) ^ style_flip.contains('x');
     let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1) ^ style_flip.contains('y');
@@ -13130,6 +13120,16 @@ fn vml_word_has_complete_anchor_reference(shape: roxmltree::Node, style: &str) -
         && has_axis("mso-position-vertical-relative", "anchory")
 }
 
+// ECMA-376 Part 4 §§19.1.2.7/.19: grouped offsets belong to the parent
+// coordinate space. MS-OE376 §2.1.1692(ee-ff) documents Office combining
+// left + margin-left and top + margin-top. Resolve both components before a
+// group transform or page-anchor choice consumes them; zero does not cancel
+// the other component. Primitive endpoint bounds are acquired separately.
+fn vml_numeric_offset_pt(style: &str, leading_property: &str, margin_property: &str) -> f64 {
+    vml_css_length_pt(style, leading_property).unwrap_or(0.0)
+        + vml_css_length_pt(style, margin_property).unwrap_or(0.0)
+}
+
 fn vml_word_anchor_choice(style: &str, axis: &str) -> AnchorAxisChoiceWire {
     let (position_property, percent_property, leading_property, margin_property) =
         if axis == "horizontal" {
@@ -13148,16 +13148,12 @@ fn vml_word_anchor_choice(style: &str, axis: &str) -> AnchorAxisChoiceWire {
             )
         };
     let authored_offset = || {
-        // Part 4 §19.1.2.19 defines the two authored numeric components;
-        // MS-OE376 §2.1.1692(ee-ff) says Office combines each pair. Its note
-        // (r) is in tension with current Word output for the exact
+        // MS-OE376 §2.1.1692(r) is in tension with current Word output for the exact
         // `mso-position-*:absolute` token: Word retains the combined value as
         // the page/margin offset rather than moving the object to the relative
         // frame origin. Keep that compatibility interpretation restricted to
         // this numeric offset branch; align and percent values never enter it.
-        let leading = vml_css_length_pt(style, leading_property).unwrap_or(0.0);
-        let margin = vml_css_length_pt(style, margin_property).unwrap_or(0.0);
-        leading + margin
+        vml_numeric_offset_pt(style, leading_property, margin_property)
     };
     if let Some(raw) = vml_css_str(style, position_property) {
         let aligned = match raw {
@@ -13516,16 +13512,12 @@ fn vml_image_run(
     let anchor =
         vml_css_str(style, "position").is_some_and(|value| value.eq_ignore_ascii_case("absolute"));
     let anchor_x_pt = if anchor {
-        vml_css_length_pt(style, "margin-left")
-            .or_else(|| vml_css_length_pt(style, "left"))
-            .unwrap_or(0.0)
+        vml_numeric_offset_pt(style, "left", "margin-left")
     } else {
         0.0
     };
     let anchor_y_pt = if anchor {
-        vml_css_length_pt(style, "margin-top")
-            .or_else(|| vml_css_length_pt(style, "top"))
-            .unwrap_or(0.0)
+        vml_numeric_offset_pt(style, "top", "margin-top")
     } else {
         0.0
     };
