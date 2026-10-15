@@ -263,6 +263,54 @@ pub(super) fn length(raw: &str) -> Option<VmlFillLength> {
     })
 }
 
+/// Part 4 §19.1.2.21: stroke textures use the same decoded brush authority
+/// as shape fills, with their own per-property inheritance and image frame.
+pub(super) fn stroke_image(
+    shape: roxmltree::Node,
+    definition: Option<roxmltree::Node>,
+    media: &HashMap<String, String>,
+) -> Option<ShapeFill> {
+    let attr = |name| vml_decoration_attr(shape, definition, "stroke", name);
+    let source = vml_direct_child(shape, "stroke")
+        .filter(|n| n.attribute("src").is_some() || vml_image_relationship(*n).is_some())
+        .or_else(|| definition.and_then(|n| vml_direct_child(n, "stroke")));
+    pen_image(attr, source, media)
+}
+
+pub(super) fn pen_image<'a>(
+    attr: impl Fn(&'static str) -> Option<&'a str>,
+    source: Option<roxmltree::Node>,
+    media: &HashMap<String, String>,
+) -> Option<ShapeFill> {
+    let kind = attr("filltype").unwrap_or("solid");
+    if !matches!(kind, "tile" | "pattern" | "frame") {
+        return None;
+    }
+    let path = vml_image_source(source?, media)?;
+    Some(ShapeFill::Image {
+        mime_type: mime_from_ext(&path).into(),
+        image_path: path,
+        svg_image_path: None,
+        src_rect: None,
+        fill_rect: None,
+        tile: None,
+        alpha: attr("opacity").and_then(fraction),
+        duotone: None,
+        vml: Some(VmlImageFill {
+            repeat: kind == "tile",
+            size: attr("imagesize")
+                .and_then(|s| s.split_once(','))
+                .and_then(|(x, y)| Some((length(x)?, length(y)?))),
+            origin: (0.0, 0.0),
+            position: (0.0, 0.0),
+            aspect: attr("imageaspect").unwrap_or("ignore").into(),
+            align_shape: attr("imagealignshape")
+                .and_then(parse_vml_true_false)
+                .unwrap_or(true),
+        }),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,52 +362,4 @@ mod tests {
         assert_eq!(image["vml"]["size"][1]["value"], 0.25);
         assert_eq!(image["vml"]["position"][0], 0.25);
     }
-}
-
-/// Part 4 §19.1.2.21: stroke textures use the same decoded brush authority
-/// as shape fills, with their own per-property inheritance and image frame.
-pub(super) fn stroke_image(
-    shape: roxmltree::Node,
-    definition: Option<roxmltree::Node>,
-    media: &HashMap<String, String>,
-) -> Option<ShapeFill> {
-    let attr = |name| vml_decoration_attr(shape, definition, "stroke", name);
-    let source = vml_direct_child(shape, "stroke")
-        .filter(|n| n.attribute("src").is_some() || vml_image_relationship(*n).is_some())
-        .or_else(|| definition.and_then(|n| vml_direct_child(n, "stroke")));
-    pen_image(attr, source, media)
-}
-
-pub(super) fn pen_image<'a>(
-    attr: impl Fn(&'static str) -> Option<&'a str>,
-    source: Option<roxmltree::Node>,
-    media: &HashMap<String, String>,
-) -> Option<ShapeFill> {
-    let kind = attr("filltype").unwrap_or("solid");
-    if !matches!(kind, "tile" | "pattern" | "frame") {
-        return None;
-    }
-    let path = vml_image_source(source?, media)?;
-    Some(ShapeFill::Image {
-        mime_type: mime_from_ext(&path).into(),
-        image_path: path,
-        svg_image_path: None,
-        src_rect: None,
-        fill_rect: None,
-        tile: None,
-        alpha: attr("opacity").and_then(fraction),
-        duotone: None,
-        vml: Some(VmlImageFill {
-            repeat: kind == "tile",
-            size: attr("imagesize")
-                .and_then(|s| s.split_once(','))
-                .and_then(|(x, y)| Some((length(x)?, length(y)?))),
-            origin: (0.0, 0.0),
-            position: (0.0, 0.0),
-            aspect: attr("imageaspect").unwrap_or("ignore").into(),
-            align_shape: attr("imagealignshape")
-                .and_then(parse_vml_true_false)
-                .unwrap_or(true),
-        }),
-    })
 }

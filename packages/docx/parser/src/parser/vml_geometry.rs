@@ -253,7 +253,7 @@ impl Builder {
             }
             return Some(());
         }
-        if a.is_empty() || a.len() % arity != 0 || (cmd == "m" && a.len() != 2) {
+        if a.is_empty() || !a.len().is_multiple_of(arity) || (cmd == "m" && a.len() != 2) {
             return None;
         }
         if cmd == "qb" {
@@ -375,12 +375,14 @@ impl Builder {
     }
 }
 
+type GeometryContext = (Values, (f64, f64), (f64, f64));
+
 fn context(
     shape: roxmltree::Node,
     definition: Option<roxmltree::Node>,
     width: f64,
     height: f64,
-) -> Option<(Values, (f64, f64), (f64, f64))> {
+) -> Option<GeometryContext> {
     let size = pair(attr(shape, definition, "coordsize").unwrap_or("1000,1000"))?;
     let origin = pair(attr(shape, definition, "coordorigin").unwrap_or("0,0"))?;
     if size.0 <= 0.0 || size.1 <= 0.0 {
@@ -1211,15 +1213,13 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
             return true;
         }
     }
-    if effective("shadow").is_some() {
-        if vml_decoration_attr(shape, definition, "shadow", "on").and_then(parse_vml_true_false)
+    if effective("shadow").is_some()
+        && vml_decoration_attr(shape, definition, "shadow", "on").and_then(parse_vml_true_false)
             != Some(false)
-            && path_attr(shape, definition, "shadowok").and_then(parse_vml_true_false)
-                != Some(false)
-            && shadow(shape, definition).is_none()
-        {
-            return true;
-        }
+        && path_attr(shape, definition, "shadowok").and_then(parse_vml_true_false) != Some(false)
+        && shadow(shape, definition).is_none()
+    {
+        return true;
     }
     false
 }

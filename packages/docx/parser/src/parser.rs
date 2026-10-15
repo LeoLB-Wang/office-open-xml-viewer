@@ -5565,7 +5565,6 @@ fn load_chart_user_shapes_xml(zip: &mut Zip, chart_path: &str, chart_xml: &str) 
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn load_header_footer_set(
     zip: &mut Zip,
     relationships: &BTreeMap<String, RelTarget>,
