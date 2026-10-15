@@ -4,36 +4,40 @@ async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: s
   const sourceRequests: string[] = [];
   const renderWorkers = new Set<string>();
   const sourceBodies: string[] = [];
-  const inspectedResponses: Promise<void>[] = [];
+  const ordinaryAssetUrls = new Set<string>();
   page.context().on('request', (request) => {
     const pathname = new URL(request.url()).pathname;
+    // The consumer fixture embeds a protocol marker in its test source, so
+    // inspect the published dist bodies, where a marker means runtime code.
+    if (pathname.startsWith('/dist/') && /\.m?js$/.test(pathname)) {
+      ordinaryAssetUrls.add(request.url());
+    }
     if (/\/assets\/render-worker-(?!host-)[^/]+\.js$/.test(pathname)) renderWorkers.add(pathname);
     if ((pathname.startsWith('/dist/') || pathname.startsWith('/consumer/'))
       && /model-source|source-worker|worker-source|render-worker-source/.test(pathname)) {
       sourceRequests.push(pathname);
     }
   });
-  const inspectOrdinaryResponse = (response: import('@playwright/test').Response) => {
-    const pathname = new URL(response.url()).pathname;
-    // The consumer fixture embeds a protocol marker in its test source, so
-    // inspect the published dist bodies, where a marker means runtime code.
-    if (!pathname.startsWith('/dist/') || !/\.m?js$/.test(pathname)) return;
-    inspectedResponses.push(response.text().then((body) => {
-      if (body.includes('ooxml-model-source-module/v1')
-        || body.includes('model source view default')) sourceBodies.push(pathname);
-    }));
-  };
-  page.context().on('response', inspectOrdinaryResponse);
   await page.goto(`${url}${url.includes('?') ? '&' : '?'}pause-sources`);
   await expect.poll(async () => {
     const body = page.locator('body');
     return (await body.getAttribute('data-ordinary-ready')) === 'true'
       || (await body.getAttribute('data-status')) === 'error';
   }, { timeout: 60_000 }).toBe(true);
-  // Body inspection belongs to the ordinary-load audit. Later source stages
-  // terminate short-lived workers, whose response bodies may then be unreadable.
-  page.context().off('response', inspectOrdinaryResponse);
-  await Promise.all(inspectedResponses);
+  // Snapshot ordinary-load requests before resuming source stages. Fetch bodies
+  // independently: browser response bodies can disappear when workers terminate,
+  // including short-lived workers used during the ordinary-load stage itself.
+  for (const assetUrl of [...ordinaryAssetUrls]) {
+    const response = await page.request.get(assetUrl);
+    try {
+      expect(response.ok(), `ordinary asset inspection: ${assetUrl}`).toBe(true);
+      const body = await response.text();
+      if (body.includes('ooxml-model-source-module/v1')
+        || body.includes('model source view default')) sourceBodies.push(new URL(assetUrl).pathname);
+    } finally {
+      await response.dispose();
+    }
+  }
   const ordinaryRenderWorkers = [...renderWorkers].sort();
   expect(ordinaryRenderWorkers, 'one render worker per format').toHaveLength(3);
   expect(sourceRequests, 'ordinary OOXML main/worker loads must not fetch source chunks').toEqual([]);
