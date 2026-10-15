@@ -17,7 +17,6 @@ import {
   GoogleFontPreloadLease,
   type FontPreloadDemand,
   loadOfficeFontFallbacks,
-  officeFontRequestDeclared,
   unloadOfficeFontFallbacks,
   releaseOwnedBitmap,
   unregisterEmbeddedFonts,
@@ -271,9 +270,6 @@ export class PptxPresentation {
    *  core, so a web font shared with another open deck survives until both go). */
   private _googleFonts: GoogleFontPreloadLease | null = null;
   private readonly _officeFontLoads = new Map<FontFaceSet, Map<string, Promise<LoadedOfficeFontFallbacks>>>();
-  /** The route load started at bootstrap by `_prefetchThemeOfficeRoute`, until
-   * a render first consumes its key. */
-  private _themeRoutePrefetch: { fontSet: FontFaceSet; key: string } | null = null;
   /** Embedded Font parts registered into the main-thread FontFaceSet. */
   private _embeddedFontFaces: FontFace[] = [];
   private _embeddedFontAliases: ReadonlyMap<string, string> = new Map();
@@ -518,7 +514,6 @@ export class PptxPresentation {
       (response as Extract<PptxWorkerResponse, { kind: 'presentationOpened' }>).bootstrap,
     );
     this._bootstrap = bootstrap;
-    this._prefetchThemeOfficeRoute(bootstrap);
     // Font extraction is independent of the retained slide cursor, so start it
     // from bootstrap metadata while the worker preflights the slide sequence.
     // Rendering still awaits `_parse`, which does not return until both finish.
@@ -610,7 +605,6 @@ export class PptxPresentation {
       (response as Extract<PptxWorkerResponse, { kind: 'presentationOpened' }>).bootstrap,
     );
     this._bootstrap = bootstrap;
-    this._prefetchThemeOfficeRoute(bootstrap);
     const embeddedFontLoad = loadEmbeddedFonts(
       bootstrap.embeddedFonts,
       (path) => this.getFontBytes(path),
@@ -1049,32 +1043,6 @@ export class PptxPresentation {
     return resolveInternalSlideTarget(ref, this._partIndex(), currentIndex);
   }
 
-  /**
-   * A theme Calibri text run makes the first render wait for Calibri's exact
-   * local() route. Start the regular tuple while the worker preflights the
-   * slides; renderSlide awaits the same cached load, and a deck that never
-   * requests it only holds a privately named face until destroy. An embedded
-   * regular Calibri covers the tuple, so nothing is started for it. A face the
-   * application loads before that render still wins: the first consumer
-   * re-checks coverage and discards the speculative route. Nothing starts while
-   * an application face already covers the tuple.
-   */
-  private _prefetchThemeOfficeRoute(bootstrap: PresentationBootstrap): void {
-    const fontSet = typeof document !== 'undefined' ? document.fonts : null;
-    const isCalibri = (family: string | null | undefined) => family?.trim().toLowerCase() === 'calibri';
-    if (!fontSet || ![bootstrap.majorFont, bootstrap.minorFont].some(isCalibri)
-      || bootstrap.embeddedFonts.some((font) => isCalibri(font.fontName) && font.style === 'regular')) return;
-    const request = { family: 'Calibri', weight: 400, style: 'normal' } as const;
-    // Only an uncovered tuple is prefetched, so the cached load always holds
-    // the routes an uncovered render needs; coverage gained later is re-checked
-    // by the first consumer.
-    if (officeFontRequestDeclared(fontSet, request)) return;
-    void this._officeRoutesForRequests([request], fontSet)
-      .catch(() => undefined);
-    // Set after the call: its synchronous part has created the cached load.
-    this._themeRoutePrefetch = { fontSet, key: 'calibri:400:normal' };
-  }
-
   private async _officeRoutesForRequests(
     requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
     fontSet: FontFaceSet | null,
@@ -1090,29 +1058,6 @@ export class PptxPresentation {
     const loaded = await Promise.all(uncovered.map((request) => {
       const key = `calibri:${request.weight}:${request.style}`;
       let pending = loads.get(key);
-      const prefetch = this._themeRoutePrefetch;
-      if (pending && prefetch?.fontSet === fontSet && prefetch.key === key) {
-        // Decide coverage now, as an unprefetched render would have.
-        this._themeRoutePrefetch = null;
-        if (officeFontRequestDeclared(fontSet, request)) {
-          loads.delete(key);
-          void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces), () => undefined);
-          pending = undefined;
-        } else {
-          // A speculative load that failed or hit the preflight deadline is
-          // not this render's answer: retry once, as a render-time load would.
-          const speculative = pending;
-          pending = speculative.then(
-            (loaded) => {
-              if (loaded.checked.length > 0) return loaded;
-              unloadOfficeFontFallbacks(loaded.faces);
-              return loadOfficeFontFallbacks([request], fontSet);
-            },
-            () => loadOfficeFontFallbacks([request], fontSet),
-          );
-          loads.set(key, pending);
-        }
-      }
       if (!pending) {
         pending = loadOfficeFontFallbacks([request], fontSet);
         loads.set(key, pending);

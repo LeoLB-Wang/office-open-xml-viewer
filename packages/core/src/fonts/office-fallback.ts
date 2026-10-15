@@ -110,19 +110,6 @@ function loadedFaceCoversTuple(face: FontFace, tuple: Tuple): boolean {
   return fontFaceWeightCovers(face.weight, tuple.weight);
 }
 
-/** Whether a loaded face in `fontSet` already declares the request's exact
- * catalogued tuple, in which case {@link loadOfficeFontFallbacks} creates no
- * local() route for it. Lets a caller holding an earlier speculative route
- * re-check before using it. */
-export function officeFontRequestDeclared(
-  fontSet: FontFaceSet,
-  request: OfficeFontFallbackRequest,
-): boolean {
-  const tuple = tupleFor(request);
-  if (!tuple || typeof fontSet[Symbol.iterator] !== 'function') return false;
-  return [...fontSet].some((face) => loadedFaceCoversTuple(face, tuple));
-}
-
 /** ECMA-376 font names identify requested families, not transferable font
  * resources. Probe only catalogued exact local() names for document-used
  * tuples. A regular face does not establish bold or italic. CSS local() exposes
