@@ -4658,9 +4658,25 @@ function paragraphAcquisitionKey(
   } = options.placement;
   const context = options.context;
   const environment = options.environment;
-  const hasFieldRun = lineOnly && paragraph.runs.some((run) => run.type === 'field');
-  const hasNoteReference = lineOnly && paragraph.runs.some((run) =>
+  // Page-field values (ECMA-376 §17.16.5.44 PAGE, §17.16.5.42 NUMPAGES,
+  // §17.16.5.16 DATE, §17.16.5.72 TIME) reach measurement only through a field
+  // run's result (resolveFieldText), and note numbers (§17.11) only through a
+  // note reference mark (segment-builder). A paragraph of nothing but text,
+  // break and ptab runs therefore lays out identically under any of them, so
+  // its key must not carry them: field convergence re-acquires the whole
+  // document once the page count is known, and every unchanged placement would
+  // otherwise miss again (each miss charged to the session's operational miss
+  // budget, runtime-state.ts). Any other run kind hands the whole environment
+  // to a nested acquisition (text box story, anchor, math), so its exact
+  // placement stays keyed by all of them. The line key, consumed only by
+  // measureParagraph, keeps its narrower gate.
+  const hasFieldRun = paragraph.runs.some((run) => run.type === 'field');
+  const hasNoteReference = paragraph.runs.some((run) =>
     run.type === 'text' && run.noteRef !== undefined);
+  const nestsEnvironment = !lineOnly && paragraph.runs.some((run) =>
+    run.type !== 'text' && run.type !== 'field' && run.type !== 'break' && run.type !== 'ptab');
+  const keysPageFields = hasFieldRun || nestsEnvironment;
+  const keysNotes = hasNoteReference || nestsEnvironment;
   // Fixed-order tuples avoid the recursive generic fingerprint cost on this hot
   // path. A different property insertion order may conservatively miss for the
   // explicitly JSON-valued geometry below, but can never alias different facts.
@@ -4720,17 +4736,17 @@ function paragraphAcquisitionKey(
       cache.objectIdentity(options.measurer.fontFamilyClasses),
     ],
     [
-      lineOnly && !hasFieldRun ? null : environment.pageIndex,
-      lineOnly && !hasFieldRun ? null : environment.totalPages,
-      lineOnly && !hasFieldRun ? null : environment.displayPageNumber ?? null,
-      lineOnly && !hasFieldRun ? null : environment.pageNumberFormat ?? null,
-      lineOnly && !hasFieldRun ? null : environment.currentDateMs ?? null,
-      (lineOnly && !hasNoteReference) || !environment.noteNumbers
+      keysPageFields ? environment.pageIndex : null,
+      keysPageFields ? environment.totalPages : null,
+      keysPageFields ? environment.displayPageNumber ?? null : null,
+      keysPageFields ? environment.pageNumberFormat ?? null : null,
+      keysPageFields ? environment.currentDateMs ?? null : null,
+      !keysNotes || !environment.noteNumbers
         ? null
         : [...environment.noteNumbers.entries()]
           .sort(([left], [right]) => left.localeCompare(right)),
-      lineOnly && !hasNoteReference ? null : environment.noteReferenceNumber ?? null,
-      lineOnly && !hasNoteReference ? null : environment.noteNumbering
+      keysNotes ? environment.noteReferenceNumber ?? null : null,
+      !keysNotes ? null : environment.noteNumbering
         ? [
           environment.noteNumbering.footnote.format,
           environment.noteNumbering.footnote.start,
