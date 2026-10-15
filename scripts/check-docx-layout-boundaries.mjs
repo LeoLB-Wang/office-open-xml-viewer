@@ -644,8 +644,13 @@ function assertProductionBodyAcquisitionAuthority(root) {
 
   const table = uniqueFunction('computeTablePtLayout');
   const tableSourceIndex = table?.parameters[3];
+  // Adjacent members pass their preparation lazily, so a cross-pass memo hit
+  // (retained-table-pass-cache.ts) skips the logical-table column solve.
   const prepared = table?.parameters[4];
-  const preparedType = prepared?.type;
+  const preparedPassKey = table?.parameters[5];
+  const preparedGetter = prepared?.type;
+  const preparedType = preparedGetter && ts.isFunctionTypeNode(preparedGetter)
+    && preparedGetter.parameters.length === 0 ? preparedGetter.type : undefined;
   const preparationFields = preparedType && ts.isTypeReferenceNode(preparedType)
     && ts.isIdentifier(preparedType.typeName) && preparedType.typeName.text === 'Readonly'
     && preparedType.typeArguments?.length === 1
@@ -656,8 +661,11 @@ function assertProductionBodyAcquisitionAuthority(root) {
   const preparedMember = preparationFields.find((field) => field.name?.getText(source) === 'member')?.type;
   // Permit only immutable solved columns and the acquired logical/member decision;
   // sourceIndex remains a required number at every call, including group rows.
-  const allowsPreparation = prepared && ts.isIdentifier(prepared.name) && prepared.name.text === 'prepared'
+  const allowsPreparation = prepared && ts.isIdentifier(prepared.name) && prepared.name.text === 'preparedColumns'
     && prepared.questionToken && preparationFields.length === 3
+    && preparedPassKey && ts.isIdentifier(preparedPassKey.name)
+    && preparedPassKey.name.text === 'preparedPassKey' && preparedPassKey.questionToken
+    && preparedPassKey.type?.kind === ts.SyntaxKind.StringKeyword
     && preparedColumns && ts.isTypeOperatorNode(preparedColumns)
     && preparedColumns.operator === ts.SyntaxKind.ReadonlyKeyword
     && ts.isArrayTypeNode(preparedColumns.type)
@@ -674,14 +682,14 @@ function assertProductionBodyAcquisitionAuthority(root) {
     'measureRetainedCellContentHeightPt',
   ].flatMap((name) => table?.body ? callsNamed(table.body, name) : []);
   if (!table?.body
-    || (table.parameters.length !== 4 && !(table.parameters.length === 5 && allowsPreparation))
+    || (table.parameters.length !== 4 && !(table.parameters.length === 6 && allowsPreparation))
     || !tableSourceIndex
     || tableSourceIndex.questionToken
     || tableSourceIndex.type?.kind !== ts.SyntaxKind.NumberKeyword
     || tableBodyCalls.length !== 1
     || tableCalls.length === 0
     || tableCalls.some((call) => call.arguments.length !== 4
-      && !(allowsPreparation && call.arguments.length === 5))
+      && !(allowsPreparation && call.arguments.length === 6))
     || forbiddenTableCalls.length !== 0) {
     fail('PRODUCTION_ACQUISITION_AUTHORITY', `${PRODUCTION_BODY_LAYOUT}#computeTablePtLayout`);
   }
