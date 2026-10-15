@@ -503,9 +503,11 @@ pub(crate) fn load_sheet_charts_with_theme_images(
     theme_format_scheme: Option<&ooxml_common::theme::ThemeFormatScheme>,
     theme_images: &ooxml_common::chart::ChartImageRelationships,
 ) -> Vec<ChartAnchor> {
+    let parts = crate::drawing::read_sheet_drawing_parts(archive, sheet_path);
+    let drawings = crate::drawing::parse_sheet_drawings(&parts);
     load_sheet_charts_observing_frames(
         archive,
-        sheet_path,
+        &drawings,
         reference_context,
         theme_colors,
         theme_fonts,
@@ -521,7 +523,7 @@ pub(crate) fn load_sheet_charts_with_theme_images(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load_sheet_charts_observing_frames(
     archive: &mut crate::XlsxZip,
-    sheet_path: &str,
+    drawings: &[crate::drawing::ParsedSheetDrawing<'_>],
     mut reference_context: Option<ChartReferenceContext<'_, '_, '_>>,
     theme_colors: &[String],
     theme_fonts: (Option<&str>, Option<&str>),
@@ -529,45 +531,13 @@ pub(crate) fn load_sheet_charts_observing_frames(
     theme_images: &ooxml_common::chart::ChartImageRelationships,
     saw_graphic_frame: &mut bool,
 ) -> Vec<ChartAnchor> {
-    let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
-        return Vec::new();
-    };
-    let sheet_rels_path = format!("xl/{}/_rels/{}.rels", sheet_dir, sheet_file);
-    let Ok(sheet_rels_xml) = read_zip_string(archive, &sheet_rels_path) else {
-        return Vec::new();
-    };
-    let Ok(rels_doc) = parse_guarded(&sheet_rels_xml) else {
-        return Vec::new();
-    };
-
-    // Collect all drawing relationship targets
-    let mut drawing_targets: Vec<String> = Vec::new();
-    for rel in rels_doc
-        .root_element()
-        .children()
-        .filter(|n| n.is_element())
-    {
-        if rel.attribute("Type").unwrap_or("").ends_with("/drawing") {
-            if let Some(t) = rel.attribute("Target") {
-                drawing_targets.push(t.to_string());
-            }
-        }
-    }
-    if drawing_targets.is_empty() {
-        return Vec::new();
-    }
-
     let mut all_charts: Vec<ChartAnchor> = Vec::new();
 
-    for target in drawing_targets {
-        // Resolve drawing path relative to the sheet directory
-        let drawing_path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
-        let Ok(drawing_xml) = read_zip_string(archive, &drawing_path) else {
+    for drawing in drawings {
+        let Some(draw_doc) = &drawing.doc else {
             continue;
         };
-        let Ok(draw_doc) = parse_guarded(&drawing_xml) else {
-            continue;
-        };
+        let drawing_path = drawing.path;
 
         // Load drawing rels (to resolve chart rIds)
         let Some((drawing_dir, drawing_file)) = drawing_path.rsplit_once('/') else {
@@ -739,7 +709,7 @@ pub(crate) fn load_sheet_charts_observing_frames(
                 let Some(chart_target) = drawing_rels.get(&rid) else {
                     continue;
                 };
-                let chart_path = resolve_zip_path(&drawing_path, chart_target);
+                let chart_path = resolve_zip_path(drawing_path, chart_target);
                 let Ok(chart_xml) = read_zip_string(archive, &chart_path) else {
                     continue;
                 };
@@ -811,7 +781,7 @@ pub(crate) fn load_sheet_charts_observing_frames(
                 );
                 chart_context.limit_reporter = Some(&reporter);
                 chart_context.retention_key = Some(ooxml_common::chart::ChartRetentionKey {
-                    source_part: &drawing_path,
+                    source_part: drawing_path,
                     site: &retention_site,
                 });
                 chart_context.host = ooxml_common::chart::ChartHost::Excel;

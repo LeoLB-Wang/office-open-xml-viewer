@@ -126,6 +126,7 @@ fn selected_anchor_content<'a, 'input>(
 /// Parse `<xdr:twoCellAnchor>` and `<xdr:oneCellAnchor>` pictures from a drawing
 /// XML and resolve embedded pictures into data URLs. `drawing_path` is the OPC
 /// source part.
+#[cfg(test)]
 pub(crate) fn parse_drawing_anchors(
     drawing_xml: &str,
     drawing_rels: &HashMap<String, String>,
@@ -138,6 +139,17 @@ pub(crate) fn parse_drawing_anchors(
     let Ok(doc) = parse_guarded(drawing_xml) else {
         return Vec::new();
     };
+    parse_drawing_doc_anchors(&doc, drawing_rels, drawing_path, archive, theme_colors)
+}
+
+/// [`parse_drawing_anchors`] over an already parsed drawing part.
+fn parse_drawing_doc_anchors(
+    doc: &roxmltree::Document<'_>,
+    drawing_rels: &HashMap<String, String>,
+    drawing_path: &str,
+    archive: &mut crate::XlsxZip,
+    theme_colors: &[String],
+) -> Vec<ImageAnchor> {
     let mut anchors: Vec<ImageAnchor> = Vec::new();
 
     for anchor in doc.descendants() {
@@ -1656,6 +1668,7 @@ pub(crate) fn collect_shapes(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_shape_anchors(
     drawing_xml: &str,
     theme_colors: &[String],
@@ -1665,6 +1678,16 @@ pub(crate) fn parse_shape_anchors(
     let Ok(doc) = parse_guarded(drawing_xml) else {
         return Vec::new();
     };
+    parse_shape_doc_anchors(&doc, theme_colors, theme_format_scheme, rid_urls)
+}
+
+/// [`parse_shape_anchors`] over an already parsed drawing part.
+fn parse_shape_doc_anchors(
+    doc: &roxmltree::Document<'_>,
+    theme_colors: &[String],
+    theme_format_scheme: &ThemeFormatScheme,
+    rid_urls: &HashMap<String, String>,
+) -> Vec<ShapeAnchor> {
     let mut anchors: Vec<ShapeAnchor> = Vec::new();
 
     for anchor in doc.descendants() {
@@ -1910,45 +1933,24 @@ pub(crate) fn parse_shape_anchors(
 
 pub(crate) fn load_sheet_shape_groups(
     archive: &mut crate::XlsxZip,
-    sheet_path: &str,
+    drawings: &[ParsedSheetDrawing<'_>],
     theme_colors: &[String],
     theme_format_scheme: &ThemeFormatScheme,
 ) -> Vec<ShapeAnchor> {
-    let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
-        return Vec::new();
-    };
-    let sheet_rels_path = format!("xl/{}/_rels/{}.rels", sheet_dir, sheet_file);
-    let Ok(sheet_rels_xml) = read_zip_string(archive, &sheet_rels_path) else {
-        return Vec::new();
-    };
-    let Ok(rels_doc) = parse_guarded(&sheet_rels_xml) else {
-        return Vec::new();
-    };
-    let mut drawing_targets: Vec<String> = Vec::new();
-    for rel in rels_doc
-        .root_element()
-        .children()
-        .filter(|n| n.is_element())
-    {
-        if rel.attribute("Type").unwrap_or("").ends_with("/drawing") {
-            if let Some(t) = rel.attribute("Target") {
-                drawing_targets.push(t.to_string());
-            }
-        }
-    }
     let mut all: Vec<ShapeAnchor> = Vec::new();
-    for target in drawing_targets {
-        let drawing_path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
-        let Ok(drawing_xml) = read_zip_string(archive, &drawing_path) else {
+    for drawing in drawings {
+        if !drawing.read {
             continue;
-        };
-        let rid_urls = build_drawing_rid_urls(archive, &drawing_path);
-        all.extend(parse_shape_anchors(
-            &drawing_xml,
-            theme_colors,
-            theme_format_scheme,
-            &rid_urls,
-        ));
+        }
+        let rid_urls = build_drawing_rid_urls(archive, drawing.path);
+        if let Some(doc) = &drawing.doc {
+            all.extend(parse_shape_doc_anchors(
+                doc,
+                theme_colors,
+                theme_format_scheme,
+                &rid_urls,
+            ));
+        }
     }
     all
 }
@@ -2002,11 +2004,58 @@ pub(crate) fn build_drawing_rid_urls(
 /// its drawing(s), and return all image anchors found.
 pub(crate) fn load_sheet_images(
     archive: &mut crate::XlsxZip,
-    sheet_path: &str, // e.g. "worksheets/sheet1.xml"
+    drawings: &[ParsedSheetDrawing<'_>],
     // Positional clrScheme palette, for resolving a picture's `<a:duotone>`
     // effect colours (§20.1.8.23) via the shared DrawingML colour grammar.
     theme_colors: &[String],
 ) -> Vec<ImageAnchor> {
+    let mut all_anchors: Vec<ImageAnchor> = Vec::new();
+    for drawing in drawings {
+        if !drawing.read {
+            continue;
+        }
+        // Drawing rels:  xl/drawings/_rels/drawing1.xml.rels
+        let Some((drawing_dir, drawing_file)) = drawing.path.rsplit_once('/') else {
+            continue;
+        };
+        let drawing_rels_path = format!("{}/_rels/{}.rels", drawing_dir, drawing_file);
+        let drawing_rels = read_zip_string(archive, &drawing_rels_path)
+            .ok()
+            .map(|xml| parse_rels_map(&xml))
+            .unwrap_or_default();
+
+        if let Some(doc) = &drawing.doc {
+            let mut anchors =
+                parse_drawing_doc_anchors(doc, &drawing_rels, drawing.path, archive, theme_colors);
+            all_anchors.append(&mut anchors);
+        }
+    }
+    all_anchors
+}
+
+/// One `/drawing` relationship target of a sheet, inflated once per sheet
+/// finalization. `xml` is `None` when the part could not be read.
+pub(crate) struct SheetDrawingPart {
+    path: String,
+    xml: Option<String>,
+}
+
+/// A [`SheetDrawingPart`] parsed once and shared by the picture, chart and
+/// shape loaders, which otherwise each read and parsed the same part.
+pub(crate) struct ParsedSheetDrawing<'a> {
+    pub(crate) path: &'a str,
+    /// Whether the part was read. A loader skips an unread part.
+    pub(crate) read: bool,
+    /// `None` when the part was unread or is not well-formed XML.
+    pub(crate) doc: Option<roxmltree::Document<'a>>,
+}
+
+/// Read every `/drawing` relationship target of `sheet_path` (e.g.
+/// `"worksheets/sheet1.xml"`) in relationship order.
+pub(crate) fn read_sheet_drawing_parts(
+    archive: &mut crate::XlsxZip,
+    sheet_path: &str,
+) -> Vec<SheetDrawingPart> {
     // sheet rels path:  xl/worksheets/_rels/sheet1.xml.rels
     let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
         return Vec::new();
@@ -2015,8 +2064,6 @@ pub(crate) fn load_sheet_images(
     let Ok(sheet_rels_xml) = read_zip_string(archive, &sheet_rels_path) else {
         return Vec::new();
     };
-
-    // Find all drawing relationships
     let Ok(rels_doc) = parse_guarded(&sheet_rels_xml) else {
         return Vec::new();
     };
@@ -2026,45 +2073,33 @@ pub(crate) fn load_sheet_images(
         .children()
         .filter(|n| n.is_element())
     {
-        let rel_type = rel.attribute("Type").unwrap_or("");
-        if rel_type.ends_with("/drawing") {
+        if rel.attribute("Type").unwrap_or("").ends_with("/drawing") {
             if let Some(t) = rel.attribute("Target") {
                 drawing_targets.push(t.to_string());
             }
         }
     }
-    if drawing_targets.is_empty() {
-        return Vec::new();
-    }
+    drawing_targets
+        .into_iter()
+        .map(|target| {
+            // sheet_dir is "worksheets", target typically "../drawings/drawing1.xml"
+            // → "xl/drawings/drawing1.xml"
+            let path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
+            let xml = read_zip_string(archive, &path).ok();
+            SheetDrawingPart { path, xml }
+        })
+        .collect()
+}
 
-    let mut all_anchors: Vec<ImageAnchor> = Vec::new();
-    for target in drawing_targets {
-        // sheet_dir is "worksheets", target typically "../drawings/drawing1.xml"
-        // base dir for the drawing = "xl/worksheets/sheet1.xml" + "../drawings" → "xl/drawings/drawing1.xml"
-        let drawing_path = resolve_zip_path(&format!("xl/{sheet_path}"), &target);
-        let Ok(drawing_xml) = read_zip_string(archive, &drawing_path) else {
-            continue;
-        };
-        // Drawing rels:  xl/drawings/_rels/drawing1.xml.rels
-        let Some((drawing_dir, drawing_file)) = drawing_path.rsplit_once('/') else {
-            continue;
-        };
-        let drawing_rels_path = format!("{}/_rels/{}.rels", drawing_dir, drawing_file);
-        let drawing_rels = read_zip_string(archive, &drawing_rels_path)
-            .ok()
-            .map(|xml| parse_rels_map(&xml))
-            .unwrap_or_default();
-
-        let mut anchors = parse_drawing_anchors(
-            &drawing_xml,
-            &drawing_rels,
-            &drawing_path,
-            archive,
-            theme_colors,
-        );
-        all_anchors.append(&mut anchors);
-    }
-    all_anchors
+pub(crate) fn parse_sheet_drawings(parts: &[SheetDrawingPart]) -> Vec<ParsedSheetDrawing<'_>> {
+    parts
+        .iter()
+        .map(|part| ParsedSheetDrawing {
+            path: &part.path,
+            read: part.xml.is_some(),
+            doc: part.xml.as_deref().and_then(|xml| parse_guarded(xml).ok()),
+        })
+        .collect()
 }
 
 /// The two-cell `<from>`/`<to>` marker rect of an OLE-object anchor, in the same

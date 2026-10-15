@@ -839,11 +839,23 @@ fn finalize_projected_sheet_reusing(
         parts.hyperlink_rids == hyperlink_rids && parts.sheet_shell_xml == sheet_shell_xml
     });
 
+    // The picture, chart and shape loaders share one read and parse of each
+    // drawing part. Reused parts may leave no loader that needs them.
+    let needs_drawings = reuse
+        .as_ref()
+        .is_none_or(|parts| parts.charts_without_frames.is_none());
+    let drawing_parts = if needs_drawings {
+        read_sheet_drawing_parts(archive, sheet_path)
+    } else {
+        Vec::new()
+    };
+    let drawings = parse_sheet_drawings(&drawing_parts);
+
     // Attach any drawing-anchored images and charts for this sheet
     if let Some(parts) = reuse.as_mut() {
         ws.images = std::mem::take(&mut parts.images);
     } else {
-        ws.images = load_sheet_images(archive, sheet_path, theme_colors);
+        ws.images = load_sheet_images(archive, &drawings, theme_colors);
         // Embedded OLE object previews (the `<oleObjects>` collection, §18.3.1.60)
         // draw through the same image
         // list; their preview parts are referenced from the worksheet XML + rels.
@@ -868,7 +880,7 @@ fn finalize_projected_sheet_reusing(
     } else {
         load_sheet_charts_observing_frames(
             archive,
-            sheet_path,
+            &drawings,
             Some(ChartReferenceContext {
                 materialized_rows,
                 materialized_col_hidden: Some(&ws.col_hidden),
@@ -906,7 +918,7 @@ fn finalize_projected_sheet_reusing(
     } else {
         ws.shape_groups = load_sheet_shape_groups(
             archive,
-            sheet_path,
+            &drawings,
             theme_colors,
             shared.theme_format_scheme.as_ref(),
         );
