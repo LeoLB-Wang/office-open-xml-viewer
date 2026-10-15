@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from './pixel-budget.js';
+import { MAX_RASTER_DIMENSION } from './pixel-budget.js';
 import { decodeDib, decodePackedDib, blitDibToCtx, type DecodedDib } from './dib.js';
 
 // ── DIB decode unit tests ────────────────────────────────────────────────────
@@ -217,6 +217,20 @@ describe('decodePackedDib — contiguous header+palette+bits (WMF-style)', () =>
 });
 
 describe('decodeDib — dimension / megapixel budget (DoS guard)', () => {
+  it('validates encoding and declared byte spans before admitting oversized geometry', () => {
+    const unsupported = new Uint8Array([...bmih(40000, 1, 16).build(), 0, 0, 0, 0]);
+    expect(decodeDib(dvOf(unsupported), 0, 40, 40, 4)).toBeNull();
+    const bytes = new Uint8Array([...bmih(40000, 1, 24).build(), 0, 0, 0, 0]);
+    const dv = dvOf(bytes);
+    expect(decodeDib(dv, 0, 45, 40, 4)).toBeNull(); // header span exceeds view by one byte
+    expect(decodeDib(dv, 0, 40, 40, 5)).toBeNull(); // bits span exceeds view by one byte
+    const truncated = new Uint8Array([...bmih(40000, 2, 24).build(), 0, 0, 0, 0]);
+    expect(decodeDib(dvOf(truncated), 0, 40, 40, 4)).toBeNull(); // already-discarded multi-row bitmap
+    expect(() => decodeDib(dv, 0, 40, 40, 4)).toThrowError(expect.objectContaining({
+      metric: 'image-dimension', limit: MAX_RASTER_DIMENSION, observed: 40000,
+    })); // declared bits end exactly at the view boundary
+  });
+
   // A crafted BITMAPINFOHEADER can declare enormous dimensions while carrying
   // only a few bytes of pixel data. The decode must REJECT such headers before
   // it reaches `new Uint8ClampedArray(width * height * 4)`, otherwise a 65535×
@@ -224,7 +238,6 @@ describe('decodeDib — dimension / megapixel budget (DoS guard)', () => {
 
   it.each([
     [40000, 1, 'image-dimension', MAX_RASTER_DIMENSION, 40000],
-    [8192, 8192, 'image-pixels', MAX_RASTER_PIXELS, 8192 * 8192],
   ] as const)('throws a typed budget error before allocating %i×%i RGBA', (width, height, metric, limit, observed) => {
     const bytes = new Uint8Array([...bmih(width, height, 24).build(), 0, 0, 0, 0]);
     const expected = expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric, limit, observed });

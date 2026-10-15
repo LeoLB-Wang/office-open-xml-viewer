@@ -259,7 +259,7 @@ export class EmfPlusPlayer {
   private sourceCopy = false;
   private readonly objects = new Map<number, TableObject>();
   private readonly saved = new Map<number, GraphicsState>();
-  private pending: { id: number; total: number; parts: Uint8Array[]; length: number } | null = null;
+  private pending: { id: number; kind: number; total: number; parts: Uint8Array[]; length: number } | null = null;
   /** Inside EmfPlusGetDC until the next EMF+ record: GDI records draw. */
   gdiAllowed = false;
   /** A record the dry run admitted failed in real playback (the failure is
@@ -425,49 +425,51 @@ export class EmfPlusPlayer {
     const id = r.flags & 0xff;
     const kind = (r.flags >> 8) & 0x7f;
     let data = new Uint8Array(dv.buffer, dv.byteOffset + r.start, r.end - r.start);
+    let parts: Uint8Array[] | null = null;
     // Bytes of an assembled continued object, alive while it is decoded.
     let assembled = 0;
     if (r.flags & 0x8000) {
       // Continued: TotalObjectSize, then this fragment.
       if (data.length < 4) throw new RangeError('Truncated EMF+ object');
       const total = dv.getUint32(r.start, true);
-      if (this.pending && (this.pending.id !== id || this.pending.total !== total)) {
+      if (this.pending && (this.pending.id !== id || this.pending.kind !== kind || this.pending.total !== total)) {
         // A different object (or a changed TotalObjectSize) before the
         // pending one completed.
         this.abandonPending();
       }
       if (!this.pending) {
-        // The fragments are views of the file; only the assembled copy
-        // allocates, so it is admitted before the first fragment is kept.
-        this.admit(total);
-        this.pending = { id, total, parts: [], length: 0 };
+        // Fragments only view input bytes. A declared total is not an actual
+        // allocation: unfinished/malformed objects keep content fallback.
+        this.pending = { id, kind, total, parts: [], length: 0 };
       }
       const part = data.subarray(4);
       // TotalObjectSize is the size of the assembled object, so the fragments
       // may add up to it and no further. A fragment that overruns it is a
       // validation failure (the GDI alternative is kept), and the assembly
-      // buffer is only ever sized by the admitted total.
+      // buffer is only sized after the complete object's validation below.
       if (part.length > this.pending.total - this.pending.length) {
         this.target.unsupported.add('EMF+ continued object (fragments exceed TotalObjectSize)');
         this.pending = null;
         this.objects.delete(id);
         return;
       }
-      this.pending.parts.push(part);
+      if (part.length) this.pending.parts.push(part);
       this.pending.length += part.length;
       if (this.pending.length < this.pending.total) return;
-      // Re-admit right before allocating: what the table retains now, plus
-      // the assembly buffer about to be created.
-      this.admit(this.pending.total);
-      const whole = new Uint8Array(this.pending.total);
-      let at = 0;
-      for (const piece of this.pending.parts) {
-        whole.set(piece, at);
-        at += piece.length;
-      }
+      parts = this.pending.parts;
+      assembled = this.pending.total;
       this.pending = null;
-      data = whole;
-      assembled = whole.length;
+      // Validate the fixed header without assembling an arbitrarily large
+      // malformed/unsupported object. At most 28 bytes of parser scratch;
+      // the budget covers the full assembly and RGBA only when needed.
+      data = new Uint8Array(Math.min(28, assembled));
+      let at = 0;
+      for (const piece of parts) {
+        const prefix = piece.subarray(0, data.length - at);
+        data.set(prefix, at);
+        at += prefix.length;
+        if (at === data.length) break;
+      }
     }
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     this.objects.delete(id);
@@ -503,7 +505,7 @@ export class EmfPlusPlayer {
       this.target.unsupported.add('EMF+ image other than an uncompressed 32-bit bitmap');
       return;
     }
-    if (width <= 0 || height <= 0 || stride < width * 4 || 28 + stride * height > data.length) {
+    if (width <= 0 || height <= 0 || stride < width * 4 || 28 + stride * height > (parts ? assembled : data.length)) {
       throw new RangeError('Invalid EMF+ bitmap');
     }
     if (width > MAX_RASTER_DIMENSION || height > MAX_RASTER_DIMENSION) {
@@ -516,6 +518,16 @@ export class EmfPlusPlayer {
     if (this.dry) {
       this.objects.set(id, { kind: 'image', bitmap: { width, height, data: new Uint8ClampedArray(0) } });
       return;
+    }
+    if (parts) {
+      // Both allocations were admitted together, after validation and after
+      // releasing the replaced object. No speculative or double charge.
+      data = new Uint8Array(assembled);
+      let at = 0;
+      for (const piece of parts) {
+        data.set(piece, at);
+        at += piece.length;
+      }
     }
     // BitmapData is top-down B,G,R,A per pixel (little-endian ARGB).
     const rgba = new Uint8ClampedArray(width * height * 4);

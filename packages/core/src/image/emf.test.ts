@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { isEmf } from './wmf.js';
 import { playEmf, renderEmfToBitmap } from './emf.js';
 import { EmfPlusPlayer, scanEmfPlus } from './emf-plus.js';
-import { HARD_MAX_DECODED_IMAGE_BYTES, MAX_RASTER_DIMENSION } from './pixel-budget.js';
+import { MAX_RASTER_DIMENSION } from './pixel-budget.js';
 import {
   decodeRasterOrMetafile,
   getIncompleteMetafileReport,
@@ -1189,6 +1189,57 @@ describe('playEmf — picture frame mapping + path clip', () => {
     expect(m.calls.filter((call) => call.op === 'closePath')).toHaveLength(1);
   });
 
+  it.each([
+    ['MOVETOEX', EMR.MOVETOEX, []],
+    ['LINETO', EMR.LINETO, [10]],
+    ['RECTANGLE', 43, [0, 0, 20]],
+    ['ARC', 45, [0, 0, 20, 20, 20, 10, 10]],
+    ['ANGLEARC radius', 41, [10, 10]],
+    ['ANGLEARC sweep', 41, [10, 10, 10, 0]],
+  ] as const)('does not borrow following-record bytes for truncated %s', (_name, type, fields) => {
+    const m = makeRecordingCtx();
+    const reported: string[] = [];
+    const file = concat(
+      emfHeader(), record(EMR.SELECTOBJECT, (w) => w.u32(0x80000000)),
+      record(EMR.BEGINPATH, () => {}),
+      record(43, (w) => w.i32(0).i32(0).i32(20).i32(20)),
+      record(type, (w) => { for (const field of fields) w.i32(field); }),
+      record(EMR.ENDPATH, () => {}), record(EMR.FILLPATH, () => {}), record(EMR.EOF, () => {}),
+    );
+    expect(playEmf(file, m.ctx, 100, 100, {
+      maxPathCommands: 5, onUnsupported: (r) => reported.push(...r),
+    } as Parameters<typeof playEmf>[4])).toBe(true);
+    expect(reported).toEqual([`EMF record ${type} (malformed)`]);
+    expect(m.calls.filter(({ op }) => ['moveTo', 'lineTo', 'bezierCurveTo', 'closePath'].includes(op))).toHaveLength(5);
+  });
+
+  it.each([
+    ['ARC', 45, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
+    ['ARCTO', 55, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
+    ['CHORD', 46, 3, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
+    ['PIE', 47, 4, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
+    ['ANGLEARC zero sweep', 41, 1, (w: Writer) => w.i32(10).i32(10).u32(10).f32(0).f32(0)],
+    ['ANGLEARC quarter turn', 41, 2, (w: Writer) => w.i32(10).i32(10).u32(10).f32(0).f32(90)],
+    ['ROUNDRECT zero corner width', 44, 5, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(0).i32(10)],
+    ['ROUNDRECT zero corner height', 44, 5, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(10).i32(0)],
+    ['ROUNDRECT curved corners', 44, 9, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(10).i32(10)],
+  ] as const)('charges exactly the commands appended by %s', (_name, type, commands, body) => {
+    const cap = 5 + commands;
+    const file = (extra: boolean) => concat(
+      emfHeader(), record(EMR.SELECTOBJECT, (w) => w.u32(0x80000000)), record(EMR.BEGINPATH, () => {}),
+      record(43, (w) => w.i32(0).i32(0).i32(20).i32(20)), record(type, body),
+      ...(extra ? [record(EMR.LINETO, (w) => w.i32(30).i32(30))] : []),
+      record(EMR.ENDPATH, () => {}), record(EMR.FILLPATH, () => {}), record(EMR.EOF, () => {}),
+    );
+    const m = makeRecordingCtx();
+    const options = { maxPathCommands: cap } as Parameters<typeof playEmf>[4];
+    expect(playEmf(file(false), m.ctx, 100, 100, options)).toBe(true);
+    expect(m.calls.filter(({ op }) => ['moveTo', 'lineTo', 'bezierCurveTo', 'closePath'].includes(op))).toHaveLength(cap);
+    expect(() => playEmf(file(true), makeRecordingCtx().ctx, 100, 100, options)).toThrow(expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'metafile-path-commands', limit: cap, observed: cap + 1,
+    }));
+  });
+
   it.each([2, 3, 4, 5, 6, 85, 86, 87, 88, 89])(
     'rejects proven per-record point crossings for record %i, while tolerating truncated counts',
     (type) => {
@@ -1200,6 +1251,11 @@ describe('playEmf — picture frame mapping + path clip', () => {
       const full = new Uint8Array(header.length + count * (type >= 85 ? 4 : 8));
       full.set(header);
       new DataView(full.buffer).setUint32(4, full.length, true);
+      if (type === 4 || type === 87) {
+        // No selected pen and no path bracket: POLYLINE is skipped without
+        // reading/appending its points, so it cannot cross a work budget.
+        expect(playEmf(concat(emfHeader(), full), makeRecordingCtx().ctx, 100, 100)).toBe(false);
+      }
       expect(() => playEmf(concat(emfHeader(), selection, full), makeRecordingCtx().ctx, 100, 100))
         .toThrow(expect.objectContaining({
           code: 'ooxml-decoded-image-limit', metric: 'metafile-record-points',
@@ -1250,6 +1306,29 @@ describe('playEmf — picture frame mapping + path clip', () => {
 
     playEmf(file, m.ctx, 100, 100);
     expect(m.calls.filter((call) => call.op === 'fill')).toHaveLength(0);
+  });
+
+  it.each([76, 81, 93, 94])('bounds bitmap offsets to their containing record for record %i', (type) => {
+    const dib = new Writer().u32(40).i32(40000).i32(1).u16(1).u16(24)
+      .u32(0).u32(0).i32(0).i32(0).u32(0).u32(0).raw(0, 0, 0, 0).build();
+    const headerSize = type === 76 ? 100 : type === 81 ? 80 : 32;
+    const malformed = record(type, (w) => {
+      if (type === 76) {
+        for (let i = 0; i < 19; i++) w.i32(0); // through usageSrc
+      } else if (type === 81) {
+        for (let i = 0; i < 10; i++) w.i32(0); // through cySrc
+      } else w.u32(1).u32(0); // handle, usage
+      w.u32(headerSize + 8).u32(40).u32(headerSize + 48).u32(4); // following record's data
+      if (type === 81) w.u32(0).u32(0x00cc0020).i32(1).i32(1);
+    });
+    const m = makeRecordingCtx();
+    expect(playEmf(concat(
+      emfHeader(), malformed, record(0, (w) => { for (const byte of dib) w.raw(byte); }),
+      record(EMR.SELECTOBJECT, (w) => w.u32(0x80000000)), record(EMR.BEGINPATH, () => {}),
+      record(43, (w) => w.i32(0).i32(0).i32(20).i32(20)),
+      record(EMR.ENDPATH, () => {}), record(EMR.FILLPATH, () => {}), record(EMR.EOF, () => {}),
+    ), m.ctx, 100, 100, { maxPathCommands: 5 } as Parameters<typeof playEmf>[4])).toBe(true);
+    expect(m.calls.filter(({ op }) => op === 'fill')).toHaveLength(1);
   });
 
   it('propagates DIB budget errors through bitmap and pattern-brush playback catches', () => {
@@ -2213,6 +2292,11 @@ describe('playEmf — EMF+ bitmap records', () => {
     const unfinished = scanEmfPlus(file([comment(header(true), attributes(), first, drawImage([0, 0, 2, 1]))]));
     expect(unfinished.play).toBe(false);
     expect(unfinished.failures).toContain('EMF+ continued object (unfinished)');
+    // A huge declaration with only a small fragment is still unfinished
+    // content, with no assembly allocation. Dual playback keeps GDI fallback.
+    const declaredOnly = plusRecord(0x4008, 0x8501, [...u32(0xffffff00), ...data.slice(0, 10)]);
+    expect(run([comment(header(true), declaredOnly, drawImage([0, 0, 2, 1]))], gdiPolygon()).styles.fill)
+      .toEqual(['#000000']);
     const interleaved = scanEmfPlus(file([comment(header(true), attributes(), first, plusRecord(0x401e, 0), second, drawImage([0, 0, 2, 1]))]));
     expect(interleaved.play).toBe(false);
     expect(interleaved.failures).toContain('EMF+ continued object (unfinished)');
@@ -2263,11 +2347,8 @@ describe('playEmf — EMF+ bitmap records', () => {
     const v = new DataView(wide.buffer);
     [0xdbc01002, 1, 40000, 1, 160000, 0x0026200a, 0].forEach((x, i) => v.setUint32(i * 4, x, true));
     const oversized = plusRecord(0x4008, 0x0501, [...wide]);
-    // Admission of a continued object is also a hard byte ceiling.
-    const huge = plusRecord(0x4008, 0x8501, [...u32(0xffffff00), 1, 2, 3, 4]);
     for (const [object, metric, limit, observed] of [
       [oversized, 'image-dimension', MAX_RASTER_DIMENSION, 40000],
-      [huge, 'active-decoded-bytes', HARD_MAX_DECODED_IMAGE_BYTES, 0xffffff00],
     ] as const) {
       const records = [comment(header(true), attributes(), object, drawImage([0, 0, 2, 1]))];
       const expected = { code: 'ooxml-decoded-image-limit', metric, limit, observed };

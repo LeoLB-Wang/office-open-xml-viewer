@@ -44,23 +44,34 @@ export function decodeDib(
   bitsOff: number,
   bitsLen: number,
 ): DecodedDib | null {
-  if (bmiLen < 40 || bmiOff + 40 > dv.byteLength) return null;
+  // Offsets and declared spans must belong to the containing view (the EMF
+  // player supplies a view ending at its record). Invalid ranges and encodings
+  // are content fallback, before any decoded-surface resource admission.
+  if (bmiOff < 0 || bitsOff < 0 || bitsLen < 0 || bmiLen < 40
+    || bmiOff + bmiLen > dv.byteLength || bitsOff + bitsLen > dv.byteLength) return null;
   const biSize = dv.getUint32(bmiOff, true);
-  if (biSize < 40) return null; // only BITMAPINFOHEADER (or larger) supported
+  if (biSize < 40 || biSize > bmiLen) return null; // complete BITMAPINFOHEADER (or larger)
   const biWidth = dv.getInt32(bmiOff + 4, true);
   const biHeightRaw = dv.getInt32(bmiOff + 8, true);
   const biBitCount = dv.getUint16(bmiOff + 14, true);
   const biCompression = dv.getUint32(bmiOff + 16, true);
   if (biCompression !== 0) return null; // BI_RGB only
+  if (![1, 4, 8, 24, 32].includes(biBitCount)) return null;
   const topDown = biHeightRaw < 0;
   const width = Math.abs(biWidth);
   const height = Math.abs(biHeightRaw);
+  if (width <= 0 || height <= 0) return null;
+  // Preserve the existing short-data tolerance: at most one missing row can
+  // produce a partial bitmap; more is discarded. Check that content fallback
+  // before surface admission. Arithmetic (rather than 32-bit shifts) keeps
+  // row sizes valid even for oversized headers that have not been admitted.
+  const rowStride = Math.ceil(width * biBitCount / 32) * 4;
+  if (rowStride * height > bitsLen + rowStride && bitsOff + rowStride * height > dv.byteLength) return null;
   // Validate dimensions BEFORE the RGBA allocation. Reject non-positive dims,
   // any dimension past the max canvas size, and any total pixel count over the
   // megapixel budget — a crafted header (e.g. 65535×65535) otherwise reaches
   // `new Uint8ClampedArray(width*height*4)` and OOMs the tab (~17 GB). See
   // MAX_DIB_DIMENSION / MAX_DIB_PIXELS.
-  if (width <= 0 || height <= 0) return null;
   // Library resource policy is terminal, including inside a metafile's
   // compatibility fallback. Unsupported encodings still return null above.
   if (width > MAX_DIB_DIMENSION || height > MAX_DIB_DIMENSION) {
@@ -71,11 +82,6 @@ export function decodeDib(
   }
 
   const out = new Uint8ClampedArray(width * height * 4);
-  const rowStride = (((width * biBitCount + 31) >> 5) << 2) >>> 0; // 4-byte aligned
-  if (bitsOff + rowStride * height > bitsOff + bitsLen + rowStride) {
-    // Tolerate slight over-read; only bail if obviously out of buffer.
-    if (bitsOff + rowStride * height > dv.byteLength) return null;
-  }
 
   // Palette for ≤8bpp follows the header.
   let palette: number[] | null = null;

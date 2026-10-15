@@ -47,9 +47,8 @@ describe('EMF+ decoded-byte budget', () => {
     }));
   });
 
-  it('rejects continued-object fragments that overrun TotalObjectSize before allocating, in scan and playback', () => {
-    // Declares a 24-byte ImageAttributes object but carries 324 bytes.
-    const oversized = plusRecord(0x4008, 0x8800, [...u32(24), ...u32(0xdbc01002), ...new Array(320).fill(0)]);
+  it.each([24, 300])('rejects a 324-byte fragment overrunning TotalObjectSize %i before budget admission', (total) => {
+    const oversized = plusRecord(0x4008, 0x8800, [...u32(total), ...u32(0xdbc01002), ...new Array(320).fill(0)]);
     const bytes = file(comment(header, bitmap4(1), oversized, drawImage(1)));
     const allocated: number[] = [];
     const Original = Uint8Array;
@@ -73,6 +72,67 @@ describe('EMF+ decoded-byte budget', () => {
     expect(target.unsupported).toContain('EMF+ continued object (fragments exceed TotalObjectSize)');
     vi.unstubAllGlobals();
     expect(allocated.every((n) => n <= 256)).toBe(true);
+  });
+
+  /** Exercise real playback as well as the allocation-free scanner. */
+  function playback(records: number[][]) {
+    const bytes = file(comment(header, ...records));
+    const target: EmfPlusTarget = {
+      ctx: null, W: 4, H: 4, left: 0, top: 0, boundsW: 4, boundsH: 4, drew: false, unsupported: new Set(),
+    };
+    const player = new EmfPlusPlayer(target);
+    const dv = new DataView(bytes.buffer);
+    player.playComment(dv, 88, 88 + dv.getUint32(92, true));
+    player.finish();
+    return [...target.unsupported];
+  }
+
+  function check(records: number[][]) {
+    const scan = scanEmfPlus(file(comment(header, ...records)));
+    expect(playback(records)).toEqual(scan.failures);
+    return scan;
+  }
+
+  it('keeps oversized unfinished, inconsistent and malformed continuations as content failures', () => {
+    const fragment = (total: number, data: number[]) => plusRecord(0x4008, 0x8501, [...u32(total), ...data]);
+    expect(check([fragment(300, [1, 2, 3, 4])]).failures).toContain('EMF+ continued object (unfinished)');
+    expect(check([fragment(300, new Array(200).fill(0)), fragment(300, new Array(104).fill(0))]).failures)
+      .toContain('EMF+ continued object (fragments exceed TotalObjectSize)');
+    // Same ID/total with a changed kind cannot complete the preceding image
+    // using an attributes record (or reinterpret its header as attributes).
+    const valid = [...bitmap4(1).slice(12), ...new Array(208).fill(0)];
+    expect(check([
+      fragment(300, valid.slice(0, 10)),
+      plusRecord(0x4008, 0x8801, [...u32(300), ...valid.slice(10)]),
+    ]).failures)
+      .toContain('EMF+ continued object (unfinished)');
+    // Complete payload, but invalid dimensions; no assembly or RGBA is needed.
+    const invalid = [...u32(0xdbc01002), ...u32(1), ...u32(0), ...u32(4), ...u32(16),
+      ...u32(0x0026200a), ...u32(0), ...new Array(272).fill(0)];
+    expect(check([fragment(300, invalid.slice(0, 10)), fragment(300, invalid.slice(10))]).failures)
+      .toContain('EMF+ record 0x4008 (malformed)');
+  });
+
+  it('does not assemble continued attributes or unsupported object types', () => {
+    const data = [...attributes.slice(12), ...new Array(276).fill(0)];
+    const object = (kind: number) => plusRecord(0x4008, 0x8000 | (kind << 8), [...u32(data.length), ...data]);
+    expect(check([object(8)]).failures).toEqual([]);
+    expect(check([object(2)]).failures).toEqual(['EMF+ object type 2']);
+  });
+
+  it('admits the exact completed assembly plus decoded bitmap, and rejects one byte more', () => {
+    const continued = (total: number) => {
+      const data = [...bitmap4(1).slice(12), ...new Array(total - 92).fill(0)];
+      return [data.slice(0, 10), data.slice(10)].map((part) => plusRecord(0x4008, 0x8501, [...u32(total), ...part]));
+    };
+    expect(check(continued(192)).failures).toEqual([]); // 192 assembly + 64 RGBA
+    const expected = expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'active-decoded-bytes', limit: 256, observed: 257,
+    });
+    expect(() => check(continued(193))).toThrowError(expected);
+    expect(() => playback(continued(193))).toThrowError(expected);
+    // The old entry is released before its replacement is assembled/decoded.
+    expect(check([bitmap4(1), ...continued(192)]).failures).toEqual([]);
   });
 
   it('accepts exactly the per-player table plus blit budget and rejects one more retained bitmap', () => {

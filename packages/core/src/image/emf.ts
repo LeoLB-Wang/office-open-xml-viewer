@@ -297,7 +297,7 @@ class EmfCursor {
   private p: number;
   constructor(
     private readonly dv: DataView,
-    start: number,
+    private readonly start: number,
     private readonly end: number, // exclusive
   ) {
     this.p = start;
@@ -306,13 +306,17 @@ class EmfCursor {
     return this.p;
   }
   set pos(v: number) {
+    if (!Number.isInteger(v) || v < this.start || v > this.end) throw new RangeError('Invalid EMF cursor position');
     this.p = v;
   }
   get remaining(): number {
     return this.end - this.p;
   }
   private require(size: number): void {
-    if (this.p < 0 || this.remaining < size) throw new RangeError('Truncated EMF record');
+    // MS-EMF 2.3: every field belongs to this record, even when the backing
+    // DataView also contains the next record. Truncation is content damage,
+    // never evidence of geometry that would cross a resource ceiling.
+    if (!Number.isInteger(size) || size < 0 || this.remaining < size) throw new RangeError('Truncated EMF record');
   }
   u16(): number {
     this.require(2);
@@ -321,21 +325,25 @@ class EmfCursor {
     return v;
   }
   i16(): number {
+    this.require(2);
     const v = this.dv.getInt16(this.p, true);
     this.p += 2;
     return v;
   }
   i32(): number {
+    this.require(4);
     const v = this.dv.getInt32(this.p, true);
     this.p += 4;
     return v;
   }
   u32(): number {
+    this.require(4);
     const v = this.dv.getUint32(this.p, true);
     this.p += 4;
     return v;
   }
   f32(): number {
+    this.require(4);
     const v = this.dv.getFloat32(this.p, true);
     this.p += 4;
     return v;
@@ -352,6 +360,7 @@ class EmfCursor {
     };
   }
   skip(n: number): void {
+    this.require(n);
     this.p += n;
   }
 }
@@ -886,11 +895,13 @@ function strokePolyline(s: PlayState, c: EmfCursor, rp: PointReader): void {
   if (c.remaining < 20) return; // incomplete bounds/count header is malformed
   c.skip(16); // RECTL rclBounds — drawing uses world transform, not bounds
   const count = c.u32();
-  if (count < 2 || !admitRecordPoints(c, count, rp)) return;
+  if (count < 2) return;
   if (!s.inPath && (!s.curPen || s.curPen.stroke == null)) {
-    // still drop current position to the last point for ...TO continuity callers
+    // No path and no stroke: this record appends no geometry and reads no
+    // points, so its declaration cannot prove a work-budget crossing.
     return;
   }
+  if (!admitRecordPoints(c, count, rp)) return;
   const { ctx } = s;
   const sink = geometrySink(s);
   const appendPath = reservePathCommands(s, readablePointCount(c, count, rp));
@@ -1346,8 +1357,10 @@ function drawRadialArc(s: PlayState, c: EmfCursor, kind: ArcKind, name: string):
   const geometry = radialArc(box, p0, p1, s.arcDirection);
   if (!geometry) return; // an empty bounding box has no curve
   // Inside a path bracket the geometry is appended to the DC path
-  // under the bracket's command budget (move/line, curves, radial, close).
-  if (!reservePathCommands(s, geometry.curves.length + 3)) return;
+  // under the bracket's command budget. MS-EMF 2.3.5.2–4 / 2.3.5.15:
+  // ARC/ARCTO append one move/line, CHORD also closes, PIE also has a radial.
+  const extra = kind === 'pie' ? 3 : kind === 'chord' ? 2 : 1;
+  if (!reservePathCommands(s, geometry.curves.length + extra)) return;
   const { ctx } = s;
   const sink = geometrySink(s);
   const start = toPx(s, geometry.start[0], geometry.start[1]);
@@ -1398,7 +1411,8 @@ function drawAngleArc(s: PlayState, c: EmfCursor): void {
   // Counterclockwise on a y-down surface = decreasing parametric angle.
   const theta0 = (-startDeg * Math.PI) / 180;
   const geometry = ellipseArc(cx, cy, radius, radius, theta0, (-sweep * Math.PI) / 180);
-  if (!reservePathCommands(s, geometry.curves.length + 1)) return;
+  // Zero sweep appends only the connecting line; no cubic is emitted below.
+  if (!reservePathCommands(s, (sweep === 0 ? 0 : geometry.curves.length) + 1)) return;
   const { ctx } = s;
   const sink = geometrySink(s);
   const start = toPx(s, geometry.start[0], geometry.start[1]);
@@ -1431,8 +1445,9 @@ function drawRoundRect(s: PlayState, c: EmfCursor): void {
   const [t, b] = t0 <= b0 ? [t0, b0] : [b0, t0];
   const rx = Math.min(Math.abs(cw) / 2, (r - l) / 2);
   const ry = Math.min(Math.abs(ch) / 2, (b - t) / 2);
-  // Four corners of at most one curve each, four joining moves/lines, close.
-  if (!reservePathCommands(s, 9)) return;
+  // Four joining moves/lines and a close; curves only for nonzero corners.
+  const curved = rx > 0 && ry > 0;
+  if (!reservePathCommands(s, curved ? 9 : 5)) return;
   const { ctx } = s;
   const sink = geometrySink(s);
   if (!s.inPath) ctx.beginPath();
@@ -1453,7 +1468,7 @@ function drawRoundRect(s: PlayState, c: EmfCursor): void {
     const start = toPx(s, arc.start[0], arc.start[1]);
     if (i === 0) sink.moveTo(start[0], start[1]);
     else sink.lineTo(start[0], start[1]);
-    if (rx > 0 && ry > 0) emitCurves(s, sink, arc);
+    if (curved) emitCurves(s, sink, arc);
   });
   sink.closePath();
   if (!s.inPath) paintFigure(s, true);
@@ -1624,6 +1639,18 @@ function readCreateBrush(c: EmfCursor): [number, Brush] {
   return [ih, { kind: 'brush', fill }];
 }
 
+function decodeRecordDib(
+  c: EmfCursor, dv: DataView, recStart: number,
+  offBmi: number, cbBmi: number, offBits: number, cbBits: number,
+): DecodedDib | null {
+  // MS-EMF 2.3.1 / 2.3.7 bitmap offsets address data after the fixed fields,
+  // inside this record. Reject invalid ranges before the shared decoder can
+  // interpret header fields as a bitmap or classify a resource crossing.
+  const headerSize = c.pos - recStart;
+  if (offBmi < headerSize || offBits < headerSize) return null;
+  return decodeDib(dv, recStart + offBmi, cbBmi, recStart + offBits, cbBits);
+}
+
 /**
  * EMR_CREATEMONOBRUSH(93) / EMR_CREATEDIBPATTERNBRUSHPT(94): u32 ihObject,
  * u32 iUsage, u32 offBmi, u32 cbBmi, u32 offBits, u32 cbBits, then a DIB.
@@ -1641,7 +1668,7 @@ function readDibPatternBrush(c: EmfCursor, dv: DataView, recStart: number): [num
   const cbBits = c.u32();
   let fill = '#808080';
   try {
-    const dib = decodeDib(dv, recStart + offBmi, cbBmi, recStart + offBits, cbBits);
+    const dib = decodeRecordDib(c, dv, recStart, offBmi, cbBmi, offBits, cbBits);
     if (dib) fill = dibAverageColor(dib);
   } catch (error) {
     if (isOoxmlDecodedImageLimitError(error)) throw error;
@@ -1791,6 +1818,7 @@ function drawText(s: PlayState, c: EmfCursor, dv: DataView, recStart: number): v
  *  toPx). Skips gracefully on unsupported DIBs or missing OffscreenCanvas. */
 function blitDib(
   s: PlayState,
+  c: EmfCursor,
   dv: DataView,
   recStart: number,
   offBmi: number,
@@ -1803,7 +1831,7 @@ function blitDib(
   destB: number,
 ): void {
   if (cbBmi === 0 || cbBits === 0) return; // no source bitmap (see doBitBlt)
-  const dib = decodeDib(dv, recStart + offBmi, cbBmi, recStart + offBits, cbBits);
+  const dib = decodeRecordDib(c, dv, recStart, offBmi, cbBmi, offBits, cbBits);
   if (!dib) {
     s.unsupported.add('EMF bitmap (DIB encoding)');
     return;
@@ -1862,7 +1890,7 @@ function doBitBlt(s: PlayState, c: EmfCursor, dv: DataView, recStart: number): v
     return;
   }
   blitDib(
-    s, dv, recStart, offBmi, cbBmi, offBits, cbBits,
+    s, c, dv, recStart, offBmi, cbBmi, offBits, cbBits,
     xDest, yDest, xDest + cxDest, yDest + cyDest,
   );
 }
@@ -1885,7 +1913,7 @@ function doStretchDibits(s: PlayState, c: EmfCursor, dv: DataView, recStart: num
   const cxDest = c.i32();
   const cyDest = c.i32();
   blitDib(
-    s, dv, recStart, offBmi, cbBmi, offBits, cbBits,
+    s, c, dv, recStart, offBmi, cbBmi, offBits, cbBits,
     xDest, yDest, xDest + cxDest, yDest + cyDest,
   );
 }
@@ -2047,14 +2075,14 @@ function replayRecordStream(
   s: PlayState,
   plus: EmfPlusPlayer | null,
   stopOnPlusFailure: boolean,
-  dv: DataView,
+  fileView: DataView,
   bytes: Uint8Array,
 ): void {
   const ctx = s.ctx;
   let pos = 0;
   while (pos + 8 <= bytes.length) {
-    const iType = dv.getUint32(pos, true);
-    const nSize = dv.getUint32(pos + 4, true);
+    const iType = fileView.getUint32(pos, true);
+    const nSize = fileView.getUint32(pos + 4, true);
     // Validate: nSize ≥ 8 (the iType+nSize header) and 4-aligned and in-bounds.
     // A damaged record walk ends playback; what drew so far is kept and the
     // damage is reported.
@@ -2064,6 +2092,10 @@ function replayRecordStream(
     }
     const recEnd = pos + nSize;
     if (iType === EMR.EOF) break;
+
+    // Also bound direct header/DIB reads. Keep absolute offsets, but never
+    // let an offset or palette borrow bytes beyond this record (MS-EMF 2.3).
+    const dv = new DataView(fileView.buffer, fileView.byteOffset, recEnd);
 
     // A cursor over the data region (starts at record offset 8).
     const c = new EmfCursor(dv, pos + 8, recEnd);
@@ -2091,10 +2123,10 @@ function replayRecordStream(
           // device units) @ record offset 8; rclFrame (the intended PICTURE
           // FRAME, in .01 mm) @ 24; szlDevice (reference device size, px) @ 72;
           // szlMillimeters (reference device size, mm) @ 80.
-          const bLeft = dv.getInt32(pos + 8, true);
-          const bTop = dv.getInt32(pos + 12, true);
-          const bRight = dv.getInt32(pos + 16, true);
-          const bBottom = dv.getInt32(pos + 20, true);
+          const bLeft = c.i32();
+          const bTop = c.i32();
+          const bRight = c.i32();
+          const bBottom = c.i32();
           // Default mapping: the ink bounds fill the target. Used when the frame
           // or reference device size is absent/degenerate (mirrors the
           // LibreOffice/POI fallback to the bounds rectangle).
@@ -2160,8 +2192,10 @@ function replayRecordStream(
         }
         case EMR.SETWINDOWORGEX: {
           // data: POINTL { i32 x, i32 y } ([MS-EMF] 2.3.11).
-          s.winOrgX = c.i32();
-          s.winOrgY = c.i32();
+          const x = c.i32();
+          const y = c.i32();
+          s.winOrgX = x;
+          s.winOrgY = y;
           break;
         }
         case EMR.SETWINDOWEXTEX: {
@@ -2173,8 +2207,10 @@ function replayRecordStream(
           break;
         }
         case EMR.SETVIEWPORTORGEX: {
-          s.vpOrgX = c.i32();
-          s.vpOrgY = c.i32();
+          const x = c.i32();
+          const y = c.i32();
+          s.vpOrgX = x;
+          s.vpOrgY = y;
           break;
         }
         case EMR.SETVIEWPORTEXTEX: {
@@ -2485,8 +2521,10 @@ function replayRecordStream(
           fillStrokePolyPoly(s, c, readPoint32, false);
           break;
         case EMR.MOVETOEX: {
-          s.curX = c.i32();
-          s.curY = c.i32();
+          const x = c.i32();
+          const y = c.i32();
+          s.curX = x;
+          s.curY = y;
           if (s.inPath && reservePathCommands(s, 1)) {
             const [px, py] = toPx(s, s.curX, s.curY);
             s.path.moveTo(px, py);
