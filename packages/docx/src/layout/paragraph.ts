@@ -5048,7 +5048,7 @@ function acquireParagraphCandidate(
           // back into its input. Acquire each reference without that occurrence,
           // preserving external exclusions and the other objects' seed geometry,
           // then retain it for this acquisition, independently of the final host.
-          // This is solver policy, not an observed Word compatibility rule.
+          // This counterfactual step is library solver policy.
           // At most one extra paragraph measurement per participating occurrence
           // (none when no other owned exclusion exists), plus one seed projection;
           // counterfactuals project lines only, never drawing/textbox stories.
