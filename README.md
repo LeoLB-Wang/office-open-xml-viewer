@@ -33,6 +33,8 @@ A browser-based viewer for Office Open XML documents that renders to an HTML Can
 The parsers are written in Rust and compiled to WebAssembly; the renderers use the Canvas 2D API.
 Each format also exposes a headless engine (`DocxDocument` / `XlsxWorkbook` / `PptxPresentation`) that renders into any caller-supplied canvas, so you can compose your own UI — scroll views, thumbnail grids, master-detail panes — instead of being locked into the built-in viewer. See the [live framework examples](https://ooxml.silurus.dev/frameworks/) for runnable React, Vue, Svelte, and Solid projects.
 
+Optional, experimental [legacy Office add-on](https://ooxml.silurus.dev/legacy-office/) reads a supported subset of `.doc`, `.xls` and `.ppt` with the same viewers.
+
 ## Project scope: read-only viewing
 
 This project is intentionally a **read-only viewer**. Editing interfaces, mutation APIs, editable or lossless document models, saving / round-tripping, and partial editing of DOCX, XLSX, or PPTX files are out of scope. Read-only interactions such as selection, copy, search, shape IDs, hit testing, and annotation or external-tool integrations remain in scope, and editing-focused forks are welcome. See [#496](https://github.com/yukiyokotani/office-open-xml-viewer/issues/496) for the rationale.
@@ -234,7 +236,13 @@ path, and without a source a legacy file still rejects with the typed
 self-contained source module and WASM load in the parser worker (or in Node)
 only when a claimed file is opened, and no OOXML package is generated. The
 readers are narrow and experimental and reject unsupported content rather than
-guessing; see [Experimental legacy Office sources](docs/legacy-office-conversion.md).
+showing a partial document. They do not execute macros, fields, formulas, actions
+or embedded objects. Unsupported claimed content rejects with a diagnostic failure
+without a dedicated typed unsupported-content code; keep a generic fallback and
+offer conversion. The package versions must match exactly; upgrade both together.
+No migration is required without the add-on. See the [legacy Office guide](https://ooxml.silurus.dev/legacy-office/)
+for viewer and Node examples, and [Experimental legacy Office sources](docs/legacy-office-conversion.md)
+for the full support boundaries.
 
 ### Optional rendering modules
 

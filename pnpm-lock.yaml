@@ -326,6 +326,9 @@ importers:
       '@silurus/ooxml-docx':
         specifier: workspace:*
         version: link:../packages/docx
+      '@silurus/ooxml-legacy-office':
+        specifier: workspace:*
+        version: link:../packages/legacy-converter
       '@silurus/ooxml-pptx':
         specifier: workspace:*
         version: link:../packages/pptx
