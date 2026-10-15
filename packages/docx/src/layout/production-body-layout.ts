@@ -161,6 +161,7 @@ import type {
 } from './layout-source-store.js';
 import type { ParagraphLayoutSource } from './text.js';
 import type { TableLayoutSource } from './table-source-acquisition.js';
+import { retainedTableFromPassMemo, retainedTablePassKey, retainTableInPassMemo } from './retained-table-pass-cache.js';
 import { collectBodyFrameGroups, prepareBodyFrameMetadata } from './frame.js';
 import {
   physicalToLogicalMatrix,
@@ -3005,24 +3006,45 @@ function computeTablePtLayout(
   table: TableLayoutSource,
   contentWPt: number,
   sourceIndex: number,
-  prepared?: Readonly<{ columns: readonly number[]; decision: LogicalTableDecision; member: TableMemberDecision }>,
+  // Adjacent §17.4.37 members resolve their columns from the shared logical
+  // table; evaluated only when the acquisition is not memoized.
+  preparedColumns?: () => Readonly<{ columns: readonly number[]; decision: LogicalTableDecision; member: TableMemberDecision }>,
+  // Memo key for a prepared member; it must also identify the member's group.
+  preparedPassKey?: string,
 ): void {
   const prior = state.retainedTablesBySourceIndex.get(sourceIndex);
   if (prior?.contentWidthPt === contentWPt && prior.reusableAcrossPages) return;
-  const decision = prepared?.decision ?? singleTableDecision(table, contentWPt, state);
-  const member = prepared?.member ?? decision.logical;
-  const colWidthsPt = prepared ? [...prepared.columns] : resolveColumnWidths(table, contentWPt, state, decision, member);
-  const dependencies = state.retainedTableAcquisition;
-  const acquired = acquireRetainedTable(
-    table,
-    colWidthsPt,
-    contentWPt,
-    state,
-    [sourceIndex],
-    dependencies,
-    member,
-    { kind: 'story-root', story: 'body' },
-  );
+  // Another body pass of this pagination execution may already have acquired
+  // this table from an identical acquisition state (retained-table-pass-cache).
+  const passKey = preparedColumns
+    ? preparedPassKey
+    : retainedTablePassKey(state, sourceIndex, contentWPt);
+  const passServices = state.layoutServices;
+  const memoized = passKey !== undefined && passServices
+    ? retainedTableFromPassMemo(passServices, table, passKey)
+    : undefined;
+  const acquired = memoized ?? (() => {
+    const prepared = preparedColumns?.();
+    const decision = prepared?.decision ?? singleTableDecision(table, contentWPt, state);
+    const member = prepared?.member ?? decision.logical;
+    const colWidthsPt = prepared ? [...prepared.columns] : resolveColumnWidths(table, contentWPt, state, decision, member);
+    return acquireRetainedTable(
+      table,
+      colWidthsPt,
+      contentWPt,
+      state,
+      [sourceIndex],
+      state.retainedTableAcquisition,
+      member,
+      { kind: 'story-root', story: 'body' },
+    );
+  })();
+  // Reusability is a property of the rows and nested tables, which the
+  // column-width override below leaves untouched.
+  const reusableAcrossPages = retainedTableAcquisitionIsReusableAcrossPages(acquired);
+  if (!memoized && passKey !== undefined && passServices && reusableAcrossPages) {
+    retainTableInPassMemo(passServices, table, passKey, acquired);
+  }
   // Split rows are page-local acquisitions, but an unchanged inline extent
   // retains one authoritative track vector for the table's full occurrence.
   const retained = prior?.contentWidthPt === contentWPt
@@ -3038,7 +3060,7 @@ function computeTablePtLayout(
     sourceIndex,
     acquisition: retained,
     contentWidthPt: contentWPt,
-    reusableAcrossPages: retainedTableAcquisitionIsReusableAcrossPages(retained),
+    reusableAcrossPages,
     anchorYPt: state.y,
   }));
 }
@@ -3055,6 +3077,32 @@ function computeAdjacentTablePtLayouts(
   if (prior.every((record) => record?.contentWidthPt === contentWPt && record.reusableAcrossPages)) {
     return prior.map((record) => record!.acquisition);
   }
+  // Members memoize under the state key plus the group composition: each
+  // member's columns and decision derive from the whole logical table.
+  const stateKey = retainedTablePassKey(state, -1, contentWPt);
+  const groupPassKey = stateKey === undefined
+    ? undefined
+    : `${stateKey}|adjacent:${members.map(({ sourceIndex }) => sourceIndex).join(',')}`;
+  let group: ReturnType<typeof resolveAdjacentTableGroup> | undefined;
+  return members.map(({ table, sourceIndex }, i) => {
+    computeTablePtLayout(state, table, contentWPt, sourceIndex, () => {
+      group ??= resolveAdjacentTableGroup(state, members, contentWPt);
+      const member = group.decision.members[i]!;
+      return {
+        columns: group.logicalColumns ?? resolveColumnWidths(table, contentWPt, state, group.decision, member),
+        decision: group.decision,
+        member,
+      };
+    }, groupPassKey);
+    return retainedTableRecord(state, sourceIndex).acquisition;
+  });
+}
+
+function resolveAdjacentTableGroup(
+  state: BodyAcquisitionState,
+  members: readonly Readonly<{ table: TableLayoutSource; sourceIndex: number }>[],
+  contentWPt: number,
+): Readonly<{ decision: LogicalTableDecision; logicalColumns: number[] | null }> {
   const first = members[0]!.table;
   const commonFrame = members.every(({ table }) => table.bidiVisual === first.bidiVisual
     && table.jc === first.jc && table.tblInd === first.tblInd);
@@ -3082,14 +3130,7 @@ function computeAdjacentTablePtLayouts(
     tableDecisionEnvironment(state), commonFrame, commonGrid);
   const logicalColumns = decision.usesLogicalProperties
     ? resolveColumnWidths(logicalTable, contentWPt, state, decision, decision.logical) : null;
-  return members.map(({ table, sourceIndex }, i) => {
-    const member = decision.members[i]!;
-    computeTablePtLayout(state, table, contentWPt, sourceIndex, {
-      columns: logicalColumns ?? resolveColumnWidths(table, contentWPt, state, decision, member),
-      decision, member,
-    });
-    return retainedTableRecord(state, sourceIndex).acquisition;
-  });
+  return { decision, logicalColumns };
 }
 
 /**
