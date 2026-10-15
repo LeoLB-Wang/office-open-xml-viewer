@@ -17,6 +17,7 @@ import {
   preloadGoogleFonts,
   loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
+  unloadGoogleFonts,
   type OfficeFontFallbackRoute,
   WasmParserHost,
   dropDecodedBitmapCache,
@@ -91,12 +92,11 @@ let archiveBacked = false;
  *  new document begins, after the previous pull session was reset. */
 let worksheetPolicy: NormalizedXlsxWorksheetPolicy = DEFAULT_XLSX_WORKSHEET_POLICY;
 let renderers: LoadedWorkerRenderers = {};
-/** Settled before any render when `useGoogleFonts` was requested. The resolved
- *  value (the preloaded FontFace[]) is unused here: the worker owns its own
- *  FontFaceSet (`self.fonts`) and terminates with it, so there is nothing to
- *  release — only the sequencing (fonts landed before first paint) matters. */
+/** Every font operation started during parse settles before its load response.
+ *  Retained faces are released on replacement or unpublished parse failure. */
 let fontsLoaded: Promise<unknown> = Promise.resolve();
 let officeFontFaces: FontFace[] = [];
+let googleFontFaces: FontFace[] = [];
 let officeFontRoutes: Record<string, OfficeFontFallbackRoute> = {};
 let checkedOfficeTupleSet = new Set<string>();
 let googleSubstitutes = false;
@@ -105,16 +105,17 @@ let officeSheetLoadQueue: Promise<void> = Promise.resolve();
 
 function startFontLoad(parsed: ParsedWorkbook, useGoogleFonts: boolean): void {
   googleSubstitutes = useGoogleFonts;
-  fontsLoaded = Promise.all([
-    useGoogleFonts
-      ? preloadGoogleFonts(xlsxFontPreloadNames(parsed, cjkFallback), XLSX_GOOGLE_FONTS)
-      : Promise.resolve([]),
-    loadOfficeFontFallbacks(xlsxOfficeFontRequests(parsed)),
-  ]).then(([, office]) => {
+  // Each load-time resource is owned and awaited by parse. Sequential adoption
+  // also lets parse cleanup release earlier faces if the next loader rejects.
+  fontsLoaded = (async () => {
+    googleFontFaces = useGoogleFonts
+      ? await preloadGoogleFonts(xlsxFontPreloadNames(parsed, cjkFallback), XLSX_GOOGLE_FONTS)
+      : [];
+    const office = await loadOfficeFontFallbacks(xlsxOfficeFontRequests(parsed));
     officeFontFaces = office.faces;
     officeFontRoutes = office.routes;
     checkedOfficeTupleSet = new Set(office.checked);
-  });
+  })();
 }
 const sheetCache = new Map<number, Worksheet>();
 const provisionalSheets = new Map<number, Worksheet>();
@@ -243,6 +244,7 @@ self.onmessage = async (e: MessageEvent<
   }
   const id = req.id;
   if (req.type === 'openSheetSession') worksheetPull.reserveOpen(req);
+  let ownsParseResources = false;
   try {
     if (req.type === 'openSheetSession') {
       if (!archiveBacked) throw new Error('Worksheet is already materialized');
@@ -289,6 +291,9 @@ self.onmessage = async (e: MessageEvent<
       cjkFallback = req.cjkFallback ?? 'jp';
       await fontsLoaded;
       await officeSheetLoadQueue;
+      ownsParseResources = true;
+      unloadGoogleFonts(googleFontFaces);
+      googleFontFaces = [];
       unloadOfficeFontFallbacks(officeFontFaces);
       officeFontFaces = [];
       officeFontRoutes = {};
@@ -322,6 +327,7 @@ self.onmessage = async (e: MessageEvent<
         sheetCache.set(0, parsed.worksheet);
         sheetCacheUsage.set(0, measured);
         startFontLoad(parsed.workbook, !!req.useGoogleFonts);
+        await fontsLoaded;
         const worksheetJson = new TextEncoder()
           .encode(JSON.stringify(parsed.worksheet)).buffer as ArrayBuffer;
         post({
@@ -385,6 +391,7 @@ self.onmessage = async (e: MessageEvent<
       if (maximumDigitWidth !== undefined) workbook.layoutMetrics = { maximumDigitWidth };
       cjkFallback = xlsxCjkFallback(workbook, cjkFallback);
       startFontLoad(workbook, !!req.useGoogleFonts);
+      await fontsLoaded;
       post({ type: 'parsed', id, workbook, usage: bootstrap.usage });
       return;
     }
@@ -504,8 +511,23 @@ self.onmessage = async (e: MessageEvent<
     }
   } catch (err) {
     if (req.type === 'openSheetSession') worksheetPull.abandonOpen(req.sessionId);
-    if (req.type === 'parse') {
+    if (ownsParseResources) {
       try { source?.closeModelSource(); } catch {}
+      try { host.run(() => host.disposeArchive()); } catch {}
+      try { unloadOfficeFontFallbacks(officeFontFaces); } catch {}
+      try { unloadGoogleFonts(googleFontFaces); } catch {}
+      officeFontFaces = [];
+      googleFontFaces = [];
+      officeFontRoutes = {};
+      checkedOfficeTupleSet.clear();
+      fontsLoaded = Promise.resolve();
+      workbook = null;
+      archiveBacked = false;
+      sheetCache.clear();
+      viewProjectionCache.clear();
+      sheetCacheUsage.clear();
+      retainedSheetUsage = { rows: 0, cells: 0, ownedUtf8Bytes: 0, jsonBytes: 0 };
+      rawParts.clear();
     }
     try {
       post({ type: 'error', id, ...serializeWorkerError(err) });

@@ -22,6 +22,7 @@ export {
   decodeOoxmlResourceUsage,
   deserializeWorkerError,
   parseResourceLimitError,
+  withWasmResourceErrors,
   parseTypedParserError,
   serializeWorkerError,
   type WorkerErrorPayload,
