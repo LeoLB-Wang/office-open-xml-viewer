@@ -61,6 +61,33 @@ function counter(pixels: Uint8ClampedArray) {
   return count;
 }
 
+it.each(['shape', 'picture'])('preserves standalone %s margins in identity and scaled groups', async kind => {
+  const leaf = (position: string, width = 40, height = 20) => `<v:rect style="position:absolute;${position};width:${width}pt;height:${height}pt" fillcolor="red" stroked="f">${kind === 'picture' ? '<v:imagedata r:id="pic"/>' : ''}</v:rect>`;
+  const margin = 'left:0;top:0;margin-left:60pt;margin-top:50pt';
+  const reference = await renderVml(leaf('left:60pt;top:50pt'));
+  expect(counter(reference.pixels)(255, 0, 0)).toBeGreaterThan(100);
+  expect(reference.diagnostics).toEqual([]);
+  for (const content of [
+    leaf(margin),
+    `<v:group style="position:absolute;width:150pt;height:150pt" coordsize="150,150">${leaf(margin)}</v:group>`,
+    `<v:group style="position:absolute;width:150pt;height:150pt" coordsize="300,300">${leaf('left:0;top:0;margin-left:120;margin-top:100', 80, 40)}</v:group>`,
+  ]) {
+    const actual = await renderVml(content);
+    expect(actual.diagnostics).toEqual([]);
+    expect(Buffer.compare(Buffer.from(actual.pixels), Buffer.from(reference.pixels))).toBe(0);
+  }
+});
+
+it.each(['shape', 'picture'])('composes nested group and %s margins before parent scaling', async kind => {
+  const leaf = (position: string) => `<v:rect style="position:absolute;${position};width:10;height:5" fillcolor="red" stroked="f">${kind === 'picture' ? '<v:imagedata r:id="pic"/>' : ''}</v:rect>`;
+  const reference = await renderVml(leaf('left:55;top:35'));
+  expect(counter(reference.pixels)(255, 0, 0)).toBeGreaterThan(10);
+  expect(reference.diagnostics).toEqual([]);
+  const actual = await renderVml(`<v:group style="position:absolute;width:150pt;height:150pt" coordsize="300,300" coordorigin="10,20"><v:group style="left:0;top:0;margin-left:100;margin-top:80;width:80;height:40" coordsize="40,20">${leaf('left:0;top:0;margin-left:10;margin-top:5')}</v:group></v:group>`);
+  expect(actual.diagnostics).toEqual([]);
+  expect(Buffer.compare(Buffer.from(actual.pixels), Buffer.from(reference.pixels))).toBe(0);
+});
+
 it('paints equivalent textpath font shorthand, longhands and template overrides identically', async () => {
   const normal = "font-family:'Times New Roman';font-size:24pt;font-weight:normal;font-style:normal";
   const draw = (template: string, style: string, grouped = true) => {
