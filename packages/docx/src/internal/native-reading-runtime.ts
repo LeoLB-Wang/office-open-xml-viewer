@@ -1,7 +1,9 @@
+import { nativeReadingOwners } from './native-reading-owners.js';
+import { readingPaintOwners } from '../paint/reading-owners.js';
 import { NativeReadingSceneError } from '../layout/reading-scene-error.js';
-import { installReadingPaintHooks } from '../paint/reading-hooks.js';
+import { readingPaintHooks, installReadingPaintHooks } from '../paint/reading-hooks.js';
 import { readingPageAdmission, assertReadingPageImages } from '../paint/native-reading-page-admission.js';
-import { installReadingHooks } from './reading-hooks.js';
+import { readingHooks, installReadingHooks } from './reading-hooks.js';
 import { acquireNativeReadingWordBreaking } from '../native-reading-word-breaking.js';
 import { acquireNativeReadingPictureBullet } from '../native-reading-picture-bullet.js';
 import { nativeReadingRequests, hasNativeReadingRequests, nativeReadingNotices, retainedReadingNotices } from '../native-reading-notice.js';
@@ -14,8 +16,20 @@ import { assertNativeReadingImageBinding } from '../paint/native-reading-image-a
 /** Called by selected-source entry points before source normalization. Keep
  * activation explicit: the package is sideEffects:false, so a side-effect-only
  * import would disappear from consumer builds. No per-document policy lives
- * in this registry; individual acquired facts still authorize every action. */
-export function installNativeReadingRuntime(): void {
+ * in this registry; individual acquired facts still authorize every action.
+ * A self-contained worker sidecar binds the renderer's owners and hook targets
+ * synchronously before its archive is opened. Normal module graphs share those
+ * identities already and omit the target. Reinstallation is idempotent. */
+export function installNativeReadingRuntime(target?: {
+  readonly readingHooks: typeof readingHooks;
+  readonly readingPaintHooks: typeof readingPaintHooks;
+  readonly owners: typeof nativeReadingOwners;
+  readonly paintOwners: typeof readingPaintOwners;
+}): void {
+  if (target) {
+    Object.assign(nativeReadingOwners, target.owners);
+    Object.assign(readingPaintOwners, target.paintOwners);
+  }
   installReadingHooks({
     error: (blocker, message) => new NativeReadingSceneError(blocker, message),
     wordBreaking: acquireNativeReadingWordBreaking,
@@ -37,4 +51,8 @@ export function installNativeReadingRuntime(): void {
     pageAdmission: readingPageAdmission, assertPageImages: assertReadingPageImages,
     assertNativeReadingImageBinding,
   });
+  if (target) {
+    Object.assign(target.readingHooks, readingHooks);
+    Object.assign(target.readingPaintHooks, readingPaintHooks);
+  }
 }

@@ -1,6 +1,6 @@
 import { drawingMLGeometryBounds, requireResolvedDrawingMLGeometry, type DrawingMLShapePaintPlan } from '@silurus/ooxml-core';
 import type { DrawingLayout, LayoutRect } from './types.js';
-import { isDeepFrozenPlainDataRoot } from './plain-data.js';
+import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 export class NativeWrapPaintBudgetError extends RangeError {}
 export interface NativeWrapPaintExtent {
   readonly coordinateSpace: 'section-logical-pt';
@@ -21,7 +21,7 @@ function assertSolidPlan(plan: DrawingMLShapePaintPlan): void {
  * tight/through contours. The source wrap facts stay intact. No painter runs. */
 export function deriveNativeWrapPaintExtent(drawing: DrawingLayout, maximumOperations: number): NativeWrapPaintExtent {
   if (!Number.isSafeInteger(maximumOperations) || maximumOperations < 1) throw new NativeWrapPaintBudgetError('Invalid native wrap paint budget');
-  if (!isDeepFrozenPlainDataRoot(drawing)) throw new Error('Native wrap drawing must be internally sealed');
+  if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(drawing)) throw new Error('Native wrap drawing must be internally sealed');
   if (drawing.clip || drawing.textBoxIds?.length) throw new Error('Native wrap cannot prove clip or owned textboxes');
   let work = 0;
   for (const command of drawing.commands) {

@@ -1,6 +1,7 @@
 import { imageNaturalSize } from '@silurus/ooxml-core';
+import { readingPaintOwners } from './reading-owners.js';
 import type { LayoutRect, NativeReadingImagePlan } from '../layout/types.js';
-import { isOwnedPaintResourceSession, isUnavailablePaintResourceHandle, type PaintResourceSession, type ResolvedPaintResource } from './resource-session.js';
+import { isUnavailablePaintResourceHandle, type PaintResourceSession, type ResolvedPaintResource } from './resource-session.js';
 
 /** Identity/admission only. Source sealing and geometry are acquired and
  * validated by layout; paint cannot re-import that authority or dry-render a
@@ -33,7 +34,7 @@ export function assertNativeReadingImageBinding(
 export function assertNativeReadingImageAvailable(
   session: PaintResourceSession, plan: NativeReadingImagePlan, rect: LayoutRect,
 ): void {
-  if (!isOwnedPaintResourceSession(session)) throw new Error('Native reading image requires a realm-owned resource session');
+  if (!readingPaintOwners.isOwnedPaintResourceSession(session)) throw new Error('Native reading image requires a realm-owned resource session');
   const resource = session.resolve(plan.source.resourceKey, 'image');
   assertNativeReadingImageBinding(resource, plan, rect);
   const image = resource.handle;

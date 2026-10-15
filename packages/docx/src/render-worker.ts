@@ -1,3 +1,8 @@
+import { readingPaintHooks } from './paint/reading-hooks.js';
+import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './layout/plain-data.js';
+import { isLayoutSourceStore } from './layout/layout-source-store.js';
+import { planRetainedAnchorShape } from './layout/retained-anchor-shape.js';
+import { isOwnedPaintResourceSession } from './paint/resource-session.js';
 import { readingHooks } from './internal/reading-hooks.js';
 /**
  * Render-capable worker entry: parse → font preload → paginate, all
@@ -17,6 +22,7 @@ import {
   unloadGoogleFonts,
   unregisterEmbeddedFonts,
   WasmParserHost,
+  GeometryWorkBudgetError,
   dropDecodedBitmapCache,
   dropSvgImageCache,
 } from '@silurus/ooxml-core';
@@ -233,7 +239,16 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       let viewDefaults: DocxModelSourceViewDefaults | undefined;
       if (req.source) {
         if (!req.sourceOwnerUrl) throw new TypeError('DOCX source owner URL is missing');
-        const { WorkerDocumentSourceOwner } = await import(/* @vite-ignore */ req.sourceOwnerUrl) as typeof import('./internal/worker-document-source.js');
+        const { WorkerDocumentSourceOwner, installNativeReadingRuntime } = await import(/* @vite-ignore */ req.sourceOwnerUrl) as typeof import('./internal/worker-document-source.js');
+        // Rebind on every selected-source parse, including a fresh RB6 worker
+        // realm. The self-contained sidecar must use this renderer's ownership
+        // identities and hooks before the pull consumer normalizes any facts.
+        installNativeReadingRuntime({
+          readingHooks, readingPaintHooks,
+          owners: { isDeepFrozenPlainDataRoot, snapshotPlainData, isLayoutSourceStore,
+            planRetainedAnchorShape, GeometryWorkBudgetError },
+          paintOwners: { isOwnedPaintResourceSession },
+        });
         sourceOwner = new WorkerDocumentSourceOwner(host);
         viewDefaults = await sourceOwner.openModelSource(bytes, req.source, req.sourceTransfer);
         if (requestedGeneration !== parseGeneration) {

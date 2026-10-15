@@ -1,7 +1,8 @@
 import { noReadingNotices, noNativeReadingRequests, type DocxReadingNotice, type NativeReadingRequests } from './internal/reading-contract.js';
 export { noReadingNotices, noNativeReadingRequests, type DocxReadingNotice, type NativeReadingRequests } from './internal/reading-contract.js';
 import type { DeepReadonly, DocumentLayout, LayoutPage } from './layout/types.js';
-import { isLayoutSourceStore, type LayoutSourceStore } from './layout/layout-source-store.js';
+import type { LayoutSourceStore } from './layout/layout-source-store.js';
+import { nativeReadingOwners } from './internal/native-reading-owners.js';
 import { nativeReadingOccurrenceIds } from './layout/native-reading-paragraph.js';
 import { readingPictureBulletKeys } from './paint/reading-picture-bullets.js';
 export { readingPictureBulletKeys } from './paint/reading-picture-bullets.js';
@@ -22,7 +23,7 @@ const canonicalNotices: readonly DocxReadingNotice[] = Object.freeze([
 // or a caller-supplied adapter. Failed scans leave no partially acquired entry.
 const requestsBySource = new WeakMap<LayoutSourceStore, NativeReadingRequests>();
 export function nativeReadingRequests(source: LayoutSourceStore): NativeReadingRequests {
-  const cacheable = isLayoutSourceStore(source);
+  const cacheable = nativeReadingOwners.isLayoutSourceStore(source);
   const retained = cacheable ? requestsBySource.get(source) : undefined;
   if (retained) return retained;
   let contour = false, wordBreaking = false, pictureBullets = false;

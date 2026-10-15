@@ -1,8 +1,78 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AcquiredParagraphLayoutInput, DocumentLayout } from './layout/types.js';
 import type { DocParagraph, DocxDocumentModel } from './types.js';
+import type { ParagraphAcquisitionInput } from './layout/text.js';
 
 describe('optional reading runtime', () => {
+  it('binds an isolated sidecar to renderer-owned seals, planners and image sessions', async () => {
+    vi.resetModules();
+    const { readingHooks } = await import('./internal/reading-hooks.js');
+    const { readingPaintHooks } = await import('./paint/reading-hooks.js');
+    const { nativeReadingOwners: owners } = await import('./internal/native-reading-owners.js');
+    const { readingPaintOwners: paintOwners } = await import('./paint/reading-owners.js');
+    const { createPaintResourceRegistry } = await import('./layout/paint-resources.js');
+    const { createPaintResourceSession } = await import('./paint/resource-session.js');
+    const registry = createPaintResourceRegistry([{
+      kind: 'image', resourceKey: 'reading-image', partPath: 'reading.png', mimeType: 'image/png',
+      intrinsicSize: { widthPt: 40, heightPt: 20 },
+    }]);
+    const paragraph = owners.snapshotPlainData({ runs: [{
+      type: 'anchorHost', anchorOccurrenceId: 'reading-anchor',
+    }, {
+      type: 'image', imagePath: 'reading.png', mimeType: 'image/png', widthPt: 40, heightPt: 20,
+      anchorAcquisitionInput: {
+        occurrenceId: 'reading-anchor', nativeReadingRelocation: 'completeScene', group: null,
+        extent: { widthPt: 40, heightPt: 20, widthStatus: 'valid', heightStatus: 'valid' },
+        relativeSize: { horizontal: null, vertical: null }, wrap: { kind: 'tight', polygon: null },
+      },
+    }] }, 'reading worker paragraph');
+    // Isolate every sidecar module, as the self-contained production ESM does.
+    vi.resetModules();
+    const { installNativeReadingRuntime } = await import('./internal/native-reading-runtime.js');
+    const { imageResourceKey } = await import('./layout/source-key.js');
+    const source = { story: 'body' as const, storyInstance: 'body', path: [0] };
+    const key = imageResourceKey({ ...source, path: [0, 1] }, 'reading.png');
+    const descriptor = { ...registry.descriptors[0], resourceKey: key };
+    const rendererRegistry = createPaintResourceRegistry([descriptor]);
+    installNativeReadingRuntime({ readingHooks, readingPaintHooks, owners, paintOwners });
+    const scenes = readingHooks.scenes(paragraph as unknown as ParagraphAcquisitionInput,
+      source, 'p', 'body', rendererRegistry);
+    expect(scenes).toHaveLength(1);
+    expect(owners.isDeepFrozenPlainDataRoot(scenes[0])).toBe(true);
+    const drawing = scenes[0].drawing;
+    const command = drawing.commands[0];
+    if (command.kind !== 'resource' || !command.nativeImagePlan) throw new Error('reading image lost');
+    const plan = command.nativeImagePlan;
+    const session = createPaintResourceSession(rendererRegistry, [{
+      kind: 'image', resourceKey: key, handle: { width: 100, height: 80 },
+    }]);
+    const { assertNativeReadingImageAvailable } = await import('./paint/native-reading-image-availability.js');
+    // A renderer session must pass ownership, then fail the distinct immutable
+    // bitmap gate. A structural copy must still fail the ownership gate.
+    expect(() => assertNativeReadingImageAvailable(session, plan, command.rect))
+      .toThrow('available immutable');
+    expect(() => assertNativeReadingImageAvailable({ ...session }, plan, command.rect))
+      .toThrow('realm-owned');
+
+    const vector = owners.snapshotPlainData({ runs: [paragraph.runs[0], {
+      type: 'shape', presetGeometry: 'rect', subpaths: [], fill: { fillType: 'solid', color: '000000' },
+      anchorAcquisitionInput: {
+        ...paragraph.runs[1].anchorAcquisitionInput,
+        group: {
+          sourceIndex: 0, sourceCount: 1, childSourceId: 'reading-child',
+          transformChain: [], childTransform: null,
+          resolvedChildFrame: { offsetXPt: 0, offsetYPt: 0, widthPt: 40, heightPt: 20,
+            rotationDeg: 0, flipH: false, flipV: false },
+        },
+      },
+    }] }, 'reading worker group') as unknown as ParagraphAcquisitionInput;
+    expect(readingHooks.scenes(vector, source, 'p', 'body', undefined, 2000)).toHaveLength(1);
+    // The shared planner throws the renderer's error class, not the sidecar's
+    // independently bundled constructor. Budget classification must survive.
+    expect(() => readingHooks.scenes(vector, source, 'p', 'body', undefined, 5))
+      .toThrow(expect.objectContaining({ blocker: 'budget' }));
+  }, 30000);
+
   it('accepts absent and explicitly empty picture-bullet provenance in a cold realm', async () => {
     vi.resetModules();
     const { paragraphAcquisitionInput } = await import('./parser-model.js');

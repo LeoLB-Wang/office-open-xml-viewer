@@ -7,7 +7,7 @@ import { NativeReadingSceneError } from './native-reading-block-scene.js';
 import { endnoteIdsInRetainedSlice, footnoteIdsInRetainedSlice } from './note-reference-ownership.js';
 import type { acquireParagraphAnchorRunStage } from './paragraph.js';
 import type { LayoutRect, PaintResourceRegistry, ParagraphLayout, DrawingLayout, ImagePaintResourceDescriptor } from './types.js';
-import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './plain-data.js';
+import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 import { translateDrawing, translateParagraphLayout } from './retained-geometry-translation.js';
 import { acquireNativeReadingImagePlan, nativeReadingImageFrame } from './native-reading-image-frame.js';
 
@@ -84,7 +84,7 @@ function completeDrawing(d: DrawingLayout, registry: PaintResourceRegistry | und
       // Image descriptors share a union discriminator with picture bullets;
       // keep the canonical runtime source-kind/key/seal checks after resolving.
       const descriptor = registry?.resolve(command.resourceKey, 'image') as ImagePaintResourceDescriptor | undefined;
-      if (!descriptor || !isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image'
+      if (!descriptor || !nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image'
         || descriptor.resourceKey !== command.resourceKey) fail('anchor run image resource is unavailable');
       const plan = command.nativeImagePlan ?? acquireNativeReadingImagePlan(descriptor,command.rect.widthPt,command.rect.heightPt);
       boxes.push(nativeReadingImageFrame(plan,command.rect));
@@ -92,7 +92,7 @@ function completeDrawing(d: DrawingLayout, registry: PaintResourceRegistry | und
     }
     fail('anchor run cannot enclose this retained command');
   });
-  return snapshotPlainData({...d,commands,inkBounds:union(boxes)},'complete reading peer',d);
+  return nativeReadingOwners.snapshotPlainData({...d,commands,inkBounds:union(boxes)},'complete reading peer',d);
 }
 
 export interface AnchorRunMember {
@@ -248,7 +248,7 @@ export function composeNativeReadingAnchorRun(
     }
     const ink = union([layout.inkBounds,...drawings.map(d=>d.inkBounds),...layout.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds])]);
     return {input,sourceOwners,stageLineCount:layout.lines.length,stageInk:layout.inkBounds,
-      layout:snapshotPlainData({...layout,drawings,lines,inkBounds:ink,
+      layout:nativeReadingOwners.snapshotPlainData({...layout,drawings,lines,inkBounds:ink,
       ...(layout.anchorCollisions ? {anchorCollisions:layout.anchorCollisions.map(entry=>sourceOwners.has(entry.occurrenceId)
         ? {...entry,horizontalOwnership:'host' as const} : entry)} : {}),
       ...(requestedIds.length ? {nativeReadingRelocations:requestedIds} : {}),
@@ -305,7 +305,7 @@ export function composeNativeReadingAnchorRun(
           return {...p,bounds:{...p.bounds,xPt:originalHost.bounds.xPt}};
         })};
     });
-    const layout = snapshotPlainData({...translated,lines,
+    const layout = nativeReadingOwners.snapshotPlainData({...translated,lines,
       inkBounds:union([{...m.stageInk,yPt:m.stageInk.yPt+dy},
         ...translated.drawings.map(d=>d.inkBounds),...translated.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds])]),
       flowBounds:{...translated.flowBounds,

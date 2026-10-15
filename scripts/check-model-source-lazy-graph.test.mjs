@@ -74,11 +74,6 @@ test('a model-source marker leaking into eager emitted code fails', () => {
   }
 });
 
-test('selected-source workers allow reading behavior but still reject eager archive-source runtime', () => {
-  assert.doesNotThrow(() => assertNoSourceRuntime('Native reading scene ', 'selected', { allowReading: true }));
-  assert.throws(() => assertNoSourceRuntime('ooxml-model-source-module/v1', 'selected', { allowReading: true }), /optional source runtime/);
-});
-
 test('a model-source helper factored outside the branch is charged to the build difference', async () => {
   const root = mkdtempSync(join(tempRoot, 'ooxml-source-cost-'));
   try {

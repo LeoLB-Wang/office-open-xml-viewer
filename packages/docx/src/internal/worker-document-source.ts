@@ -1,3 +1,4 @@
+export { installNativeReadingRuntime } from './native-reading-runtime.js';
 import { isWasmTrap, type WasmParserHost } from '@silurus/ooxml-core';
 import {
   copyModelSourceBytes,

@@ -1,7 +1,7 @@
 import { imagePaintProjection } from '@silurus/ooxml-core';
 import type { ImagePaintProjection } from '@silurus/ooxml-core';
 import type { ImagePaintResourceDescriptor, LayoutRect, NativeReadingImagePlan } from './types.js';
-import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './plain-data.js';
+import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 import { composeAffine } from './affine.js';
 import { transformRect } from './coordinate-space.js';
 
@@ -13,7 +13,7 @@ import { transformRect } from './coordinate-space.js';
 export function acquireNativeReadingImagePlan(
   descriptor: ImagePaintResourceDescriptor, width: number, height: number,
 ): NativeReadingImagePlan {
-  if (!isDeepFrozenPlainDataRoot(descriptor)) throw new Error('Native image plan requires an internally sealed descriptor');
+  if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor)) throw new Error('Native image plan requires an internally sealed descriptor');
   if (descriptor.kind !== 'image' || descriptor.svgImagePath !== undefined
     || descriptor.colorReplaceFrom !== undefined || descriptor.duotone !== undefined) {
     throw new Error('Native image substitution/color effects require their decoded-owner proof');
@@ -26,7 +26,7 @@ export function acquireNativeReadingImagePlan(
     flipV: descriptor.flipV ?? null, alpha: descriptor.alpha ?? null,
   };
   const projection = imagePaintProjection(width, height, source.srcRect, descriptor);
-  return snapshotPlainData({ source, projection }, 'native reading image plan');
+  return nativeReadingOwners.snapshotPlainData({ source, projection }, 'native reading image plan');
 }
 
 function sameProjection(actual: ImagePaintProjection, expected: ImagePaintProjection): boolean {
