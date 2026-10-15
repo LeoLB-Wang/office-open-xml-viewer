@@ -7,6 +7,7 @@ import {
   shadePixel,
   shadeParamsFor,
   lightDirFromRig,
+  lightDirectionsFromRig,
   applyBevelShading,
   applyExtrusion,
   materialClass,
@@ -147,6 +148,40 @@ describe('lightDirFromRig', () => {
     expect(Math.hypot(rotated.x, rotated.y, rotated.z)).toBeCloseTo(1, 5);
     // The elevation (z, toward viewer) is unchanged by an in-plane revolution.
     expect(rotated.z).toBeCloseTo(base.z, 5);
+  });
+
+  it('latitude and longitude orient the axis of the rig revolution', () => {
+    const base = lightDirFromRig('threePt', 't');
+    const latitude = lightDirFromRig('threePt', 't', { lat: 90, lon: 0, rev: 0 });
+    expect(latitude.x).toBeCloseTo(base.x);
+    expect(latitude.y).toBeCloseTo(-base.z);
+    expect(latitude.z).toBeCloseTo(base.y);
+    const longitude = lightDirFromRig('threePt', 'r', { lat: 0, lon: 90, rev: 0 });
+    const right = lightDirFromRig('threePt', 'r');
+    expect(longitude.x).toBeCloseTo(right.z);
+    expect(longitude.y).toBeCloseTo(right.y);
+    expect(longitude.z).toBeCloseTo(-right.x);
+    // A complete turn is identity; a half-turn must allow a light behind the
+    // surface instead of clamping it to the front hemisphere.
+    expect(lightDirFromRig('threePt', 'r', { lat: 360, lon: 360, rev: 360 }).z).toBeCloseTo(right.z);
+    expect(lightDirFromRig('threePt', 'r', { lat: 0, lon: 180, rev: 0 }).z).toBeCloseTo(-right.z);
+    // Three quarter turns exchange axes. This distinguishes rotation order
+    // from merely adding the angles to the screen-plane azimuth.
+    const combined = lightDirFromRig('threePt', 'br', { lat: 90, lon: 90, rev: 90 });
+    const diagonal = lightDirFromRig('threePt', 'br');
+    expect(combined.x).toBeCloseTo(diagonal.x);
+    expect(combined.y).toBeCloseTo(-diagonal.z);
+    expect(combined.z).toBeCloseTo(diagonal.y);
+    expect(Math.hypot(combined.x, combined.y, combined.z)).toBeCloseTo(1);
+  });
+
+  it('rotates the fill rigidly with the key instead of reconstructing a screen-plane fill', () => {
+    const base = lightDirectionsFromRig('threePt', 'tr');
+    const tilted = lightDirectionsFromRig('threePt', 'tr', { lat: 90, lon: 90, rev: 90 });
+    const dot = (a: typeof base.key, b: typeof base.key) => a.x * b.x + a.y * b.y + a.z * b.z;
+    expect(dot(tilted.key, tilted.fill)).toBeCloseTo(dot(base.key, base.fill));
+    expect(tilted.fill.y).toBeCloseTo(-base.fill.z);
+    expect(tilted.fill.z).toBeCloseTo(base.fill.y);
   });
 
   it('rev=0 (or absent rot) is identical to no rot', () => {

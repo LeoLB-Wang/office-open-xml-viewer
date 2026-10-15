@@ -187,7 +187,6 @@ export async function decodeRaster(
   const sourceBitmapOptions = {
     widthPt,
     heightPt,
-    suppressBoundaryFrame: true,
     tiff,
     maxRetainedPixels,
     // The shared decoder preserves the native grid while it fits the explicit
