@@ -226,9 +226,7 @@ describe('decodeDib — dimension / megapixel budget (DoS guard)', () => {
     expect(decodeDib(dv, 0, 40, 40, 5)).toBeNull(); // bits span exceeds view by one byte
     const truncated = new Uint8Array([...bmih(40000, 2, 24).build(), 0, 0, 0, 0]);
     expect(decodeDib(dvOf(truncated), 0, 40, 40, 4)).toBeNull(); // already-discarded multi-row bitmap
-    expect(() => decodeDib(dv, 0, 40, 40, 4)).toThrowError(expect.objectContaining({
-      metric: 'image-dimension', limit: MAX_RASTER_DIMENSION, observed: 40000,
-    })); // declared bits end exactly at the view boundary
+    expect(decodeDib(dv, 0, 40, 40, 4)).toBeNull(); // even a one-row bitmap needs its complete pixels to prove a crossing
   });
 
   // A crafted BITMAPINFOHEADER can declare enormous dimensions while carrying
@@ -239,9 +237,10 @@ describe('decodeDib — dimension / megapixel budget (DoS guard)', () => {
   it.each([
     [40000, 1, 'image-dimension', MAX_RASTER_DIMENSION, 40000],
   ] as const)('throws a typed budget error before allocating %i×%i RGBA', (width, height, metric, limit, observed) => {
-    const bytes = new Uint8Array([...bmih(width, height, 24).build(), 0, 0, 0, 0]);
+    const bytes = new Uint8Array(40 + width * height * 3);
+    bytes.set(bmih(width, height, 24).build());
     const expected = expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric, limit, observed });
-    expect(() => decodeDib(dvOf(bytes), 0, 40, 40, 4)).toThrowError(expected);
+    expect(() => decodeDib(dvOf(bytes), 0, 40, 40, bytes.length - 40)).toThrowError(expected);
     expect(() => decodePackedDib(dvOf(bytes), 0, bytes.length)).toThrowError(expected);
   });
 

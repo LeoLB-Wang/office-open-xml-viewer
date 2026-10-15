@@ -96,7 +96,9 @@ export type OoxmlDecodedImageLimitMetric =
   | 'image-effect-work'
   | 'metafile-path-commands'
   | 'metafile-record-points'
-  | 'metafile-record-polygons';
+  | 'metafile-record-polygons'
+  | 'metafile-record-rectangles'
+  | 'metafile-record-text-units';
 
 export interface OoxmlDecodedImageLimitDetails {
   readonly metric: OoxmlDecodedImageLimitMetric;
@@ -112,7 +114,9 @@ function isDecodedImageLimitMetric(value: unknown): value is OoxmlDecodedImageLi
     || value === 'image-effect-work'
     || value === 'metafile-path-commands'
     || value === 'metafile-record-points'
-    || value === 'metafile-record-polygons';
+    || value === 'metafile-record-polygons'
+    || value === 'metafile-record-rectangles'
+    || value === 'metafile-record-text-units';
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {

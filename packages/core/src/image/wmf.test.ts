@@ -644,7 +644,8 @@ describe('playWmf — STRETCHDIBITS (embedded raster DIB)', () => {
       w.u32(0x00cc0020);
       for (let i = 0; i < 9; i++) w.u16(1);
       w.u32(40).u32(40000).u32(1).u16(1).u16(24).u32(0).u32(0)
-        .u32(0).u32(0).u32(0).u32(0).raw(0, 0, 0, 0);
+        .u32(0).u32(0).u32(0).u32(0);
+      for (let i = 0; i < 120000; i++) w.raw(0);
     });
     expect(() => playWmf(concat(wmfHeader(), bitmap, record(FN.EOF, () => {})), makeRecordingCtx().ctx, 100, 100))
       .toThrowError(expect.objectContaining({

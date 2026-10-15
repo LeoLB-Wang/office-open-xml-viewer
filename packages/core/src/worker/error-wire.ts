@@ -384,6 +384,8 @@ const DECODED_IMAGE_LIMIT_METRICS = {
   'metafile-path-commands': true,
   'metafile-record-points': true,
   'metafile-record-polygons': true,
+  'metafile-record-rectangles': true,
+  'metafile-record-text-units': true,
 } satisfies Record<OoxmlDecodedImageLimitMetric, true>;
 
 function isDecodedImageLimitMetric(value: unknown): value is OoxmlDecodedImageLimitMetric {

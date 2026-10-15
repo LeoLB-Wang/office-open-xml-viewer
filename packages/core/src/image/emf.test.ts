@@ -1214,6 +1214,18 @@ describe('playEmf — picture frame mapping + path clip', () => {
   });
 
   it.each([
+    ['MOVETOEX', EMR.MOVETOEX, 1, (w: Writer) => w.i32(10).i32(10)],
+    ['LINETO', EMR.LINETO, 1, (w: Writer) => w.i32(10).i32(10)],
+    ['CLOSEFIGURE', EMR.CLOSEFIGURE, 1, (_w: Writer) => {}],
+    ['RECTANGLE', 43, 5, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20)],
+    ['ELLIPSE', 42, 6, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20)],
+    ['POLYLINE16', 87, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(2).i16(0).i16(0).i16(10).i16(10)],
+    ['POLYLINETO16', 89, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(2).i16(0).i16(0).i16(10).i16(10)],
+    ['POLYGON16', 86, 3, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(2).i16(0).i16(0).i16(10).i16(10)],
+    ['POLYBEZIER16', 85, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(4).i32(0).i32(0).i32(0).i32(0)],
+    ['POLYBEZIERTO16', 88, 1, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(3).i32(0).i32(0).i32(0)],
+    ['POLYPOLYGON16', 91, 3, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(1).u32(2).u32(2).i32(0).i32(0)],
+    ['POLYPOLYLINE16', 90, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).u32(1).u32(2).u32(2).i32(0).i32(0)],
     ['ARC', 45, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
     ['ARCTO', 55, 2, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
     ['CHORD', 46, 3, (w: Writer) => w.i32(0).i32(0).i32(20).i32(20).i32(20).i32(10).i32(10).i32(0)],
@@ -1240,53 +1252,156 @@ describe('playEmf — picture frame mapping + path clip', () => {
     }));
   });
 
+  it('admits 65,536 region rectangles and rejects the next only when supplied', () => {
+    const region = (count: number, supplied = count) => {
+      const bytes = new Uint8Array(48 + supplied * 16);
+      const v = new DataView(bytes.buffer);
+      [75, bytes.length, 32 + supplied * 16, 1, 32, 1, count, count * 16].forEach((n, i) => v.setUint32(i * 4, n, true));
+      return bytes;
+    };
+    const run = (data: Uint8Array, mode = 1) => {
+      new DataView(data.buffer, data.byteOffset, data.byteLength).setUint32(12, mode, true);
+      const m = makeRecordingCtx();
+      const reported: string[] = [];
+      playEmf(concat(emfHeader(), data, record(EMR.EOF, () => {})), m.ctx, 100, 100, {
+        onUnsupported: (r) => reported.push(...r),
+      });
+      return { m, reported };
+    };
+    const boundary = run(region(0x10000));
+    expect(boundary.m.calls.filter(({ op }) => op === 'closePath')).toHaveLength(0x10000);
+    expect(boundary.m.calls.filter(({ op }) => op === 'clip')).toHaveLength(1);
+    expect(boundary.reported).toEqual([]);
+    for (const mode of [1, 2, 4, 5]) {
+      expect(() => run(region(0x10001), mode)).toThrowError(expect.objectContaining({
+        code: 'ooxml-decoded-image-limit', metric: 'metafile-record-rectangles', limit: 0x10000, observed: 0x10001,
+      }));
+    }
+    const truncated = run(region(0x10001, 0x10000));
+    expect(truncated.reported).toEqual(['EMF record 75 (malformed)']);
+    expect(truncated.m.calls.some(({ op }) => op === 'clip')).toBe(false);
+    const shortRegion = region(0x10001, 0x10000);
+    new DataView(shortRegion.buffer).setUint32(8, 32 + 0x10001 * 16, true);
+    expect(run(shortRegion).reported).toEqual(['EMF record 75 (malformed)']);
+  });
+
+  it.each([0, 0x100])('admits 65,536 UTF-16 units and rejects the next after string validation (options %i)', (options) => {
+    const textRecord = (count: number, supplied = count, offset?: number) => record(EMR.EXTTEXTOUTW, (w) => {
+      w.i32(0).i32(0).i32(20).i32(20).u32(1).f32(1).f32(1)
+        .i32(0).i32(0).u32(count).u32(offset ?? (options ? 60 : 76)).u32(options);
+      if (!options) w.i32(0).i32(0).i32(20).i32(20);
+      w.u32(0).utf16('A'.repeat(supplied));
+    });
+    const run = (data: Uint8Array) => {
+      const m = makeRecordingCtx();
+      const reported: string[] = [];
+      playEmf(concat(emfHeader(), record(EMR.EXTCREATEFONTINDIRECTW, (w) => {
+        w.u32(1).i32(-12);
+        for (let i = 0; i < 88; i++) w.raw(0);
+      }), record(EMR.SELECTOBJECT, (w) => w.u32(1)), data, record(EMR.EOF, () => {})), m.ctx, 100, 100, {
+        onUnsupported: (r) => reported.push(...r),
+      });
+      return { m, reported };
+    };
+    const boundary = run(textRecord(0x10000));
+    expect(boundary.m.calls.find(({ op }) => op === 'fillText')?.args[0]).toBe('A'.repeat(0x10000));
+    expect(boundary.reported).toEqual([]);
+    expect(() => run(textRecord(0x10001))).toThrowError(expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'metafile-record-text-units', limit: 0x10000, observed: 0x10001,
+    }));
+    for (const data of [textRecord(0x10001, 0x10000), textRecord(0x10001, 0x10001, 8)]) {
+      const malformed = run(data);
+      expect(malformed.reported).toEqual(['EMF record 84 (malformed)']);
+      expect(malformed.m.calls.some(({ op }) => op === 'fillText')).toBe(false);
+    }
+  });
+
   it.each([2, 3, 4, 5, 6, 85, 86, 87, 88, 89])(
     'rejects proven per-record point crossings for record %i, while tolerating truncated counts',
     (type) => {
-      const count = 0x100001;
-      const header = record(type, (w) => w.i32(0).i32(0).i32(20).i32(20).u32(count));
       const selection = record(EMR.SELECTOBJECT, (w) => w.u32(0x80000007)); // BLACK_PEN
-      expect(() => playEmf(concat(emfHeader(), selection, header), makeRecordingCtx().ctx, 100, 100)).not.toThrow();
-      // Typed arrays avoid constructing a million-point JS fixture or mock call log.
-      const full = new Uint8Array(header.length + count * (type >= 85 ? 4 : 8));
-      full.set(header);
-      new DataView(full.buffer).setUint32(4, full.length, true);
-      if (type === 4 || type === 87) {
-        // No selected pen and no path bracket: POLYLINE is skipped without
-        // reading/appending its points, so it cannot cross a work budget.
-        expect(playEmf(concat(emfHeader(), full), makeRecordingCtx().ctx, 100, 100)).toBe(false);
+      for (const count of [0x100000, 0x100001]) {
+        const header = record(type, (w) => w.i32(0).i32(0).i32(20).i32(20).u32(count));
+        const pointBytes = type >= 85 ? 4 : 8;
+        // Typed arrays and counting sinks keep actual production-ceiling tests
+        // independent of a million-point JS fixture or mock call log.
+        const full = new Uint8Array(header.length + count * pointBytes);
+        full.set(header);
+        new DataView(full.buffer).setUint32(4, full.length, true);
+        const m = makeRecordingCtx();
+        let commands = 0;
+        m.ctx.moveTo = m.ctx.lineTo = m.ctx.bezierCurveTo = () => { commands++; };
+        const run = (data: Uint8Array, select = selection) => playEmf(concat(emfHeader(), select, data), m.ctx, 100, 100);
+        if (count === 0x100000) {
+          expect(run(full)).toBe(true);
+          expect(commands).toBeGreaterThan(0);
+        } else {
+          const expected = expect.objectContaining({
+            code: 'ooxml-decoded-image-limit', metric: 'metafile-record-points', limit: 0x100000, observed: count,
+          });
+          expect(() => run(full)).toThrowError(expected);
+          // Drawing state must not hide a fully supplied oversized record.
+          expect(() => run(full, new Uint8Array(0))).toThrowError(expected);
+          const truncated = full.slice(0, full.length - pointBytes);
+          new DataView(truncated.buffer).setUint32(4, truncated.length, true);
+          expect(() => run(truncated)).not.toThrow();
+        }
       }
-      expect(() => playEmf(concat(emfHeader(), selection, full), makeRecordingCtx().ctx, 100, 100))
-        .toThrow(expect.objectContaining({
-          code: 'ooxml-decoded-image-limit', metric: 'metafile-record-points',
-          limit: 0x100000, observed: count,
-        }));
     },
   );
 
   it.each([7, 8, 90, 91])('rejects proven multi-poly ceilings for record %i only after validating its payload', (type) => {
+    const selection = record(EMR.SELECTOBJECT, (w) => w.u32(0x80000007)); // BLACK_PEN
     for (const exceeded of ['points', 'polygons'] as const) {
-      const polygons = exceeded === 'polygons' ? 0x10001 : 1;
-      const points = exceeded === 'points' ? 0x200001 : polygons * 2;
-      const prefix = record(type, (w) => w.i32(0).i32(0).i32(20).i32(20).u32(polygons).u32(points));
-      const full = new Uint8Array(prefix.length + polygons * 4 + points * (type >= 90 ? 4 : 8));
-      full.set(prefix);
-      const view = new DataView(full.buffer);
-      view.setUint32(4, full.length, true);
-      for (let i = 0; i < polygons; i++) view.setUint32(prefix.length + i * 4, polygons === 1 ? points : 2, true);
-      const wrap = (data: Uint8Array) => concat(emfHeader(), data, record(EMR.EOF, () => {}));
-      const truncated = full.slice(0, prefix.length + polygons * 4);
-      new DataView(truncated.buffer).setUint32(4, truncated.length, true);
-      expect(() => playEmf(wrap(truncated), makeRecordingCtx().ctx, 100, 100)).not.toThrow();
-      expect(() => playEmf(wrap(full), makeRecordingCtx().ctx, 100, 100)).toThrow(expect.objectContaining({
-        code: 'ooxml-decoded-image-limit', metric: `metafile-record-${exceeded}`,
-        limit: exceeded === 'points' ? 0x200000 : 0x10000,
-        observed: exceeded === 'points' ? points : polygons,
-      }));
-      // A fully supplied but inconsistent count table is malformed, not a crossing.
-      view.setUint32(prefix.length, 0, true);
-      expect(() => playEmf(wrap(full), makeRecordingCtx().ctx, 100, 100)).not.toThrow();
+      for (const extra of [0, 1]) {
+        const polygons = exceeded === 'polygons' ? 0x10000 + extra : 1;
+        const points = exceeded === 'points' ? 0x200000 + extra : polygons * 2;
+        const prefix = record(type, (w) => w.i32(0).i32(0).i32(20).i32(20).u32(polygons).u32(points));
+        const pointBytes = type >= 90 ? 4 : 8;
+        const full = new Uint8Array(prefix.length + polygons * 4 + points * pointBytes);
+        full.set(prefix);
+        const view = new DataView(full.buffer);
+        view.setUint32(4, full.length, true);
+        for (let i = 0; i < polygons; i++) view.setUint32(prefix.length + i * 4, polygons === 1 ? points : 2, true);
+        const m = makeRecordingCtx();
+        let commands = 0;
+        m.ctx.moveTo = m.ctx.lineTo = m.ctx.closePath = () => { commands++; };
+        const run = (data: Uint8Array) => playEmf(concat(emfHeader(), selection, data, record(EMR.EOF, () => {})), m.ctx, 100, 100);
+        if (extra === 0) {
+          expect(run(full)).toBe(true);
+          expect(commands).toBe(points + (type === 8 || type === 91 ? polygons : 0));
+        } else {
+          const truncated = full.slice(0, full.length - pointBytes);
+          new DataView(truncated.buffer).setUint32(4, truncated.length, true);
+          expect(() => run(truncated)).not.toThrow();
+          expect(() => run(full)).toThrowError(expect.objectContaining({
+            code: 'ooxml-decoded-image-limit', metric: `metafile-record-${exceeded}`,
+            limit: exceeded === 'points' ? 0x200000 : 0x10000,
+            observed: exceeded === 'points' ? points : polygons,
+          }));
+          // A fully supplied but inconsistent count table is malformed, not a crossing.
+          view.setUint32(prefix.length, 0, true);
+          expect(() => run(full)).not.toThrow();
+        }
+      }
     }
+  });
+
+  it.each([7, 8, 90, 91])('does not let empty polygons bypass the polygon ceiling for record %i', (type) => {
+    const polygons = (count: number, supplied = count) => {
+      const bytes = new Uint8Array(32 + supplied * 4);
+      const v = new DataView(bytes.buffer);
+      v.setUint32(0, type, true);
+      v.setUint32(4, bytes.length, true);
+      v.setUint32(24, count, true); // zero total points, zero per-polygon counts
+      return bytes;
+    };
+    const run = (data: Uint8Array) => playEmf(concat(emfHeader(), data), makeRecordingCtx().ctx, 100, 100);
+    expect(run(polygons(0x10000))).toBe(false);
+    expect(() => run(polygons(0x10001))).toThrowError(expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'metafile-record-polygons', limit: 0x10000, observed: 0x10001,
+    }));
+    expect(() => run(polygons(0x10001, 0x10000))).not.toThrow();
   });
 
   it('rejects a poly-polygon whose per-polygon counts exceed its declared total', () => {
@@ -1333,15 +1448,17 @@ describe('playEmf — picture frame mapping + path clip', () => {
 
   it('propagates DIB budget errors through bitmap and pattern-brush playback catches', () => {
     const dib = new Writer().u32(40).i32(40000).i32(1).u16(1).u16(24)
-      .u32(0).u32(0).i32(0).i32(0).u32(0).u32(0).raw(0, 0, 0, 0).build();
+      .u32(0).u32(0).i32(0).i32(0).u32(0).u32(0).build();
+    const completeDib = new Uint8Array(40 + 120000);
+    completeDib.set(dib);
     const brush = record(EMR.CREATEDIBPATTERNBRUSHPT, (w) => {
-      w.u32(1).u32(0).u32(32).u32(40).u32(72).u32(4);
-      for (const byte of dib) w.raw(byte);
+      w.u32(1).u32(0).u32(32).u32(40).u32(72).u32(120000);
+      for (const byte of completeDib) w.raw(byte);
     });
     const bitmap = record(81, (w) => {
       for (let i = 0; i < 10; i++) w.i32(0); // bounds and destination/source fields
-      w.u32(80).u32(40).u32(120).u32(4).u32(0).u32(0x00cc0020).i32(1).i32(1);
-      for (const byte of dib) w.raw(byte);
+      w.u32(80).u32(40).u32(120).u32(120000).u32(0).u32(0x00cc0020).i32(1).i32(1);
+      for (const byte of completeDib) w.raw(byte);
     });
     for (const drawing of [brush, bitmap]) {
       const m = makeRecordingCtx();

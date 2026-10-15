@@ -466,7 +466,9 @@ function fillStrokePolygon(s: PlayState, pts: Array<[number, number]>): void {
  *  across them as a unit (correct glyph holes). */
 function fillStrokePolyPolygon(s: PlayState, c: Cursor): void {
   const numPolys = c.u16();
-  if (numPolys <= 0 || numPolys > 0x10000) return;
+  // MS-WMF 2.2.2.17: NumberOfPolygons is u16, already bounded by its
+  // representation. There is no additional library polygon-count ceiling.
+  if (numPolys === 0) return;
   const counts: number[] = [];
   for (let i = 0; i < numPolys; i++) {
     if (c.remaining < 2) return;

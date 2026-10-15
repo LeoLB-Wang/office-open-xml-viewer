@@ -69,6 +69,19 @@ export function decodeDib(
   // EMF records may carry unrelated data after the explicit pixel span too.
   // Only bitsLen proves bitmap bytes; the enclosing view is not pixel data.
   if (rowStride * height > bitsLen + rowStride) return null;
+  // A tolerated partial row is not proof of a resource crossing. Preserve
+  // partial decoding within budget, but oversized inputs need all pixel bytes
+  // before a terminal resource error can replace malformed-content fallback.
+  const oversized = width > MAX_DIB_DIMENSION || height > MAX_DIB_DIMENSION || width * height > MAX_DIB_PIXELS;
+  if (oversized) {
+    if (rowStride * height > bitsLen) return null;
+    // MS-WMF 2.2.2.9: RGBQUAD entries are the indexed palette, or the
+    // optional optimization table at >8bpp. Ordinary decoding tolerates a
+    // short palette (black for missing indices) and ignores optimization
+    // colors; absent declared bytes cannot prove a terminal policy crossing.
+    const entries = dv.getUint32(bmiOff + 32, true) || (biBitCount <= 8 ? 1 << biBitCount : 0);
+    if (entries * 4 > bmiLen - biSize) return null;
+  }
   // Validate dimensions BEFORE the RGBA allocation. Reject non-positive dims,
   // any dimension past the max canvas size, and any total pixel count over the
   // megapixel budget — a crafted header (e.g. 65535×65535) otherwise reaches

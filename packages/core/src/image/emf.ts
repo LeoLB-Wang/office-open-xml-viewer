@@ -877,10 +877,12 @@ const readPoint32: PointReader = (c) => [c.i32(), c.i32()];
 
 // Existing per-record work/allocation ceilings are library policy, not MS-EMF
 // count restrictions. An oversized declaration is only proof when its complete
-// point array is present; otherwise keep the old malformed-record fallback.
+// payload is present; otherwise keep the old malformed-record fallback.
 const MAX_EMF_RECORD_POINTS = 0x100000;
 const MAX_EMF_POLYPOLY_POINTS = 0x200000;
 const MAX_EMF_RECORD_POLYGONS = 0x10000;
+const MAX_EMF_REGION_RECTANGLES = 0x10000;
+const MAX_EMF_TEXT_UNITS = 0x10000;
 
 function admitRecordPoints(c: EmfCursor, count: number, rp: PointReader): boolean {
   if (count <= MAX_EMF_RECORD_POINTS) return true;
@@ -896,12 +898,12 @@ function strokePolyline(s: PlayState, c: EmfCursor, rp: PointReader): void {
   c.skip(16); // RECTL rclBounds — drawing uses world transform, not bounds
   const count = c.u32();
   if (count < 2) return;
+  if (!admitRecordPoints(c, count, rp)) return;
   if (!s.inPath && (!s.curPen || s.curPen.stroke == null)) {
-    // No path and no stroke: this record appends no geometry and reads no
-    // points, so its declaration cannot prove a work-budget crossing.
+    // No geometry to paint. Per-record admission still precedes this no-op:
+    // a fully supplied oversized record must not depend on selected DC state.
     return;
   }
-  if (!admitRecordPoints(c, count, rp)) return;
   const { ctx } = s;
   const sink = geometrySink(s);
   const appendPath = reservePathCommands(s, readablePointCount(c, count, rp));
@@ -1079,7 +1081,7 @@ function fillStrokePolyPoly(
   c.skip(16); // RECTL rclBounds
   const numPolys = c.u32();
   const totalPoints = c.u32();
-  if (numPolys <= 0 || totalPoints <= 0 || numPolys > Math.floor(c.remaining / 4)) return;
+  if (numPolys === 0 || numPolys > Math.floor(c.remaining / 4)) return;
   const countsStart = c.pos;
   let countedPoints = 0;
   for (let i = 0; i < numPolys; i++) {
@@ -1097,6 +1099,10 @@ function fillStrokePolyPoly(
     }
     throw new OoxmlDecodedImageLimitError('metafile-record-points', MAX_EMF_POLYPOLY_POINTS, totalPoints);
   }
+  // Empty sub-polygons paint nothing, but a complete count table still
+  // proves its polygon-count crossing. Do not let zero total points bypass
+  // admission; inconsistent or truncated tables already returned above.
+  if (totalPoints === 0) return;
   const pointsStart = c.pos;
   c.pos = countsStart;
   const counts: number[] = [];
@@ -1549,10 +1555,6 @@ function extSelectClipRgn(s: PlayState, c: EmfCursor): void {
     resetClip(s, name);
     return;
   }
-  if (mode !== RGN_AND && mode !== RGN_COPY && mode !== RGN_DIFF) {
-    s.unsupported.add(`${name} (mode ${mode})`);
-    return;
-  }
   // RegionDataHeader: dwSize (32), iType (1), nCount,
   // nRgnSize, rclBounds; then nCount RECTL.
   if (size < 32 || c.remaining < size) throw new RangeError('Truncated EMF region');
@@ -1561,7 +1563,17 @@ function extSelectClipRgn(s: PlayState, c: EmfCursor): void {
   const count = c.u32();
   c.u32();
   c.skip(16);
-  if (count > Math.floor((size - 32) / 16) || count > 0x10000) throw new RangeError('Invalid EMF region');
+  if (count > Math.floor((size - 32) / 16)) throw new RangeError('Invalid EMF region');
+  // MS-EMF 2.2.24 / 2.3.2.2: Count rectangles must fit RgnDataSize.
+  // The ceiling is library policy, applied only after those bytes are proven
+  // present, before allocation or any clip/mode fallback can hide a crossing.
+  if (count > MAX_EMF_REGION_RECTANGLES) {
+    throw new OoxmlDecodedImageLimitError('metafile-record-rectangles', MAX_EMF_REGION_RECTANGLES, count);
+  }
+  if (mode !== RGN_AND && mode !== RGN_COPY && mode !== RGN_DIFF) {
+    s.unsupported.add(`${name} (mode ${mode})`);
+    return;
+  }
   if (mode === RGN_COPY && !resetClip(s, name)) return;
   const dev = (x: number, y: number): [number, number] => [
     ((x - s.left) * s.W) / s.boundsW,
@@ -1734,11 +1746,17 @@ function drawText(s: PlayState, c: EmfCursor, dv: DataView, recStart: number): v
   // moving offDx and the minimum string offset earlier in the record.
   const headerSize = options & 0x100 ? 60 : 76;
   if (recStart + headerSize > recEnd) throw new RangeError('Truncated EMF text header');
-  if (nChars <= 0 || nChars > 0x10000) return;
+  if (nChars === 0) return;
   // MS-EMF 2.2.5 offsets address data inside the containing record. Do not
   // normalize a truncated string using unrelated bytes from following records.
   if (offString < headerSize || recStart + offString + nChars * 2 > recEnd) {
     throw new RangeError('Truncated EMF text string');
+  }
+  // MS-EMF 2.2.5 / 2.3.5.8 defines UTF-16LE units, not a 64K format
+  // maximum. Only a complete string proves this library work-limit crossing;
+  // malformed offsets and truncated strings retain content fallback above.
+  if (nChars > MAX_EMF_TEXT_UNITS) {
+    throw new OoxmlDecodedImageLimitError('metafile-record-text-units', MAX_EMF_TEXT_UNITS, nChars);
   }
   // Read nChars UTF-16LE code units at recStart + offString.
   let str = '';
