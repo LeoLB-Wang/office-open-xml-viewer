@@ -32,6 +32,11 @@ export default defineConfig({
       // Pull the workspace packages from source so Vite processes their
       // `?worker&inline` / `?url` imports (same flow as Storybook).
       alias: {
+        // The built optional companion uses the installed viewer ABI; site demos
+        // compile that viewer from source. Keep both on this one runtime contract.
+        '@silurus/ooxml/internal/companion': fileURLToPath(
+          new URL('../src/internal-companion.ts', import.meta.url),
+        ),
         // Public package entry used by executable documentation examples.
         // Resolve it to the same source entry as the site's internal package
         // import so the displayed code is also the code that runs.

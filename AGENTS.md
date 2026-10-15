@@ -467,6 +467,14 @@ Release checklist:
    - `packages/{core,pptx,xlsx,docx,markdown,node,vscode-extension}/package.json`,
    - `site/package.json`,
    - `packages/mcp-server/Cargo.toml`.
+
+   After bumping the root version, run `pnpm sync:versions` to synchronize
+   `packages/legacy-office/package.json` (the public
+   `@silurus/ooxml-legacy-office` package), its exact `@silurus/ooxml` peer pin,
+   and the compiled companion runtime version. Run `pnpm install --lockfile-only`
+   and `pnpm check:versions`; CI and publishing reject any mismatch. Both npm
+   packages publish from the same tag, viewer first; retries skip exact versions
+   already present on npm.
 6. Run `cargo check -p ooxml-mcp-server` after bumping the MCP server so
    `Cargo.lock` follows.
 7. Open PR `chore(release): 0.x.0`.
