@@ -96,4 +96,22 @@ describe('layoutParagraph East Asian / complex-script faces', () => {
     expect(segments.find(([text]) => text.includes('עב'))?.[1]).toMatch(/^\d+px "Arial"/u);
     expect(segments.find(([text]) => text.includes('ไท'))?.[1]).toMatch(/^\d+px "Angsana New"/u);
   });
+
+  it('draws symbols and CJK-language curly quotes in a resolved East Asian face (#1653)', () => {
+    const face = (text: string, lang: string, extra: Partial<TextRunData> = { fontFamilyEa: 'Yu Gothic' }) =>
+      fonts([run(`A${text}`, { lang, ...extra })]).find(([t]) => t.includes(text))?.[1];
+    for (const symbol of ['§', '°', '±', '×', '÷', '①', '⓿', '■', '◯', '★', '☀']) {
+      expect(face(symbol, 'en-US')).toMatch(/^\d+px "Yu Gothic"/u);
+    }
+    expect(face('“', 'ja-JP')).toMatch(/^\d+px "Yu Gothic"/u);
+    expect(face('„', 'zh-CN')).toMatch(/^\d+px "Yu Gothic"/u);
+    // Latin under en-US, U+201F in every language, and Latin-slot symbols.
+    expect(face('“', 'en-US')).toMatch(/^\d+px "Corbel"/u);
+    expect(face('‟', 'ja-JP')).toMatch(/^\d+px "Corbel"/u);
+    for (const symbol of ['¶', '…', '→', '─', '€', 'α']) {
+      expect(face(symbol, 'ja-JP')).toMatch(/^\d+px "Corbel"/u);
+    }
+    // An empty East Asian slot leaves them in the Latin face.
+    expect(face('°', 'ja-JP', {})).toMatch(/^\d+px "Corbel"/u);
+  });
 });

@@ -136,3 +136,26 @@ export function eastAsianDefaultFaces(latinFace: string | null, text: string): r
   const first = tiers.slice(0, 2).find((face) => covers(face, text));
   return first ? [first, ...tiers.filter((face) => face !== first)] : [tiers[2], tiers[0], tiers[1]];
 }
+
+// Non-CJK characters PowerPoint draws in a resolved East Asian face (issue
+// #1653; #1627 sweep and #1653 boundary controls, explicit faces, reference
+// PDF engine): § ° ± × ÷, Enclosed Alphanumerics, Geometric Shapes and
+// Miscellaneous Symbols in every language, and the curly quotes U+2018-201E
+// (U+201F stays Latin) in Japanese, Korean and Chinese runs. Further measured
+// slot moves (European digits to cs in Hebrew/Arabic runs, the yen glyph for
+// a Japanese backslash) only change which proportional glyph is drawn, so
+// they are deliberately not modelled.
+const EA_SLOT_SYMBOLS = new Set([0xa7, 0xb0, 0xb1, 0xd7, 0xf7]);
+const CJK_LANG_RE = /^(?:ja|ko|zh)(?:[-_]|$)/i;
+
+/**
+ * True when `cp` (outside the CJK break ranges) takes the East Asian slot in a
+ * run of language `lang` whose East Asian face is resolved. Runs with an empty
+ * East Asian slot keep these characters in the Latin face.
+ */
+export function isEastAsianSlotSymbol(cp: number, lang: string | null | undefined): boolean {
+  return EA_SLOT_SYMBOLS.has(cp)
+    || (cp >= 0x2460 && cp <= 0x24ff)
+    || (cp >= 0x25a0 && cp <= 0x26ff)
+    || (cp >= 0x2018 && cp <= 0x201e && CJK_LANG_RE.test(lang ?? ''));
+}
