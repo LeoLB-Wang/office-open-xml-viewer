@@ -11,7 +11,7 @@
  * MS-OI29500 §2.1.1270 says non-perspective cameras ignore FOV. This module's
  * modern preset table and projection are bounded Office observations, not
  * normative definitions. Legacy presets retain their previous parallel fallback.
- * See MODERN_DISTANCE_PER_WIDTH for the evidence and scene-scale limitation.
+ * See MODERN_SCENE_INCHES for the evidence and scene-scale limitation.
  *
  * Phase A scope: we model the shape as a flat z=0 rectangle (the picture / 2D
  * drawing) and compute the 2D homography that maps the un-projected rectangle
@@ -25,6 +25,13 @@
  * degrees (the parser already converted from 60000ths).
  */
 export interface CameraInput {
+  /**
+   * Projection coordinate units per document inch; renderer context, not an
+   * OOXML camera attribute. Defaults to 96 for CSS pixels. Use 72 for points,
+   * or multiply by the raster scale for device-space extrusion. Shape/group
+   * resizing changes geometry, not this document-to-render conversion.
+   */
+  unitsPerInch?: number;
   /** Preset camera name (`ST_PresetCameraType`). */
   prst: string;
   /** Field-of-view override in degrees. Omitted = preset default. */
@@ -96,8 +103,8 @@ interface PresetDef {
   baseRev: number;
   /** Default field of view for perspective presets, degrees. */
   fovDeg: number;
-  /** Perspective distance numerator per unit of shape width; absent = old fallback. */
-  distancePerWidth?: number;
+  /** Physical scene framing for modern perspective; absent = old fallback. */
+  sceneInches?: number;
   /** Parallel depth shear in screen coordinates, after rotation. */
   shearX: number;
   shearY: number;
@@ -113,18 +120,26 @@ interface PresetDef {
 // The table's orientation hypothesis was independently checked against those
 // Office controls; the numeric angles are observations, not ECMA defaults.
 //
-// The measured perspective law is d=452.16pt/tan(FOV/2) at width 95.76pt.
-// Microsoft Open Specifications support, question 769795 (2022-03-23), gives
-// d=6.28/tan(FOV/2) in SCENE units, leaving document-unit mapping unspecified.
-// Since all controls use one width, fixed physical distance and width-relative
-// distance are indistinguishable. Library scale policy: use the width-relative
-// law below so CSS/device-space projection and extrusion remain covariant.
-// This is NOT a measured physical-size law or a claim that a scene unit is an
-// inch. Vary physical width to settle that mapping before claiming size fidelity.
-// The omitted lenses (45 degrees, 80 for both heroic-extreme presets) and 0.3
-// directional oblique shear fit this bounded packet. Arbitrary rotations,
-// physical sizes, groups, extrusion and near-plane behavior are not validated.
-const MODERN_DISTANCE_PER_WIDTH = 452.16 / 95.76;
+// Windows PowerPoint 16.0 controls additionally vary width 47.88..383.04pt,
+// aspect 0.7/2.5, shape-image-fill/picture, 2pt top bevel, 6pt extrusion,
+// xfrm rotation 0/30 and flipH, all 23 modern perspective/oblique presets,
+// wrapped lat/lon/rev, and identity/uniform/nonuniform/nested reflected groups.
+// Together with the lens packet above they support a FIXED physical numerator:
+// d = 6.28 * unitsPerInch / tan(FOV/2), independent of shape size/aspect/depth.
+// Microsoft Open Specifications support question 769795 (2022-03-23) gives
+// the 6.28 scene-unit formula; the inch mapping is an Office observation from
+// these varied-size controls, not an ECMA definition or a universal scene rule.
+// https://learn.microsoft.com/answers/questions/769795/
+// Group ext/chExt scale the leaf dimensions before projection (Annex L.4.3);
+// composed flips act before the camera and composed 2-D rotation after it.
+// Do not scale the physical distance with group/shape width or raster bounds.
+// All 1,005 original and 77,648 added modern controls fit a 2pt maximum corner
+// tolerance. Thin compressed PDF fiducials require higher-resolution edge
+// extraction; this tolerance is for measured front-plane correspondences.
+// Interior fiducials measure the z=0 texture plane, not bevel/wall silhouettes.
+// Omitted lenses are 45 degrees (80 for both heroic-extreme presets). Near-plane
+// nudging, larger depths and other group/angle combinations remain unvalidated.
+const MODERN_SCENE_INCHES = 6.28;
 
 // Legacy ST_PresetCameraType names intentionally keep the previous parallel
 // fallback, including their authored rotations/FOV handling; no legacy framing
@@ -148,7 +163,7 @@ function parallel(lat = 0, lon = 0, rev = 0, shearX = 0, shearY = 0): PresetDef 
 function perspective(lat: number, lon: number, rev: number, fovDeg = 45): PresetDef {
   return {
     kind: 'perspective', baseLat: lat, baseLon: lon, baseRev: rev, fovDeg,
-    distancePerWidth: MODERN_DISTANCE_PER_WIDTH, shearX: 0, shearY: 0,
+    sceneInches: MODERN_SCENE_INCHES, shearX: 0, shearY: 0,
   };
 }
 
@@ -205,7 +220,7 @@ const PRESETS: Record<string, PresetDef> = {
 };
 
 const UNKNOWN_PERSPECTIVE: PresetDef = {
-  ...perspective(0, 0, 0, LEGACY_PERSP_FOV), distancePerWidth: undefined,
+  ...perspective(0, 0, 0, LEGACY_PERSP_FOV), sceneInches: undefined,
 };
 
 /** 3×3 matrix in row-major order. */
@@ -283,7 +298,8 @@ function cameraDistance(camera: CameraInput, def: PresetDef, w: number, h: numbe
   const fovDeg = camera.fov ?? def.fovDeg;
   // Retain the finite-lens guard; endpoint/near-plane fidelity is unvalidated.
   const fov = (Math.max(1, Math.min(179, fovDeg)) * Math.PI) / 180;
-  const numerator = def.distancePerWidth === undefined ? Math.max(w, h) / 2 : w * def.distancePerWidth;
+  const numerator = def.sceneInches === undefined
+    ? Math.max(w, h) / 2 : def.sceneInches * (camera.unitsPerInch ?? 96);
   return numerator / Math.tan(fov / 2);
 }
 
@@ -388,18 +404,26 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number, su
 /**
  * True when a scene3d camera will visibly change the shape, i.e. the renderer
  * should take the projection path. A camera whose preset is unknown/front-facing
- * with no rot (or an all-zero rot) can be skipped only if its depth geometry
- * is also unchanged. `depth` uses the same coordinate units as w and h.
+ * with no rot (or an all-zero rot) can be skipped when its depth geometry adds
+ * no visible footprint. `depth` uses the same coordinate units as w and h.
  */
 export function isScene3dNonIdentity(camera: CameraInput, w?: number, h?: number, depth = 0): boolean {
   // Perspective framing depends on aspect, so a square probe can miss a visible
   // projection on a tall shape. Renderers supply their actual dimensions.
   if (w !== undefined && h !== undefined) {
+    if (w <= 0 || h <= 0) return false;
     // The front plane alone is insufficient: default oblique cameras preserve
     // it but shear the extrusion base (§20.1.5.12). Test both ends of the solid
-    // with the same geometry tolerance; this also retains perspective depth.
-    return !computeScene3dQuad(camera, w, h).isIdentity ||
-      (depth > 0 && !computeScene3dQuad(camera, w, h, depth).isIdentity);
+    // with the same geometry tolerance. A modern face-on perspective camera
+    // contracts the rear plane inside the front: that hidden surface does not
+    // expose a wall and must not introduce another front-face resampling.
+    // The planar compositor does not draw independent translucent rear faces.
+    if (!computeScene3dQuad(camera, w, h).isIdentity) return true;
+    if (depth <= 0) return false;
+    const back = computeScene3dQuad(camera, w, h, depth);
+    if (presetDef(camera.prst).sceneInches === undefined) return !back.isIdentity;
+    const eps = 1e-3 * Math.max(w, h);
+    return back.corners.some(p => p.x < -eps || p.y < -eps || p.x > w + eps || p.y > h + eps);
   }
   // Geometry-free callers use a conservative mathematical identity test instead
   // of borrowing a shape's numerical pixel tolerance.
@@ -450,8 +474,9 @@ export function computeDepthOffset(camera: CameraInput, w: number, h: number, de
 
   // Project the centre at object-z 0 and at object-z −depthPx, take the screen
   // delta. Use the same lens, distance and parallel shear as the front face.
-  // Width-relative distance also keeps device-space extrusion consistent with
-  // the CSS-space quad. This remains a centre approximation to the wall sweep.
+  // unitsPerInch must use the same render scale as w/h/depth, keeping the
+  // device-space extrusion consistent with the CSS-space face. This remains
+  // a centre approximation to the wall sweep.
   const project = (oz: number): [number, number] => {
     const [rx, ry, rz] = applyMat3(R, 0, 0, oz);
     if (def.kind === 'perspective') {

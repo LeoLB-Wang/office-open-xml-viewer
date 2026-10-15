@@ -83,13 +83,13 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
   }, 60_000);
   afterAll(async () => { await browser?.close(); });
 
-  async function render(shape: ShapeElement | PictureElement, height = 400, sourceAlpha = 1) {
-    const png = await page.evaluate(async ({ shape, height, sourceAlpha }) => {
+  async function render(shape: ShapeElement | PictureElement, height = 400, sourceAlpha = 1, width = 400, dpr = 1) {
+    const png = await page.evaluate(async ({ shape, height, sourceAlpha, width, dpr }) => {
       const canvas = document.querySelector('canvas') as HTMLCanvasElement;
       const renderer = (globalThis as unknown as { pptxRenderer: typeof import('./renderer') }).pptxRenderer;
       await renderer.renderSlide(canvas,
         { index: 0, slideNumber: 1, background: null, elements: [shape] },
-        400 * 9525, height * 9525, { width: 400, dpr: 1, fetchImage: async () => {
+        400 * 9525, height * 9525, { width, dpr, fetchImage: async () => {
           const source = document.createElement('canvas');
           source.width = source.height = 96;
           const ctx = source.getContext('2d') as CanvasRenderingContext2D;
@@ -98,7 +98,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
           return new Promise<Blob>(resolve => source.toBlob(blob => resolve(blob as Blob)));
         } });
       return canvas.toDataURL('image/png').split(',')[1];
-    }, { shape, height, sourceAlpha });
+    }, { shape, height, sourceAlpha, width, dpr });
     return PNG.sync.read(Buffer.from(png, 'base64')).data;
   }
   const pixel = (data: Uint8Array, x: number, y: number) => [...data.subarray((y * 400 + x) * 4, (y * 400 + x) * 4 + 3)];
@@ -284,6 +284,44 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
         scene3d: shape.scene3d, sp3d: shape.sp3d, shadow: shape.shadow ?? undefined, softEdge: shape.softEdge,
       };
     }
+
+    it(`preserves physical camera framing at different render and device scales (${adapter})`, async () => {
+      const shape = orthographicBeveledShape();
+      Object.assign(shape, { x: 48 * 9525, y: 96 * 9525, width: 288 * 9525,
+        geometry: 'rect', sp3d: undefined,
+        scene3d: { camera: { prst: 'perspectiveFront', fov: 90,
+          rot: { lat: 0, lon: 30, rev: 0 } } } });
+      // Independent pinhole bounds in 96dpi coordinates: fixed 6.28-inch
+      // distance, 3-inch face, 30-degree longitude, no renderer helper oracle.
+      const d = 6.28 * 96;
+      const halfProjectedWidth = 144 * Math.cos(Math.PI / 6);
+      const expected = [192 - halfProjectedWidth / (1 + 72 / d),
+        192 + halfProjectedWidth / (1 - 72 / d)];
+      for (const [width, dpr] of [[300, 1], [600, 2]]) {
+        const data = await render(element(shape), 400, 1, width, dpr);
+        const side = width * dpr;
+        const bounds = [side, 0];
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] > 200 || data[i + 2] < 150) continue;
+          const x = i / 4 % side;
+          bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.max(bounds[1], x);
+        }
+        // Pixel-centre ownership and the existing warp mesh can move the
+        // thresholded edge by one device pixel.
+        bounds.forEach((v, i) => expect(Math.abs(v + .5 - expected[i] * side / 400), `edge ${i}, width ${width}, dpr ${dpr}`)
+          .toBeLessThanOrEqual(1));
+      }
+    });
+
+    it(`keeps a face-on inset extrusion on the unchanged front paint path (${adapter})`, async () => {
+      const shape = orthographicBeveledShape();
+      shape.width = 288 * 9525; shape.height = 300 * 9525; shape.x = 48 * 9525;
+      shape.scene3d!.camera = { prst: 'perspectiveFront', fov: 90 };
+      const plain = await render(element(shape));
+      const deep = await render(element({ ...shape,
+        sp3d: { ...shape.sp3d, prstMaterial: 'translucentPowder', extrusionH: 2 * 12700 } }));
+      expect(deep).toEqual(plain);
+    });
 
     it(`uses geometry and shadow color independently of body opacity (${adapter})`, async () => {
       const shape = projectedBeveledShape();

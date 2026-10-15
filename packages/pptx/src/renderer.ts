@@ -44,6 +44,7 @@ import {
   withInheritedPatternScope,
   applyStroke as applyStrokeCore,
   buildShapePath,
+  EMU_PER_INCH,
   EMU_PER_PT as PT_TO_EMU,
   mathToMathML,
   rasterizeMathSvg,
@@ -3647,9 +3648,12 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   // follow the per-pixel perspective warp applied here. So a projected shape's
   // text is drawn into the bitmap but EXCLUDED from the selection overlay
   // (onTextRun is suppressed below). See README "Bevel / 3D" note.
-  const spScene3d = el.scene3d && isScene3dNonIdentity(
-    el.scene3d.camera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
-  ) ? el.scene3d : null;
+  // Camera framing uses document inches, even when the slide renders at an
+  // arbitrary target width. Group sizing is already folded into w/h by Annex L.
+  const spCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale };
+  const spScene3d = spCamera && isScene3dNonIdentity(
+    spCamera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
+  ) ? { ...el.scene3d, camera: spCamera } : null;
   if (spScene3d && w > 0 && h > 0) {
     const tf = ctx.getTransform();
     const det = Math.abs(tf.a * tf.d - tf.b * tf.c);
@@ -6098,7 +6102,10 @@ function buildExtrusion(
   const depthDev = sp3d.extrusionH * scale * devScale;
   // Depth offset is computed in the device-px box (w·devScale × h·devScale) so
   // it matches the device-resolution offscreen the side wall is baked into.
-  const off = computeDepthOffset(camera, w * devScale, h * devScale, depthDev);
+  const off = computeDepthOffset(
+    { ...camera, unitsPerInch: (camera.unitsPerInch ?? 96) * devScale },
+    w * devScale, h * devScale, depthDev,
+  );
   if (Math.hypot(off.x, off.y) < 0.75) return null;
   let rgb: [number, number, number] = [64, 64, 64];
   if (sp3d.extrusionClr) {
@@ -6819,9 +6826,10 @@ function paintResolvedPicture(
     // to the normal flat draw (but sp3d bevel/extrusion still apply via the flat
     // path below). sp3d bevel/extrusion shading is wired in just after this; the
     // contour edge is the flat approximation in strokeContourEdge.
-    const scene3d = el.scene3d && isScene3dNonIdentity(
-      el.scene3d.camera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
-    ) ? el.scene3d : null;
+    const pictureCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale };
+    const scene3d = pictureCamera && isScene3dNonIdentity(
+      pictureCamera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
+    ) ? { ...el.scene3d, camera: pictureCamera } : null;
 
     // Paint JUST the (clipped, optionally cropped) bitmap body at a local rect —
     // no border/contour. Separated from the edges so the bevel shading reads the

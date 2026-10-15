@@ -246,7 +246,7 @@ describe('modern camera families', () => {
     ['perspectiveAboveLeftFacing', [[13.900154, -14.375288], [98.436788, 30.355168], [80.793806, 76.730822], [-0.423556, 32.856135]]],
     ['perspectiveRelaxed', [[0.766264, 11.92], [94.515514, 11.92], [96.659306, 52.42], [-1.397547, 52.42]]],
   ] as const)('%s supplies the omitted orientation', (prst, observed) => {
-    const { corners } = computeScene3dQuad({ prst }, 95.76, 63.84);
+    const { corners } = computeScene3dQuad({ prst, unitsPerInch: 72 }, 95.76, 63.84);
     for (const [x, y] of observed) {
       expect(Math.min(...corners.map((p) => Math.hypot(p.x - x, p.y - y)))).toBeLessThan(0.75);
     }
@@ -280,25 +280,41 @@ describe('modern camera families', () => {
     expect(isScene3dNonIdentity({ prst: 'orthographicFront' }, 200, 100, 60)).toBe(false);
   });
 
-  it('modern perspective distance follows width rather than the larger half-extent', () => {
-    const camera = { prst: 'perspectiveFront', fov: 90, rot: { lat: 0, lon: 30, rev: 0 } };
+  it('does not route a hidden inset back plane through another front-face rasterization', () => {
+    const camera = { prst: 'perspectiveFront', unitsPerInch: 72, fov: 90 };
+    expect(computeScene3dQuad(camera, 288, 360, 2).isIdentity).toBe(false);
+    // A convex extrusion receding straight behind the unchanged opaque front
+    // cannot expose a wall or back face, even when its inset is measurable.
+    expect(isScene3dNonIdentity(camera, 288, 360, 2)).toBe(false);
+  });
+
+  it('modern perspective distance is physical and independent of shape size/aspect', () => {
+    const camera = { prst: 'perspectiveFront', unitsPerInch: 72, fov: 90, rot: { lat: 0, lon: 30, rev: 0 } };
     const wide = computeScene3dQuad(camera, 95.76, 63.84);
     const tall = computeScene3dQuad(camera, 95.76, 191.52);
     // Independent ray-plane result: x=47.88+41.4652963332/(1-23.94/452.16).
     expect(wide.corners[1].x).toBeCloseTo(91.6634486713, 7);
     expect(tall.corners[1].x).toBeCloseTo(wide.corners[1].x, 8);
+    // Doubling physical width changes depth relative to the fixed camera.
+    // Right edge: x=95.76+82.9305926664/(1-47.88/452.16).
+    expect(computeScene3dQuad(camera, 191.52, 127.68).corners[1].x)
+      .toBeCloseTo(188.5122924212, 7);
+    // A different width must not change the centre's depth projection.
+    expect(computeDepthOffset(camera, 191.52, 127.68, 20))
+      .toEqual(computeDepthOffset(camera, 95.76, 63.84, 20));
   });
 
   it('keeps CSS and device projections consistent under uniform scaling', () => {
     const camera = { prst: 'perspectiveHeroicExtremeLeftFacing', zoom: 1.5, rot: { lat: 25, lon: 35, rev: 17 } };
     const a = computeScene3dQuad(camera, W, H);
-    const b = computeScene3dQuad(camera, W * 4, H * 4);
+    const deviceCamera = { ...camera, unitsPerInch: 96 * 4 };
+    const b = computeScene3dQuad(deviceCamera, W * 4, H * 4);
     a.corners.forEach((p, i) => {
       expect(b.corners[i].x).toBeCloseTo(p.x * 4, 8);
       expect(b.corners[i].y).toBeCloseTo(p.y * 4, 8);
     });
     const da = computeDepthOffset(camera, W, H, 20);
-    const db = computeDepthOffset(camera, W * 4, H * 4, 80);
+    const db = computeDepthOffset(deviceCamera, W * 4, H * 4, 80);
     expect(db.x).toBeCloseTo(da.x * 4, 8);
     expect(db.y).toBeCloseTo(da.y * 4, 8);
   });
