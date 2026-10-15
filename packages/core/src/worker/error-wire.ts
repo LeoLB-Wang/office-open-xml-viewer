@@ -254,6 +254,23 @@ export function parseResourceLimitError(error: unknown): OoxmlResourceLimitError
   return new OoxmlResourceLimitError(resourceLimitMessage(data.details), data.details);
 }
 
+/**
+ * WASM returns resource violations as strings. Normalize at the invocation
+ * boundary, before an optional font/image/codec catch can classify the failure
+ * as recoverable. This is library resource policy, not an OOXML recovery rule;
+ * preserve typed errors and unrelated failures (including traps) by identity.
+ * WASM archive methods are synchronous; async orchestration awaits their caller.
+ */
+export function withWasmResourceErrors<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof OoxmlResourceLimitError
+      || (typeof error !== 'string' && !(error instanceof Error))) throw error;
+    throw parseResourceLimitError(error) ?? error;
+  }
+}
+
 /** Parse only an exact Rust not-OOXML envelope into `OoxmlError('not-ooxml')`. */
 function parseNotOoxmlError(error: unknown): OoxmlError | undefined {
   const text = error instanceof Error ? error.message : String(error);
@@ -432,6 +449,11 @@ const DECODED_IMAGE_LIMIT_METRICS = {
   'active-decoded-bytes': true,
   'image-effect-count': true,
   'image-effect-work': true,
+  'metafile-path-commands': true,
+  'metafile-record-points': true,
+  'metafile-record-polygons': true,
+  'metafile-record-rectangles': true,
+  'metafile-record-text-units': true,
 } satisfies Record<OoxmlDecodedImageLimitMetric, true>;
 
 function isDecodedImageLimitMetric(value: unknown): value is OoxmlDecodedImageLimitMetric {

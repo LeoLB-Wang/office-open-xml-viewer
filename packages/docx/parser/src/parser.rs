@@ -14,7 +14,7 @@ use ooxml_common::rels::{
 };
 use ooxml_common::resource::ResourceUsage;
 // Production parses go through `ooxml_common::depth::parse_guarded` (depth-guarded
-// before roxmltree's recursive tree builder). The `XmlDoc` alias survives only for
+// before retaining a DOM). The `XmlDoc` alias survives only for
 // the in-module unit tests, which parse trusted, hand-written fixtures directly.
 use crate::chartex_choice::{self, Verdict, CHARTEX_NS, CHARTEX_REL};
 #[cfg(test)]
@@ -41,6 +41,9 @@ use crate::types::*;
 use crate::xml_util::*;
 use docx_model::paragraph_breaks::{split_para_on_page_breaks, ParaPiece};
 
+#[cfg(test)]
+#[path = "parser/fail_closed_tests.rs"]
+mod fail_closed_tests;
 #[cfg(test)]
 #[path = "parser/relationship_target_tests.rs"]
 mod relationship_target_tests;
@@ -98,6 +101,7 @@ impl Zip {
         run: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
         self.begin_operation(name)?;
+        let _resource_scope = self.operation()?.resource_scope()?;
         let result = run(self);
         self.operation.settle(&self.session, result)
     }
@@ -1296,10 +1300,9 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
         Ok(xml) => xml,
         Err(e) => return Ok(degraded_document(theme, format!("word/document.xml: {e}"))),
     };
-    // `parse_guarded` runs the allocation-free depth pre-check BEFORE roxmltree's
-    // tree builder (which recurses per element-nesting level and would overflow
-    // the fixed WASM stack, trapping the whole parse, on a pathologically deep
-    // `word/document.xml`). Every attacker-controllable part is parsed this way.
+    // Bound lexical nesting before the recursive DOM parser. A crossing latches
+    // a resource failure even for malformed XML; only in-budget content errors
+    // follow the established degradation path.
     let xml_doc = match parse_guarded(&doc_xml) {
         Ok(doc) => doc,
         Err(e) => return Ok(degraded_document(theme, format!("word/document.xml: {e}"))),
@@ -5550,6 +5553,8 @@ fn load_header_footer_set(
 
         let xml_doc = match parse_guarded(&xml) {
             Ok(d) => d,
+            // Corrupt optional stories may degrade; depth failures have already
+            // poisoned the operation and cannot publish missing headers/footers.
             Err(_) => continue,
         };
         let Some(root) = xml_doc
@@ -11362,9 +11367,8 @@ fn parse_text_box_content_at_depth(
             content_depth,
         )
     } else {
-        // Keep the authored container observable when the shared recursion
-        // budget is exhausted. Downstream layout can surface one deterministic
-        // diagnostic instead of mistaking a skipped subtree for an empty box.
+        // descend() has latched a typed resource failure. This provisional
+        // container is never published by the package/cursor boundary.
         (
             vec![TextBoxBlockWire::Unsupported {
                 kind: "unsupportedTextBoxBlock".to_string(),
@@ -15148,10 +15152,9 @@ fn parse_table_cell(
             // formatting; the outer cell's `cond` does not propagate into it.
             //
             // Descend the depth guard here — this `<w:tbl>` inside a `<w:tc>` is
-            // the one real recursion level. Once the shared limit is reached the
-            // nested table is dropped (not recursed into) so a pathologically deep
-            // table nest cannot overflow the stack; the cell's other content is
-            // unaffected.
+            // the one real recursion level. A crossing latches a typed hard
+            // resource failure before stopping recursion; this provisional
+            // table cannot be published by the package operation.
             "tbl" => {
                 if let Some(child_depth) = depth.descend() {
                     content.push(CellElement::Table(Box::new(parse_table_with_diagnostics(
@@ -15967,10 +15970,8 @@ mod tests {
         depth
     }
 
-    /// Parse on a generous stack: `roxmltree::Document::parse` itself recurses on
-    /// nesting depth, so give it room. This test targets OUR table-recursion
-    /// guard; the raw-XML depth pre-check in `ooxml_common::depth` guards the
-    /// roxmltree layer separately (with its own tests).
+    /// Exercise the recursive table walker with generous native stack headroom.
+    /// Trusted fixtures bypass the separate production XML depth policy.
     fn parse_tbl_deep(levels: usize) -> DocTable {
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)

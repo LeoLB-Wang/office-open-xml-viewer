@@ -1,3 +1,4 @@
+import { withWasmResourceErrors } from '@silurus/ooxml-core/worker';
 export { installNativeReadingWorkerRuntime } from './native-reading-worker-runtime.js';
 import { isWasmTrap, type WasmParserHost } from '@silurus/ooxml-core';
 import {
@@ -170,7 +171,7 @@ export class WorkerDocumentSourceOwner<TArchive extends OoxmlWorkerDocumentArchi
       return this.ooxmlHost.run(() => operation(archive));
     }
     try {
-      return operation(source.transferArchive);
+      return withWasmResourceErrors(() => operation(source.transferArchive));
     } catch (error) {
       if (isWasmTrap(error) && this.modelSource === source) {
         try { this.closeModelSource(); } catch {}

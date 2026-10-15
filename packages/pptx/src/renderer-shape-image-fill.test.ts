@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { OoxmlDecodedImageLimitError, OoxmlResourceLimitError } from '@silurus/ooxml-core';
 import type { Slide } from './types.js';
 
 const mocks = vi.hoisted(() => ({
@@ -13,7 +14,7 @@ vi.mock('@silurus/ooxml-core', async (importOriginal) => {
     tintMathRaster: () => mocks.image };
 });
 
-import { paintPreparedShapeImageFill, renderSlide } from './renderer.js';
+import { paintPreparedShapeImageFill, prepareSlideMath, renderSlide } from './renderer.js';
 
 function recordingCanvas() {
   const calls: Array<[string, ...unknown[]]> = [];
@@ -326,6 +327,31 @@ it('selects the complete authored equation fallback branch before planning image
   expect(text.mock.calls.map(([run]) => run.text).join('')).toBe('Picture fill text');
   expect(slide.elements).toHaveLength(3); // rendering never rewrites caller-owned input
 });
+
+it.each([
+  new OoxmlDecodedImageLimitError('active-decoded-bytes', 1, 2),
+  new OoxmlResourceLimitError('equation resource limit', {
+    stage: 'parsing', violation: {
+      format: 'pptx', operation: 'parse-slide', resource: 'xml-tree', metric: 'depth',
+      limit: 1, observed: 2, configurable: false,
+      usage: { archiveEntryCount: 1, declaredInflatedBytes: 2,
+        distinctInflatedBytes: 2, operationInflatedBytes: 2 },
+    },
+  }),
+].flatMap(error => (['load', 'conversion'] as const).map(phase => ({ error, phase }))))(
+  'propagates equation resource failures during $phase instead of selecting a preview ($error.name)', async ({ error, phase }) => {
+    const live = shape('', 0, true);
+    const slide = { elements: [{ ...live, textBody: { ...live.textBody!, paragraphs: [{
+      ...live.textBody!.paragraphs[0], runs: [
+        { type: 'math', nodes: [{ kind: 'run', text: 'x', style: 'roman' }], display: false },
+      ],
+    }] } }] } as unknown as Slide;
+    await expect(prepareSlideMath(slide, {
+      loadMathJax: async () => { if (phase === 'load') throw error; },
+      mathMLToSvg: async () => { throw error; },
+    })).rejects.toBe(error);
+  },
+);
 
 function equationTable(body: unknown, mathFallback?: unknown) {
   return { type: 'table', x: 0, y: 0, width: 914_400, height: 914_400,

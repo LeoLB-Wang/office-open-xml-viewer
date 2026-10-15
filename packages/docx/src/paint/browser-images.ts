@@ -20,6 +20,8 @@ import {
   chartImageFillUsageSize,
   collectChartImageFillUsages,
   isOptionalImageCodecUnavailableError,
+  OoxmlResourceLimitError,
+  isOoxmlDecodedImageLimitError,
 } from '@silurus/ooxml-core';
 import type {
   Duotone,
@@ -438,7 +440,10 @@ export async function preloadPaintImages(
       request.imagePath,
       request.mimeType,
       fetchImage,
-    ).catch(() => null);
+    ).catch((error: unknown) => {
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+      return null;
+    });
     if (!inspection?.dimensions
       || !isDecodeTargetResizableRasterFormat(inspection.format, tiff !== undefined)) return null;
     return {
@@ -477,6 +482,8 @@ export async function preloadPaintImages(
         try {
           image = await decodeSvg(blip.svgImagePath, request);
         } catch (vectorError) {
+          // An archive failure cannot become successful raster fallback.
+          if (vectorError instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(vectorError)) throw vectorError;
           const fallback = dataIsSvg
             ? await decodeSvg(request.imagePath, request)
             : await decodeRaster(

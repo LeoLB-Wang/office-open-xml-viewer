@@ -933,6 +933,7 @@ impl PptxZip {
         run: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
         self.begin_operation(name)?;
+        let _resource_scope = self.operation()?.resource_scope()?;
         let result = run(self);
         self.operation.settle(&self.session, result)
     }
@@ -1668,11 +1669,8 @@ fn parse_slide(
     }
 
     note_layout_master_parse();
-    // Guard against a pathologically deep slide XML: roxmltree's tree builder
-    // recurses per element-nesting level, so a slide nested thousands deep
-    // overflows the fixed WASM stack and traps *inside* `Document::parse` before
-    // our own depth-guarded shape walk runs. The nesting-depth pre-check that
-    // rejects it now lives in `parse_preflighted_pptx_xml`.
+    // Lexical depth is bounded before the recursive DOM parser runs. A crossing
+    // poisons the operation even when the part also has a content error.
     let doc = parse_preflighted_pptx_xml_with_limit(
         xml,
         pptx_internal_limits().slide_xml_dom_complexity,
@@ -2581,6 +2579,7 @@ fn escape_xml_attr(value: &str) -> String {
 fn bootstrap_presentation(
     zip: &mut PptxZip,
 ) -> Result<PresentationShared, Box<dyn std::error::Error>> {
+    let _resource_scope = zip.operation()?.resource_scope()?;
     // --- presentation.xml ---
     let pres_xml = read_zip_str(zip, "ppt/presentation.xml")?;
     let pres_doc = parse_preflighted_pptx_xml(&pres_xml)?;
@@ -2790,6 +2789,7 @@ fn produce_slide_unit_with_journal<T>(
     mut journal: Option<&mut SlideCacheJournal>,
     finish_output: impl FnOnce(&Slide, &PackageLimitReporter) -> Result<T, String>,
 ) -> Result<ProducedSlide<T>, Box<dyn std::error::Error>> {
+    let _resource_scope = zip.operation()?.resource_scope()?;
     let descriptor = shared
         .slide_descriptors
         .get(index)
@@ -4018,6 +4018,26 @@ mod tests {
     // injected into the slide spTree / layout spTree.
     // Default master txStyles: titleStyle centred, bodyStyle left, otherStyle right.
     const DEFAULT_TXSTYLES: &str = r#"<p:txStyles><p:titleStyle><a:lvl1pPr algn="ctr"><a:defRPr sz="4400"/></a:lvl1pPr></p:titleStyle><p:bodyStyle><a:lvl1pPr algn="l"><a:defRPr sz="2800"/></a:lvl1pPr></p:bodyStyle><p:otherStyle><a:lvl1pPr algn="r"><a:defRPr sz="1800"/></a:lvl1pPr></p:otherStyle></p:txStyles>"#;
+
+    #[test]
+    fn nested_group_depth_fails_closed_at_the_native_package_boundary() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let shapes = "<p:grpSp>".repeat(65) + "<p:sp/>" + &"</p:grpSp>".repeat(65);
+                let bytes = build_align_pptx(&shapes, "", "");
+                let error = parse_pptx_native(&bytes).unwrap_err();
+                let payload: serde_json::Value = serde_json::from_str(
+                    error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error),
+                )
+                .unwrap();
+                assert_eq!(payload["details"]["violation"]["metric"], "depth");
+                assert_eq!(payload["details"]["violation"]["limit"], 64);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     fn build_align_pptx(slide_sp: &str, layout_extra_sp: &str, master_txstyles: &str) -> Vec<u8> {
         build_align_pptx_with_rels(slide_sp, layout_extra_sp, master_txstyles, "", "", "")
@@ -13013,6 +13033,32 @@ mod tests {
             parses_before,
             "complexity limit+1 is rejected before the primary slide DOM parser"
         );
+    }
+
+    mod lexical_depth_cases {
+        include!("../../../ooxml-common/tests/support/lexical_depth_cases.rs");
+    }
+
+    #[test]
+    fn optional_relationships_distinguish_lexical_depth_from_shallow_content_errors() {
+        let base = build_three_slide_deck(usize::MAX, "");
+        let path = "ppt/slides/_rels/slide1.xml.rels";
+        let baseline = rewrite_deck_xml(base.clone(), path, |_| "<broken".into());
+        let expected = parse_pptx_native(&baseline).unwrap();
+        for (name, xml, crossing) in lexical_depth_cases::lexical_depth_cases() {
+            let bytes = rewrite_deck_xml(base.clone(), path, |_| xml.clone());
+            let result = parse_pptx_native(&bytes);
+            if crossing {
+                let error = result.unwrap_err();
+                let payload: serde_json::Value = serde_json::from_str(
+                    error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error),
+                )
+                .unwrap();
+                assert_eq!(payload["details"]["violation"]["metric"], "depth", "{name}");
+            } else {
+                assert_eq!(result.expect(name), expected, "{name}");
+            }
+        }
     }
 
     #[test]

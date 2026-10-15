@@ -1,4 +1,6 @@
 import {
+  OoxmlResourceLimitError,
+  isOoxmlDecodedImageLimitError,
   deobfuscateOdttf,
   embeddedFontBytesAreWithinLimit,
   normalizeFontMetricFamily,
@@ -9,6 +11,7 @@ import {
   type ResolvedFontMetric,
 } from '@silurus/ooxml-core';
 import {
+  parseResourceLimitError,
   HARD_MAX_RAW_PART_CACHE_BYTES,
   HARD_MAX_RAW_PART_CACHE_ENTRIES,
 } from '@silurus/ooxml-core/worker';
@@ -139,7 +142,8 @@ function sha256(bytes: Uint8Array): Uint8Array {
  * MUST run before pagination (which measures text). No-ops when the document
  * embeds no fonts. Individual part fetches are concurrent; a rejected fetch
  * skips only that face (the rest still register) so one missing part never
- * aborts the whole document.
+ * aborts the whole document. Typed resource-limit failures remain fatal: they
+ * enforce archive policy rather than diagnose malformed font content.
  *
  * Returns the shared `FontFace` objects registered for this document (deduped +
  * refcounted in core). The caller ({@link DocxDocument}) holds them and passes
@@ -184,7 +188,13 @@ export async function loadEmbeddedFonts(
     const batch = uniqueRefs.slice(start, Math.min(start + MAX_CONCURRENT_FONT_OPERATIONS, admittedRefCount));
     const fetched = await Promise.all(batch.map(async (ref) => {
       try { return await fetchFontBytes(ref.partPath); }
-      catch { return null; }
+      catch (error) {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+        // Worker rendering reads WASM directly, before bridge deserialization.
+        const resourceError = parseResourceLimitError(error);
+        if (resourceError) throw resourceError;
+        return null;
+      }
     }));
     for (let index = 0; index < batch.length; index++) {
       const ref = batch[index];
