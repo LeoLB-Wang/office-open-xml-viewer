@@ -225,7 +225,7 @@ describe('XLSX workers with a model source', () => {
     state.openSource
       .mockResolvedValueOnce({ archive: first, viewDefaults: {}, close: firstClose })
       .mockResolvedValueOnce({ archive: second, viewDefaults: {}, close: secondClose });
-    await import('./render-worker-source.js');
+    await import('./render-worker.js');
     const dispatch = scope.onmessage!;
 
     await dispatch({ data: {

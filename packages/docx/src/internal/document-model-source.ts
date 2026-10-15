@@ -197,7 +197,7 @@ export async function loadDocxModelSource(
     // The render worker is reachable only through this dynamic import, so
     // main-mode bundles never pull in its (renderer-bearing) chunk.
     const worker = mode === 'worker'
-      ? (await import('../render-worker-source-host')).createRenderWorker()
+      ? (await import('../render-worker-host')).createRenderWorker()
       : new (await import('../worker-source.ts?worker&inline')).default();
     let doc: SourceDocxFriend | undefined;
     let publicDoc: DocxDocument | undefined;
