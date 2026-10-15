@@ -108,6 +108,7 @@ import {
 import {
   wordActiveColumnBreakIndexes,
   wordFinalParagraphAdmissionExtentPt,
+  wordGridLineAdmissionExtentPt,
   wordParagraphFootnoteMayContinue,
   wordFootnoteLookaheadBoundary,
   wordEmptyKeepNextBridgesSuccessor,
@@ -2085,9 +2086,21 @@ function* paginateBodyPassSteps(
           session.moveAcquisitionCursor(acquisitionLocation(state));
           continue;
         }
+        // A same-page column reaching the physical bottom has the same edge;
+        // a balanced/shortened column, footer or existing note band does not.
+        const region = activeRegion(state);
+        const physicalBodyBottomPt = region.section.geometry.pageHeight
+          - Math.abs(region.section.geometry.marginBottom);
+        const unreservedBodyBottomPt = region.writingMode === 'horizontal-tb'
+          && activeBlockEndPt(state) === physicalBodyBottomPt
+          && (reserves[state.flow.pageIndex]?.bottom ?? 0) === 0
+          && state.footnoteReservePt === 0
+          ? physicalBodyBottomPt : undefined;
         if (cursor.boundary === null && block.keepNext && state.flow.pageHasContent) {
           let keepSetExtentPt = acquired.blockExtentPt;
           const keepSetReferenceIds = new Set(footnoteIdsInRetainedSlice(acquired.layout));
+          let terminalGridParagraph: ParagraphLayout | undefined;
+          let terminalLeadExtentPt = 0;
           let hasTerminalBlock = false;
           let keepSetBlockedByDeferral = false;
           let bridgeSuccessor = wordEmptyKeepNextBridgesSuccessor({
@@ -2127,6 +2140,10 @@ function* paginateBodyPassSteps(
               ? following.fullFootnoteReferenceIds
               : following.leadFootnoteReferenceIds;
             referenceIds?.forEach((id) => keepSetReferenceIds.add(id));
+            if (!continues) {
+              terminalGridParagraph = following.leadGridParagraph;
+              terminalLeadExtentPt = following.leadContentExtentPt;
+            }
             if (!continues || keepSetBlockedByDeferral) {
               hasTerminalBlock = true;
               break;
@@ -2144,7 +2161,12 @@ function* paginateBodyPassSteps(
             [...keepSetReferenceIds],
             location.availableBounds.widthPt,
           ).reservePt;
-          const keepSetAdmissionPt = keepSetExtentPt + keepSetReservePt;
+          const terminalAdmissionPt = terminalGridParagraph
+            ? wordGridLineAdmissionExtentPt(terminalGridParagraph, terminalLeadExtentPt,
+              unreservedBodyBottomPt, keepSetReservePt, keepSetExtentPt - terminalLeadExtentPt)
+            : terminalLeadExtentPt;
+          const keepSetAdmissionPt = keepSetExtentPt
+            - (terminalLeadExtentPt - terminalAdmissionPt) + keepSetReservePt;
           if (
             hasTerminalBlock
             && (keepSetAdmissionPt > location.availableBounds.heightPt || keepSetBlockedByDeferral)
@@ -2291,6 +2313,7 @@ function* paginateBodyPassSteps(
             keepLines: block.keepLines,
             widowControl: block.widowControl,
             authoredSpaceAfterPt: block.spaceAfterPt,
+            ...(unreservedBodyBottomPt === undefined ? {} : { unreservedBodyBottomPt }),
             writingMode: activeRegion(state).writingMode,
             ...(anchorLineBreak === undefined ? {} : { lineEndLimit: anchorLineBreak }),
           },

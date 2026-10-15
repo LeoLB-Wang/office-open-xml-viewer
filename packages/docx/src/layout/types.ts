@@ -597,6 +597,11 @@ export interface LineLayout {
   readonly bounds: LayoutRect;
   readonly baselinePt: number;
   readonly advancePt: number;
+  /** Trailing grid leading eligible for plain-paragraph page-edge admission.
+   * Authored paragraph decorations disable it before continuation slicing;
+   * only whitelisted plain text paint can use it at unreserved body boundaries.
+   * Placement and paint always retain the full advance. */
+  readonly gridAfterLeadingPt?: number;
   readonly placements: readonly ParagraphPlacement[];
   /** §17.18.84 bar-tab vertical rules acquired independently of tab advances. */
   readonly barTabRules?: readonly BorderSegment[];
