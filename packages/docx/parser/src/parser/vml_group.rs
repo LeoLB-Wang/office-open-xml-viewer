@@ -218,6 +218,10 @@ pub(super) fn parse_groups(
             continue;
         }
         let Some(spec) = group_spec(group, true) else {
+            // Part 4 §19.1.2.7 permits auto/relative sizing, but acquisition
+            // currently needs a concrete point-space box. No wrapper survives
+            // this gate, so preserve the omission as a document diagnostic in
+            // every story rather than relying on retained unsupported markers.
             unsupported(document_diagnostics);
             continue;
         };

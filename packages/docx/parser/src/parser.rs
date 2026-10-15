@@ -2334,7 +2334,7 @@ fn parse_notes(
             Some(&mut local_diagnostics),
             false,
         );
-        commit_story_ref_budget_diagnostics(local_diagnostics, diagnostics);
+        commit_story_diagnostics(local_diagnostics, diagnostics);
         out.push(crate::types::DocxNote { id, content });
     }
     (out, selected_stories)
@@ -3993,20 +3993,15 @@ fn parse_body_elements(
     )
 }
 
-// REF acquisition has a story-local retained-text budget. A crossing in a
-// header/footer/note is still a document-level resource diagnostic. Its local
-// block indices cannot name main-body blocks, so publish an empty document
-// path instead of attributing the warning to an unrelated body paragraph.
-fn commit_story_ref_budget_diagnostics(
-    local: Vec<ParseDiagnostic>,
-    document: &mut Vec<ParseDiagnostic>,
-) {
-    document.extend(local.into_iter().filter_map(|mut diagnostic| {
-        if diagnostic.code != PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT {
-            return None;
-        }
+// Preserve every header/footer/note acquisition diagnostic, including failures
+// before a retained node exists (e.g. unacquired VML root groups). The current
+// wire contract uses DOCUMENT_PART for these document-level facts; story-local
+// block indices cannot name main-body blocks. Clear the path rather than
+// falsely attributing an omission or resource limit to a body paragraph.
+fn commit_story_diagnostics(local: Vec<ParseDiagnostic>, document: &mut Vec<ParseDiagnostic>) {
+    document.extend(local.into_iter().map(|mut diagnostic| {
         diagnostic.path.clear();
-        Some(diagnostic)
+        diagnostic
     }));
 }
 
@@ -5630,7 +5625,7 @@ fn load_header_footer_set(
             &HashMap::new(),
             false,
         );
-        commit_story_ref_budget_diagnostics(local_diagnostics, diagnostics);
+        commit_story_diagnostics(local_diagnostics, diagnostics);
         let hf = HeaderFooter { body };
         match kind.as_str() {
             "first" => out.first = Some(hf),
@@ -21716,6 +21711,76 @@ mod svg_blip_tests {
                 assert_eq!(previous, wire);
             }
             previous_diagnostics = Some(wire);
+        }
+    }
+
+    #[test]
+    fn unacquired_vml_groups_in_stories_reach_both_document_entry_points() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let namespaces = format!(r#"xmlns:w="{w}" xmlns:v="urn:schemas-microsoft-com:vml""#);
+        let group = r#"<w:p><w:r><w:pict><v:group style="width:auto;height:20pt"><v:rect style="width:100;height:100"/></v:group></w:pict></w:r></w:p>"#;
+        let document = format!(
+            r#"<w:document xmlns:w="{w}" xmlns:r="{r}"><w:body>
+            <w:p><w:r><w:t>Body</w:t><w:footnoteReference w:id="1"/><w:endnoteReference w:id="1"/></w:r></w:p>
+            <w:sectPr><w:headerReference w:type="default" r:id="header"/><w:footerReference w:type="default" r:id="footer"/></w:sectPr>
+            </w:body></w:document>"#
+        );
+        let mut parts = vec![("word/document.xml".to_string(), document)];
+        let mut rels = String::new();
+        for (part, root, content) in [
+            ("header", "hdr", group.to_string()),
+            ("footer", "ftr", group.to_string()),
+            (
+                "footnotes",
+                "footnotes",
+                format!(r#"<w:footnote w:id="1">{group}</w:footnote>"#),
+            ),
+            (
+                "endnotes",
+                "endnotes",
+                format!(r#"<w:endnote w:id="1">{group}</w:endnote>"#),
+            ),
+        ] {
+            rels.push_str(&format!(
+                r#"<Relationship Id="{part}" Type="{r}/{part}" Target="{part}.xml"/>"#
+            ));
+            parts.push((
+                format!("word/{part}.xml"),
+                format!("<w:{root} {namespaces}>{content}</w:{root}>"),
+            ));
+        }
+        parts.push(("word/_rels/document.xml.rels".to_string(), format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>"#)));
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            write_test_content_types(&mut writer);
+            for (path, xml) in parts {
+                writer
+                    .start_file(path, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(xml.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        for streamed in [false, true] {
+            let doc = if streamed {
+                parse_from_bytes_streamed_with_limits(&bytes, None, None, "story-vml-test")
+            } else {
+                parse_from_bytes(&bytes)
+            }
+            .unwrap();
+            assert_eq!(
+                doc.diagnostics.len(),
+                4,
+                "one per story, streamed={streamed}"
+            );
+            assert!(doc.diagnostics.iter().all(|diagnostic| diagnostic.code
+                == PARSE_DIAGNOSTIC_CODE_UNSUPPORTED_VML_CONTENT
+                && diagnostic.part == DOCUMENT_PART
+                && diagnostic.path.is_empty()));
         }
     }
 

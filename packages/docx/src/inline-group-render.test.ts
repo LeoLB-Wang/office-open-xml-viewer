@@ -34,6 +34,27 @@ function docx(kind: string, unsupported: boolean | 'sibling' = false): Uint8Arra
   ]));
 }
 
+function storyGroupDocx(story: string, width: string): Uint8Array {
+  const w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const namespaces = `xmlns:w="${w}" xmlns:r="${r}" xmlns:v="urn:schemas-microsoft-com:vml"`;
+  const group = `<w:p><w:r><w:pict><v:group style="width:${width};height:20pt"><v:rect style="width:100;height:100" fillcolor="red" stroked="f"/></v:group></w:pict></w:r></w:p>`;
+  const headerFooter = story === 'header' || story === 'footer';
+  const note = story === 'footnote' || story === 'endnote';
+  const root = story === 'header' ? 'hdr' : 'ftr';
+  const body = story === 'body' ? group : `<w:p><w:r><w:t>Body</w:t>${note ? `<w:${story}Reference w:id="1"/>` : ''}</w:r></w:p>`;
+  const parts = new Map([
+    ['[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'],
+    ['_rels/.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="doc" Type="${r}/officeDocument" Target="word/document.xml"/></Relationships>`],
+    ['word/_rels/document.xml.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${story === 'body' ? '' : `<Relationship Id="story" Type="${r}/${note ? `${story}s` : story}" Target="story.xml"/>`}</Relationships>`],
+    ['word/document.xml', `<w:document ${namespaces}><w:body>${body}<w:sectPr>${headerFooter ? `<w:${story}Reference w:type="default" r:id="story"/>` : ''}</w:sectPr></w:body></w:document>`],
+  ]);
+  if (story !== 'body') parts.set('word/story.xml', headerFooter
+    ? `<w:${root} ${namespaces}>${group}</w:${root}>`
+    : `<w:${story}s ${namespaces}><w:${story} w:id="1">${group}</w:${story}></w:${story}s>`);
+  return storeZip(new Map([...parts].map(([path, xml]) => [path, encoder.encode(xml)])));
+}
+
 function recordingCanvas(): {
   canvas: HTMLCanvasElement;
   events: string[];
@@ -78,6 +99,33 @@ beforeAll(async () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('inline groups through DOCX parse and render', () => {
+  it.each(['body', 'header', 'footer', 'footnote', 'endnote'])('discloses unacquired root VML groups from the %s part through layout', story => {
+    // Part 4 §19.1.2.7 permits auto sizing. Acquisition currently requires a
+    // concrete box, so this early return has no retained unsupported marker.
+    for (const width of ['auto', '36pt']) {
+      const archive = new DocxArchive(storyGroupDocx(story, width));
+      let wire;
+      try { wire = JSON.parse(new TextDecoder().decode(archive.parse())); }
+      finally { archive.free(); }
+      const model = normalizeInternalDocumentModel(wire).document;
+      const measureContext = recordingCanvas().canvas.getContext('2d');
+      const layout = layoutDocument(model, createLayoutServices(model, { measureContext }));
+      if (width === 'auto') {
+        expect(wire.diagnostics).toEqual([{
+          code: 'UNSUPPORTED_VML_CONTENT', severity: 'warning',
+          part: 'word/document.xml', path: story === 'body' ? [0] : [],
+        }]);
+        expect(layout.diagnostics).toEqual([{
+          code: 'UNSUPPORTED_FEATURE', severity: 'warning',
+          source: { story: 'body', storyInstance: 'body', path: story === 'body' ? [0] : [] },
+          message: 'Some VML content could not be rendered',
+        }]);
+      } else {
+        expect(layout.diagnostics).toEqual([]);
+      }
+    }
+  });
+
   it.each(['DrawingML', 'VML'])('%s keeps mixed child paint order and advances the paragraph once', async kind => {
     vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 1, height: 1, close() {} })));
     const archive = new DocxArchive(docx(kind));
