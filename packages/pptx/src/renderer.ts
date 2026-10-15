@@ -80,7 +80,6 @@ import {
   clampCanvasSize,
   MAX_CANVAS_DIMENSION,
   MAX_CANVAS_AREA,
-  findReferenceFontMetrics,
   classifyCjkFont,
   classifyFontGeneric,
   googleCjkFontAlias,
@@ -1056,26 +1055,17 @@ function hyperlinkKey(t: HyperlinkTarget | undefined): string {
 }
 
 /**
- * A named cut uses the reference catalog's OS/2.usWeightClass when unambiguous
- * across its profiles. Otherwise CSS Fonts §3.2 / OpenType OS/2 weight names
- * supply the fallback (Medium = 500), never a substitute's visual thickness.
- * Ordinary family names keep the run's regular/bold selection; the first cut
- * of a multi-weight catalog family does not define its default weight.
+ * Map weight words in a face name to the OpenType OS/2.usWeightClass name
+ * classes: https://learn.microsoft.com/en-us/typography/opentype/spec/os2#usweightclass
+ * This name-based substitution policy does not read catalog weights: a named
+ * weight can be a separate RIBBI family whose regular face is recorded as 400
+ * (e.g. Franklin Gothic Medium), which loses the design weight on substitution.
+ * Names without a weight word keep the run's regular/bold selection; explicit
+ * run bold takes precedence in buildFont. Never tune for a substitute's stroke.
  */
 function namedFaceWeight(family: string): number | null {
-  const fallback = standardNamedFaceWeight(family);
-  if (fallback === null) return null;
-  // Recorded OS/2 metrics establish that weight came from usWeightClass.
-  // Without that table the generator stores a synthetic 400 (e.g. Courier-Bold),
-  // which must not override the standard weight encoded in the face name.
-  const profiles = findReferenceFontMetrics(family).filter((p) => p.win != null);
-  const weight = profiles[0]?.weight;
-  return weight !== undefined && profiles.every((p) => p.weight === weight) ? weight : fallback;
-}
-
-function standardNamedFaceWeight(family: string): number | null {
   const name = family.toLowerCase();
-  if (/\b(thin|hairline)\b/.test(name)) return 100;
+  if (/\bthin\b/.test(name)) return 100;
   if (/\b(extra[- ]?light|ultra[- ]?light)\b/.test(name)) return 200;
   if (/\blight\b/.test(name)) return 300;
   if (/\b(black|heavy)\b/.test(name)) return 900;
@@ -1083,6 +1073,7 @@ function standardNamedFaceWeight(family: string): number | null {
   if (/\b(semi[- ]?bold|demi[- ]?bold)\b/.test(name)) return 600;
   if (/\bbold\b/.test(name)) return 700;
   if (/\bmedium\b/.test(name)) return 500;
+  if (/\b(normal|regular)\b/.test(name)) return 400;
   return null;
 }
 

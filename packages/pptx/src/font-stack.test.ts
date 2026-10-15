@@ -273,31 +273,39 @@ describe('buildFont — style encoded in a face name', () => {
     expect(font.endsWith('serif')).toBe(true);
   });
 
-  it('uses usWeightClass for a catalogued named cut when the browser falls back', () => {
+  it('preserves a family-named Medium weight when the browser falls back', () => {
     const font = buildFont(false, false, 48, 'Franklin Gothic Medium', {
       themeMajorFont: null,
       themeMinorFont: null,
       dpr: 1,
     });
-    expect(font).toMatch(/^400 48px "Franklin Gothic Medium"/);
+    expect(font).toMatch(/^500 48px "Franklin Gothic Medium"/);
     expect(font).not.toContain('"Libre Franklin"');
-    expect(buildFont(false, false, 48, 'Franklin Gothic Medium', {
+    const substituted = buildFont(false, false, 48, 'Franklin Gothic Medium', {
       themeMajorFont: null, themeMinorFont: null, dpr: 1, googleSubstitutes: true,
-    })).toContain('"Libre Franklin"');
+    });
+    expect(substituted).toMatch(/^500 48px "Franklin Gothic Medium"/);
+    expect(substituted).toContain('"Libre Franklin"');
   });
 
-  it('maps uncatalogued weight names to the CSS/OpenType classes', () => {
+  it.each([
+    ['Thin', 100],
+    ['ExtraLight', 200],
+    ['Light', 300],
+    ['Regular', 400],
+    ['Medium', 500],
+    ['SemiBold', 600],
+    ['Bold', 700],
+    ['ExtraBold', 800],
+    ['Black', 900],
+  ])('maps the OpenType weight name %s to %i', (name, weight) => {
     const rc = { themeMajorFont: null, themeMinorFont: null, dpr: 1 };
-    expect(buildFont(false, false, 24, 'Uncatalogued Medium', rc)).toMatch(/^500 24px /);
-    expect(buildFont(false, false, 24, 'Uncatalogued SemiBold', rc)).toMatch(/^600 24px /);
-    expect(buildFont(false, false, 24, 'Yu Gothic Medium', rc)).toMatch(/^500 24px /);
-    // An ordinary multi-weight family must not select its first catalog cut.
+    expect(buildFont(false, false, 24, `Example ${name}`, rc)).toMatch(new RegExp(`^${weight} 24px `));
+  });
+
+  it('keeps unnamed families regular and recognizes hyphenated bold names', () => {
+    const rc = { themeMajorFont: null, themeMinorFont: null, dpr: 1 };
     expect(buildFont(false, false, 24, 'Yu Gothic', rc)).toMatch(/^24px /);
-  });
-
-  it('keeps the named bold weight when the catalog face has no OS/2 table', () => {
-    const rc = { themeMajorFont: null, themeMinorFont: null, dpr: 1 };
-    // Courier-Bold's real catalog profile has a synthetic weight of 400.
     expect(buildFont(false, false, 24, 'Courier-Bold', rc)).toMatch(/^700 24px /);
   });
 
