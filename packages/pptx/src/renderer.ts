@@ -3361,6 +3361,31 @@ function authoredAlignmentAnchor(
   return transformPoint(transform, x + u * w, y + v * h);
 }
 
+/** One surface plane for body projection, effect bounds/anchors and masks.
+ * MS-OI29500 §2.1.1268 places bevelB at the extrusion base. Keep the
+ * existing planar compositor's face selection, including its winding test;
+ * effect dispatch must not silently move that surface back to z=0. Depth comes
+ * from a prepared bottom bevel or wireframe input; this planar painter still
+ * does not construct an unbeveled solid's back mesh. Quantize padding here too,
+ * so cache/effect bounds include the same device-pixel margin as the raster.
+ */
+function projectedSurface(
+  camera: CameraInput, w: number, h: number, backDepthCss = 0,
+  edgePadCss = 0, devScale = 1,
+) {
+  const front = computeScene3dQuad(camera, w, h);
+  const [p0, p1, , p3] = front.corners;
+  const backFacing = (p1.x - p0.x) * (p3.y - p0.y) - (p1.y - p0.y) * (p3.x - p0.x) < 0;
+  const quad = backFacing && backDepthCss > 0
+    ? computeScene3dQuad(camera, w, h, backDepthCss) : front;
+  let padDev = Math.max(0, Math.ceil(edgePadCss * devScale));
+  const expanded = padDev > 0
+    ? expandProjectedQuad(quad.corners, padDev / devScale / w, padDev / devScale / h) : null;
+  if (!expanded) padDev = 0;
+  return { face: quad.corners, corners: expanded ?? quad.corners,
+    backFacing, padDev, padCss: padDev / devScale };
+}
+
 export function projectedEffectGeometry(
   camera: CameraInput,
   transform: EffectTransform,
@@ -3370,11 +3395,11 @@ export function projectedEffectGeometry(
   h: number,
   edgePadCss: number,
   algn: Shadow['algn'],
+  backDepthCss = 0,
 ): { bbox: { x: number; y: number; w: number; h: number }; anchor: [number, number] } {
-  const face = computeScene3dQuad(camera, w, h).corners;
-  const painted = edgePadCss > 0
-    ? expandProjectedQuad(face, edgePadCss / w, edgePadCss / h) ?? face
-    : face;
+  const det = Math.abs(transform.a * transform.d - transform.b * transform.c);
+  const devScale = det > 0 ? Math.sqrt(det) : 1;
+  const { face, corners: painted } = projectedSurface(camera, w, h, backDepthCss, edgePadCss, devScale);
   const devicePoints = painted.map((point) => transformPoint(transform, x + point.x, y + point.y));
   const xs = devicePoints.map(([px]) => px);
   const ys = devicePoints.map(([, py]) => py);
@@ -3607,7 +3632,9 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   // follow the per-pixel perspective warp applied here. So a projected shape's
   // text is drawn into the bitmap but EXCLUDED from the selection overlay
   // (onTextRun is suppressed below). See README "Bevel / 3D" note.
-  const spScene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera, w, h) ? el.scene3d : null;
+  const spScene3d = el.scene3d && isScene3dNonIdentity(
+    el.scene3d.camera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
+  ) ? el.scene3d : null;
   if (spScene3d && w > 0 && h > 0) {
     const tf = ctx.getTransform();
     const det = Math.abs(tf.a * tf.d - tf.b * tf.c);
@@ -3620,6 +3647,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
       ctxDevScale,
       spScene3d.camera,
     );
+    const backDepthCss = (bevels.find(bevel => bevel.bottom)?.depthPx ?? 0) / ctxDevScale;
     const extrusion = buildExtrusion(
       el.sp3d as Sp3dLike | undefined,
       spScene3d.camera,
@@ -3699,7 +3727,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
           renderShape(octx, projectedElement, scale, themeDefaultColor, slideNumber, rc, undefined);
         },
         padded
-          ? { bevels, extrusion: extrusion ?? undefined, edgePadCss, preservePatternFrame }
+          ? { bevels, backDepthCss, extrusion: extrusion ?? undefined, edgePadCss, preservePatternFrame }
           : { preservePatternFrame },
       );
     const paintProjectedBody = (target: CanvasRenderingContext2D): boolean =>
@@ -3722,6 +3750,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         h,
         edgePadCss,
         el.shadow?.algn,
+        backDepthCss,
       );
       let projectionSucceeded = false;
       const rawPaint: EffectPaint = (target) => {
@@ -6087,6 +6116,8 @@ function buildExtrusion(
  * then fall back to painting directly.
  */
 interface Project3dOpts {
+  /** Extrusion-base depth of the prepared bottom surface, in CSS px. */
+  backDepthCss?: number;
   /** Text front faces retain the slide pattern frame before camera projection. */
   preservePatternFrame?: boolean;
   /** Bevel lips to bake into the body before the warp (§20.1.5.12 bevelT/B). */
@@ -6163,22 +6194,9 @@ function projectScene3dPaint(
   // onto the destination by extrapolating the camera quad through its own
   // homography. The camera is defined for the authored w×h face, so it must not
   // be recomputed from the padded raster size. Degenerate extrapolation → pad 0.
-  let padDev = Math.max(0, Math.ceil((opts.edgePadCss ?? 0) * devScale));
-  let quad = computeScene3dQuad(camera, w, h);
-  const [p0, p1, , p3] = quad.corners;
-  const backFacing = (p1.x - p0.x) * (p3.y - p0.y) - (p1.y - p0.y) * (p3.x - p0.x) < 0;
-  const backDepth = opts.bevels?.find(bevel => bevel.bottom)?.depthPx ?? 0;
-  // MS-OI29500 §2.1.1268: bevelB starts at the extrusion base. A reversed
-  // planar face uses that plane's quad, not a second shading of the front.
-  if (backFacing && backDepth > 0) quad = computeScene3dQuad(camera, w, h, backDepth / devScale);
-  let quadCorners = quad.corners;
-  if (padDev > 0) {
-    const padCss = padDev / devScale;
-    const expanded = expandProjectedQuad(quad.corners, padCss / w, padCss / h);
-    if (expanded) quadCorners = expanded;
-    else padDev = 0;
-  }
-  const padCss = padDev / devScale;
+  const backDepth = opts.backDepthCss ?? 0;
+  const { corners: quadCorners, backFacing, padDev, padCss } =
+    projectedSurface(camera, w, h, backDepth, opts.edgePadCss, devScale);
 
   const ow = Math.max(1, Math.ceil(w * devScale) + 2 * padDev);
   const oh = Math.max(1, Math.ceil(h * devScale) + 2 * padDev);
@@ -6745,7 +6763,9 @@ function paintResolvedPicture(
     // to the normal flat draw (but sp3d bevel/extrusion still apply via the flat
     // path below). sp3d bevel/extrusion shading is wired in just after this; the
     // contour edge is the flat approximation in strokeContourEdge.
-    const scene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera, w, h) ? el.scene3d : null;
+    const scene3d = el.scene3d && isScene3dNonIdentity(
+      el.scene3d.camera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
+    ) ? el.scene3d : null;
 
     // Paint JUST the (clipped, optionally cropped) bitmap body at a local rect —
     // no border/contour. Separated from the edges so the bevel shading reads the
@@ -6822,6 +6842,7 @@ function paintResolvedPicture(
       ctxDevScale,
       el.scene3d?.camera,
     );
+    const backDepthCss = (bevels.find(bevel => bevel.bottom)?.depthPx ?? 0) / ctxDevScale;
     // Extrusion side wall only resolves under a camera that turns it visible
     // (§20.1.5.12). Computed against the active camera so a face-on view yields
     // null (no wall) and a tilted view reveals it.
@@ -6853,6 +6874,7 @@ function paintResolvedPicture(
       if (scene3d) {
         const ok = projectScene3dPaint(target, scene3d.camera, x, y, w, h, paintFaceAt, {
           bevels,
+          backDepthCss,
           extrusion: extrusion ?? undefined,
           paintEdges: strokeContourEdge,
           edgePadCss,
@@ -6898,6 +6920,7 @@ function paintResolvedPicture(
       if (scene3d) {
         const ok = projectScene3dPaint(target, scene3d.camera, x, y, w, h, (octx, ox, oy, ow, oh) =>
           paintMaskAt(octx, color, ox, oy, ow, oh),
+          { backDepthCss },
         );
         if (ok) return;
       }
@@ -6935,6 +6958,7 @@ function paintResolvedPicture(
           h,
           edgePadCss,
           el.shadow?.algn,
+          backDepthCss,
         )
       : {
           bbox: transformedEffectBounds(

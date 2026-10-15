@@ -270,6 +270,16 @@ describe('modern camera families', () => {
     expect(computeDepthOffset({ prst: 'obliqueRight' }, 200, 100, 20).x).toBeCloseTo(6, 8);
   });
 
+  it('routes depth geometry even when the default oblique front plane is identity', () => {
+    for (const prst of ['obliqueTop', 'obliqueTopLeft']) {
+      const camera = { prst };
+      expect(isScene3dNonIdentity(camera, 200, 100, 0)).toBe(false);
+      expect(isScene3dNonIdentity(camera, 200, 100, 60)).toBe(true);
+      expect(isScene3dNonIdentity(camera, undefined, undefined, 60)).toBe(true);
+    }
+    expect(isScene3dNonIdentity({ prst: 'orthographicFront' }, 200, 100, 60)).toBe(false);
+  });
+
   it('modern perspective distance follows width rather than the larger half-extent', () => {
     const camera = { prst: 'perspectiveFront', fov: 90, rot: { lat: 0, lon: 30, rev: 0 } };
     const wide = computeScene3dQuad(camera, 95.76, 63.84);

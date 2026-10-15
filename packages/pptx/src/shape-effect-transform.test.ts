@@ -39,6 +39,31 @@ describe('shape effect bounds', () => {
     expect(geometry.anchor).not.toEqual([geometry.bbox.x + geometry.bbox.w, geometry.bbox.y]);
   });
 
+  it('includes raster padding rounded up to device pixels under camera zoom', () => {
+    const geometry = projectedEffectGeometry(
+      { prst: 'orthographicFront', zoom: 4 },
+      { a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 },
+      0, 0, 100, 50, 1.1, 'tr',
+    );
+    // 1.1 CSS px rounds to 3 device px. Camera zoom scales that local margin.
+    expect(geometry.bbox.x).toBeCloseTo(-312, 10);
+    expect(geometry.bbox.w).toBeCloseTo(824, 10);
+  });
+
+  it('bounds and anchors the exposed back surface at the extrusion base', () => {
+    const geometry = projectedEffectGeometry(
+      { prst: 'orthographicFront', rot: { lat: 0, lon: 150, rev: 0 } },
+      { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 },
+      0, 0, 100, 50, 0, 'tr', 40,
+    );
+    // Parallel projection: width=100*cos(30), centre=50+40*sin(150).
+    // The back-facing top-right corner is the left end of the projected box.
+    expect(geometry.bbox.x).toBeCloseTo(70 - 50 * Math.cos(Math.PI / 6), 10);
+    expect(geometry.bbox.w).toBeCloseTo(100 * Math.cos(Math.PI / 6), 10);
+    expect(geometry.anchor[0]).toBeCloseTo(geometry.bbox.x, 10);
+    expect(geometry.anchor[1]).toBe(0);
+  });
+
   it('reuses one device-space projection across multiple effect passes', () => {
     const cacheContext = { setTransform: vi.fn() };
     class TestOffscreenCanvas {

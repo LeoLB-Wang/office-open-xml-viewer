@@ -388,12 +388,19 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number, su
 /**
  * True when a scene3d camera will visibly change the shape, i.e. the renderer
  * should take the projection path. A camera whose preset is unknown/front-facing
- * with no rot (or an all-zero rot) is the identity and can be skipped.
+ * with no rot (or an all-zero rot) can be skipped only if its depth geometry
+ * is also unchanged. `depth` uses the same coordinate units as w and h.
  */
-export function isScene3dNonIdentity(camera: CameraInput, w?: number, h?: number): boolean {
+export function isScene3dNonIdentity(camera: CameraInput, w?: number, h?: number, depth = 0): boolean {
   // Perspective framing depends on aspect, so a square probe can miss a visible
   // projection on a tall shape. Renderers supply their actual dimensions.
-  if (w !== undefined && h !== undefined) return !computeScene3dQuad(camera, w, h).isIdentity;
+  if (w !== undefined && h !== undefined) {
+    // The front plane alone is insufficient: default oblique cameras preserve
+    // it but shear the extrusion base (§20.1.5.12). Test both ends of the solid
+    // with the same geometry tolerance; this also retains perspective depth.
+    return !computeScene3dQuad(camera, w, h).isIdentity ||
+      (depth > 0 && !computeScene3dQuad(camera, w, h, depth).isIdentity);
+  }
   // Geometry-free callers use a conservative mathematical identity test instead
   // of borrowing a shape's numerical pixel tolerance.
   const def = presetDef(camera.prst), R = buildRotation(def, camera.rot);
@@ -401,6 +408,10 @@ export function isScene3dNonIdentity(camera: CameraInput, w?: number, h?: number
     ? [R[0] - 1, R[1], R[3], R[4] - 1, R[6], R[7]]
     : [R[0] + def.shearX * R[6] - 1, R[1] + def.shearX * R[7],
        R[3] + def.shearY * R[6], R[4] + def.shearY * R[7] - 1];
+  if (depth > 0) {
+    if (def.kind === 'perspective') return true;
+    terms.push(R[2] + def.shearX * R[8], R[5] + def.shearY * R[8]);
+  }
   return (camera.zoom ?? 1) !== 1 || terms.some(value => Math.abs(value) > 1e-12);
 }
 

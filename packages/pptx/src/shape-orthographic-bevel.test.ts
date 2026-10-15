@@ -3,7 +3,7 @@ import { chromium, type Browser, type Page } from '@playwright/test';
 import { build } from 'vite';
 import { existsSync } from 'node:fs';
 import { PNG } from 'pngjs';
-import type { ShapeElement } from './types.js';
+import type { PictureElement, ShapeElement } from './types.js';
 
 function orthographicBeveledShape(): ShapeElement {
   return {
@@ -78,13 +78,20 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
   }, 60_000);
   afterAll(async () => { await browser?.close(); });
 
-  async function render(shape: ShapeElement, height = 400) {
+  async function render(shape: ShapeElement | PictureElement, height = 400) {
     const png = await page.evaluate(async ({ shape, height }) => {
       const canvas = document.querySelector('canvas') as HTMLCanvasElement;
       const renderer = (globalThis as unknown as { pptxRenderer: typeof import('./renderer') }).pptxRenderer;
       await renderer.renderSlide(canvas,
         { index: 0, slideNumber: 1, background: null, elements: [shape] },
-        400 * 9525, height * 9525, { width: 400, dpr: 1 });
+        400 * 9525, height * 9525, { width: 400, dpr: 1, fetchImage: async () => {
+          const source = document.createElement('canvas');
+          source.width = source.height = 96;
+          const ctx = source.getContext('2d') as CanvasRenderingContext2D;
+          ctx.fillStyle = '#4472C4';
+          ctx.fillRect(0, 0, 96, 96);
+          return new Promise<Blob>(resolve => source.toBlob(blob => resolve(blob as Blob)));
+        } });
       return canvas.toDataURL('image/png').split(',')[1];
     }, { shape, height });
     return PNG.sync.read(Buffer.from(png, 'base64')).data;
@@ -157,6 +164,56 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
     expect(pixel(extruded, 190, 144)).not.toEqual([255, 255, 255]);
     expect(pixel(extruded, 190, 144)).not.toEqual(pixel(extruded, 156, 144));
   });
+
+  for (const adapter of ['shape', 'picture'] as const) {
+    function element(shape: ShapeElement): ShapeElement | PictureElement {
+      if (adapter === 'shape') return shape;
+      return {
+        type: 'picture', x: shape.x, y: shape.y, width: shape.width, height: shape.height,
+        rotation: shape.rotation, flipH: shape.flipH, flipV: shape.flipV,
+        imagePath: 'test/camera.png', mimeType: 'image/png', stroke: null,
+        scene3d: shape.scene3d, sp3d: shape.sp3d, shadow: shape.shadow ?? undefined, softEdge: shape.softEdge,
+      };
+    }
+
+    it(`keeps an extruded back face intact with an invisible shadow (${adapter})`, async () => {
+      const shape = orthographicBeveledShape();
+      shape.geometry = 'rect';
+      shape.x = 180 * 9525;
+      shape.scene3d!.camera = { prst: 'orthographicFront', rot: { lat: 0, lon: 110, rev: 0 } };
+      shape.sp3d = { prstMaterial: 'matte', extrusionH: 24 * 9525,
+        bevelB: { w: 127000, h: 127000, prst: 'angle' } };
+      const plain = await render(element(shape));
+      const shadow = await render(element({ ...shape,
+        shadow: { color: '000000', alpha: 0, blur: 0, dist: 0, dir: 0 } }));
+      expect(pixel(plain, 240, 144)).not.toEqual([255, 255, 255]);
+      // An intermediate transparent cache can round premultiplied channels
+      // by one; it must preserve the whole back face, not clip its far edge.
+      const maxDifference = plain.reduce((max, value, i) => Math.max(max, Math.abs(value - shadow[i])), 0);
+      expect(maxDifference).toBeLessThanOrEqual(1);
+      if (adapter === 'picture') {
+        const softened = await render(element({ ...shape, softEdge: { radius: 9525 } }));
+        // This interior lies beyond the front-plane mask, but well inside the
+        // back plane: a soft edge must not erase it using a stale front mask.
+        expect(pixel(softened, 250, 144)).not.toEqual([255, 255, 255]);
+      }
+    });
+
+    for (const wireframe of [false, true]) {
+      it(`retains default oblique ${wireframe ? 'wireframe' : 'solid'} depth (${adapter})`, async () => {
+        const shape = orthographicBeveledShape();
+        shape.geometry = 'rect';
+        shape.scene3d!.camera = { prst: 'obliqueTop' };
+        shape.sp3d = { prstMaterial: wireframe ? 'legacyWireframe' : 'matte', extrusionH: 60 * 9525 };
+        const deep = await render(element(shape));
+        const flat = await render(element({ ...shape, sp3d: { ...shape.sp3d, extrusionH: 0 } }));
+        // Default obliqueTop leaves the front unchanged and pushes the back
+        // 18 px upward. Both its solid wall and wire rim extend above y=96.
+        expect(pixel(deep, 144, 79)).not.toEqual([255, 255, 255]);
+        expect(pixel(flat, 144, 79)).toEqual([255, 255, 255]);
+      });
+    }
+  }
 
   it('renders wireframe rims with a transparent interior', async () => {
     const shape = projectedBeveledShape();
