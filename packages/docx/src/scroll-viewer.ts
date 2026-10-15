@@ -1,4 +1,4 @@
-import { updateNativeReadingNotice, noReadingNotices } from './native-reading-notice.js';
+import { updateNativeReadingNotice, noReadingNotices } from './internal/reading-hooks.js';
 import { openExternalHyperlink, PT_TO_PX } from '@silurus/ooxml-core';
 import type { FindHighlightColors, FindMatch, FindMatchesOptions, HyperlinkTarget, OoxmlResourceMetrics, ViewerContextMenuEvent, ZoomableViewer } from '@silurus/ooxml-core';
 import {

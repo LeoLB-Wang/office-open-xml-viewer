@@ -1,5 +1,6 @@
+import { readingHooks } from './reading-hooks.js';
+import { installNativeReadingRuntime } from './native-reading-runtime.js';
 import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-asset-url';
-import { hasNativeReadingRequests } from '../native-reading-notice.js';
 import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
 import {
   preloadGoogleFonts,
@@ -187,6 +188,7 @@ export async function loadDocxModelSource(
     // runs and the OOXML path below is unchanged.
     const selected = selectModelSource(opts.modelSources, 'docx', new Uint8Array(buffer));
     if (!selected) return DocxDocument.load(buffer, { ...opts, modelSources: undefined });
+    installNativeReadingRuntime();
     const sourceLoad = beginModelSourceLoad(selected, 'docx');
     try {
     // Resolve the container on the main thread before spinning up the worker.
@@ -397,7 +399,7 @@ export async function loadDocxModelSource(
         // Native reading suppresses early publication, not the library's
         // requested completion callback. Retain the same short-circuit scan.
         const nativeReading = deferrable && !!opts.progressiveLayout
-          && hasNativeReadingRequests(doc._source);
+          && readingHooks.requested(doc._source);
         owesNativeCompletion = nativeReading;
         if (deferrable && opts.progressiveLayout && !nativeReading) {
           const store = retained.layoutVariants;

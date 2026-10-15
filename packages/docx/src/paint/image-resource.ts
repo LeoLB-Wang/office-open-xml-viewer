@@ -1,7 +1,7 @@
 import { drawImageCropped, paintOptionalImagePlaceholder } from '@silurus/ooxml-core';
 import type { ImagePaintResourceDescriptor, LayoutRect, NativeReadingImagePlan } from '../layout/types.js';
 import { isUnavailablePaintResourceHandle, type ResolvedPaintResource } from './resource-session.js';
-import { assertNativeReadingImageBinding } from './native-reading-image-availability.js';
+import { readingPaintHooks } from './reading-hooks.js';
 import type { PaintCanvas2D } from './types.js';
 
 type DrawablePaintResource =
@@ -31,7 +31,7 @@ export function paintImageResource(
   const descriptor = resource.descriptor as ImagePaintResourceDescriptor;
   if (nativeImagePlan) {
     if (descriptor.kind !== 'image') throw new Error('Reading plan requires an image resource');
-    assertNativeReadingImageBinding(resource as ResolvedPaintResource<'image'>, nativeImagePlan, bounds);
+    readingPaintHooks.assertNativeReadingImageBinding(resource as ResolvedPaintResource<'image'>, nativeImagePlan, bounds);
   }
   const image = drawableHandle(resource);
   const placeholder = isUnavailablePaintResourceHandle(resource.handle) ? resource.handle.placeholder : undefined;

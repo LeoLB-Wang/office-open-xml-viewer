@@ -1,14 +1,10 @@
-import { drawingMLGeometryBounds } from '@silurus/ooxml-core';
 import type { BodyLayoutInput, BodyParagraphSourceInput } from './body-layout-input.js';
 import type { ParagraphAcquisitionInput } from './text.js';
 import type { AnchorReferenceFramesInput } from './anchor-frame.js';
-import { resolveAnchorPlacement } from './anchor-frame.js';
 import { NativeReadingSceneError } from './native-reading-block-scene.js';
-import { endnoteIdsInRetainedSlice, footnoteIdsInRetainedSlice } from './note-reference-ownership.js';
 import type { acquireParagraphAnchorRunStage } from './paragraph.js';
 import type { LayoutRect, PaintResourceRegistry, ParagraphLayout, DrawingLayout, ImagePaintResourceDescriptor } from './types.js';
-import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './plain-data.js';
-import { translateDrawing, translateParagraphLayout } from './retained-geometry-translation.js';
+import { nativeReadingOwners } from '../internal/native-reading-owners.js';
 import { acquireNativeReadingImagePlan, nativeReadingImageFrame } from './native-reading-image-frame.js';
 
 const MAX_RUN_WORK = 16384;
@@ -76,7 +72,7 @@ function completeDrawing(d: DrawingLayout, registry: PaintResourceRegistry | und
       const units = command.plan.resolvedGeometry?.workUnits;
       if (!Number.isSafeInteger(units) || units === undefined || units < 1) fail('ordinary peer numeric geometry is unresolved');
       debit(units);
-      const box = drawingMLGeometryBounds(command.plan,d.transform);
+      const box = nativeReadingOwners.drawingMLGeometryBounds(command.plan,d.transform);
       if (box) boxes.push({xPt:box.x,yPt:box.y,widthPt:box.w,heightPt:box.h});
       return command;
     }
@@ -84,7 +80,7 @@ function completeDrawing(d: DrawingLayout, registry: PaintResourceRegistry | und
       // Image descriptors share a union discriminator with picture bullets;
       // keep the canonical runtime source-kind/key/seal checks after resolving.
       const descriptor = registry?.resolve(command.resourceKey, 'image') as ImagePaintResourceDescriptor | undefined;
-      if (!descriptor || !isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image'
+      if (!descriptor || !nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor) || descriptor.kind !== 'image'
         || descriptor.resourceKey !== command.resourceKey) fail('anchor run image resource is unavailable');
       const plan = command.nativeImagePlan ?? acquireNativeReadingImagePlan(descriptor,command.rect.widthPt,command.rect.heightPt);
       boxes.push(nativeReadingImageFrame(plan,command.rect));
@@ -92,7 +88,7 @@ function completeDrawing(d: DrawingLayout, registry: PaintResourceRegistry | und
     }
     fail('anchor run cannot enclose this retained command');
   });
-  return snapshotPlainData({...d,commands,inkBounds:union(boxes)},'complete reading peer',d);
+  return nativeReadingOwners.snapshotPlainData({...d,commands,inkBounds:union(boxes)},'complete reading peer',d);
 }
 
 export interface AnchorRunMember {
@@ -196,7 +192,7 @@ export function composeNativeReadingAnchorRun(
       const first = paragraph.runs.find(r => (r.type === 'shape' || r.type === 'image')
         && r.anchorAcquisitionInput?.occurrenceId === scene.occurrenceId);
       if (!first || (first.type !== 'shape' && first.type !== 'image') || !first.anchorAcquisitionInput) fail('scene source owner is missing');
-      const resolved = resolveAnchorPlacement({acquisition:first.anchorAcquisitionInput,
+      const resolved = nativeReadingOwners.resolveAnchorPlacement({acquisition:first.anchorAcquisitionInput,
         frames:{...frames,paragraph:layout.flowBounds,line:null,character:null}});
       const h = resolved.axes.horizontal,v = resolved.axes.vertical;
       // Completed scenes already own full paint geometry. This acquisition is
@@ -205,7 +201,7 @@ export function composeNativeReadingAnchorRun(
         fail('scene authored origin is unresolved');
       const behavior = first.anchorAcquisitionInput.behavior;
       if (typeof behavior.behindDoc !== 'boolean' || typeof behavior.relativeHeight !== 'number') fail('scene stacking owner is unresolved');
-      const d = {...translateDrawing(scene.drawing,{xPt:h.resolvedOriginPt,yPt:v.resolvedOriginPt}),
+      const d = {...nativeReadingOwners.translateDrawing(scene.drawing,{xPt:h.resolvedOriginPt,yPt:v.resolvedOriginPt}),
         anchorLayer:{occurrenceId:scene.occurrenceId,behindDoc:behavior.behindDoc,
           relativeHeight:behavior.relativeHeight,
           sourceOrder:scene.memberRunIndices[0],horizontalOwnership:'host' as const,verticalOwnership:'host' as const}};
@@ -240,15 +236,15 @@ export function composeNativeReadingAnchorRun(
           fail('anchor run contains unsupported owned textbox content');
         // Atom admission does not commit notes from independent member stories.
         // Their authority is retained on placements, independently of events.
-        if (block.events.length || footnoteIdsInRetainedSlice(block).length
-          || endnoteIdsInRetainedSlice(block).length
+        if (block.events.length || nativeReadingOwners.footnoteIdsInRetainedSlice(block).length
+          || nativeReadingOwners.endnoteIdsInRetainedSlice(block).length
           || block.lines.some(line=>line.placements.some(p=>p.kind === 'text' && p.dependency !== undefined)))
           fail('anchor run textbox requires independent note/event acquisition');
       }
     }
     const ink = union([layout.inkBounds,...drawings.map(d=>d.inkBounds),...layout.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds])]);
     return {input,sourceOwners,stageLineCount:layout.lines.length,stageInk:layout.inkBounds,
-      layout:snapshotPlainData({...layout,drawings,lines,inkBounds:ink,
+      layout:nativeReadingOwners.snapshotPlainData({...layout,drawings,lines,inkBounds:ink,
       ...(layout.anchorCollisions ? {anchorCollisions:layout.anchorCollisions.map(entry=>sourceOwners.has(entry.occurrenceId)
         ? {...entry,horizontalOwnership:'host' as const} : entry)} : {}),
       ...(requestedIds.length ? {nativeReadingRelocations:requestedIds} : {}),
@@ -285,7 +281,7 @@ export function composeNativeReadingAnchorRun(
   const extent = all.yPt+dy+all.heightPt-start;
   if (!Number.isFinite(extent) || extent < 0 || extent > column.heightPt) fail('complete anchor run exceeds a full column');
   const placed = prepared.map(m=> {
-    const translated = translateParagraphLayout(m.layout,{xPt:dx,yPt:dy});
+    const translated = nativeReadingOwners.translateParagraphLayout(m.layout,{xPt:dx,yPt:dy});
     // Canonical translation moves all commands, glyphs, owned stories and
     // anchor diagnostics together. The logical paragraph column allocation
     // remains horizontally authoritative; only its vertical mark origin moves.
@@ -305,7 +301,7 @@ export function composeNativeReadingAnchorRun(
           return {...p,bounds:{...p.bounds,xPt:originalHost.bounds.xPt}};
         })};
     });
-    const layout = snapshotPlainData({...translated,lines,
+    const layout = nativeReadingOwners.snapshotPlainData({...translated,lines,
       inkBounds:union([{...m.stageInk,yPt:m.stageInk.yPt+dy},
         ...translated.drawings.map(d=>d.inkBounds),...translated.textBoxes.flatMap(b=>[b.inkBounds,b.story.inkBounds])]),
       flowBounds:{...translated.flowBounds,

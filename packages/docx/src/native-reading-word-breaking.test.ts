@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { afterEach, describe, expect, it } from 'vitest';
 import { acquireNativeReadingWordBreaking } from './native-reading-word-breaking.js';
 import { nativeReadingNotices, hasNativeReadingRequests, nativeReadingRequests } from './native-reading-notice.js';

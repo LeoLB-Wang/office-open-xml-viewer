@@ -1,4 +1,6 @@
-use ooxml_common::json_measurement::serialize_json_with_limit;
+#[cfg(not(target_arch = "wasm32"))]
+use ooxml_common::json_measurement::serialize_json_string;
+use ooxml_common::json_measurement::{serialize_json, serialize_json_with_limit};
 use ooxml_common::package_session::PackageLimitReporter;
 use ooxml_common::pull::insufficient_credit_error;
 use ooxml_common::resource::{
@@ -93,7 +95,7 @@ pub fn parse_docx(
         "parse",
     )
     .map_err(docx_parser_js_error)?;
-    serde_json::to_vec(&doc).map_err(|e| JsValue::from_str(&format!("serialize error: {e}")))
+    serialize_json(&doc).map_err(|e| JsValue::from_str(&format!("serialize error: {e}")))
 }
 
 /// WASM-callable markdown projection (mirrors `to_markdown_native`). Returns
@@ -240,7 +242,7 @@ impl DocxArchive {
             .archive
             .run_operation("parse", parser::parse_streamed_compatible)
             .map_err(docx_parser_js_error)?;
-        serde_json::to_vec(&doc).map_err(|e| JsValue::from_str(&format!("serialize error: {e}")))
+        serialize_json(&doc).map_err(|e| JsValue::from_str(&format!("serialize error: {e}")))
     }
 
     /// Begin one sequential document-body operation. The complete required part
@@ -492,7 +494,7 @@ impl DocxArchive {
         let Some(usage) = self.archive.operation_usage().or(self.last_document_usage) else {
             return Ok(None);
         };
-        serde_json::to_vec(&usage)
+        serialize_json(&usage)
             .map(Some)
             .map_err(|error| JsValue::from_str(&format!("serialize error: {error}")))
     }
@@ -501,7 +503,7 @@ impl DocxArchive {
     /// extraction. Diagnostic only: this is not an allocator-memory estimate.
     pub fn resource_usage(&self) -> Result<Vec<u8>, JsValue> {
         let usage = self.archive.usage();
-        serde_json::to_vec(&usage)
+        serialize_json(&usage)
             .map_err(|error| JsValue::from_str(&format!("serialize error: {error}")))
     }
 
@@ -534,7 +536,7 @@ impl DocxArchive {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn parse_docx_native(data: &[u8]) -> Result<String, String> {
     parse_docx_model_native(data)
-        .and_then(|doc| serde_json::to_string(&doc).map_err(|e| e.to_string()))
+        .and_then(|doc| serialize_json_string(&doc).map_err(|e| e.to_string()))
 }
 
 /// Native typed equivalent of `parse_docx`; it shares the JSON entry point's
