@@ -59,6 +59,15 @@ describe('Excel DrawingML stacked WordArt', () => {
       expect(Math.sign(calls[2].x - calls[0].x)).toBe(vert === 'wordArtVert' ? 1 : -1);
     },
   );
+  it('uses the reference usWin box for a formerly fitted face', () => {
+    const { ctx, calls } = record();
+    drawShapeText(ctx, body('wordArtVert', {
+      paragraphs: [{ align: 'l', runs: [{ type: 'text', text: '日日', size: 18,
+        bold: false, italic: false, fontFace: 'Yu Gothic' }] }],
+    }), 200, 200, 1);
+    expect(calls[1].y - calls[0].y).toBeCloseTo((7 / 6) * (2636 / 2048) * 24, 6);
+  });
+
   it('applies the authored normAutofit fontScale before stacked measurement', () => {
     const normal = record(), scaled = record();
     drawShapeText(normal.ctx, body('wordArtVert'), 200, 200, 1);

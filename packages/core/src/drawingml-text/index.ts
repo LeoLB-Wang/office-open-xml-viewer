@@ -22,5 +22,5 @@ export type {
   StackedColumn, StackedLayout,
 } from './stacked.js';
 export {
-  STACKED_CELL_FACTOR, stackedCellBoxOverride, stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph,
+  STACKED_CELL_FACTOR, stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph,
 } from './stacked-faces.js';

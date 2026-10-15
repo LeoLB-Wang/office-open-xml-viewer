@@ -36,6 +36,61 @@ export interface Announcement {
 
 export const announcements: readonly Announcement[] = [
   {
+    slug: 'experimental-legacy-office',
+    date: '2026-10-15',
+    label: 'Upcoming release',
+    title: 'Experimental legacy Office reading, as an optional add-on',
+    summary: 'The upcoming release adds optional reading of a supported subset of .doc, .xls and .ppt files through the existing viewers. OOXML Viewer remains an OOXML viewer; legacy reading is experimental and enabled separately.',
+    audience: 'Applications that need a local preview of older Office files and can offer conversion for unsupported input.',
+    sections: [
+      {
+        title: 'In short',
+        kind: 'summary',
+        paragraphs: [
+          'The experimental @silurus/ooxml-legacy-office add-on opens supported binary Word, Excel and PowerPoint files in the same viewers used for DOCX, XLSX and PPTX. It reads directly into the existing models without generating an intermediate OOXML package.',
+        ],
+        bullets: [
+          'Enable DOC, XLS and PPT independently through modelSources.',
+          'Keep legacy readers outside ordinary OOXML imports; each reader loads only when used.',
+          'Reject unsupported input instead of displaying a partial document.',
+          'Try experimental legacy previews locally in Try Yours, without uploading a file.',
+        ],
+      },
+      {
+        title: 'One add-on, three explicit sources',
+        modules: ['@silurus/ooxml-legacy-office/doc', '@silurus/ooxml-legacy-office/xls', '@silurus/ooxml-legacy-office/ppt'],
+        rationale: 'A separate package lets applications choose legacy previews without adding binary readers to ordinary OOXML viewing.',
+        paragraphs: [
+          'Install @silurus/ooxml and @silurus/ooxml-legacy-office together; their versions must match exactly. Pass legacyDocSource(), legacyXlsSource() or legacyPptSource() to the matching viewer or Node session through modelSources. Each factory creates a source without fetching its reader.',
+        ],
+        examples: [
+          {
+            title: 'Enable experimental DOC reading',
+            code: `import { DocxViewer } from '@silurus/ooxml/docx';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
+
+const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+const viewer = new DocxViewer(canvas, { modelSources: [legacyDocSource()] });
+await viewer.load(await file.arrayBuffer());`,
+          },
+        ],
+      },
+      {
+        title: 'An experimental subset with a conversion fallback',
+        paragraphs: [
+          'The readers support a bounded subset of each binary format. They do not execute macros, fields, formulas, actions or embedded objects. Unsupported structures reject the load; keep a conversion fallback for files the reader cannot represent. This is not a claim of Office fidelity.',
+        ],
+      },
+      {
+        title: 'Upgrading',
+        paragraphs: [
+          'No migration is required for applications that do not enable the add-on. Existing OOXML imports and loading calls keep their current behavior. To opt in, install matching viewer and add-on versions and configure only the sources your application needs. Upgrade both packages together thereafter.',
+          'See the Legacy Office files guide for browser and Node examples, deployment assets, support boundaries and failure handling.',
+        ],
+      },
+    ],
+  },
+  {
     slug: 'v088-chart-fidelity-and-safer-word-layout',
     date: '2026-09-21',
     label: 'Release note',
