@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTypeScriptResolver, findViolations, isGuardedPath } from './check-core-legacy-boundary.mjs';
-import { legacyBundleBoundary } from '../vite.config.ts';
+import { companionBundleBoundary, legacyBundleBoundary, wasmAssetUrl } from '../vite.config.ts';
 import { build } from 'vite';
 
 const rules = (text) => findViolations([{ path: 'packages/docx/src/x.ts', text }]).map((v) => v.rule);
@@ -232,4 +232,41 @@ test('guards source, parser and manifest files but not generated or private outp
   assert.equal(isGuardedPath('packages/xlsx/src/wasm/xlsx_parser.js'), false);
   assert.equal(isGuardedPath('packages/pptx/public/demo/readme.md'), false);
   assert.equal(isGuardedPath('packages/legacy-converter/src/legacy-doc.ts'), false);
+});
+
+// Both the factory graph and the opaque URL-loaded reader assets must keep
+// renderer/transport ownership in the installed peer after upstream refactors.
+test('companion builds reject viewer runtimes in entries and URL-loaded source modules', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ooxml-companion-boundary-'));
+  try {
+    const entry = join(root, 'entry.ts');
+    const reader = join(root, 'reader.ts');
+    for (const path of [
+      'packages/docx/src/internal/native-reading-runtime.ts',
+      'packages/xlsx/src/internal/worker-worksheet-source.ts',
+      'packages/pptx/src/render-worker.ts',
+      'packages/node/src/docx-model-source.ts',
+      'packages/core/src/worker/bridge.ts',
+      'packages/core/src/source/model-source.ts',
+    ]) {
+      const owner = join(root, path);
+      mkdirSync(join(owner, '..'), { recursive: true });
+      writeFileSync(owner, 'export const runtime = 1;');
+      writeFileSync(reader, path.includes('native-reading-runtime')
+        ? `export const runtime = () => import('./${path}');`
+        : `export { runtime } from './${path}';`);
+      for (const asset of [false, true]) {
+        writeFileSync(entry, asset
+          ? "export { default } from './reader.ts?url';"
+          : "export { runtime } from './reader.ts';");
+        await assert.rejects(() => build({
+          configFile: false, logLevel: 'silent',
+          plugins: [companionBundleBoundary(), wasmAssetUrl(undefined, [companionBundleBoundary()])],
+          build: { write: false, lib: { entry, formats: ['es'] } },
+        }), /viewer-owned runtime/);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -2,14 +2,18 @@ import { defineConfig } from 'vite';
 import { dts } from 'rolldown-plugin-dts';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { wasmAssetUrl } from '../../vite.config';
+import { companionBundleBoundary, wasmAssetUrl } from '../../vite.config';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 export default defineConfig({
   base: './',
   // Shared structural types live above this package. Keep tsgo's config/root
   // at repository level so every declaration stays inside its temporary tree.
-  plugins: [wasmAssetUrl(), dts({ generator: 'tsgo', tsconfig: '../../tsconfig.legacy.json' })],
+  plugins: [
+    companionBundleBoundary(),
+    wasmAssetUrl(undefined, [companionBundleBoundary()]),
+    dts({ generator: 'tsgo', tsconfig: '../../tsconfig.legacy.json' }),
+  ],
   oxc: { exclude: [/\.js$/, /\.d\.[cm]?ts$/] },
   build: {
     target: 'esnext',

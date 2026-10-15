@@ -43,6 +43,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  */
 export function wasmAssetUrl(
   readAsset: (path: string) => Promise<Uint8Array> = readFile,
+  modulePlugins: Plugin[] = [],
 ): Plugin {
   const SUFFIX = '?url';
   return {
@@ -63,7 +64,7 @@ export function wasmAssetUrl(
       // realm that imports it by URL cannot resolve sibling chunks.
       const moduleAsset = /\.[cm]?ts$/.test(filePath);
       const source = moduleAsset
-        ? await bundleSelfContainedModule(filePath)
+        ? await bundleSelfContainedModule(filePath, modulePlugins)
         : await readAsset(filePath);
       const referenceId = this.emitFile({
         type: 'asset',
@@ -130,11 +131,37 @@ export function legacyBundleBoundary(): Plugin {
   };
 }
 
+/** The installed viewer owns layout, selected-source sidecars and transport.
+ * Check retained modules after tree shaking: importing stateless WASM guards
+ * through core's worker barrel must not count its unused transport exports.
+ * Apply this to opaque source-module builds too; the outer build sees only
+ * their emitted asset bytes, not their dependency graphs. */
+export function companionBundleBoundary(): Plugin {
+  return {
+    name: 'companion-bundle-boundary',
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== 'chunk') continue;
+        for (const [id, module] of Object.entries(output.modules)) {
+          if (module.renderedLength === 0) continue;
+          const path = id.replaceAll('\\', '/');
+          if (/\/packages\/(?:docx|xlsx|pptx|node)\/src\//.test(path)
+            || /\/packages\/core\/src\/source\/model-source\.ts$/.test(path)
+            || (/\/packages\/core\/src\/worker\//.test(path)
+              && !/\/(?:index|wasm-guard)\.ts$/.test(path))) {
+            this.error(`${output.fileName} contains viewer-owned runtime ${id}`);
+          }
+        }
+      }
+    },
+  };
+}
+
 /** Bundle one ES module with all of its imports inlined and its exports kept. */
-async function bundleSelfContainedModule(entry: string): Promise<string> {
+async function bundleSelfContainedModule(entry: string, plugins: Plugin[]): Promise<string> {
   const bundle = await rolldown({
     input: entry,
-    plugins: [docxCompatibilityMetadata()],
+    plugins: [docxCompatibilityMetadata(), ...plugins],
     platform: 'neutral',
     resolve: {
       alias: {

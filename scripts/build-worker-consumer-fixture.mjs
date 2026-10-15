@@ -219,8 +219,8 @@ writeFileSync(join(outDir, 'chart-ex.pptx'), chartExPptxBytes());
 const workers = readdirSync(join(outDir, 'assets'))
   .filter((name) => /^render-worker-[\w-]+\.js$/.test(name)
     && !name.includes('-host-'));
-if (workers.length < 3 || workers.length > 6) {
-  throw new Error(`Vite consumer output must contain 3 ordinary and up to 3 opt-in source render workers, found ${workers.length}`);
+if (workers.length !== 3) {
+  throw new Error(`Vite consumer output must contain exactly 3 shared render workers, found ${workers.length}`);
 }
 // The legacy DOC model source is loaded by URL inside the parser worker; the
 // consumer bundler must copy both its self-contained module and its WASM.
