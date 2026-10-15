@@ -250,7 +250,7 @@ describe('PPTX ordinary-shape image fills', () => {
     expect(state.globalAlpha).toBe(1);
   });
 
-  it('bounds tile rasters at native resolution while retaining the logical repetition scale', () => {
+  it('preserves in-budget tile sampling and bounds only oversized repeating cells', () => {
     const allocations: Array<[number, number]> = [];
     const patternScales: number[][] = [];
     class ScratchCanvas {
@@ -270,10 +270,12 @@ describe('PPTX ordinary-shape image fills', () => {
       return painted;
     };
 
-    expect(paint(2047.05)).toBe(true); // authored cell 4094.1×4096.1 uses a native 2×1 raster
-    expect(allocations).toEqual([[2, 1]]);
-    expect(paint(2047.55)).toBe(true); // a larger logical cell keeps the same native allocation
+    expect(paint(2047.05)).toBe(true); // ceil(4094.1) × ceil(4096.1) fits the old budget
+    expect(allocations).toEqual([[4095, 4097]]);
+    expect(patternScales[0]).toEqual([1, 1]);
+    expect(paint(2047.55)).toBe(true); // ceil(4095.1) × ceil(4096.1) crosses the old budget
     expect(allocations).toHaveLength(2);
+    expect(allocations[1]).toEqual([2, 1]);
     expect(allocations[1][0] * allocations[1][1]).toBeLessThanOrEqual(16_777_216);
     expect(paint(1_000_000)).toBe(true);
     expect(allocations[2]).toEqual([2, 1]);

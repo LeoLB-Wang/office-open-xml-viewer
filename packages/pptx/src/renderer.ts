@@ -2407,23 +2407,30 @@ function paintTiledBackground(
   // not the fractional geometry, so two individually-safe fractions cannot
   // cross the retained scratch-area limit after independent ceil operations.
   if (!Number.isFinite(cellW) || !Number.isFinite(cellH)) return false;
-  // Raster size is a resource policy, not a limit on DrawingML tile geometry.
-  // Keep a bounded repeating cell and restore its authored extent in the
-  // pattern transform (§20.1.8.58), including the mirrored-neighbour cadence.
-  // Never raster-upsample a small source just because its authored tile is
-  // enormous. The pattern transform supplies that scale without retaining a
-  // maximum-size canvas for every such fill.
-  let scratchW = Math.min(MAX_CANVAS_DIMENSION,
-    Math.max(1, Math.ceil(Math.min(cellW, source.width * (flipX ? 2 : 1)))));
-  let scratchH = Math.min(MAX_CANVAS_DIMENSION,
-    Math.max(1, Math.ceil(Math.min(cellH, source.height * (flipY ? 2 : 1)))));
-  if (scratchW * scratchH > MAX_CANVAS_AREA) {
-    const reduction = Math.sqrt(MAX_CANVAS_AREA / (scratchW * scratchH));
-    scratchW = Math.max(1, Math.floor(scratchW * reduction));
-    scratchH = Math.max(1, Math.floor(scratchH * reduction));
+  // Preserve the previous rasterization for cells that fit: draw at the
+  // authored size into the ceil-sized canvas and repeat those integer pixels.
+  // Normalizing even fractional cells to their exact extent changes sampling
+  // and seam placement. Only cells previously omitted use the bounded path.
+  let scratchW = Math.max(1, Math.ceil(cellW));
+  let scratchH = Math.max(1, Math.ceil(cellH));
+  const oversized = scratchW > MAX_CANVAS_DIMENSION || scratchH > MAX_CANVAS_DIMENSION
+    || scratchW > Math.floor(MAX_CANVAS_AREA / scratchH);
+  if (oversized) {
+    // Raster size is resource policy, not a DrawingML geometry limit. Avoid
+    // upsampling small sources; the pattern transform restores the authored
+    // extent (§20.1.8.58), including mirrored-neighbour cadence.
+    scratchW = Math.min(MAX_CANVAS_DIMENSION,
+      Math.max(1, Math.ceil(Math.min(cellW, source.width * (flipX ? 2 : 1)))));
+    scratchH = Math.min(MAX_CANVAS_DIMENSION,
+      Math.max(1, Math.ceil(Math.min(cellH, source.height * (flipY ? 2 : 1)))));
+    if (scratchW * scratchH > MAX_CANVAS_AREA) {
+      const reduction = Math.sqrt(MAX_CANVAS_AREA / (scratchW * scratchH));
+      scratchW = Math.max(1, Math.floor(scratchW * reduction));
+      scratchH = Math.max(1, Math.floor(scratchH * reduction));
+    }
   }
-  const rasterScaleX = scratchW / cellW;
-  const rasterScaleY = scratchH / cellH;
+  const rasterScaleX = oversized ? scratchW / cellW : 1;
+  const rasterScaleY = oversized ? scratchH / cellH : 1;
   const aux = createAuxCanvas(scratchW, scratchH);
   if (!aux) return false;
   const actx = aux.getContext('2d') as CanvasRenderingContext2D | null;

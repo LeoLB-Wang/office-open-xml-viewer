@@ -101,14 +101,15 @@ function tiledGradient(
   return pattern;
 }
 
-/** Compatibility fallback, deliberately identical to the previous native
- * radial resolver: authored midpoint and max-axis radius for rect, diagonal
- * radius for circle/shape. Resource/allocation rejection must preserve these
- * bytes rather than recursively changing the authored path type.
+/** Native fallback retains the previous midpoint/radius approximation:
+ * authored midpoint and max-axis radius for rect, diagonal radius for
+ * circle/shape. Resource/allocation rejection must preserve that shading
+ * model rather than recursively changing the authored path type.
  * ECMA-376 §20.1.8.31 defines the center-shade rectangle. Native Canvas has
  * only a point focus, so this approximation uses its authored midpoint.
  * Concentric PowerPoint PDF exports do not establish a general live circle
- * focus rule; retain the previous local-frame reading pending evidence. */
+ * focus rule; retain the midpoint approximation. The complete focus frame
+ * still honors rotWithShape (§20.1.8.33), as all gradient styles must. */
 function nativeRadialFill(fill: GradientFill, ctx: CanvasRenderingContext2D, box: ShadeBox,
   rotation = 0, shapeBox = box): CanvasGradient {
   const focus = fill.fillToRect;

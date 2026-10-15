@@ -407,15 +407,35 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
     expect(Math.abs(pixel(ctx, 120, 30)[3] - 128)).toBeLessThanOrEqual(3);
   });
 
-  it('keeps the previous local radial frame for rotWithShape=false', () => {
-    const recipe = { ...fill, fillToRect: { l: .1, r: .5, t: .4, b: .1 } };
-    const contexts = [canvas(160, 160).ctx, canvas(160, 160).ctx];
-    for (const [i, ctx] of contexts.entries()) {
-      ctx.translate(80, 80); ctx.rotate(Math.PI / 4); ctx.scale(-1, 1); ctx.translate(-50, -50);
-      ctx.fillStyle = resolveFill({ ...recipe, rotWithShape: i === 0 }, ctx, 0, 0, 100, 100, 45) as CanvasPattern;
-      ctx.fillRect(0, 0, 100, 100);
+  it.each(['rect', 'circle'] as const)('keeps a non-rotating %s gradient in the page frame, including reflection', path => {
+    const recipe = { ...fill, path, fillToRect: { l: .1, r: .5, t: .4, b: .1 } };
+    for (const flipped of [false, true]) {
+      const actual = canvas(160, 160).ctx;
+      actual.translate(80, 80); actual.rotate(Math.PI / 2);
+      actual.scale(flipped ? -1 : 1, 1); actual.translate(-50, -50);
+      actual.fillStyle = resolveFill({ ...recipe, rotWithShape: false }, actual, 0, 0, 100, 100, 90) as CanvasPattern;
+      actual.fillRect(0, 0, 100, 100);
+
+      // §20.1.8.33 applies to path gradients too (§20.1.8.46): the
+      // off-centre focus and complete shade frame stay upright. A quarter
+      // turn leaves this square's coverage unchanged; reflection is retained.
+      const expected = canvas(160, 160).ctx;
+      expected.translate(flipped ? 130 : 30, 30); expected.scale(flipped ? -1 : 1, 1);
+      expected.fillStyle = resolveFill(recipe, expected, 0, 0, 100, 100) as CanvasPattern;
+      expected.fillRect(0, 0, 100, 100);
+      const pixels = actual.getImageData(0, 0, 160, 160).data;
+      const reference = expected.getImageData(0, 0, 160, 160).data;
+      // The shade's 1024-texel ramp can round a rotated band one RGB unit
+      // apart. Coverage must agree exactly; moving the focus/frame fails.
+      let colorError = 0; let alphaError = 0;
+      for (let i = 0; i < pixels.length; i++) {
+        const error = Math.abs(pixels[i] - reference[i]);
+        if (i % 4 === 3) alphaError = Math.max(alphaError, error);
+        else colorError = Math.max(colorError, error);
+      }
+      expect(alphaError).toBe(0);
+      expect(colorError).toBeLessThanOrEqual(1);
     }
-    expect(contexts[1].getImageData(0, 0, 160, 160).data).toEqual(contexts[0].getImageData(0, 0, 160, 160).data);
   });
 
   it('bounds auxiliary allocation even for very large authored extents', () => {

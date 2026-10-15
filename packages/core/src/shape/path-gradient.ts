@@ -457,7 +457,8 @@ export function bandRowSpans(corners: Point[], y: number): Array<[number, number
  * and is a library support boundary, not an Office brush classifier.
  * Unsupported outlines keep the previous path-specific native resolver;
  * adjustment/aspect/topology boundaries lack live Office evidence (#1599).
- * Rotation framing also keeps the previous local frame pending live evidence.
+ * ECMA-376 §20.1.8.33 applies rotWithShape to every gradient style, including
+ * path shades (§20.1.8.46); counter-rotate the complete field when false.
  * Returns null when the host cannot allocate the shade raster.
  */
 export function resolvePathShade(
