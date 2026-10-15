@@ -1809,6 +1809,36 @@ pub(crate) fn math_run_color(
         .find_map(|rpr| child(rpr, "solidFill").and_then(|sf| parse_color_node(sf, theme)))
 }
 
+/// Conversion-failure recovery is library policy, but the retained authored
+/// preview still obeys ECMA-376 Part 3 §§9.3–9.4: recursively replace each
+/// AlternateContent with its first understood Choice (or Fallback), discarding
+/// every unselected branch. Only DrawingML/OMML text contributes to the preview.
+fn inline_math_preview_text(fallback: roxmltree::Node<'_, '_>) -> String {
+    let mut text = String::new();
+    // Keep traversal iterative and in document order without cloning subtrees.
+    let mut pending = vec![fallback];
+    while let Some(node) = pending.pop() {
+        if node.has_tag_name((ooxml_common::bounded_xml::MCE_NS, "AlternateContent")) {
+            if let Some(selected) = ooxml_common::mce::select_alternate_content(
+                node,
+                &crate::shape::pptx_understands_ns,
+            ) {
+                pending.push(selected);
+            }
+        } else if node.tag_name().name() == "t" {
+            let ns = node.tag_name().namespace();
+            if ooxml_common::ns::is_a_ns(ns) || ooxml_common::ns::is_m_ns(ns) {
+                if let Some(value) = node.text() {
+                    text.push_str(value);
+                }
+            }
+        } else {
+            pending.extend(node.children().rev().filter(|n| n.is_element()));
+        }
+    }
+    text
+}
+
 pub(crate) fn push_math_runs(
     node: roxmltree::Node<'_, '_>,
     font_size: Option<f64>,
@@ -1859,14 +1889,10 @@ pub(crate) fn push_math_runs(
                     push_math_runs(c, font_size, theme, runs, fallbacks);
                 }
                 if sel.tag_name().name() == "Choice" && runs.len() > start {
-                    let text = child(node, "Fallback")
-                        .map(|fallback| {
-                            fallback
-                                .descendants()
-                                .filter(|n| n.is_element() && n.tag_name().name() == "t")
-                                .filter_map(|n| n.text())
-                                .collect::<String>()
-                        })
+                    let text = node
+                        .children()
+                        .find(|n| n.has_tag_name((ooxml_common::bounded_xml::MCE_NS, "Fallback")))
+                        .map(inline_math_preview_text)
                         .unwrap_or_default();
                     if !text.is_empty() {
                         fallbacks.push(InlineEquationFallback {

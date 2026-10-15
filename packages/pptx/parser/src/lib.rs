@@ -7429,6 +7429,54 @@ mod tests {
     }
 
     #[test]
+    fn inline_math_preview_selects_nested_alternatives() {
+        for (choices, expected) in [
+            (
+                r#"<mc:Choice Requires="u"><a:r><a:t>unsupported</a:t></a:r></mc:Choice>
+                <mc:Choice Requires="a14"><a:r><a:t>chosen</a:t></a:r></mc:Choice>
+                <mc:Choice Requires="a14"><a:r><a:t>later choice</a:t></a:r></mc:Choice>"#,
+                "beforechosenafter",
+            ),
+            (
+                r#"<mc:Choice Requires="u"><a:r><a:t>unsupported</a:t></a:r></mc:Choice>
+                <mc:Choice Requires="a14 u"><a:r><a:t>partly understood</a:t></a:r></mc:Choice>"#,
+                "beforefallbackafter",
+            ),
+        ] {
+            let xml = format!(
+                r#"<mc:AlternateContent
+                xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"
+                xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+                xmlns:u="urn:unsupported">
+                <mc:Choice Requires="a14"><a14:m><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></a14:m></mc:Choice>
+                <mc:Fallback><a:r><a:t>before</a:t></a:r>
+                  <mc:AlternateContent>{choices}<mc:Fallback>
+                    <mc:AlternateContent><mc:Choice Requires="a14"><a:r><a:t>fallback</a:t></a:r></mc:Choice>
+                      <mc:Fallback><a:r><a:t>discarded nested fallback</a:t></a:r></mc:Fallback>
+                    </mc:AlternateContent>
+                  </mc:Fallback></mc:AlternateContent>
+                  <u:t>foreign text</u:t><a:r><a:t>after</a:t></a:r>
+                </mc:Fallback></mc:AlternateContent>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let mut runs = Vec::new();
+            let mut fallbacks = Vec::new();
+            push_math_runs(
+                doc.root_element(),
+                None,
+                &HashMap::new(),
+                &mut runs,
+                &mut fallbacks,
+            );
+            assert_eq!(runs.len(), 1);
+            assert_eq!(fallbacks.len(), 1);
+            assert_eq!(fallbacks[0].text, expected);
+        }
+    }
+
+    #[test]
     fn inline_math_retains_one_fallback_for_the_complete_choice_range() {
         let equation = "<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>";
         for (choice, expected_previews) in [
@@ -7450,6 +7498,7 @@ mod tests {
         ] {
             let xml = format!(
                 r#"<mc:AlternateContent
+                xmlns="http://schemas.openxmlformats.org/drawingml/2006/main"
                 xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                 xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"
                 xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">

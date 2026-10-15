@@ -1,12 +1,22 @@
 import { test, expect } from '@playwright/test';
 import { storedZip } from '../../../../tests/fixtures/chart-ex-packages.mjs';
 
-for (const kind of ['two children', 'one paragraph']) {
+for (const kind of ['two children', 'one paragraph', 'nested choice', 'nested fallback']) {
   test(`inline equation recovery replaces the complete Choice with ${kind}`, async ({ page }) => {
     const equation = (text: string) => `<m:oMath><m:r><m:t>${text}</m:t></m:r></m:oMath>`;
     const choice = kind === 'two children'
       ? `<a14:m>${equation('x')}</a14:m><a14:m>${equation('y')}</a14:m>`
       : `<a14:m><m:oMathPara>${equation('x')}${equation('y')}</m:oMathPara></a14:m>`;
+    const preview = '<a:r><a:t>complete preview</a:t></a:r>';
+    const discarded = '<a:r><a:t>discarded preview</a:t></a:r>';
+    const fallback = kind.startsWith('nested')
+      ? `<mc:AlternateContent>
+          <mc:Choice Requires="u">${discarded}</mc:Choice>
+          <mc:Choice Requires="${kind === 'nested choice' ? 'a14' : 'a14 u'}">${preview}</mc:Choice>
+          <mc:Choice Requires="${kind === 'nested choice' ? 'a14' : 'u'}">${discarded}</mc:Choice>
+          <mc:Fallback>${kind === 'nested fallback' ? preview : discarded}</mc:Fallback>
+        </mc:AlternateContent>`
+      : preview;
     const a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
     const p = 'http://schemas.openxmlformats.org/presentationml/2006/main';
     const r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -25,13 +35,14 @@ for (const kind of ['two children', 'one paragraph']) {
       ['ppt/slides/slide1.xml', `<p:sld xmlns:p="${p}" xmlns:a="${a}"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"
+        xmlns:u="urn:unsupported"
         xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><p:cSld><p:spTree>
         <p:sp><p:nvSpPr><p:cNvPr id="2" name="Equation"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
         <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="6858000"/></a:xfrm>
         <a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
         <p:txBody><a:bodyPr/><a:p><a:r><a:t>before</a:t></a:r><mc:AlternateContent>
         <mc:Choice Requires="a14">${choice}</mc:Choice>
-        <mc:Fallback><a:r><a:t>complete preview</a:t></a:r></mc:Fallback>
+        <mc:Fallback>${fallback}</mc:Fallback>
         </mc:AlternateContent><a:r><a:t>after</a:t></a:r></a:p></p:txBody>
         </p:sp></p:spTree></p:cSld></p:sld>`],
     ]);
