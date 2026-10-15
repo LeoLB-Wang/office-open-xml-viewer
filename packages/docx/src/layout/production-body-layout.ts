@@ -140,7 +140,7 @@ import {
 import { paragraphGapAdjustment } from './paragraph-spacing.js';
 import { bottomBorderExtentPt, resolveParagraphBorderEdges, topBorderExtentPt, type ParagraphBorderEdges } from './paragraph-border-adjacency.js';
 import { acquireParagraphAnchorRunStage, type ParagraphAcquisitionOptions, acquireParagraphResult, acquireRetainedFrameGroup, bodyFrameGroupFor, bodyParagraphBorderEdgesFor, projectPhysicalAnchorResult, retainedFrameMaximumBaselineLoweringPt, sliceParagraphLayout, type BodyFrameGroup } from './paragraph.js';
-import { wordGridLineAdmissionExtentPt, wordLoweredDropCapAnchorLeadingPt } from './body-pagination-compatibility.js';
+import { wordLoweredDropCapAnchorLeadingPt } from './body-pagination-compatibility.js';
 import { wordGridFrameCarrierSourceOwnsNoFlow } from './table-compatibility.js';
 import type { CompleteTextBoxStoryAcquirer } from './paragraph.js';
 import type { AnchorFloatRegistrationState, BodyAcquisitionState, BodyMeasurementContext, CompleteTextBoxStoryOwner, PhysicalAnchorFrame, RetainedTableRecord } from './acquisition-context.js';
@@ -2030,11 +2030,10 @@ function measureFollowingBodyBlock(
       fullExtentPt: layout.advancePt,
       // keepNext admits the successor's first content line, including
       // any retained wrap displacement before that line begins. Apply the
-      // selector's terminal grid-leading allowance only to that successor;
-      // earlier keep-set members still consume their full retained advances.
-      leadContentExtentPt: leadFragment
-        ? wordGridLineAdmissionExtentPt(leadFragment, leadLineBoxExtentPt)
-        : leadLineBoxExtentPt,
+      // terminal grid-leading allowance only after the paginator knows the
+      // keep set's complete reserve; earlier members keep their full advances.
+      leadContentExtentPt: leadLineBoxExtentPt,
+      ...(leadFragment ? { leadGridParagraph: leadFragment } : {}),
       fullFootnoteReferenceIds: footnoteIdsInRetainedSlice(layout),
       leadFootnoteReferenceIds: firstLine ? footnoteIdsInRetainedLines([firstLine]) : [],
       pageOwnedAnchorKeysByLine: pageOwnedAnchorKeysByLine(layout),

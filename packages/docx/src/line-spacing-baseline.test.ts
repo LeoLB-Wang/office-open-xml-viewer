@@ -179,6 +179,56 @@ describe('inline objects on a line grid', () => {
 });
 
 describe('line-grid page-bottom admission', () => {
+  it.each([
+    [false, false], [true, false], [false, true], [true, true],
+  ])('charges the full grid cell beside a new footnote with continuation=%s, keepNext=%s', (allowFootnoteContinuation, keepNext) => {
+    const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
+    caption.defaultFontSize = 16;
+    caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 },
+      { type: 'text', ...textRun(''), noteRef: { kind: 'footnote', id: '1' } }];
+    const model = docWith(...(keepNext
+      ? [paragraph('Preceding', exact(10)), { ...paragraph('Heading', exact(10)), keepNext } as BodyElement]
+      : [paragraph('Preceding', exact(20))]), caption);
+    model.footnotes = [{ id: '1', content: [paragraph('Note', exact(10))] }];
+    model.section.pageHeight = 54;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'), allowFootnoteContinuation,
+    }));
+    // 20pt preceding + 20pt cell + (6pt separator + 10pt note) exceeds
+    // 54pt, although the centered caption's natural box fits above the band.
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages[0].layers.body).toHaveLength(1);
+    expect(layout.pages[0].layers.notes).toHaveLength(0);
+    expect(layout.pages[1].layers.body).toHaveLength(keepNext ? 2 : 1);
+    expect(layout.pages[1].layers.notes.some(node => node.kind === 'note')).toBe(true);
+  });
+
+  it('charges the full grid cell above an already committed footnote band', () => {
+    const preceding = paragraph('Preceding', exact(20)) as Extract<BodyElement, { type: 'paragraph' }>;
+    preceding.runs.push({ type: 'text', ...textRun(''), noteRef: { kind: 'footnote', id: '1' } });
+    const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
+    caption.defaultFontSize = 16;
+    caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 }];
+    const model = docWith(preceding, caption);
+    model.footnotes = [{ id: '1', content: [paragraph('Note', exact(10))] }];
+    model.section.pageHeight = 54;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual([1, 1]);
+    expect(layout.pages[0].layers.notes.some(node => node.kind === 'note')).toBe(true);
+    expect(layout.pages[1].layers.notes).toHaveLength(0);
+  });
+
   it.each([[40, 2], [41, 2], [41.5, 1]])('keeps the grid caption bottom-border stroke inside body bottom %s', (bodyBottom, pages) => {
     const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
     caption.defaultFontSize = 16;

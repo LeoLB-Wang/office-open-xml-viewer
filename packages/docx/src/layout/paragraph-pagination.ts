@@ -42,9 +42,9 @@ export type ParagraphFragmentation =
 /**
  * The selector's fit extent of a fragment that completes its paragraph.
  * Retained advance stays authoritative for placement and paint; only the
- * page/column-edge fit comparison ignores terminal grid leading
- * (WORD_GRID_LINE_CONTENT_FIT_ADMISSION) and authored trailing whitespace
- * (WORD_TRAILING_SPACE_AFTER_FIT_ADMISSION), and any retained trailing
+ * physical-body-edge fit comparison ignores terminal grid leading when
+ * unreserved (WORD_GRID_LINE_CONTENT_FIT_ADMISSION). Authored trailing whitespace
+ * follows WORD_TRAILING_SPACE_AFTER_FIT_ADMISSION, and any retained trailing
  * extent beyond it (for example a bottom border) remains. Vertical final-line
  * admission follows WORD_VERTICAL_RL_FINAL_LINE_BASELINE_ADMISSION. That edge
  * policy is not evidence for a body/note-band boundary: footnote plans charge
@@ -55,13 +55,17 @@ function completingParagraphAdmissionExtentPt(
   authoredSpaceAfterPt: number,
   writingMode: WritingMode,
   availableBlockExtentPt: number,
+  unreservedBodyBottomPt: number | undefined,
+  reservePt: number,
 ): number {
   const withoutSpaceAfterPt = wordFinalParagraphAdmissionExtentPt({
     advancePt: fragment.advancePt,
     retainedSpaceAfterPt: fragment.spacing.afterPt,
     authoredSpaceAfterPt,
   });
-  const logicalLineBoxExtentPt = wordGridLineAdmissionExtentPt(fragment, withoutSpaceAfterPt);
+  const logicalLineBoxExtentPt = wordGridLineAdmissionExtentPt(
+    fragment, withoutSpaceAfterPt, unreservedBodyBottomPt, reservePt,
+  );
   return wordVerticalRlFinalLineAdmissionExtentPt({
     paragraph: fragment,
     writingMode,
@@ -90,6 +94,9 @@ export function selectParagraphFragment(
     /** Owning section-region flow axis. Vertical final-line admission is
      * governed by WORD_VERTICAL_RL_FINAL_LINE_BASELINE_ADMISSION. */
     writingMode?: WritingMode;
+    /** Physical body bottom, only when no existing reservation or shortened
+     * column boundary intervenes. Candidate reserves are checked separately. */
+    unreservedBodyBottomPt?: number;
     /** Lines at or after this index may not be admitted in this flow region:
      * a proven anchor-line deferral (anchor-line-deferral.ts) ends the page
      * just above that line. Keep and widow rules then act as for overflow. */
@@ -135,16 +142,19 @@ export function selectParagraphFragment(
     return reserve;
   };
   const reserveFits = (reservePt: number): boolean => additionalReserveFits?.(reservePt) ?? true;
-  const admissionExtent = (fragment: ParagraphLayout, completesParagraph: boolean): number => (
+  const admissionExtent = (fragment: ParagraphLayout, completesParagraph: boolean, reservePt: number): number => (
     completesParagraph
       ? completingParagraphAdmissionExtentPt(
         fragment, authoredSpaceAfterPt, policy.writingMode ?? 'horizontal-tb', availableBlockExtentPt,
+        policy.unreservedBodyBottomPt, reservePt,
       )
-      : wordGridLineAdmissionExtentPt(fragment, fragment.advancePt)
+      : wordGridLineAdmissionExtentPt(
+        fragment, fragment.advancePt, policy.unreservedBodyBottomPt, reservePt,
+      )
   );
   if (fragmentation.kind === 'indivisible') {
     const completeReserve = reserveFor(acquired);
-    const completeExtentPt = admissionExtent(acquired, true);
+    const completeExtentPt = admissionExtent(acquired, true, completeReserve);
     if (acquired.nativeReadingRelocations?.length && nativeReadingRequiresFreshColumn(
       completeExtentPt + completeReserve, availableBlockExtentPt, freshFlowRegionBlockExtentPt,
       canRelocate, reserveFits(completeReserve),
@@ -176,7 +186,7 @@ export function selectParagraphFragment(
   }
   if (total === 0) {
     const reserve = reserveFor(acquired);
-    const completeExtentPt = admissionExtent(acquired, true);
+    const completeExtentPt = admissionExtent(acquired, true, reserve);
     if (canRelocate && (
       completeExtentPt + reserve > availableBlockExtentPt
       || !reserveFits(reserve)
@@ -195,7 +205,7 @@ export function selectParagraphFragment(
     };
   }
   const completeReserve = reserveFor(acquired);
-  const completeExtentPt = admissionExtent(acquired, true);
+  const completeExtentPt = admissionExtent(acquired, true, completeReserve);
   if (cursor.boundary === null && policy.keepLines && canRelocate
     && (
       lineEndLimit !== undefined
@@ -236,7 +246,7 @@ export function selectParagraphFragment(
       const candidate = slice(lineEnd);
       const reserve = reserveFor(candidate);
       return reserveFits(reserve)
-        ? admissionExtent(candidate, lineEnd === total) + reserve
+        ? admissionExtent(candidate, lineEnd === total, reserve) + reserve
         : availableBlockExtentPt + 1;
     })(),
   ).end;
@@ -274,6 +284,7 @@ export function selectParagraphFragment(
   ) {
     throw new Error('Paragraph continuation source boundary did not advance');
   }
+  const finalReservePt = reserveFor(fragment);
   return {
     fragment,
     nextCursor: nextBoundary === null ? null : Object.freeze({
@@ -282,8 +293,8 @@ export function selectParagraphFragment(
       ...(uniformRubyAdvancePt === undefined ? {} : { uniformRubyAdvancePt }),
     }),
     requiresFreshFlowRegion: false,
-    additionalReservePt: reserveFor(fragment),
+    additionalReservePt: finalReservePt,
     admittedBlockExtentPt: Math.min(fragment.advancePt, availableBlockExtentPt),
-    admissionExtentPt: admissionExtent(fragment, end === total),
+    admissionExtentPt: admissionExtent(fragment, end === total, finalReservePt),
   };
 }

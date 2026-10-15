@@ -113,19 +113,41 @@ export const WORD_GRID_LINE_CONTENT_FIT_ADMISSION = defineCompatibilityRule({
     kind: 'regression-test',
     reference: 'packages/docx/src/line-spacing-baseline.test.ts#paginates a centered natural box with body bottom %s',
   },
-  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. Only leading added beyond its own natural/authored height is eligible; authored atLeast minima and auto multiples remain charged. Off-grid and exact lines retain full-box admission.',
+  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. Only leading added beyond its own natural/authored height is eligible; authored atLeast minima and auto multiples remain charged. Off-grid and exact lines retain full-box admission. This observation applies only at the physical body bottom with no intervening reservation; note bands, wrap exclusions and shortened column regions retain the whole grid cell.',
 });
 
 /** Omit only the terminal grid leading, preserving paragraph trailing extents
  * and all retained placement/paint geometry. Applies to complete and continuing
- * fragments; earlier lines still consume their full grid cells. */
+ * fragments; earlier lines still consume their full grid cells. The caller
+ * supplies a physical body bottom only when the active region reaches it
+ * without a footer, committed note band or column-balancing reservation. */
 export function wordGridLineAdmissionExtentPt(
   paragraph: ParagraphLayout,
   logicalLineBoxExtentPt: number,
+  unreservedBodyBottomPt: number | undefined,
+  additionalReservePt = 0,
+  blockOffsetPt = 0,
 ): number {
   void WORD_GRID_LINE_CONTENT_FIT_ADMISSION;
-  const leadingPt = paragraph.lines.at(-1)?.gridAfterLeadingPt ?? 0;
+  const lastLine = paragraph.lines.at(-1);
+  const leadingPt = lastLine?.gridAfterLeadingPt ?? 0;
   if (leadingPt === 0) return logicalLineBoxExtentPt;
+  // The page-margin observation provides no allowance against a retained
+  // reservation (§17.11.21 note bands; §20.4 anchored wrap exclusions).
+  // This is a scope restriction, not a new Office compatibility inference.
+  if (unreservedBodyBottomPt === undefined || additionalReservePt > 0) {
+    return logicalLineBoxExtentPt;
+  }
+  // Keep-next lookahead acquires successors at the current cursor; only
+  // its terminal slice moves by the preceding keep members' full advances;
+  // host-owned exclusions move with it, while page-owned exclusions stay put.
+  if (lastLine && paragraph.exclusions.some(({ bounds, verticalOwnership }) => {
+    const topPt = bounds.yPt + (verticalOwnership === 'host' ? blockOffsetPt : 0);
+    return topPt < unreservedBodyBottomPt
+      && topPt + bounds.heightPt > lastLine.bounds.yPt + blockOffsetPt
+      && bounds.xPt < paragraph.flowBounds.xPt + paragraph.flowBounds.widthPt
+      && bounds.xPt + bounds.widthPt > paragraph.flowBounds.xPt;
+  })) return logicalLineBoxExtentPt;
   // §17.3.1.7/24 borders (including their authored spacing) and §17.3.1.31
   // shading retain their acquired paint geometry. The observed grid-leading
   // allowance exempts blank leading only, never decoration ink. Measure its
