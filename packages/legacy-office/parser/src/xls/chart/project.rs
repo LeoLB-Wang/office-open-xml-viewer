@@ -346,7 +346,7 @@ fn charge(budget: &std::cell::Cell<usize>, bytes: usize) -> Result<(), String> {
     let left = budget
         .get()
         .checked_sub(bytes)
-        .ok_or_else(|| super::super::unsupported("XLS chart model retention budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("XLS chart model retention budget exceeded"))?;
     budget.set(left);
     Ok(())
 }

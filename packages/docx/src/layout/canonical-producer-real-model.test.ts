@@ -1564,3 +1564,38 @@ describe('multiple pending footnote continuations', () => {
     expect(sliced).toEqual(layout);
   });
 });
+
+// Issue #1806: the endnote case is a passing control; the footnote case
+// exercises the same stack arithmetic after relocation to the page bottom.
+it.each([
+  { kind: 'endnote' as const, count: 50, linePt: 10.3 },
+  { kind: 'endnote' as const, count: 20, linePt: 25.056 },
+  { kind: 'footnote' as const, count: 5, linePt: 25.056 },
+])('keeps $count fractional $kind advances inside their composed domain', ({ kind, count, linePt }) => {
+  const ids = Array.from({ length: count }, (_, index) => String(index + 1));
+  const body = ordinaryParagraph('references');
+  body.runs = ids.flatMap(id => {
+    const reference = endnoteReferenceParagraph(id) as unknown as DocParagraph;
+    const run = reference.runs[0];
+    if (run?.type === 'text') run.noteRef = { kind, id };
+    return reference.runs;
+  });
+  const note = ordinaryParagraph('note');
+  note.lineSpacing = { value: linePt, rule: 'exact', explicit: true };
+  const notes = ids.map(id => ({ id, content: [note] }));
+  const model = {
+    section: {
+      pageWidth: 612, pageHeight: 792,
+      marginTop: 72, marginRight: 72, marginBottom: 72, marginLeft: 72,
+      headerDistance: 36, footerDistance: 36, titlePage: false,
+      evenAndOddHeaders: false, sectionStart: 'nextPage', columns: null,
+    },
+    body: [body], headers: { default: null, first: null, even: null },
+    footers: { default: null, first: null, even: null },
+    footnotes: kind === 'footnote' ? notes : [],
+    endnotes: kind === 'endnote' ? notes : [], fontFamilyClasses: {},
+  } as unknown as DocxDocumentModel;
+  const layout = layoutDocument(model,
+    createLayoutServices(model, { measureContext: measureContext() }), { currentDateMs: 0 });
+  expect(layout.pages[0]?.layers.notes).toHaveLength(ids.length);
+});

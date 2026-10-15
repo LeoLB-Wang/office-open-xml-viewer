@@ -12,27 +12,15 @@ export interface ShadeBox { x: number; y: number; w: number; h: number }
 type Point = [number, number];
 type Matrix = [number, number, number, number, number, number];
 
-// Resource policy, not an OOXML rule: at most 512² raster pixels. Exact
-// row intersections of bilinear bands avoid probing their bounding boxes.
-// For E flattened edges, R <= 512 rows and P <= 512² pixels, geometry work is
-// O(N + E R (log(E + 1) + alpha(P)) + P alpha(P)):
-// focus crossings are sorted per row,
-// N is input outline work; E <= 32768 after the explicit support budget.
-// Each band has constant-degree row extrema, and successor links remove
-// assigned pixels. Geometry memory is O(N + P); no shade geometry is
-// clustered or cached. Stop sorting/ramp construction is separate.
-// This is an inherent additive cost over main's native point-focus brush,
-// not a constant-factor latency promise. A sequential Node/Skia resolve-only
-// probe at 512px with 32768 alternating-radius edges measured medians of
-// 0.14s (center), 0.35s (corner), 0.45s (outside-area focus) after replacing
-// rational extrema with shared-edge scans for convex bands. The previous
-// renderer measured 1.00s/2.20s/2.25s in the same three-run comparison.
-// Hardware-dependent times include outline traversal and raster generation,
-// not the subsequent paint; folded bands still require rational extrema.
-// Work guards cover the maximum supported edge count and reject larger inputs
-// before raster allocation. Tiled paints retain the native brush entirely.
+// Resource policy, not an OOXML rule: at most 512² raster pixels. For E
+// flattened edges, R <= 512 rows and P <= 512² pixels, scanline geometry work
+// is O(N + E R log(E + 1) + (E R + P) alpha(P)); memory is O(N + P).
+// Reading the authored outline necessarily costs O(N). Increasing its edge
+// count never increases raster size or the number of successful pixel solves:
+// successor sets assign each pixel once, without an E × P shading loop.
+// ECMA-376 §20.1.8.46 does not limit path complexity: keep the authored field
+// for every edge count rather than substituting a circular gradient.
 const MAX_EDGE = 512;
-const EDGE_LIMIT = 32768;
 const MARGIN = 2;
 const BEZIER_SEGMENTS = 16;
 const ARC_STEP = Math.PI / 32;
@@ -487,9 +475,6 @@ export function resolvePathShade(
     && box.w > 0 && box.h > 0)) return null;
   if (typeof ctx.getTransform !== 'function' || fill.stops.length === 0) return null;
   const outlinePolygons = outline ? flattenFillOutline(outline, ctx, shapeBox) : [];
-  // Explicit resource policy: above this edge budget retain main's native
-  // circle approximation. Never cluster geometry or silently alter its shape.
-  if (outlinePolygons.reduce((n, polygon) => n + polygon.length, 0) > EDGE_LIMIT) return null;
   const coverage = outlinePolygons.length > 0 ? outlinePolygons : [rectangle(shapeBox)];
   // Host topology constrains rect shades too: rect only changes the field,
   // not the evidence boundary. Non-kernel outlines (arrows, chevrons, holes,

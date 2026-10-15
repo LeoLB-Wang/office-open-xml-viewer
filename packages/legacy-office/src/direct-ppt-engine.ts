@@ -36,6 +36,7 @@ export function createLegacyPptSourceEngine(
 }> {
   return createDirectSourceRuntime({
     label: 'legacy PPT',
+    format: 'ppt',
     maximumSourceBytes: MAX_LEGACY_PPT_SOURCE_BYTES,
     loadGlue,
     resolveWasm,

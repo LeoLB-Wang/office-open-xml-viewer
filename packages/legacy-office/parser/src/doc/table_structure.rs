@@ -211,7 +211,7 @@ impl<P: Payload, R: Borrow<Row>> Assembler<P, R> {
         if row_end {
             self.rows = self.rows.checked_add(1).ok_or("OUTPUT_TOO_LARGE")?;
             if self.rows > 100_000 {
-                return Err(unsupported("Word table row budget exceeded"));
+                return Err(crate::rejection::resource("Word table row budget exceeded"));
             }
             if !current.cell.is_empty()
                 || current.cells.len() != props.row.borrow().cells.len()
@@ -240,7 +240,7 @@ impl<P: Payload, R: Borrow<Row>> Assembler<P, R> {
             current.cell.append(paragraph, admit)?;
             if cell_end {
                 if current.cells.len() >= 63 {
-                    return Err(unsupported("too many Word table cell marks"));
+                    return Err(crate::rejection::resource("too many Word table cell marks"));
                 }
                 reserve_one(&mut current.cells, admit)?;
                 current.cells.push(std::mem::take(&mut current.cell));
@@ -377,7 +377,9 @@ pub(super) fn plan<P: Default, A: FnMut(usize) -> Result<(), String>>(
         sum.checked_add(*count).ok_or("OUTPUT_TOO_LARGE")
     })?;
     if grid_len > 65_536 {
-        return Err(unsupported("Word table grid budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word table grid budget exceeded",
+        ));
     }
     let mut grid = Vec::new();
     reserve_exact(&mut grid, grid_len, admit)?;
@@ -551,7 +553,9 @@ fn grid_boundaries<P, A: FnMut(usize) -> Result<(), String>>(
         boundaries[write] = (edge, maximum);
         write += 1;
         if write > 65_536 {
-            return Err(unsupported("Word table grid budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word table grid budget exceeded",
+            ));
         }
     }
     boundaries.truncate(write);
@@ -1262,7 +1266,7 @@ mod tests {
         assert!(feed(Assembler::new(), true).is_ok());
         assert_eq!(
             feed(Assembler::new(), false).unwrap_err(),
-            "UNSUPPORTED:Word table grid budget exceeded"
+            "LEGACY_RESOURCE_LIMIT:Word table grid budget exceeded"
         );
     }
 
@@ -1363,7 +1367,7 @@ mod tests {
             )
             .err()
             .as_deref(),
-            Some("UNSUPPORTED:Word table grid budget exceeded")
+            Some("LEGACY_RESOURCE_LIMIT:Word table grid budget exceeded")
         );
     }
 

@@ -350,11 +350,15 @@ impl Store<'_> {
         context: &mut GroupRead,
     ) -> Result<(), String> {
         if depth > MAX_DEPTH {
-            return Err(unsupported("Word drawing groups are nested too deeply"));
+            return Err(crate::rejection::resource(
+                "Word drawing groups are nested too deeply",
+            ));
         }
         for child in children {
             if members.len() >= MAX_MEMBERS {
-                return Err(unsupported("Word drawing group member budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word drawing group member budget exceeded",
+                ));
             }
             match child.kind {
                 0xf003 if child.version == 15 => {
@@ -539,6 +543,27 @@ impl Store<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_depth_ceiling_is_resource_policy() {
+        let word = vec![0; 0x232];
+        let mut store = Store::read(&word, &[], 0).unwrap();
+        let mut context = GroupRead {
+            part: Part::Main,
+            reading_contour: false,
+            nested_solver: false,
+            line_connector: false,
+            group_ids: vec![],
+        };
+        let map = Map::new([0, 0, 1, 1], [0.0, 0.0, 1.0, 1.0]).unwrap();
+        assert!(store
+            .group_members(&[], map, MAX_DEPTH, &mut vec![], &mut context)
+            .is_ok());
+        assert!(store
+            .group_members(&[], map, MAX_DEPTH + 1, &mut vec![], &mut context)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+    }
 
     #[test]
     fn maps_child_anchors_through_nested_coordinate_systems() {

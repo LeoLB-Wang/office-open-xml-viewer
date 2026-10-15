@@ -174,7 +174,7 @@ fn read_hyperlink_catalog(
                     }
                     (CSTRING, 1) if view.version == 0 && view.payload.len() % 2 == 0 => {
                         remaining = remaining.checked_sub(view.payload.len()).ok_or_else(|| {
-                            unsupported("PowerPoint hyperlink text budget exceeded")
+                            crate::rejection::resource("PowerPoint hyperlink text budget exceeded")
                         })?;
                         let units = view
                             .payload
@@ -342,12 +342,13 @@ impl SpanStore {
         bytes: Vec<u8>,
     ) -> Result<u32, String> {
         if self.blob_images.len() >= 1024 {
-            return Err(unsupported("too many PowerPoint blob images"));
+            return Err(crate::rejection::resource(
+                "too many PowerPoint blob images",
+            ));
         }
-        self.remaining = self
-            .remaining
-            .checked_sub(bytes.len())
-            .ok_or_else(|| unsupported("PowerPoint retained media budget exceeded"))?;
+        self.remaining = self.remaining.checked_sub(bytes.len()).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint retained media budget exceeded")
+        })?;
         let index = u32::try_from(self.entries.len() + self.blob_images.len() + 1)
             .map_err(|_| unsupported("PowerPoint image index overflow"))?;
         self.blob_images.insert(index, (extension, bytes));
@@ -408,7 +409,9 @@ impl SpanStore {
                 self.remaining = self
                     .remaining
                     .checked_sub(image.view(primary, pictures)?.len())
-                    .ok_or_else(|| unsupported("PowerPoint retained media budget exceeded"))?;
+                    .ok_or_else(|| {
+                        crate::rejection::resource("PowerPoint retained media budget exceeded")
+                    })?;
             }
             self.images.insert(index, image);
         }
@@ -447,9 +450,11 @@ impl SpanStore {
         if let Some((extension, bytes)) = self.blob_images.get(&index) {
             return Ok(Some((*extension, bytes)));
         }
+        // A key that was never admitted is caller/session misuse. A retained
+        // None below is an input image outside the passive reader subset.
         self.images
             .get(&index)
-            .ok_or_else(|| unsupported("PowerPoint image was not admitted"))?
+            .ok_or_else(|| "PowerPoint image was not admitted".to_string())?
             .as_ref()
             .map(|image| Ok((image.image.extension, image.view(primary, pictures)?)))
             .transpose()

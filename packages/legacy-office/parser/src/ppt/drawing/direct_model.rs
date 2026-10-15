@@ -71,15 +71,15 @@ fn apply_text_links(
     // until a projected run needs one. Sorting permits one forward sweep;
     // repeated references never cause a links × runs scan.
     let charge = |budget: &mut usize, bytes: usize, kind: &str| -> Result<(), String> {
-        *budget = budget
-            .checked_sub(bytes)
-            .ok_or_else(|| unsupported(format!("PowerPoint text link {kind} budget exceeded")))?;
+        *budget = budget.checked_sub(bytes).ok_or_else(|| {
+            crate::rejection::resource(format!("PowerPoint text link {kind} budget exceeded"))
+        })?;
         Ok(())
     };
     let scratch = links
         .len()
         .checked_mul(std::mem::size_of::<usize>() + 1)
-        .ok_or_else(|| unsupported("PowerPoint text link size overflow"))?;
+        .ok_or_else(|| crate::rejection::resource("PowerPoint text link size overflow"))?;
     charge(model_budget, scratch, "model")?;
     charge(
         work_budget,
@@ -123,7 +123,9 @@ fn apply_text_links(
                     let cut_capacity = len
                         .checked_add(active_count.saturating_mul(2))
                         .and_then(|value| value.checked_add(2))
-                        .ok_or_else(|| unsupported("PowerPoint text link size overflow"))?;
+                        .ok_or_else(|| {
+                            crate::rejection::resource("PowerPoint text link size overflow")
+                        })?;
                     let scratch = cut_capacity
                         .checked_mul(std::mem::size_of::<usize>())
                         .and_then(|bytes| {
@@ -131,7 +133,9 @@ fn apply_text_links(
                                 .checked_mul(std::mem::size_of::<(usize, usize)>())
                                 .and_then(|positions| bytes.checked_add(positions))
                         })
-                        .ok_or_else(|| unsupported("PowerPoint text link size overflow"))?;
+                        .ok_or_else(|| {
+                            crate::rejection::resource("PowerPoint text link size overflow")
+                        })?;
                     charge(model_budget, scratch, "model")?;
                     let mut cuts = Vec::with_capacity(cut_capacity);
                     cuts.extend([0, len]);
@@ -164,7 +168,9 @@ fn apply_text_links(
                     let style_bytes = usize::try_from(
                         ooxml_common::json_measurement::measure_json(&data)?.json_bytes,
                     )
-                    .map_err(|_| unsupported("PowerPoint text link size overflow"))?;
+                    .map_err(|_| {
+                        crate::rejection::resource("PowerPoint text link size overflow")
+                    })?;
                     let mut selected = next_link;
                     for pair in cuts.windows(2) {
                         charge(work_budget, 1, "work")?;
@@ -193,7 +199,9 @@ fn apply_text_links(
                         let owned_bytes = style_bytes
                             .checked_add(last - first)
                             .and_then(|bytes| bytes.checked_add(target_bytes))
-                            .ok_or_else(|| unsupported("PowerPoint text link size overflow"))?;
+                            .ok_or_else(|| {
+                                crate::rejection::resource("PowerPoint text link size overflow")
+                            })?;
                         charge(model_budget, owned_bytes, "model")?;
                         text_style::direct_model::reserve_run_slot(&mut projected, model_budget)?;
                         let mut part = data.clone();
@@ -393,7 +401,9 @@ impl Context<'_> {
         ancestors: &[pptx_model::GroupTransform],
     ) -> Result<(), String> {
         if depth > MAX_DEPTH {
-            return Err(unsupported("PowerPoint drawing nesting is too deep"));
+            return Err(crate::rejection::resource(
+                "PowerPoint drawing nesting is too deep",
+            ));
         }
         let view = record.view(self.backing)?;
         if view.kind == 0xf003 {
@@ -454,7 +464,9 @@ impl Context<'_> {
         ancestors: &[pptx_model::GroupTransform],
     ) -> Result<(), String> {
         if self.elements.len() >= MAX_MODEL_SHAPES {
-            return Err(unsupported("too many PowerPoint drawing shapes"));
+            return Err(crate::rejection::resource(
+                "too many PowerPoint drawing shapes",
+            ));
         }
         let local = direct_transform::leaf(&shape)?;
         let local_extent = (local.cx, local.cy);
@@ -1139,7 +1151,9 @@ impl Context<'_> {
                             .model_budget
                             .checked_sub(2 * std::mem::size_of::<(usize, usize, &str)>())
                             .ok_or_else(|| {
-                                unsupported("PowerPoint text link model budget exceeded")
+                                crate::rejection::resource(
+                                    "PowerPoint text link model budget exceeded",
+                                )
                             })?;
                         text_links.push((begin, end, target));
                     }
@@ -1344,10 +1358,9 @@ impl Context<'_> {
             if len < capacity {
                 return Ok((capacity, 0));
             }
-            let next = capacity
-                .max(1)
-                .checked_mul(2)
-                .ok_or_else(|| unsupported("PowerPoint direct slide model size overflow"))?;
+            let next = capacity.max(1).checked_mul(2).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint direct slide model size overflow")
+            })?;
             Ok((next, next - capacity))
         };
         let (element_capacity, element_slots) =
@@ -1360,17 +1373,22 @@ impl Context<'_> {
                     .checked_mul(std::mem::size_of::<SlideElementSource>())
                     .and_then(|b| a.checked_add(b))
             })
-            .ok_or_else(|| unsupported("PowerPoint direct slide model size overflow"))?;
-        *self.model_budget = self
-            .model_budget
-            .checked_sub(bytes)
-            .ok_or_else(|| unsupported("PowerPoint direct slide model budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("PowerPoint direct slide model size overflow")
+            })?;
+        *self.model_budget = self.model_budget.checked_sub(bytes).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint direct slide model budget exceeded")
+        })?;
         self.elements
             .try_reserve_exact(element_capacity.saturating_sub(self.elements.len()))
-            .map_err(|_| unsupported("PowerPoint direct slide model allocation failed"))?;
+            .map_err(|_| {
+                crate::rejection::resource("PowerPoint direct slide model allocation failed")
+            })?;
         self.sources
             .try_reserve_exact(source_capacity.saturating_sub(self.sources.len()))
-            .map_err(|_| unsupported("PowerPoint direct slide model allocation failed"))?;
+            .map_err(|_| {
+                crate::rejection::resource("PowerPoint direct slide model allocation failed")
+            })?;
         self.elements.push(element);
         self.sources.push(SlideElementSource {
             origin: if inherited {
@@ -1386,7 +1404,9 @@ impl Context<'_> {
         *self.model_budget = self
             .model_budget
             .checked_sub(MODEL_SHAPE_STRINGS_BYTES)
-            .ok_or_else(|| unsupported("PowerPoint direct slide model budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("PowerPoint direct slide model budget exceeded")
+            })?;
         Ok(())
     }
 }

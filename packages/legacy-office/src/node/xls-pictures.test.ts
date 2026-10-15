@@ -111,12 +111,12 @@ describe('XLS pictures', () => {
   // The converter omitted these pictures with a warning; the direct reader
   // does not drop drawn content and rejects the workbook instead.
   it.each([
-    [{ imageFormat: 'wmf', wmfTrailer: new Uint8Array(8).fill(0xa5) }, /BLIP is not a supported image/],
-    [{ imageFormat: 'wmf', wmfMalformedBeforeEof: true }, /WMF/],
-    [{ malformedImage: true }, /BLIP is not a supported image/],
-    [{ hiddenRoot: true }, /grouped or transformed drawing shapes/],
-    [{ nested: true }, /drawing group without its anchor/],
-  ] as const)('rejects an unsupported referenced picture: %j', async (options, reason) => {
-    await expect(sheet(buildXlsPicturesFixture(options), 7)).rejects.toThrow(reason);
+    { imageFormat: 'wmf', wmfTrailer: new Uint8Array(8).fill(0xa5) },
+    { imageFormat: 'wmf', wmfMalformedBeforeEof: true },
+    { malformedImage: true },
+    { hiddenRoot: true },
+    { nested: true },
+  ] as const)('rejects an unsupported referenced picture: %j', async options => {
+    await expect(sheet(buildXlsPicturesFixture(options), 7)).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'xls', reason: 'source-subset' } });
   });
 });

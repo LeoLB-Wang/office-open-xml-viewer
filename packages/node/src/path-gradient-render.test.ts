@@ -498,7 +498,9 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
 
   it('bounds band solves and covers interiors for corner and nonnested area foci', () => {
     const { ctx } = canvas(512, 512);
-    for (const path of ['rect', 'shape'] as const) for (const edges of [720, 20000, 32768, 32769]) {
+    // Ordinary complexity and the first edge count above the removed cap.
+    // Intermediate counts add the same coverage at substantial scanline cost.
+    for (const path of ['rect', 'shape'] as const) for (const edges of [720, 32769]) {
       const outline = (target: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => {
         for (let i = 0; i < edges; i++) {
           const angle = i / edges * Math.PI * 2; const r = i % 2 ? .5 : .03;
@@ -515,7 +517,9 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
           stops: [{ position: 0, color: '000000' }, { position: 1, color: '000000' },
             { position: 1, color: 'FFFFFF' }],
         }, ctx, box, box, outline, undefined, work);
-        if (edges > 32768 || (path === 'rect' && focus.r === 1)) {
+        // A degenerate rect focus still uses the existing native path. Edge
+        // count alone must never discard a supported path-gradient field.
+        if (path === 'rect' && focus.r === 1) {
           expect(paint).toBeNull();
           expect(work).toEqual({ edgeRows: 0, solves: 0, rejected: 0, pixels: 0 });
           continue;
@@ -525,7 +529,7 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
         expect(work.solves, JSON.stringify({ path, edges, focus, work })).toBeLessThanOrEqual(work.pixels);
         expect(work.rejected).toBe(0);
         expect(work.pixels).toBeLessThanOrEqual(512 * 512);
-        if (path === 'shape' && edges === 32768) {
+        if (path === 'shape') {
           ctx.fillStyle = paint as CanvasPattern; ctx.fillRect(0, 0, size, size);
           const data = ctx.getImageData(0, 0, size, size).data;
           let checked = 0; let holes = 0;
@@ -536,8 +540,9 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
             const px = (x + .5) / size - .5; const py = (y + .5) / size - .5;
             const angle = (Math.atan2(py, px) + 2 * Math.PI) % (2 * Math.PI);
             const i = Math.floor(angle / (2 * Math.PI) * edges);
-            const a = i / edges * 2 * Math.PI; const b = (i + 1) / edges * 2 * Math.PI;
-            const r1 = i % 2 ? .5 : .03; const r2 = (i + 1) % 2 ? .5 : .03;
+            const next = (i + 1) % edges;
+            const a = i / edges * 2 * Math.PI; const b = next / edges * 2 * Math.PI;
+            const r1 = i % 2 ? .5 : .03; const r2 = next % 2 ? .5 : .03;
             const ax = r1 * Math.cos(a); const ay = r1 * Math.sin(a);
             const bx = r2 * Math.cos(b); const by = r2 * Math.sin(b);
             const radius = (ax * by - ay * bx) / (Math.cos(angle) * (by - ay) - Math.sin(angle) * (bx - ax));
@@ -553,15 +558,8 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
     }
   }, 60000);
 
-  it.each(['rect', 'shape'] as const)('preserves main %s fallback bytes for edge limits and unavailable allocation', path => {
-    const outline = (target: CanvasRenderingContext2D) => {
-      for (let i = 0; i < 32769; i++) {
-        const angle = i / 32769 * Math.PI * 2;
-        target[i ? 'lineTo' : 'moveTo'](100 + 100 * Math.cos(angle), 50 + 50 * Math.sin(angle));
-      }
-      target.closePath();
-    };
-    for (const reason of ['edge budget', 'allocation'] as const) for (const tiled of [false, true]) {
+  it.each(['rect', 'shape'] as const)('preserves main %s fallback bytes for unavailable allocation', path => {
+    for (const tiled of [false, true]) {
       const actual = canvas(300, 200).ctx; const expected = canvas(300, 200).ctx;
       for (const ctx of [actual, expected]) { ctx.translate(70, 30); ctx.rotate(.3); }
       const recipe = { ...fill, path, fillToRect: { l: .1, r: .5, t: .4, b: .1 },
@@ -573,24 +571,18 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
           return typeof value === 'function' ? value.bind(target) : value;
         },
       });
-      actual.fillStyle = resolveFill(recipe, reason === 'allocation' ? unavailable : actual,
-        0, 0, 200, 100, 0, undefined, undefined, reason === 'edge budget' ? outline : undefined) as CanvasGradient;
+      actual.fillStyle = resolveFill(recipe, unavailable, 0, 0, 200, 100) as CanvasGradient;
       // Independent native Canvas oracle from main: midpoint (60,65),
       // farthest axis distances (140,65), rect uses max; shape uses diagonal.
-      // A half-width tile halves x distances. If allocation is unavailable,
-      // main paints the same native field directly instead of repeating it.
-      const reference = tiled && reason === 'edge budget' ? canvas(100, 100).ctx : expected;
+      // A half-width tile halves x distances. Without allocation the native
+      // field is painted directly instead of repeating a raster tile.
       const cx = tiled ? 30 : 60; const rx = tiled ? 70 : 140;
-      const gradient = reference.createRadialGradient(cx, 65, 0, cx, 65,
+      const gradient = expected.createRadialGradient(cx, 65, 0, cx, 65,
         path === 'rect' ? Math.max(rx, 65) : Math.sqrt(rx ** 2 + 65 ** 2));
       gradient.addColorStop(0, '#000000'); gradient.addColorStop(.5, '#808080'); gradient.addColorStop(1, '#FFFFFF');
-      reference.fillStyle = gradient;
-      if (reference !== expected) {
-        reference.fillRect(0, 0, 100, 100);
-        expected.fillStyle = expected.createPattern(reference.canvas, 'repeat') as CanvasPattern;
-      }
+      expected.fillStyle = gradient;
       for (const ctx of [actual, expected]) ctx.fillRect(0, 0, 200, 100);
-      expect(actual.getImageData(0, 0, 300, 200).data, JSON.stringify({ reason, tiled }))
+      expect(actual.getImageData(0, 0, 300, 200).data, JSON.stringify({ tiled }))
         .toEqual(expected.getImageData(0, 0, 300, 200).data);
     }
   });

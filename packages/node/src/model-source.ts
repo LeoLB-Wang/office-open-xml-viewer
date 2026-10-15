@@ -1,3 +1,4 @@
+import { parseTypedParserError } from '@silurus/ooxml-core/worker';
 import {
   beginModelSourceLoad,
   openModelSourceModule,
@@ -51,8 +52,39 @@ export async function resolveNodeSessionInput<TArchive>(
       try { opened.close(); } catch {}
       throw error;
     }
-    return { kind: 'model-source', opened, sourceByteLength: bytes.byteLength };
+    return {
+      kind: 'model-source',
+      opened: {
+        ...opened,
+        archive: normalizeSourceArchive(opened.archive),
+        close() {
+          try { opened.close(); } catch (error) { throw parseTypedParserError(error) ?? error; }
+        },
+      },
+      sourceByteLength: bytes.byteLength,
+    };
+  } catch (error) {
+    throw parseTypedParserError(error) ?? error;
   } finally {
     load.release();
   }
+}
+
+/** Browser workers normalize declared failures when serializing their responses.
+ * Node has no wire boundary, so guard lazy source calls here, once for every
+ * format. Native receivers and immutable archive methods remain supported. */
+function normalizeSourceArchive<T>(raw: T): T {
+  const target = raw as object;
+  return new Proxy(Object.create(target) as object, {
+    get(_facade, key) {
+      try {
+        const value = Reflect.get(target, key, target);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          try { return Reflect.apply(value, target, args); }
+          catch (error) { throw parseTypedParserError(error) ?? error; }
+        };
+      } catch (error) { throw parseTypedParserError(error) ?? error; }
+    },
+  }) as T;
 }

@@ -463,7 +463,7 @@ fn drawing_defaults(records: &[Record<'_>]) -> Result<Table, String> {
     for record in records.iter().take_while(|r| r.kind != super::EOF) {
         if record.kind == 0x00eb || (active && record.kind == 0x003c) {
             if bytes.len() + record.data.len() > 64 * 1024 * 1024 {
-                return Err(unsupported("oversized BIFF drawing group"));
+                return Err(crate::rejection::resource("oversized BIFF drawing group"));
             }
             bytes.extend_from_slice(record.data);
             active = true;
@@ -915,7 +915,7 @@ fn rgb(color: u32, alpha: u32) -> Result<String, String> {
 fn charge_shape(budget: &mut usize, bytes: usize) -> Result<(), String> {
     *budget = budget
         .checked_sub(bytes)
-        .ok_or_else(|| unsupported("XLS shape model retention budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("XLS shape model retention budget exceeded"))?;
     Ok(())
 }
 

@@ -113,6 +113,22 @@ the OOXML path. Password-protected legacy binaries, pre-CFB Office formats and
 unsupported binary structures are rejected by the readers. These checks are
 structural, never filename-based.
 
+After admission, representational rejections use the viewer-owned `OoxmlError`
+with `code: 'unsupported-content'` and frozen, content-free details:
+`{ format: 'doc' | 'xls' | 'ppt', reason: 'source-subset' }`. Offer conversion
+for this code; do not match diagnostic text. The category includes malformed
+and unknown structures and does not certify file validity. It applies to open
+and lazy worksheet, slide and image operations, in browser main/worker rendering
+modes and Node. Background failures use the same error through `onError`.
+
+Encryption uses `unsupported-encryption`. `OoxmlResourceLimitError`,
+`parser-crashed`, `companion-runtime-mismatch`, network and worker failures keep
+their own meaning. Native budgets without measured resource records remain
+ordinary errors, as does cursor misuse. Input size guards remain `RangeError`.
+The source module protocol is v2; rebuild custom modules using the documented
+model-source rejection signal and install matching viewer/companion versions.
+No migration is required for applications that do not enable model sources.
+
 ## Experimental direct DOC source
 
 ```typescript
