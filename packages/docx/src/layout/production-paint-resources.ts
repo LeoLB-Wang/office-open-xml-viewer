@@ -109,9 +109,15 @@ function collectDescriptorCandidates(
     }
     if (shape.vmlPicture) {
       const picture = shape.vmlPicture;
+      // Part 4 §§19.1.2.10/.11/.19: the host owns picture placement.
+      // Project resource/crop/effect facts explicitly: Rust serializes a full
+      // ImageRun, and a TypeScript Pick does not erase its runtime transforms.
       addImage('image', source, picture.imagePath, picture.mimeType,
-        shape.widthPt, shape.heightPt, picture,
-        vmlPictureResourceKey(source, picture.imagePath));
+        shape.widthPt, shape.heightPt, {
+          srcRect: picture.srcRect,
+          colorReplaceFrom: picture.colorReplaceFrom,
+          duotone: picture.duotone,
+        }, vmlPictureResourceKey(source, picture.imagePath));
     }
     const storyInstance = `${source.story}:${source.storyInstance}:${source.path.join('.')}`;
     if (shape.textBoxContent !== undefined) {

@@ -12473,10 +12473,18 @@ fn parse_vml_shape(
         stroke_width: resolved_stroke.width_pt,
         stroke_dash: resolved_stroke.dash,
         stroke_cap: resolved_stroke.cap,
-        stroke_join: vml_decoration_attr(shape, shape_type, "stroke", "joinstyle")
-            .map(str::to_string),
-        stroke_miter_limit: vml_decoration_attr(shape, shape_type, "stroke", "miterlimit")
-            .and_then(|s| s.parse().ok()),
+        // ECMA-376 Part 4 §19.1.2.21: resolve VML defaults only after
+        // instance/shapetype inheritance; DrawingML/Canvas defaults differ.
+        stroke_join: Some(
+            vml_decoration_attr(shape, shape_type, "stroke", "joinstyle")
+                .unwrap_or("round")
+                .to_string(),
+        ),
+        stroke_miter_limit: Some(
+            vml_decoration_attr(shape, shape_type, "stroke", "miterlimit")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(8.0),
+        ),
         stroke_compound: vml_decoration_attr(shape, shape_type, "stroke", "linestyle")
             .and_then(|s| match s {
                 "single" => Some("sng"),

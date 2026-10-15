@@ -60,10 +60,14 @@ export function planVmlShadows(
     : [[shadow.offset, shadow.color]] as const;
   for (const [offset, color] of offsets) {
     const dx = offset.xPt + offset.xFraction * w, dy = offset.yPt + offset.yFraction * h;
+    // The shadow uses its own solid pen. Omit the source brush entirely;
+    // retained layout data cannot carry an explicit undefined property.
+    const shadowStroke = plan.stroke ? { ...plan.stroke, color } : null;
+    if (shadowStroke) delete shadowStroke.fill;
     let shadowPlan: DrawingMLShapePaintPlan = {
       ...plan, rect: { x: x + dx, y: y + dy, w, h },
       fill: !shadow.obscured || shape.fill || shape.vmlPicture ? { fillType: 'solid', color } : null,
-      stroke: plan.stroke ? { ...plan.stroke, color, fill: undefined } : null,
+      stroke: shadowStroke,
       resolvedGeometry: undefined,
     };
     if (shadow.kind === 'perspective') {

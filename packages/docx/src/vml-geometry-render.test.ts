@@ -16,12 +16,13 @@ beforeAll(async () => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-async function renderVml(content: string, monochrome: boolean | 'transparent' = false) {
+async function renderVml(content: string, monochrome: boolean | 'transparent' | 'vertical' = false) {
   const source = new Canvas(20, 10);
+  const vertical = monochrome === 'vertical';
   source.getContext('2d').fillStyle = monochrome === true ? '#000000' : '#ff0000';
-  if (monochrome !== 'transparent') source.getContext('2d').fillRect(0, 0, 10, 10);
+  if (monochrome !== 'transparent') source.getContext('2d').fillRect(0, 0, vertical ? 20 : 10, vertical ? 5 : 10);
   source.getContext('2d').fillStyle = monochrome === true ? '#ffffff' : '#0000ff';
-  source.getContext('2d').fillRect(10, 0, 10, 10);
+  source.getContext('2d').fillRect(vertical ? 0 : 10, vertical ? 5 : 0, vertical ? 20 : 10, vertical ? 5 : 10);
   const png = new Uint8Array(source.toBufferSync('png'));
   vi.stubGlobal('OffscreenCanvas', Canvas);
   vi.stubGlobal('createImageBitmap', async (source: Blob | Canvas) => loadImage(source instanceof Blob
@@ -240,4 +241,65 @@ it('applies effective host and child grayscale/chromakey and discloses unavailab
     expect(unavailable.diagnostics.length, attribute).toBeGreaterThan(0);
     expect(counter(unavailable.pixels)(255, 0, 0), attribute).toBeGreaterThan(2500);
   }
+});
+
+it('applies picture rotation/reflection once and composes nested group transforms', async () => {
+  const picture = (transform: string) => `<v:image src="media/two.png" style="left:30;top:30;width:40;height:40;${transform}" stroked="f"/>`;
+  const group = (content: string, transform = '') => `<v:group style="width:100pt;height:100pt;${transform}" coordsize="100,100">${content}</v:group>`;
+  for (const [content, axis, direction, source] of [
+    [group(picture('rotation:90')), 'y', -1, false],
+    [group(picture('flip:x')), 'x', 1, false],
+    [group(picture('flip:y')), 'y', 1, 'vertical'],
+    [group(group(picture('flip:x'), 'flip:x'), 'rotation:90'), 'y', -1, false],
+  ] as const) {
+    const { pixels, diagnostics } = await renderVml(content, source);
+    const centers = [[0, 0], [0, 0]];
+    for (let i = 0; i < pixels.length; i += 4) {
+      const color = pixels[i] === 255 && pixels[i + 1] === 0 && pixels[i + 2] === 0 ? 0
+        : pixels[i] === 0 && pixels[i + 1] === 0 && pixels[i + 2] === 255 ? 1 : -1;
+      if (color < 0) continue;
+      centers[color][0] += axis === 'x' ? (i / 4) % 200 : Math.floor(i / 4 / 200);
+      centers[color][1]++;
+    }
+    expect(centers[0][1], content).toBeGreaterThan(500);
+    expect(centers[1][1], content).toBeGreaterThan(500);
+    expect(direction * (centers[0][0] / centers[0][1] - centers[1][0] / centers[1][1]), content).toBeGreaterThan(15);
+    expect(diagnostics, content).toEqual([]);
+  }
+});
+
+it('paints solid fill opacity independently of stroke and shadow and inherits each fill property', async () => {
+  const group = (content: string) => `<v:group style="width:100pt;height:100pt" coordsize="100,100">${content}</v:group>`;
+  const shape = (type: string, fill: string) => `<v:rect ${type} style="left:10;top:10;width:50;height:50" fillcolor="red" strokecolor="lime" strokeweight="4pt">${fill}<v:shadow on="t" color="blue" opacity="1" offset="12pt,12pt"/></v:rect>`;
+  const noStroke = await renderVml(group('<v:rect style="width:50;height:50" fillcolor="red" stroked="f"><v:fill opacity="0"/></v:rect>'));
+  expect(counter(noStroke.pixels)(255, 255, 255)).toBe(40000);
+  const hidden = await renderVml(group(shape('', '<v:fill opacity="0"/>')));
+  expect(counter(hidden.pixels)(255, 0, 0)).toBe(0);
+  expect(counter(hidden.pixels)(255, 255, 255)).toBeGreaterThan(35000);
+  expect(counter(hidden.pixels)(0, 255, 0)).toBeGreaterThan(500);
+  expect(counter(hidden.pixels)(0, 0, 255)).toBeGreaterThan(500);
+  const partial = await renderVml(group(shape('', '<v:fill opacity=".5"/>')));
+  expect(counter(partial.pixels)(255, 128, 128)).toBeGreaterThan(500);
+  expect(counter(partial.pixels)(0, 255, 0)).toBeGreaterThan(500);
+  expect(counter(partial.pixels)(0, 0, 255)).toBeGreaterThan(500);
+  expect(counter(partial.pixels)(255, 0, 0)).toBe(0);
+  const inherited = await renderVml(group(`<v:shapetype id="alpha"><v:fill color="yellow" opacity="32768f"/></v:shapetype>${shape('type="#alpha"', '<v:fill type="solid"/>')}`));
+  expect(inherited.pixels).toEqual(partial.pixels);
+  expect([...noStroke.diagnostics, ...hidden.diagnostics, ...partial.diagnostics, ...inherited.diagnostics]).toEqual([]);
+});
+
+it('uses VML round joins and an inherited miter limit of eight when omitted', async () => {
+  // This corner's miter ratio lies between VML's 8 and Canvas's 10,
+  // so the limit control distinguishes the defaults even with a miter join.
+  const render = (definition: string, stroke: string) => renderVml(`<v:group style="width:100pt;height:100pt" coordsize="100,100">${definition}<v:polyline type="#pen" points="34.5,80 40,30 45.5,80" filled="f" strokecolor="red" strokeweight="8pt">${stroke}</v:polyline></v:group>`);
+  const omitted = await render('', '');
+  const explicit = await render('', '<v:stroke joinstyle="round" miterlimit="8"/>');
+  expect(omitted.pixels).toEqual(explicit.pixels);
+  const inherited = await render('<v:shapetype id="pen"><v:stroke joinstyle="miter"/></v:shapetype>', '<v:stroke color="red"/>');
+  const miter = await render('', '<v:stroke joinstyle="miter" miterlimit="8"/>');
+  expect(inherited.pixels).toEqual(miter.pixels);
+  const largerLimit = await render('', '<v:stroke joinstyle="miter" miterlimit="10"/>');
+  expect(miter.pixels).not.toEqual(largerLimit.pixels);
+  expect(miter.pixels).not.toEqual(explicit.pixels);
+  expect([...omitted.diagnostics, ...explicit.diagnostics, ...inherited.diagnostics, ...miter.diagnostics, ...largerLimit.diagnostics]).toEqual([]);
 });

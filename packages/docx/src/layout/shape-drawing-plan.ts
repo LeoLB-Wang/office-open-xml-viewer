@@ -259,18 +259,18 @@ export function planShapeDrawing(
   };
   const retainedPlan = { ...plan, resolvedGeometry: resolveDrawingMLGeometry(plan, 1, maximumGeometryWork) };
   const shadows = planVmlShadows(shape, retainedPlan, (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits);
+  let remainingWork = (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits
+    - shadows.reduce((sum, command) => sum + (command.plan.resolvedGeometry?.workUnits ?? 0), 0);
+  const acquirePass = (pass: DrawingMLShapePaintPlan) => {
+    const resolvedGeometry = resolveDrawingMLGeometry(pass, 1, remainingWork);
+    remainingWork -= resolvedGeometry.workUnits;
+    return { ...pass, resolvedGeometry };
+  };
   if (shape.vmlPicture) {
     if (!vmlPictureResourceKey) throw new Error('VML picture requires a retained image resource key');
     // Part 4 §§19.1.2.10/.11: shadow, backing brush, picture, outline.
     // Each pass binds geometry to its own fill/stroke contract during
     // acquisition. Paint only replays the retained commands.
-    let remainingWork = (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits
-      - shadows.reduce((sum, command) => sum + (command.plan.resolvedGeometry?.workUnits ?? 0), 0);
-    const acquirePass = (pass: DrawingMLShapePaintPlan) => {
-      const resolvedGeometry = resolveDrawingMLGeometry(pass, 1, remainingWork);
-      remainingWork -= resolvedGeometry.workUnits;
-      return { ...pass, resolvedGeometry };
-    };
     const backingPlan = acquirePass({ ...plan, stroke: null });
     const before: NonNullable<Extract<ShapeDrawingPlanResult, { status: 'planned' }>['before']>[number][] = [...shadows];
     if (shape.fill?.fillType === 'image') {
@@ -327,6 +327,24 @@ export function planShapeDrawing(
           },
         }),
       }, 'DrawingML shape image-fill command'),
+    });
+  }
+  // Part 4 §19.1.2.5: primary fill opacity does not attenuate the
+  // independent stroke or shadow. Gradients/image brushes retain their alpha
+  // in the brush; solid fills retain it separately. Split only translucent
+  // fill+stroke commands, charging both geometries to the same allowance.
+  if (shape.fill && shape.fillOpacity != null && shape.fillOpacity !== 1) {
+    const opacity = Math.max(0, Math.min(1, shape.fillOpacity));
+    const fillCommand = { kind: 'drawingml-shape' as const,
+      plan: plan.stroke ? acquirePass({ ...plan, stroke: null }) : retainedPlan, opacity };
+    return Object.freeze({
+      status: 'planned',
+      ...(shadows.length || plan.stroke ? { before: snapshotPlainData(
+        [...shadows, ...(plan.stroke ? [fillCommand] : [])], 'VML fill and shadows',
+      ) } : {}),
+      command: snapshotPlainData(plan.stroke
+        ? { kind: 'drawingml-shape' as const, plan: acquirePass({ ...plan, fill: null }) }
+        : fillCommand, 'VML shape command'),
     });
   }
   return Object.freeze({
