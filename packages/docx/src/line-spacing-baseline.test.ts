@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createLayoutServices } from './layout-runtime.js';
+import { layoutDocument } from './document-layout.js';
 import { renderDocumentToCanvas } from './renderer.js';
 import { testFontSnapshot } from './layout/test-font-snapshot.js';
 import type {
@@ -138,6 +139,44 @@ const atLeast = (pt: number): LineSpacing => ({ value: pt, rule: 'atLeast', expl
 const ASCENT = 8;
 const NATURAL = 10;
 const TOL = 0.05;
+
+describe('inline objects on a line grid', () => {
+  it.each([
+    ['lines', true, auto(1), 240],
+    ['linesAndChars', true, null, 240],
+    ['lines', false, auto(1), 221.2],
+    [null, true, auto(1), 221.2],
+    ['lines', true, exact(225), 225],
+    ['lines', true, atLeast(18), 221.2],
+  ] as const)('advances the following paragraph with grid=%s, snap=%s, spacing=%j', async (
+    gridType, snapToGrid, spacing, expectedAdvance,
+  ) => {
+    const picture = {
+      ...paragraph('', spacing), alignment: 'center', snapToGrid,
+      runs: [{ type: 'image', imagePath: 'word/media/picture.png', mimeType: 'image/png',
+        widthPt: 100, heightPt: 221.2, anchor: false }],
+    } as BodyElement;
+    const model = docWith(picture, paragraph('Following', auto(1)));
+    model.section.marginTop = 72;
+    model.section.docGridType = gridType;
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layoutServices = createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]), measureContext: canvas.getContext('2d'),
+    });
+    const first = layoutDocument(model, layoutServices).pages[0].layers.body[0];
+    if (first.kind !== 'paragraph') throw new Error('expected picture paragraph');
+    const image = first.lines[0].placements.find((item) => item.kind === 'resource');
+    expect(image?.bounds.yPt).toBeCloseTo(72 + (expectedAdvance - 221.2) / 2, 6);
+    const tops: number[] = [];
+    await renderDocumentToCanvas(model, canvas, 0, {
+      dpr: 1, width: 400, layoutServices,
+      onTextRun: (run) => { if (run.text === 'Following') tops.push(run.y); },
+    });
+    expect(tops).toHaveLength(1);
+    expect(tops[0]).toBeCloseTo(72 + expectedAdvance, 6);
+  });
+});
 
 describe('Word for Mac uniform positioned text in an automatic line', () => {
   const arial = (text: string, position: number, size = 10, family = 'Arial'): BodyElement => {
