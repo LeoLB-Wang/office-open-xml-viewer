@@ -182,7 +182,9 @@ impl StoryFields {
                         })
                         .unwrap_or(false);
                     if stack.len() >= MAX_FIELD_DEPTH {
-                        return Err(unsupported("Word field nesting budget exceeded"));
+                        return Err(crate::rejection::resource(
+                            "Word field nesting budget exceeded",
+                        ));
                     }
                     stack.push(Open {
                         begin: cp,

@@ -640,7 +640,7 @@ fn normalized(decoded: &Decoded, budget: &mut usize) -> Result<Vec<Vec<PathCmd>>
     for path in decoded.paths() {
         *budget = budget
             .checked_sub(path.commands().len())
-            .ok_or_else(|| unsupported("OfficeArt geometry work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("OfficeArt geometry work budget exceeded"))?;
         result.push(
             path.commands()
                 .map(|command| match command {

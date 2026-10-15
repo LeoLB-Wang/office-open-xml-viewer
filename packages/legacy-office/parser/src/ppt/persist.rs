@@ -77,7 +77,12 @@ fn resolve_slide_list(
                     return Err(unsupported("invalid PowerPoint SlidePersistAtom"));
                 }
                 let id = u32_at(item.payload, 0)?;
-                if !seen.insert(id) || slides.len() >= MAX_SLIDES {
+                if slides.len() >= MAX_SLIDES {
+                    return Err(crate::rejection::resource(
+                        "PowerPoint slide reference count budget exceeded",
+                    ));
+                }
+                if !seen.insert(id) {
                     return Err(unsupported(
                         "duplicate or excessive PowerPoint slide references",
                     ));
@@ -103,7 +108,9 @@ fn resolve_slide_list(
                     .last_mut()
                     .ok_or_else(|| unsupported("orphan PowerPoint outline text"))?;
                 if slide.outline.len() >= MAX_TEXT_BLOCKS_PER_SLIDE {
-                    return Err(unsupported("too many PowerPoint outline text blocks"));
+                    return Err(crate::rejection::resource(
+                        "too many PowerPoint outline text blocks",
+                    ));
                 }
                 slide.outline.push(String::new());
                 slide.outline_types.push(text_style::text_type(item)?);
@@ -184,9 +191,9 @@ pub(super) fn resolve_directory(
                 return Err(unsupported("invalid PowerPoint persist ID range"));
             }
             position += 4;
-            *budget = budget
-                .checked_sub(count as usize)
-                .ok_or_else(|| unsupported("PowerPoint persist-entry budget exceeded"))?;
+            *budget = budget.checked_sub(count as usize).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint persist-entry budget exceeded")
+            })?;
             for id in first..first + count {
                 if !seen.insert(id) {
                     return Err(unsupported("duplicate PowerPoint persist ID in one edit"));

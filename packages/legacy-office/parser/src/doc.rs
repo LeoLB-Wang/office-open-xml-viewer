@@ -215,7 +215,7 @@ fn with_acquired_doc_with_policies<T>(
     }
     let flags = u16_at(&word, FIB_FLAGS_OFFSET)?;
     if (flags & 0x0100) != 0 || (flags & 0x8000) != 0 {
-        return Err(unsupported(
+        return Err(crate::rejection::encryption(
             "encrypted Word binary documents are not supported",
         ));
     }
@@ -330,7 +330,9 @@ fn read_story_range<'a>(
     // Logical pieces may repeatedly reference the same physical bytes. Bound
     // decoded main-story work before copying, independently of input ZIP/CFB size.
     if length > MAX_MAIN_STORY_UNITS {
-        return Err(unsupported("Word main story character budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word main story character budget exceeded",
+        ));
     }
     let ccp_text = start
         .checked_add(length)
@@ -626,7 +628,7 @@ fn decode_windows_1252(byte: u8) -> char {
 }
 
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, String> {

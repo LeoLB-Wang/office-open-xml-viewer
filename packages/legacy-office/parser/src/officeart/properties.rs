@@ -119,7 +119,7 @@ fn decode_fopte(
     let count = usize::from(record.instance);
     *budget = budget
         .checked_sub(count)
-        .ok_or_else(|| unsupported("OfficeArt property work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("OfficeArt property work budget exceeded"))?;
     let length = count * 6;
     let entries = record
         .payload

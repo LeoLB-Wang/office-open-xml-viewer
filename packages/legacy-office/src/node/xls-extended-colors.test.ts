@@ -168,17 +168,22 @@ describe('XLS extended colors', () => {
 
   it.each([
     { duplicateChecksum: true }, { duplicateXf: true }, { index: 16 },
-    { propertyCount: 2 }, { propertyCount: 1025 }, { tail: new Uint8Array([0]) },
+    { propertyCount: 2 }, { tail: new Uint8Array([0]) },
     { checksumType: 0 }, { extensionType: 0 },
   ])('rejects malformed or ambiguous bound extensions: %j', async options => {
-    await expect(styles(fixture([prop(FILL_FG, color())], options))).rejects.toThrow(/^UNSUPPORTED:.*BIFF/);
+    await expect(styles(fixture([prop(FILL_FG, color())], options))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'xls', reason: 'source-subset' } });
+  });
+
+  it('keeps the extension-property budget distinct from unsupported content', async () => {
+    await expect(styles(fixture([prop(FILL_FG, color())], { propertyCount: 1025 })))
+      .rejects.toMatchObject({ message: 'LEGACY_RESOURCE_LIMIT:too many BIFF XF extension properties' });
   });
 
   it.each([
     [prop(FILL_FG, color()), prop(FILL_FG, color())], [prop(FILL_FG, new Uint8Array(15))],
     [prop(FILL_FG, color([0, 0, 0, 0], 5))], [concat(little16(FILL_FG), little16(3))],
   ].map(properties => [properties]))('rejects malformed color payloads and duplicate properties', async properties => {
-    await expect(styles(fixture(properties))).rejects.toThrow(/^UNSUPPORTED:.*BIFF/);
+    await expect(styles(fixture(properties))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'xls', reason: 'source-subset' } });
   });
 });
 
@@ -214,7 +219,7 @@ describe('XLS extended theme colors', () => {
 
   it('rejects a malformed theme that a theme color needs', async () => {
     await expect(styles(fixture([prop(FONT, themed(1))], { themeRecords: malformedTheme })))
-      .rejects.toThrow(/^UNSUPPORTED:.*theme/);
+      .rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'xls', reason: 'source-subset' } });
   });
 
   it.each([

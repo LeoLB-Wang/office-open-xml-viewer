@@ -110,7 +110,9 @@ impl<'a> Store<'a> {
             .ok_or_else(|| unsupported("Word picture bullet is not a passive special picture"))?;
         if !self.bullets.contains_key(&offset) {
             if self.cache.len() + self.bullets.len() >= 100_000 {
-                return Err(unsupported("Word picture cache budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word picture cache budget exceeded",
+                ));
             }
             // Work and retained-byte budgets are committed only on success.
             let mut budget = self.budget;
@@ -130,7 +132,7 @@ impl<'a> Store<'a> {
             let remaining = self
                 .remaining_bytes
                 .checked_sub(image.bytes.len())
-                .ok_or_else(|| unsupported("Word retained media budget exceeded"))?;
+                .ok_or_else(|| crate::rejection::resource("Word retained media budget exceeded"))?;
             self.budget = budget;
             self.remaining_bytes = remaining;
             self.bullets.insert(
@@ -161,7 +163,9 @@ impl<'a> Store<'a> {
     fn load(&mut self, offset: usize) -> Result<(), String> {
         if !self.cache.contains_key(&offset) {
             if self.cache.len() + self.bullets.len() >= 100_000 {
-                return Err(unsupported("Word picture cache budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word picture cache budget exceeded",
+                ));
             }
             let mut placeholder = false;
             let picture = read_with_limit(
@@ -179,7 +183,9 @@ impl<'a> Store<'a> {
                 self.remaining_bytes = self
                     .remaining_bytes
                     .checked_sub(picture.image.bytes.len())
-                    .ok_or_else(|| unsupported("Word retained media budget exceeded"))?;
+                    .ok_or_else(|| {
+                        crate::rejection::resource("Word retained media budget exceeded")
+                    })?;
             }
             self.cache.insert(offset, picture);
         }
@@ -453,7 +459,7 @@ impl Options {
         let count = usize::from(record.instance);
         *budget = budget
             .checked_sub(count)
-            .ok_or_else(|| unsupported("Word picture option budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("Word picture option budget exceeded"))?;
         let mut complex_end = count * 6;
         if complex_end > record.payload.len() {
             return Err(unsupported("truncated Word picture options"));

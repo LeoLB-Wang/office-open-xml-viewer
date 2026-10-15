@@ -66,13 +66,13 @@ fn normalized_len(authored: &[ShadeColor]) -> Result<usize, String> {
     authored
         .len()
         .checked_add(usize::from(add_front) + usize::from(add_back))
-        .ok_or_else(|| unsupported("OfficeArt shade stop count overflow"))
+        .ok_or_else(|| crate::rejection::resource("OfficeArt shade stop count overflow"))
 }
 
 pub(crate) fn scratch_bytes(authored: &[ShadeColor]) -> Result<usize, String> {
     normalized_len(authored)?
         .checked_mul(size_of::<ShadeColor>())
-        .ok_or_else(|| unsupported("OfficeArt shade scratch size overflow"))
+        .ok_or_else(|| crate::rejection::resource("OfficeArt shade scratch size overflow"))
 }
 
 pub(crate) fn requirements(authored: &[ShadeColor], focus: i32) -> Result<Requirements, String> {
@@ -86,18 +86,22 @@ pub(crate) fn requirements(authored: &[ShadeColor], focus: i32) -> Result<Requir
         normalized_len
             .checked_mul(2)
             .and_then(|value| value.checked_sub(1))
-            .ok_or_else(|| unsupported("OfficeArt projected shade stop count overflow"))?
+            .ok_or_else(|| {
+                crate::rejection::resource("OfficeArt projected shade stop count overflow")
+            })?
     };
     Ok(Requirements {
         work_iterations: authored
             .len()
             .checked_add(normalized_len)
             .and_then(|value| value.checked_add(output_len))
-            .ok_or_else(|| unsupported("OfficeArt shade projection work overflow"))?,
+            .ok_or_else(|| {
+                crate::rejection::resource("OfficeArt shade projection work overflow")
+            })?,
         scratch_bytes: scratch_bytes(authored)?,
         output_bytes: output_len
             .checked_mul(size_of::<ProjectedShadeStop>())
-            .ok_or_else(|| unsupported("OfficeArt shade output size overflow"))?,
+            .ok_or_else(|| crate::rejection::resource("OfficeArt shade output size overflow"))?,
     })
 }
 
@@ -149,7 +153,7 @@ pub(crate) fn project(
     let mut normalized = Vec::new();
     normalized
         .try_reserve_exact(normalized_len)
-        .map_err(|_| unsupported("OfficeArt shade scratch allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("OfficeArt shade scratch allocation failed"))?;
     if add_front {
         normalized.push(ShadeColor {
             color: scalar_front,
@@ -167,7 +171,7 @@ pub(crate) fn project(
     let mut stops = Vec::new();
     stops
         .try_reserve_exact(output_len)
-        .map_err(|_| unsupported("OfficeArt shade output allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("OfficeArt shade output allocation failed"))?;
     let forward = |stop: ShadeColor, scale: u64, offset: u64| ProjectedShadeStop {
         color: stop.color,
         position_numerator: offset + scale * u64::from(stop.position),

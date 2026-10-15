@@ -68,6 +68,7 @@ export function createLegacyDocSourceEngine(
   }
   return createDirectSourceRuntime<LegacyDocGlue, LegacyDocNativeDocument, LegacyDocReadingRequest>({
     label: 'legacy DOC',
+    format: 'doc',
     maximumSourceBytes: MAX_LEGACY_DOC_SOURCE_BYTES,
     loadGlue,
     resolveWasm,

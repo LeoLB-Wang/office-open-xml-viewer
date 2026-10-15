@@ -121,11 +121,11 @@ impl Text {
 }
 
 fn retained_budget_error() -> String {
-    unsupported("BIFF retained shared string byte budget exceeded")
+    crate::rejection::resource("BIFF retained shared string byte budget exceeded")
 }
 
 fn model_budget_error() -> String {
-    unsupported("BIFF shared string model byte budget exceeded")
+    crate::rejection::resource("BIFF shared string model byte budget exceeded")
 }
 
 fn charge_model(budget: &mut usize, bytes: usize) -> Result<(), String> {

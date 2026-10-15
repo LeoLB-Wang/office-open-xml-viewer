@@ -456,7 +456,7 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
             }
             id::SERIES => {
                 if chart.series.len() >= MAX_SERIES {
-                    return Err(unsupported("too many chart series"));
+                    return Err(crate::rejection::resource("too many chart series"));
                 }
                 // Series (2.4.252) sdtX: the projection takes category values
                 // from the cached cells whatever their type, so only the
@@ -583,7 +583,7 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
                 let text = short_string(record.data.get(2..).unwrap_or_default())?;
                 text_bytes = text_bytes.saturating_add(text.len());
                 if text_bytes > MAX_TEXT_BYTES {
-                    return Err(unsupported("chart text budget exceeded"));
+                    return Err(crate::rejection::resource("chart text budget exceeded"));
                 }
                 if let Some(block) = stack.last_mut() {
                     block.text = Some(text);
@@ -668,7 +668,9 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
                     index += 1;
                 }
                 if data.len() > MAX_XML_BYTES {
-                    return Err(unsupported("chart shape XML budget exceeded"));
+                    return Err(crate::rejection::resource(
+                        "chart shape XML budget exceeded",
+                    ));
                 }
                 if let Some(block) = stack.last_mut() {
                     if let Some(last) = block.records.last_mut() {
@@ -751,7 +753,7 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
                         let text = long_string(record.data.get(6..).unwrap_or_default())?;
                         text_bytes = text_bytes.saturating_add(text.len());
                         if text_bytes > MAX_TEXT_BYTES {
-                            return Err(unsupported("chart text budget exceeded"));
+                            return Err(crate::rejection::resource("chart text budget exceeded"));
                         }
                         Some(Cached::Text(text))
                     }

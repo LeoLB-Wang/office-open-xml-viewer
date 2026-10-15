@@ -331,7 +331,7 @@ fn enforces_shape_identity_and_global_retained_anchor_limits() {
     };
     assert!(walk(&mut drawing, 0, &mut 2_000_000, &mut Vec::new())
         .unwrap_err()
-        .contains("excessive BIFF shapes"));
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
 
     let source = fixture();
     let mut remaining = MAX_BYTES;

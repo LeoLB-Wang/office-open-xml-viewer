@@ -31,15 +31,17 @@ fn xml_character(c: char) -> bool {
 }
 
 fn charge(remaining: &mut usize, size: usize) -> Result<(), String> {
-    *remaining = remaining
-        .checked_sub(size)
-        .ok_or_else(|| unsupported("BIFF theme XML retained string budget exceeded"))?;
+    *remaining = remaining.checked_sub(size).ok_or_else(|| {
+        crate::rejection::resource("BIFF theme XML retained string budget exceeded")
+    })?;
     Ok(())
 }
 
 pub(super) fn parse(bytes: &[u8]) -> Result<Node, String> {
     if bytes.len() > super::MAX_PART_BYTES {
-        return Err(unsupported("BIFF theme XML byte budget exceeded"));
+        return Err(crate::rejection::resource(
+            "BIFF theme XML byte budget exceeded",
+        ));
     }
     let text =
         std::str::from_utf8(bytes).map_err(|_| unsupported("BIFF theme XML must be UTF-8"))?;
@@ -79,7 +81,9 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Node, String> {
                 let mut attrs = BTreeMap::new();
                 for (i, attribute) in element.attributes().enumerate() {
                     if i >= 64 {
-                        return Err(unsupported("BIFF theme XML attribute budget exceeded"));
+                        return Err(crate::rejection::resource(
+                            "BIFF theme XML attribute budget exceeded",
+                        ));
                     }
                     let attribute =
                         attribute.map_err(|_| unsupported("invalid BIFF theme XML attribute"))?;
@@ -148,7 +152,9 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Node, String> {
             }
         }
     }
-    Err(unsupported("BIFF theme XML event budget exceeded"))
+    Err(crate::rejection::resource(
+        "BIFF theme XML event budget exceeded",
+    ))
 }
 
 #[cfg(test)]

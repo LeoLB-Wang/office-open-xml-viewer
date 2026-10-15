@@ -55,7 +55,9 @@ impl Colors {
             return Err(unsupported("invalid or duplicate BIFF theme"));
         }
         if record.data.len() - 16 > MAX_ZIP_BYTES {
-            return Err(unsupported("BIFF theme byte budget exceeded"));
+            return Err(crate::rejection::resource(
+                "BIFF theme byte budget exceeded",
+            ));
         }
         let mut bytes = record.data[16..].to_vec();
         // MS-XLS 2.1.7.20.3 THEME = Theme *ContinueFrt12, 2.4.62.
@@ -71,7 +73,9 @@ impl Colors {
             }
             let payload = &continuation.data[12..];
             if payload.len() > MAX_ZIP_BYTES.saturating_sub(bytes.len()) {
-                return Err(unsupported("BIFF theme byte budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "BIFF theme byte budget exceeded",
+                ));
             }
             bytes.extend_from_slice(payload);
         }
@@ -134,10 +138,17 @@ impl Colors {
             total = total
                 .checked_add(entry.size())
                 .ok_or_else(|| unsupported("BIFF theme size overflow"))?;
-            if total > MAX_EXPANDED_BYTES
-                || entry.size() > MAX_PART_BYTES as u64
-                || entry.encrypted()
-                || entry.is_symlink()
+            if total > MAX_EXPANDED_BYTES || entry.size() > MAX_PART_BYTES as u64 {
+                return Err(crate::rejection::resource(
+                    "BIFF theme ZIP retention budget exceeded",
+                ));
+            }
+            if entry.encrypted() {
+                return Err(crate::rejection::encryption(
+                    "encrypted BIFF theme ZIP entry",
+                ));
+            }
+            if entry.is_symlink()
                 || !names.insert(ooxml_common::rels::part_name_equivalence_key(entry.name()))
                 || (entry.name() != "[Content_Types].xml"
                     && ooxml_common::rels::part_name_equivalence_key(&normalize("", entry.name())?)
@@ -231,7 +242,9 @@ fn part(archive: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Vec<
         .map_err(|_| unsupported("missing BIFF theme part"))?;
     let declared = entry.size();
     if declared > MAX_PART_BYTES as u64 {
-        return Err(unsupported("BIFF theme part byte budget exceeded"));
+        return Err(crate::rejection::resource(
+            "BIFF theme part byte budget exceeded",
+        ));
     }
     let mut bytes = Vec::with_capacity(declared as usize);
     entry
@@ -292,7 +305,9 @@ fn normalize(source: &str, target: &str) -> Result<String, String> {
 
 fn preflight(bytes: &[u8]) -> Result<usize, String> {
     if bytes.len() < 22 || bytes.len() > MAX_ZIP_BYTES {
-        return Err(unsupported("BIFF theme ZIP byte budget exceeded"));
+        return Err(crate::rejection::resource(
+            "BIFF theme ZIP byte budget exceeded",
+        ));
     }
     // Bound entry-table allocation before invoking the ZIP reader. ZIP64,
     // split archives and trailing data are outside this small embedded subset.

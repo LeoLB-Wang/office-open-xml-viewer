@@ -71,9 +71,9 @@ fn apply_text_links(
     // until a projected run needs one. Sorting permits one forward sweep;
     // repeated references never cause a links × runs scan.
     let charge = |budget: &mut usize, bytes: usize, kind: &str| -> Result<(), String> {
-        *budget = budget
-            .checked_sub(bytes)
-            .ok_or_else(|| unsupported(format!("PowerPoint text link {kind} budget exceeded")))?;
+        *budget = budget.checked_sub(bytes).ok_or_else(|| {
+            crate::rejection::resource(format!("PowerPoint text link {kind} budget exceeded"))
+        })?;
         Ok(())
     };
     let scratch = links
@@ -453,7 +453,9 @@ impl Context<'_> {
         ancestors: &[pptx_model::GroupTransform],
     ) -> Result<(), String> {
         if self.elements.len() >= MAX_MODEL_SHAPES {
-            return Err(unsupported("too many PowerPoint drawing shapes"));
+            return Err(crate::rejection::resource(
+                "too many PowerPoint drawing shapes",
+            ));
         }
         let local = direct_transform::leaf(&shape)?;
         let local_extent = (local.cx, local.cy);
@@ -1137,7 +1139,9 @@ impl Context<'_> {
                             .model_budget
                             .checked_sub(2 * std::mem::size_of::<(usize, usize, &str)>())
                             .ok_or_else(|| {
-                                unsupported("PowerPoint text link model budget exceeded")
+                                crate::rejection::resource(
+                                    "PowerPoint text link model budget exceeded",
+                                )
                             })?;
                         text_links.push((begin, end, target));
                     }
@@ -1342,10 +1346,9 @@ impl Context<'_> {
             if len < capacity {
                 return Ok((capacity, 0));
             }
-            let next = capacity
-                .max(1)
-                .checked_mul(2)
-                .ok_or_else(|| unsupported("PowerPoint direct slide model size overflow"))?;
+            let next = capacity.max(1).checked_mul(2).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint direct slide model size overflow")
+            })?;
             Ok((next, next - capacity))
         };
         let (element_capacity, element_slots) =
@@ -1358,17 +1361,22 @@ impl Context<'_> {
                     .checked_mul(std::mem::size_of::<SlideElementSource>())
                     .and_then(|b| a.checked_add(b))
             })
-            .ok_or_else(|| unsupported("PowerPoint direct slide model size overflow"))?;
-        *self.model_budget = self
-            .model_budget
-            .checked_sub(bytes)
-            .ok_or_else(|| unsupported("PowerPoint direct slide model budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("PowerPoint direct slide model size overflow")
+            })?;
+        *self.model_budget = self.model_budget.checked_sub(bytes).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint direct slide model budget exceeded")
+        })?;
         self.elements
             .try_reserve_exact(element_capacity.saturating_sub(self.elements.len()))
-            .map_err(|_| unsupported("PowerPoint direct slide model allocation failed"))?;
+            .map_err(|_| {
+                crate::rejection::resource("PowerPoint direct slide model allocation failed")
+            })?;
         self.sources
             .try_reserve_exact(source_capacity.saturating_sub(self.sources.len()))
-            .map_err(|_| unsupported("PowerPoint direct slide model allocation failed"))?;
+            .map_err(|_| {
+                crate::rejection::resource("PowerPoint direct slide model allocation failed")
+            })?;
         self.elements.push(element);
         self.sources.push(SlideElementSource {
             origin: if inherited {
@@ -1384,7 +1392,9 @@ impl Context<'_> {
         *self.model_budget = self
             .model_budget
             .checked_sub(MODEL_SHAPE_STRINGS_BYTES)
-            .ok_or_else(|| unsupported("PowerPoint direct slide model budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("PowerPoint direct slide model budget exceeded")
+            })?;
         Ok(())
     }
 }

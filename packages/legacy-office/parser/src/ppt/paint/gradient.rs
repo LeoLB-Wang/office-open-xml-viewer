@@ -52,19 +52,21 @@ impl ResolvedGradient {
         let bytes = count
             .checked_mul(size_of::<GradStop>() + 8)
             .and_then(|value| value.checked_add("linear".len()))
-            .ok_or_else(|| unsupported("PowerPoint gradient model budget overflow"))?;
-        *byte_budget = byte_budget
-            .checked_sub(bytes)
-            .ok_or_else(|| unsupported("PowerPoint gradient model budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("PowerPoint gradient model budget overflow")
+            })?;
+        *byte_budget = byte_budget.checked_sub(bytes).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint gradient model budget exceeded")
+        })?;
         let mut stops = Vec::new();
-        stops
-            .try_reserve_exact(count)
-            .map_err(|_| unsupported("PowerPoint gradient model allocation failed"))?;
+        stops.try_reserve_exact(count).map_err(|_| {
+            crate::rejection::resource("PowerPoint gradient model allocation failed")
+        })?;
         for (stop, alpha) in self.projection.stops.into_iter().zip(self.alphas) {
             let mut color = String::new();
-            color
-                .try_reserve_exact(8)
-                .map_err(|_| unsupported("PowerPoint gradient model allocation failed"))?;
+            color.try_reserve_exact(8).map_err(|_| {
+                crate::rejection::resource("PowerPoint gradient model allocation failed")
+            })?;
             write_color(&mut color, stop.color)?;
             if alpha != 65_536 {
                 // ooxml-common GradStop: RRGGBBAA when an alpha applies.

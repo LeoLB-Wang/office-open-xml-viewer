@@ -101,7 +101,9 @@ fn decode_payload(
     let expanded = number(header, 0) as usize;
     let stored = number(header, 28) as usize;
     if expanded > MAX_METAFILE_BYTES || expanded > remaining || stored > MAX_METAFILE_BYTES {
-        return Err(unsupported("OfficeArt metafile byte budget exceeded"));
+        return Err(crate::rejection::resource(
+            "OfficeArt metafile byte budget exceeded",
+        ));
     }
     let source_range = start + 34..record.payload.len();
     let bytes = &record.payload[source_range.clone()];
@@ -162,7 +164,7 @@ fn validate_emf(bytes: &[u8], budget: &mut usize, gdiplus_end: bool) -> Result<(
     while position < bytes.len() {
         *budget = budget
             .checked_sub(1)
-            .ok_or_else(|| unsupported("EMF record work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("EMF record work budget exceeded"))?;
         let tail = &bytes[position..];
         if tail.len() < 8 || eof {
             return Err(unsupported("invalid EMF record tail"));
@@ -260,7 +262,7 @@ fn validate_wmf(bytes: &[u8], budget: &mut usize, exact_extent: bool) -> Result<
     while position < bytes.len() {
         *budget = budget
             .checked_sub(1)
-            .ok_or_else(|| unsupported("WMF record work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("WMF record work budget exceeded"))?;
         let tail = &bytes[position..];
         if tail.len() < 6 {
             return Err(unsupported("invalid WMF record tail"));

@@ -55,7 +55,7 @@ describe('lines and connectors', () => {
       expect(shape.stroke).toMatchObject({ color: '0000FF', tailEnd: { type: 'triangle' } });
       expect(shape.stroke?.dashStyle).toBe(name);
     }
-    await expect(dashed(11)).rejects.toThrow(/line dashing/);
+    await expect(dashed(11)).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   });
 
   it.skipIf(!skia)('paints a dashed leader with gaps and a solid arrow tip', async () => {

@@ -147,7 +147,9 @@ pub(super) fn read_all<'a>(
     (u32_at(word, 0x50)? as usize)
         .checked_add(u32_at(word, 0x60)? as usize)
         .filter(|n| *n <= super::MAX_MAIN_STORY_UNITS)
-        .ok_or_else(|| unsupported("Word aggregate note character budget exceeded"))?;
+        .ok_or_else(|| {
+            crate::rejection::resource("Word aggregate note character budget exceeded")
+        })?;
     [Kind::Footnote, Kind::Endnote]
         .into_iter()
         .map(|kind| read(word, table, clx, kind))
@@ -183,7 +185,12 @@ pub(super) fn read<'a>(
     }
     let count = reference_size.saturating_sub(4) / 6;
     // Resource policy: retained entries, not a limitation of the file format.
-    if count > 65_536 || text_size != (count + 2) * 4 {
+    if count > 65_536 {
+        return Err(crate::rejection::resource(
+            "Word note entry-count budget exceeded",
+        ));
+    }
+    if text_size != (count + 2) * 4 {
         return Err(unsupported("invalid or excessive Word note table length"));
     }
     let read_plc = |offset| -> Result<&[u8], String> {
@@ -246,7 +253,9 @@ pub(super) fn read<'a>(
         .count()
         > super::MAX_STORY_CONTROLS
     {
-        return Err(unsupported("Word note structure budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word note structure budget exceeded",
+        ));
     }
     // One forward UTF-16-to-UTF-8 pass over each aggregate note story.
     // Never decode/copy the CLX once per note or scan from the start per entry.
@@ -398,6 +407,6 @@ mod tests {
         assert!(read(&word, &table, &clx, Kind::Footnote)
             .err()
             .unwrap()
-            .contains("excessive Word note table"));
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 }

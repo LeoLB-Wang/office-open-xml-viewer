@@ -160,7 +160,9 @@ pub(in crate::ppt) fn master_theme(
     };
     let theme = readable().unwrap_or(Theme::Unreadable);
     if budget_exceeded {
-        return Err(unsupported("PowerPoint theme decoded byte budget exceeded"));
+        return Err(crate::rejection::resource(
+            "PowerPoint theme decoded byte budget exceeded",
+        ));
     }
     Ok(Some(theme))
 }
@@ -892,15 +894,15 @@ pub(in crate::ppt) fn adopt(
     model_budget: &mut usize,
 ) -> Result<Option<ShapeElement>, String> {
     if blob.len() > MAX_BLOB_BYTES {
-        return Err(unsupported(
+        return Err(crate::rejection::resource(
             "PowerPoint alternative shape XML exceeds its size limit",
         ));
     }
     // One parse attempt of work, and the package's declared inflated size
     // against the session's decoded-text byte budget.
-    *work_budget = work_budget
-        .checked_sub(1)
-        .ok_or_else(|| unsupported("PowerPoint alternative shape XML work budget exceeded"))?;
+    *work_budget = work_budget.checked_sub(1).ok_or_else(|| {
+        crate::rejection::resource("PowerPoint alternative shape XML work budget exceeded")
+    })?;
     super::charge_text(text_budget, inflated_size(blob)?)?;
     let Some((kind, part)) = alternative_part(blob)? else {
         return Ok(None);
@@ -1170,10 +1172,10 @@ pub(in crate::ppt) fn adopt(
             .map_err(unsupported)?
             .json_bytes,
     )
-    .map_err(|_| unsupported("PowerPoint direct slide model budget exceeded"))?;
-    *model_budget = model_budget
-        .checked_sub(retained)
-        .ok_or_else(|| unsupported("PowerPoint direct slide model budget exceeded"))?;
+    .map_err(|_| crate::rejection::resource("PowerPoint direct slide model budget exceeded"))?;
+    *model_budget = model_budget.checked_sub(retained).ok_or_else(|| {
+        crate::rejection::resource("PowerPoint direct slide model budget exceeded")
+    })?;
     Ok(Some(shape))
 }
 
@@ -1308,7 +1310,8 @@ pub(in crate::ppt) fn adopt(
 #[cfg(feature = "direct-ppt")]
 fn inflated_size(blob: &[u8]) -> Result<usize, String> {
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML package");
-    let oversized = || unsupported("PowerPoint alternative shape XML exceeds its size limit");
+    let oversized =
+        || crate::rejection::resource("PowerPoint alternative shape XML exceeds its size limit");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
     let mut total = 0u64;
     for index in 0..archive.len() {
@@ -3111,20 +3114,24 @@ mod tests {
                 let error = result.0.expect_err("must fail closed");
                 assert!(error.starts_with("UNSUPPORTED:"), "{error}");
             };
-            // Oversized, over budget, unreadable.
-            unsupported(run_adopt(
+            let resource_limited = |result: (Result<Option<ShapeElement>, String>, usize)| {
+                let error = result.0.expect_err("must fail closed");
+                assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
+            };
+            // Oversized and over budget are resource policy, not unsupported content.
+            resource_limited(run_adopt(
                 &element,
                 &vec![0; MAX_BLOB_BYTES + 1],
                 &theme(),
                 AMPLE,
             ));
-            unsupported(run_adopt(
+            resource_limited(run_adopt(
                 &element,
                 &blob(SHAPE_XML),
                 &theme(),
                 (0, usize::MAX, usize::MAX),
             ));
-            unsupported(run_adopt(
+            resource_limited(run_adopt(
                 &element,
                 &blob(SHAPE_XML),
                 &theme(),

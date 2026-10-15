@@ -57,7 +57,7 @@ use crate::officeart::{
 /// [MS-PPT] 2.3.2.
 fn parse_current_user_atom(bytes: &[u8], budget: &mut usize) -> Result<usize, String> {
     if *budget == 0 {
-        return Err(unsupported("too many PowerPoint records"));
+        return Err(crate::rejection::resource("too many PowerPoint records"));
     }
     *budget -= 1;
     if bytes.len() < 8 {
@@ -76,7 +76,7 @@ fn parse_current_user_atom(bytes: &[u8], budget: &mut usize) -> Result<usize, St
     match u32_at(payload, 4)? {
         CURRENT_USER_NOT_ENCRYPTED => {}
         CURRENT_USER_ENCRYPTED => {
-            return Err(unsupported(
+            return Err(crate::rejection::encryption(
                 "encrypted PowerPoint binary documents are not supported",
             ));
         }
@@ -261,7 +261,7 @@ fn decode_text(record: Record<'_>) -> Result<String, String> {
 fn charge_text(budget: &mut usize, bytes: usize) -> Result<(), String> {
     *budget = budget
         .checked_sub(bytes)
-        .ok_or_else(|| unsupported("PowerPoint decoded text budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("PowerPoint decoded text budget exceeded"))?;
     Ok(())
 }
 
@@ -302,7 +302,7 @@ fn theme() -> String {
 }
 
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 /// Fuzz driver for alternative shape XML resolution (`crate::fuzzing`):

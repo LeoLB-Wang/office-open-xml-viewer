@@ -130,7 +130,9 @@ impl ScopedStreams<'_, '_> {
             return Ok(None);
         };
         if entry.stream_size > maximum_bytes as u64 {
-            return Err("CFB scoped stream exceeds its caller limit".into());
+            return Err(crate::rejection::resource(
+                "CFB scoped stream exceeds its caller limit",
+            ));
         }
         self.compound.read_stream(entry).map(Some)
     }
@@ -575,7 +577,9 @@ fn read_regular_chain(
                 return Err("CFB stream size exceeds the physical file".into());
             }
             if maximum_bytes.is_some_and(|maximum| size > maximum) {
-                return Err("CFB stream exceeds its implementation limit".into());
+                return Err(crate::rejection::resource(
+                    "CFB stream exceeds its implementation limit",
+                ));
             }
             size.div_ceil(sector_size)
         }

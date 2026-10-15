@@ -241,8 +241,13 @@ impl<'a> Tables<'a> {
             let count = u32_at(data.take(4)?, 0)? as usize;
             // Every LFO has a 16-byte header and at least a 4-byte LFOData CP.
             // Test physical extent before reserving or iterating by its count.
-            if count > MAX_OVERRIDES || count > data.bytes.len() / 20 {
+            if count > data.bytes.len() / 20 {
                 return Err(unsupported("invalid or excessive Word list override count"));
+            }
+            if count > MAX_OVERRIDES {
+                return Err(crate::rejection::resource(
+                    "Word list override count budget exceeded",
+                ));
             }
             budget.bytes(4 + count * 20)?;
             let headers = data.take(count * 16)?;
@@ -358,7 +363,7 @@ impl Budget {
         self.bytes = self
             .bytes
             .checked_sub(count)
-            .ok_or_else(|| unsupported("Word list metadata byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("Word list metadata byte budget exceeded"))?;
         Ok(())
     }
 }
@@ -378,7 +383,7 @@ fn read_level<'a>(
     budget.levels = budget
         .levels
         .checked_sub(1)
-        .ok_or_else(|| unsupported("Word list level budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("Word list level budget exceeded"))?;
     budget.bytes(30)?; // LVLF + Xst.cch, before touching any variable payload.
     let header = data.take(28)?;
     let format = header[4];

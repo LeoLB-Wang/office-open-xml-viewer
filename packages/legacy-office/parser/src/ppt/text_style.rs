@@ -129,11 +129,11 @@ pub(in crate::ppt) fn direct_character_masks(
     let runs = read_runs(text, style, work_budget)?;
     let mut size = Vec::new();
     size.try_reserve_exact(length)
-        .map_err(|_| unsupported("PowerPoint text size mask allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("PowerPoint text size mask allocation failed"))?;
     let mut color = Vec::new();
     color
         .try_reserve_exact(length)
-        .map_err(|_| unsupported("PowerPoint text color mask allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("PowerPoint text color mask allocation failed"))?;
     let mut previous = 0;
     for (end, character) in runs.characters {
         size.extend(std::iter::repeat_n(
@@ -166,10 +166,9 @@ impl Reader<'_, '_> {
         Ok(n)
     }
     fn run_end(&mut self, start: usize, length: usize) -> Result<usize, String> {
-        *self.budget = self
-            .budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint text style work budget exceeded"))?;
+        *self.budget = self.budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint text style work budget exceeded")
+        })?;
         let count = self.u32()? as usize;
         start
             .checked_add(count)
@@ -306,7 +305,7 @@ impl Paragraph {
             *r.budget = r
                 .budget
                 .checked_sub(count)
-                .ok_or_else(|| unsupported("PowerPoint tab work budget exceeded"))?;
+                .ok_or_else(|| crate::rejection::resource("PowerPoint tab work budget exceeded"))?;
             for _ in 0..count {
                 r.u32()?;
             }
@@ -531,12 +530,14 @@ fn read_levels(atom: Record<'_>, budget: &mut usize) -> Result<Vec<Level>, Strin
     };
     let count = usize::from(r.u16()?);
     if count > 5 {
-        return Err(unsupported("too many PowerPoint master text levels"));
+        return Err(crate::rejection::resource(
+            "too many PowerPoint master text levels",
+        ));
     }
     *r.budget = r
         .budget
         .checked_sub(count)
-        .ok_or_else(|| unsupported("PowerPoint master text work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("PowerPoint master text work budget exceeded"))?;
     let mut levels: Vec<Option<Level>> = vec![None; count];
     for index in 0..count {
         // MS-PPT 2.9.36: only text types >=5 include an explicit level field.

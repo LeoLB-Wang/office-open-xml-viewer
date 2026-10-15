@@ -52,7 +52,9 @@ impl Records {
             .bytes
             .checked_add(data.len())
             .filter(|bytes| *bytes <= MAX_SHEET_BYTES)
-            .ok_or_else(|| unsupported("XLS conditional formatting byte budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("XLS conditional formatting byte budget exceeded")
+            })?;
         self.records.push((kind, data.to_vec()));
         Ok(())
     }
@@ -418,7 +420,9 @@ fn condition(
 
 fn push_dxf(dxfs: &mut Vec<xlsx_model::Dxf>, dxf: xlsx_model::Dxf) -> Result<u32, String> {
     if dxfs.len() >= MAX_DXFS {
-        return Err(unsupported("too many XLS conditional formatting formats"));
+        return Err(crate::rejection::resource(
+            "too many XLS conditional formatting formats",
+        ));
     }
     dxfs.push(dxf);
     u32::try_from(dxfs.len() - 1).map_err(|_| truncated())

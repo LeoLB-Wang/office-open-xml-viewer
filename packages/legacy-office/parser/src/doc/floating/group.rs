@@ -354,7 +354,9 @@ impl Store<'_> {
         }
         for child in children {
             if members.len() >= MAX_MEMBERS {
-                return Err(unsupported("Word drawing group member budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word drawing group member budget exceeded",
+                ));
             }
             match child.kind {
                 0xf003 if child.version == 15 => {
