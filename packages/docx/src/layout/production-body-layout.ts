@@ -140,7 +140,7 @@ import {
 import { paragraphGapAdjustment } from './paragraph-spacing.js';
 import { bottomBorderExtentPt, resolveParagraphBorderEdges, topBorderExtentPt, type ParagraphBorderEdges } from './paragraph-border-adjacency.js';
 import { acquireParagraphAnchorRunStage, type ParagraphAcquisitionOptions, acquireParagraphResult, acquireRetainedFrameGroup, bodyFrameGroupFor, bodyParagraphBorderEdgesFor, projectPhysicalAnchorResult, retainedFrameMaximumBaselineLoweringPt, type BodyFrameGroup } from './paragraph.js';
-import { wordLoweredDropCapAnchorLeadingPt } from './body-pagination-compatibility.js';
+import { wordGridLineAdmissionExtentPt, wordLoweredDropCapAnchorLeadingPt } from './body-pagination-compatibility.js';
 import { wordGridFrameCarrierSourceOwnsNoFlow } from './table-compatibility.js';
 import type { CompleteTextBoxStoryAcquirer } from './paragraph.js';
 import type { AnchorFloatRegistrationState, BodyAcquisitionState, BodyMeasurementContext, CompleteTextBoxStoryOwner, PhysicalAnchorFrame, RetainedTableRecord } from './acquisition-context.js';
@@ -2019,10 +2019,12 @@ function measureFollowingBodyBlock(
     return Object.freeze({
       fullExtentPt: layout.advancePt,
       // keepNext admits the successor's first content line, including
-      // any retained wrap displacement before that line begins.
-      leadContentExtentPt: firstLine
+      // any retained wrap displacement before that line begins. Apply the
+      // selector's terminal grid-leading allowance only to that successor;
+      // earlier keep-set members still consume their full retained advances.
+      leadContentExtentPt: wordGridLineAdmissionExtentPt(firstLine, firstLine
         ? firstLine.bounds.yPt + firstLine.advancePt - layout.flowBounds.yPt
-        : layout.advancePt,
+        : layout.advancePt),
       fullFootnoteReferenceIds: footnoteIdsInRetainedSlice(layout),
       leadFootnoteReferenceIds: firstLine ? footnoteIdsInRetainedLines([firstLine]) : [],
       pageOwnedAnchorKeysByLine: pageOwnedAnchorKeysByLine(layout),

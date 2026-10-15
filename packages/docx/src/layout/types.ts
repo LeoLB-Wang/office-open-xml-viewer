@@ -597,7 +597,7 @@ export interface LineLayout {
   readonly bounds: LayoutRect;
   readonly baselinePt: number;
   readonly advancePt: number;
-  /** Active line-grid leading below the natural content box. Page admission
+  /** Trailing grid leading beyond the natural/authored line box. Page admission
    * may omit this tail; placement and paint retain the full advance. */
   readonly gridAfterLeadingPt?: number;
   readonly placements: readonly ParagraphPlacement[];

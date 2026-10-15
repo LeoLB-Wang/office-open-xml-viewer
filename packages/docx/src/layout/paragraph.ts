@@ -35,6 +35,7 @@ import type {
 } from '../line-layout.js';
 import {
   effectiveCharacterSpacingPt,
+  lineBoxHeight,
   getDefaultFontSize,
   segLetterSpacingPx,
   widthBalanceSpaceAdjustmentForTextPt,
@@ -2701,12 +2702,24 @@ function planMeasuredLines(
         segments,
       },
     });
-    // Retain the same natural box used by plannedBaselinePt; pagination must
-    // not remeasure text or infer grid participation from the painted glyphs.
+    // §17.3.1.33 / §17.18.48: authored line spacing belongs to the line's
+    // own box. Only the extra leading supplied by §17.6.5 grid allocation
+    // may overhang at admission; atLeast minima and auto multiples stay charged.
+    // Reuse the allocator without a grid (no shaping or text remeasurement).
+    // Centering splits grid-only excess equally; the visible-content bottom
+    // also bounds the allowance when a separate baseline policy applies.
+    const ownHeightPt = context.lineGrid.active ? lineBoxHeight(
+      context.lineSpacing, raw.ascent, raw.descent, 1, undefined, context.hasRuby,
+      raw.intendedSingle, raw.eastAsian, raw.gridCountSingle, undefined,
+      raw.uniformPositionAuto, raw.inlinePictureTextSingle, raw.latinGridCountSingle,
+    ) : measuredLine.advancePt;
     const retained = context.lineGrid.active ? {
       ...planned,
-      gridAfterLeadingPt: Math.max(0, measuredLine.topYPt + measuredLine.advancePt
-        - baselinePt - (raw.visibleDescent ?? raw.descent)),
+      gridAfterLeadingPt: Math.max(0, Math.min(
+        (measuredLine.advancePt - ownHeightPt) / 2,
+        measuredLine.topYPt + measuredLine.advancePt
+          - baselinePt - (raw.visibleDescent ?? raw.descent),
+      )),
     } : planned;
     return raw.availWidth !== undefined && (raw.availWidth < availableWidthPt || (raw.xOffset ?? 0) !== 0)
       ? { ...retained, wrapBounds: {

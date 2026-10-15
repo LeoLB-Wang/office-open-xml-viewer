@@ -61,7 +61,7 @@ function completingParagraphAdmissionExtentPt(
     retainedSpaceAfterPt: fragment.spacing.afterPt,
     authoredSpaceAfterPt,
   });
-  const logicalLineBoxExtentPt = wordGridLineAdmissionExtentPt(fragment, withoutSpaceAfterPt);
+  const logicalLineBoxExtentPt = wordGridLineAdmissionExtentPt(fragment.lines.at(-1), withoutSpaceAfterPt);
   return wordVerticalRlFinalLineAdmissionExtentPt({
     paragraph: fragment,
     writingMode,
@@ -140,7 +140,7 @@ export function selectParagraphFragment(
       ? completingParagraphAdmissionExtentPt(
         fragment, authoredSpaceAfterPt, policy.writingMode ?? 'horizontal-tb', availableBlockExtentPt,
       )
-      : wordGridLineAdmissionExtentPt(fragment, fragment.advancePt)
+      : wordGridLineAdmissionExtentPt(fragment.lines.at(-1), fragment.advancePt)
   );
   if (fragmentation.kind === 'indivisible') {
     const completeReserve = reserveFor(acquired);

@@ -179,6 +179,56 @@ describe('inline objects on a line grid', () => {
 });
 
 describe('line-grid page-bottom admission', () => {
+  it('preserves authored atLeast spacing at the page bottom on a grid', () => {
+    const model = docWith(paragraph('Preceding', exact(20)), paragraph('Minimum', atLeast(60)));
+    model.section.pageHeight = 70;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    // 20 + 60 cannot fit a 70pt body, even though the glyphs alone would fit.
+    expect(layout.pages).toHaveLength(2);
+    const minimum = layout.pages[1].layers.body[0];
+    if (minimum.kind !== 'paragraph') throw new Error('expected minimum-spaced paragraph');
+    expect(minimum.advancePt).toBe(60);
+  });
+
+  it.each([[38, 2], [39, 1]])('charges the atLeast box when only added grid leading may cross body bottom %s', (bodyBottom, pages) => {
+    const model = docWith(paragraph('Preceding', exact(20)), paragraph('Minimum', atLeast(18)));
+    model.section.pageHeight = bodyBottom;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    // 18pt authored box centered in a 20pt cell: only its last 1pt is grid leading.
+    expect(layout.pages).toHaveLength(pages);
+  });
+
+  it.each([false, true])('admits a heading and grid caption together with keepNext=%s', keepNext => {
+    const heading = { ...paragraph('Heading', exact(20)), keepNext } as BodyElement;
+    const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
+    caption.defaultFontSize = 16;
+    caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 }];
+    const model = docWith(paragraph('Preceding', exact(20)), heading, caption);
+    model.section.pageHeight = 58;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    // The caption's natural box ends at 58pt; only its grid cell ends at 60pt.
+    expect(layout.pages).toHaveLength(1);
+    expect(layout.pages[0].layers.body.map(block => block.flowBounds.yPt)).toEqual([0, 20, 40]);
+  });
+
   it.each([
     [38, 1], // Natural box ends exactly at the body bottom; grid cell ends at 40.
     [37, 2], // The same natural box crosses the body bottom.
