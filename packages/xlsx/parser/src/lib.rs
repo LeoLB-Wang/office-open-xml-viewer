@@ -1802,8 +1802,8 @@ fn parse_projected_worksheet(
     theme_colors: &[String],
     name: &str,
 ) -> Result<(Worksheet, HyperlinkRids, String), String> {
-    // Apply the shared depth policy only after streaming DOM-equivalent
-    // validation, before retaining the worksheet shell DOM.
+    // Bound lexical nesting before constructing the worksheet shell DOM;
+    // content errors cannot suppress a resource crossing.
     let doc = parse_guarded(&streamed.shell_xml).map_err(|e| e.to_string())?;
 
     let mut rows = streamed.rows;
@@ -8822,19 +8822,19 @@ mod rb7_partial_degradation_tests {
         );
     }
 
-    mod depth_corpus {
-        include!("../../../ooxml-common/tests/support/depth_corpus.rs");
+    mod lexical_depth_cases {
+        include!("../../../ooxml-common/tests/support/lexical_depth_cases.rs");
     }
 
     #[test]
-    fn optional_deep_shared_strings_preserve_dom_error_fallback() {
+    fn optional_shared_strings_distinguish_lexical_depth_from_shallow_content_errors() {
         let baseline = build_workbook_with_shared_strings(Some("<broken"));
         let expected_sheet = parse_sheet_native(&baseline, 0, "Alpha").unwrap();
-        for (name, xml, valid) in depth_corpus::depth_corpus(257) {
+        for (name, xml, crossing) in lexical_depth_cases::lexical_depth_cases() {
             let bytes = build_workbook_with_shared_strings(Some(&xml));
             let workbook = parse_workbook_native(&bytes);
             let sheet = parse_sheet_native(&bytes, 0, "Alpha");
-            if valid {
+            if crossing {
                 for error in [workbook.unwrap_err(), sheet.unwrap_err()] {
                     let payload: serde_json::Value = serde_json::from_str(
                         error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error),
@@ -8844,7 +8844,7 @@ mod rb7_partial_degradation_tests {
                 }
             } else {
                 let result: serde_json::Value =
-                    serde_json::from_str(&workbook.expect(&name)).unwrap();
+                    serde_json::from_str(&workbook.expect(name)).unwrap();
                 // The established tolerant path publishes the workbook with the
                 // DOM error attributed to sharedStrings, and a usable sheet.
                 let dom_error = roxmltree::Document::parse(&xml).unwrap_err().to_string();
@@ -8853,7 +8853,7 @@ mod rb7_partial_degradation_tests {
                     format!("xl/sharedStrings.xml: {dom_error}"),
                     "{name}"
                 );
-                assert_eq!(sheet.expect(&name), expected_sheet, "{name}");
+                assert_eq!(sheet.expect(name), expected_sheet, "{name}");
             }
         }
     }

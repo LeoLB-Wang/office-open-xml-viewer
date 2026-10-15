@@ -1038,7 +1038,7 @@ mod tests {
         let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
         let styles = format!(
             r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{}</w:styles>"#,
-            "<w:style / >".repeat(257)
+            r#"<w:style w:styleId='> /' w:styleId="/>" />"#.repeat(257)
         );
         let bytes = zip_parts(&[
             ("word/document.xml", document),
@@ -1046,7 +1046,7 @@ mod tests {
             ("word/styles.xml", styles.as_bytes()),
         ]);
         parser::parse_from_bytes_with_limits(&bytes, None, None, "parse")
-            .expect("lexically invalid optional styles retain tolerant fallback");
+            .expect("shallow duplicate attributes retain tolerant fallback");
     }
 
     #[test]

@@ -1669,8 +1669,8 @@ fn parse_slide(
     }
 
     note_layout_master_parse();
-    // Streaming DOM-equivalent validation establishes a well-formed part before
-    // the shared depth policy can reject it; no over-deep DOM is retained.
+    // Lexical depth is bounded before the recursive DOM parser runs. A crossing
+    // poisons the operation even when the part also has a content error.
     let doc = parse_preflighted_pptx_xml_with_limit(
         xml,
         pptx_internal_limits().slide_xml_dom_complexity,
@@ -12730,20 +12730,20 @@ mod tests {
         );
     }
 
-    mod depth_corpus {
-        include!("../../../ooxml-common/tests/support/depth_corpus.rs");
+    mod lexical_depth_cases {
+        include!("../../../ooxml-common/tests/support/lexical_depth_cases.rs");
     }
 
     #[test]
-    fn optional_deep_relationships_preserve_dom_error_fallback() {
+    fn optional_relationships_distinguish_lexical_depth_from_shallow_content_errors() {
         let base = build_three_slide_deck(usize::MAX, "");
         let path = "ppt/slides/_rels/slide1.xml.rels";
         let baseline = rewrite_deck_xml(base.clone(), path, |_| "<broken".into());
         let expected = parse_pptx_native(&baseline).unwrap();
-        for (name, xml, valid) in depth_corpus::depth_corpus(257) {
+        for (name, xml, crossing) in lexical_depth_cases::lexical_depth_cases() {
             let bytes = rewrite_deck_xml(base.clone(), path, |_| xml.clone());
             let result = parse_pptx_native(&bytes);
-            if valid {
+            if crossing {
                 let error = result.unwrap_err();
                 let payload: serde_json::Value = serde_json::from_str(
                     error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error),
@@ -12751,7 +12751,7 @@ mod tests {
                 .unwrap();
                 assert_eq!(payload["details"]["violation"]["metric"], "depth", "{name}");
             } else {
-                assert_eq!(result.expect(&name), expected, "{name}");
+                assert_eq!(result.expect(name), expected, "{name}");
             }
         }
     }

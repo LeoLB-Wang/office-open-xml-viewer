@@ -1300,9 +1300,9 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
         Ok(xml) => xml,
         Err(e) => return Ok(degraded_document(theme, format!("word/document.xml: {e}"))),
     };
-    // Streaming validation shares the DOM's well-formedness rules before any
-    // depth crossing can poison the operation. Malformed optional content still
-    // follows this established degradation path.
+    // Bound lexical nesting before the recursive DOM parser. A crossing latches
+    // a resource failure even for malformed XML; only in-budget content errors
+    // follow the established degradation path.
     let xml_doc = match parse_guarded(&doc_xml) {
         Ok(doc) => doc,
         Err(e) => return Ok(degraded_document(theme, format!("word/document.xml: {e}"))),

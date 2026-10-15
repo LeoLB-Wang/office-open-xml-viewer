@@ -107,33 +107,33 @@ fn textbox_container_and_table_depth_fail_closed() {
     }
 }
 
-mod depth_corpus {
-    include!("../../../../ooxml-common/tests/support/depth_corpus.rs");
+mod lexical_depth_cases {
+    include!("../../../../ooxml-common/tests/support/lexical_depth_cases.rs");
 }
 
 #[test]
-fn optional_deep_styles_preserve_dom_error_fallback() {
+fn optional_styles_distinguish_lexical_depth_from_shallow_content_errors() {
     let baseline = package("<w:p/>", &[("word/styles.xml", "<broken")]);
     let expected = serde_json::to_value(parse_from_bytes(&baseline).unwrap()).unwrap();
     let expected_streamed = serde_json::to_value(
         parse_from_bytes_streamed_with_limits(&baseline, None, None, "depth-test").unwrap(),
     )
     .unwrap();
-    for (name, xml, valid) in depth_corpus::depth_corpus(257) {
+    for (name, xml, crossing) in lexical_depth_cases::lexical_depth_cases() {
         let bytes = package("<w:p/>", &[("word/styles.xml", &xml)]);
         let result = parse_from_bytes(&bytes);
         let streamed = parse_from_bytes_streamed_with_limits(&bytes, None, None, "depth-test");
-        if valid {
+        if crossing {
             assert_depth_error(&result.unwrap_err(), 256);
             assert_depth_error(&streamed.unwrap_err(), 256);
         } else {
             assert_eq!(
-                serde_json::to_value(result.expect(&name)).unwrap(),
+                serde_json::to_value(result.expect(name)).unwrap(),
                 expected,
                 "{name}"
             );
             assert_eq!(
-                serde_json::to_value(streamed.expect(&name)).unwrap(),
+                serde_json::to_value(streamed.expect(name)).unwrap(),
                 expected_streamed,
                 "{name}"
             );

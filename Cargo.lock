@@ -216,7 +216,7 @@ dependencies = [
  "docx-model",
  "ooxml-common",
  "quick-xml",
- "roxmltree 0.20.0",
+ "roxmltree",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -430,7 +430,7 @@ dependencies = [
  "pptx-model",
  "pptx-parser",
  "quick-xml",
- "roxmltree 0.20.0",
+ "roxmltree",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -527,8 +527,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "quick-xml",
- "roxmltree 0.20.0",
- "roxmltree 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "roxmltree",
  "serde",
  "serde_json",
  "zip",
@@ -606,7 +605,7 @@ dependencies = [
  "console_error_panic_hook",
  "ooxml-common",
  "pptx-model",
- "roxmltree 0.20.0",
+ "roxmltree",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -720,10 +719,6 @@ dependencies = [
  "serde_json",
  "syn",
 ]
-
-[[package]]
-name = "roxmltree"
-version = "0.20.0"
 
 [[package]]
 name = "roxmltree"
@@ -1171,7 +1166,7 @@ dependencies = [
  "console_error_panic_hook",
  "ooxml-common",
  "quick-xml",
- "roxmltree 0.20.0",
+ "roxmltree",
  "serde",
  "serde_json",
  "wasm-bindgen",

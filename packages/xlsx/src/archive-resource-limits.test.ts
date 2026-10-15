@@ -19,8 +19,11 @@ beforeAll(() => {
 });
 
 describe('XlsxArchive.parse resource scope (real WASM)', () => {
-  it('rejects over-deep shared strings and keeps the session poisoned', () => {
-    const archive = new XlsxArchive(workbookWithStrings('<sst>' + '<si>'.repeat(257) + '</si>'.repeat(257) + '</sst>'));
+  it.each([
+    { kind: 'well-formed', attributes: '' },
+    { kind: 'malformed', attributes: ` a='1' a='2'` },
+  ])('rejects $kind over-deep shared strings and keeps the session poisoned', ({ attributes }) => {
+    const archive = new XlsxArchive(workbookWithStrings(`<sst${attributes}>` + '<si>'.repeat(257) + '</si>'.repeat(257) + '</sst>'));
     try {
       let failure: unknown;
       try { archive.parse(); } catch (error) { failure = error; }
@@ -36,8 +39,8 @@ describe('XlsxArchive.parse resource scope (real WASM)', () => {
     }
   });
 
-  it('keeps malformed shared strings as a recoverable part error', () => {
-    const archive = new XlsxArchive(workbookWithStrings('<sst>' + '<si / >'.repeat(257) + '</sst>'));
+  it('keeps shallow malformed shared strings as a recoverable part error', () => {
+    const archive = new XlsxArchive(workbookWithStrings('<sst>' + `<si a='> /' a="/>" />`.repeat(257) + '</sst>'));
     try {
       const model = JSON.parse(new TextDecoder().decode(archive.parse()));
       expect(model.sharedStrings).toEqual([]);
