@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { build } from 'vite';
-import { assertDispatchCost, assertLazySourceOwner, assertNoTopLevelModelImport, assertEagerSourceEntries, assertNoSourceRuntime, checkSourceDispatchImports } from './check-model-source-lazy-graph.mjs';
+import { eagerModules, assertDispatchCost, assertLazySourceOwner, assertNoTopLevelModelImport, assertEagerSourceEntries, assertNoSourceRuntime, checkSourceDispatchImports } from './check-model-source-lazy-graph.mjs';
 
 const tempRoot = process.platform === 'darwin' ? '/private/tmp' : tmpdir();
 
@@ -68,7 +68,15 @@ test('each eager entry type rejects a transitive static model-source import', ()
 });
 
 test('a model-source marker leaking into eager emitted code fails', () => {
-  assert.throws(() => assertNoSourceRuntime('const marker="ooxml-model-source-module/v1";', 'entry'), /optional source runtime/);
+  for (const marker of ['ooxml-model-source-module/v1', 'Native reading scene ',
+    'Invalid native reading word-breaking owner', 'DRAWINGS_RELOCATED_FOR_READING']) {
+    assert.throws(() => assertNoSourceRuntime(JSON.stringify(marker), 'entry'), /optional source runtime/);
+  }
+});
+
+test('selected-source workers allow reading behavior but still reject eager archive-source runtime', () => {
+  assert.doesNotThrow(() => assertNoSourceRuntime('Native reading scene ', 'selected', { allowReading: true }));
+  assert.throws(() => assertNoSourceRuntime('ooxml-model-source-module/v1', 'selected', { allowReading: true }), /optional source runtime/);
 });
 
 test('a model-source helper factored outside the branch is charged to the build difference', async () => {
@@ -97,5 +105,15 @@ export async function load(options = {}) {
       join(disabledDir, 'entry.mjs'), 3_000, 'fixture'), /dispatch cost exceeds/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ordinary DOCX entry and worker exclude reading implementations; selected-source paths retain them', () => {
+  for (const entry of ['packages/docx/src/index.ts', 'packages/docx/src/render-worker.ts']) {
+    assert.doesNotThrow(() => assertEagerSourceEntries([entry]));
+  }
+  for (const entry of ['packages/docx/src/internal/document-model-source.ts',
+    'packages/docx/src/internal/worker-document-source.ts']) {
+    assert([...eagerModules(entry)].some(module => module.endsWith('/internal/native-reading-runtime.ts')));
   }
 });

@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { afterEach, describe, expect, it } from 'vitest';
 import { renderLayoutSourceToCanvas } from './renderer.js';
 import { layoutSourceStore } from './layout-source-model-adapter.js';

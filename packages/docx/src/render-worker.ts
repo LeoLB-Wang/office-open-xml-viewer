@@ -1,4 +1,4 @@
-import { hasNativeReadingRequests } from './native-reading-notice.js';
+import { readingHooks } from './internal/reading-hooks.js';
 /**
  * Render-capable worker entry: parse → font preload → paginate, all
  * worker-side; renders pages into an OffscreenCanvas and replies with
@@ -393,7 +393,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       // document is served a synthetic error page by the variant store's
       // builder, and neither previewing nor slicing may route around that.
       let unchangedPages: number | undefined;
-      if (req.progressiveLayout && source.fatalParse === null && !hasNativeReadingRequests(source)) {
+      if (req.progressiveLayout && source.fatalParse === null && !readingHooks.requested(source)) {
         // The parsed model is the source of review data, so the first
         // publication carries it: the host has nothing else to answer
         // `comments` / `revisions` from until `parsedMeta` arrives, and load()

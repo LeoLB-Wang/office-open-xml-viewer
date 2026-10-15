@@ -1,45 +1,21 @@
 import { GeometryWorkBudgetError } from '@silurus/ooxml-core';
 import type { AnchorAcquisitionInput } from './anchor-input.js';
-import type { ParagraphAcquisitionInput, ParagraphShapeRun, TextLayoutService } from './text.js';
+import type { ParagraphAcquisitionInput } from './text.js';
 import type { DrawingLayout, DrawingPaintCommand, LayoutRect, SourceRef } from './types.js';
 import { isDeepFrozenPlainDataRoot, snapshotPlainData } from './plain-data.js';
-import { planShapeDrawing, type ShapeDrawingPlanResult } from './shape-drawing-plan.js';
+import type { ShapeDrawingPlanResult } from './shape-drawing-plan.js';
 import { retainedAnchorChildFrame } from './retained-anchor-child-frame.js';
 import { NativeWrapPaintBudgetError, deriveNativeWrapPaintExtent } from './native-wrap-paint-bounds.js';
 import { translateDrawing } from './retained-geometry-translation.js';
 
-export type NativeReadingSceneBlocker =
-  | 'source-ownership' | 'member-coverage' | 'geometry' | 'resource'
-  | 'owned-text' | 'clip' | 'paint' | 'budget' | 'placement';
-
-export class NativeReadingSceneError extends Error {
-  readonly blocker: NativeReadingSceneBlocker;
-  constructor(blocker: NativeReadingSceneBlocker, message: string) {
-    super(`Native reading scene ${blocker}: ${message}`);
-    this.name = 'NativeReadingSceneError';
-    this.blocker = blocker;
-  }
-}
+export { NativeReadingSceneError, type NativeReadingSceneBlocker } from './reading-scene-error.js';
+import { NativeReadingSceneError, type NativeReadingSceneBlocker } from './reading-scene-error.js';
 function fail(blocker: NativeReadingSceneBlocker, message: string): never {
   throw new NativeReadingSceneError(blocker, message);
 }
 
-/** Same planner as ordinary anchored groups. Resolved child rotation/reflection
- * belongs to the child, not the outer group. Do not apply the raw transform
- * chain again: native acquisition has already resolved it into this frame. */
-export function planRetainedAnchorShape(
-  run: ParagraphShapeRun,
-  acquisition: AnchorAcquisitionInput,
-  rect: LayoutRect,
-  text?: TextLayoutService,
-  imageFillResourceKey?: string,
-  maximumGeometryWork?: number,
-): ShapeDrawingPlanResult {
-  const child = acquisition.group?.resolvedChildFrame;
-  return planShapeDrawing(child ? {
-    ...run, rotation: child.rotationDeg, flipH: child.flipH, flipV: child.flipV,
-  } : run, rect, text, run.vmlTextPathInput, imageFillResourceKey, maximumGeometryWork);
-}
+export { planRetainedAnchorShape } from './retained-anchor-shape.js';
+import { planRetainedAnchorShape } from './retained-anchor-shape.js';
 
 export interface NativeReadingBlockScene {
   readonly occurrenceId: string;

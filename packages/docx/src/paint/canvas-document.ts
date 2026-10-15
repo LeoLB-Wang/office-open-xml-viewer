@@ -1,4 +1,4 @@
-import { assertNativeReadingImageAvailable } from './native-reading-image-availability.js';
+import { readingPaintHooks } from './reading-hooks.js';
 import { readingPictureBulletKeys } from './reading-picture-bullets.js';
 import {
   withBitmapCacheLease,
@@ -565,7 +565,7 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
           if (command.resourceKind !== 'image') throw new Error('Reading scene changed its resource class');
           if (!command.nativeImagePlan || command.nativeImagePlan.source.resourceKey !== command.resourceKey
             || command.orientation !== undefined) throw new Error('Reading image lost its acquired projection');
-          assertNativeReadingImageAvailable(session, command.nativeImagePlan, command.rect);
+          readingPaintHooks.assertNativeReadingImageAvailable(session, command.nativeImagePlan, command.rect);
         }
       }
     }

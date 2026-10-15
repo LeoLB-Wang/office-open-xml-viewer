@@ -1,15 +1,11 @@
+import { noReadingNotices, noNativeReadingRequests, type DocxReadingNotice, type NativeReadingRequests } from './internal/reading-contract.js';
+export { noReadingNotices, noNativeReadingRequests, type DocxReadingNotice, type NativeReadingRequests } from './internal/reading-contract.js';
 import type { DeepReadonly, DocumentLayout, LayoutPage } from './layout/types.js';
 import { isLayoutSourceStore, type LayoutSourceStore } from './layout/layout-source-store.js';
 import { nativeReadingOccurrenceIds } from './layout/native-reading-paragraph.js';
 import { readingPictureBulletKeys } from './paint/reading-picture-bullets.js';
 export { readingPictureBulletKeys } from './paint/reading-picture-bullets.js';
 
-/** Public disclosure of changed reading layout, never an Office layout claim. */
-export interface DocxReadingNotice {
-  readonly code: 'DRAWINGS_RELOCATED_FOR_READING' | 'INACTIVE_PICTURE_DATA_RETAINED'
-    | 'WORD_BREAKING_SIMPLIFIED_FOR_READING' | 'PICTURE_BULLETS_SIZED_FOR_READING';
-  readonly message: string;
-}
 const canonicalNotices: readonly DocxReadingNotice[] = Object.freeze([
   Object.freeze({ code: 'DRAWINGS_RELOCATED_FOR_READING' as const,
     message: 'Some drawings were moved into separate blocks for readability' }),
@@ -20,19 +16,7 @@ const canonicalNotices: readonly DocxReadingNotice[] = Object.freeze([
   Object.freeze({ code: 'PICTURE_BULLETS_SIZED_FOR_READING' as const,
     message: 'Picture bullets use stored image sizes for reading; their appearance, placement and page breaks may differ from Word' }),
 ]);
-export const noReadingNotices: readonly DocxReadingNotice[] = Object.freeze([]);
 
-/** Acquired source facts stay distinct. Their union owns atomic publication,
- * while disclosures still require the corresponding owner and visible layout.
- * In particular, a hidden picture marker cannot imply word-breaking reading. */
-export interface NativeReadingRequests {
-  readonly contour: boolean;
-  readonly wordBreaking: boolean;
-  readonly pictureBullets: boolean;
-}
-export const noNativeReadingRequests: NativeReadingRequests = Object.freeze({
-  contour: false, wordBreaking: false, pictureBullets: false,
-});
 // Successful complete source acquisition is invariant for this sealed store.
 // Cache by its factory-owned identity, never by mutable public models, variants
 // or a caller-supplied adapter. Failed scans leave no partially acquired entry.
@@ -78,16 +62,7 @@ export function nativeReadingNotices(
   return notices.length === 0 ? noReadingNotices : Object.freeze(notices);
 }
 
-/** One stable live region for the complete active disclosure set. */
-export function updateNativeReadingNotice(container: HTMLElement, current: HTMLElement | null, notices: readonly DocxReadingNotice[]): HTMLElement | null {
-  if (notices.length === 0) { current?.remove(); return null; }
-  const element = current ?? container.ownerDocument.createElement('div');
-  element.setAttribute('role', 'status'); element.setAttribute('aria-live', 'polite');
-  const message = notices.map(notice => notice.message).join(' ');
-  if (element.textContent !== message) element.textContent = message;
-  if (!current) container.insertBefore(element, container.firstChild);
-  return element;
-}
+export { updateNativeReadingNotice } from './internal/reading-hooks.js';
 
 /** Normalize worker disclosures to a closed, immutable canonical subset.
  * Inactive picture metadata is disclosed only with an actual relocation. */

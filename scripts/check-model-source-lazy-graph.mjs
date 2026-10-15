@@ -224,8 +224,11 @@ function withDisabledBuild(check) {
   }
 }
 
-export function assertNoSourceRuntime(code, name) {
-  if (code.includes('ooxml-model-source-module/v1') || code.includes('model source view default')) {
+export function assertNoSourceRuntime(code, name, { allowReading = false } = {}) {
+  if (code.includes('ooxml-model-source-module/v1') || code.includes('model source view default')
+    || (!allowReading && (code.includes('Native reading scene ')
+      || code.includes('Invalid native reading word-breaking owner')
+      || code.includes('DRAWINGS_RELOCATED_FOR_READING')))) {
     throw new Error(`${name} includes optional source runtime in its eager OOXML code`);
   }
 }
@@ -287,7 +290,7 @@ export function assertEagerSourceEntries(entries, forbidden = []) {
     for (const module of eagerModules(entry)) {
       // Match future model-source owners as well as today's explicit list.
       // A type-only import is absent from eagerModules, as it should be.
-      if (forbiddenPaths.has(module) || /(?:^|\/)(?:[^/]*model-source[^/]*|worker-source|render-worker-source)\.[cm]?[jt]sx?$/.test(module)) {
+      if (forbiddenPaths.has(module) || /(?:^|\/)(?:[^/]*model-source[^/]*|worker-source|render-worker-source|native-reading-[^/]+)\.[cm]?[jt]sx?$/.test(module)) {
         throw new Error(`${entry} statically reaches ${module}`);
       }
     }

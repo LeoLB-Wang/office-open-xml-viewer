@@ -1,5 +1,5 @@
+import { readingHooks } from '../internal/reading-hooks.js';
 import { requireResolvedDrawingMLGeometry } from '@silurus/ooxml-core';
-import { nativeReadingImageFrame } from './native-reading-image-frame.js';
 import { LayoutInvariantError } from './diagnostics.js';
 import {
   createSectionRegionCoordinateSpace,
@@ -572,7 +572,7 @@ function requireDrawingGeometry(node: DrawingLayout, path: string): void {
         throw new LayoutInvariantError('INVALID_GEOMETRY', `${commandPath} has an unacquired image orientation/clip/resource`);
       }
       try {
-        const local = nativeReadingImageFrame(command.nativeImagePlan, command.rect);
+        const local = readingHooks.imageFrame(command.nativeImagePlan, command.rect);
         const frame = node.transform ? transformRect(node.transform, local) : local;
         if (!contains(node.flowBounds, frame)) throw new Error('image projection exceeds allocation');
       } catch (error) {

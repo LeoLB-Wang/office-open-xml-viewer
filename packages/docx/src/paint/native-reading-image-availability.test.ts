@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from '../internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPaintResourceRegistry } from '../layout/paint-resources.js';
