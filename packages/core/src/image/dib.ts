@@ -66,7 +66,9 @@ export function decodeDib(
   // before surface admission. Arithmetic (rather than 32-bit shifts) keeps
   // row sizes valid even for oversized headers that have not been admitted.
   const rowStride = Math.ceil(width * biBitCount / 32) * 4;
-  if (rowStride * height > bitsLen + rowStride && bitsOff + rowStride * height > dv.byteLength) return null;
+  // EMF records may carry unrelated data after the explicit pixel span too.
+  // Only bitsLen proves bitmap bytes; the enclosing view is not pixel data.
+  if (rowStride * height > bitsLen + rowStride) return null;
   // Validate dimensions BEFORE the RGBA allocation. Reject non-positive dims,
   // any dimension past the max canvas size, and any total pixel count over the
   // megapixel budget — a crafted header (e.g. 65535×65535) otherwise reaches
@@ -92,7 +94,7 @@ export function decodeDib(
     palette = [];
     for (let i = 0; i < clrUsed; i++) {
       const o = palOff + i * 4;
-      if (o + 4 > dv.byteLength) break;
+      if (o + 4 > bmiOff + bmiLen) break;
       const b = dv.getUint8(o);
       const g = dv.getUint8(o + 1);
       const r = dv.getUint8(o + 2);
@@ -113,7 +115,7 @@ export function decodeDib(
     const srcRow = topDown ? y : height - 1 - y; // bottom-up unless negative
     const dstRow = y;
     const rowOff = bitsOff + srcRow * rowStride;
-    if (rowOff + rowStride > dv.byteLength) break;
+    if (rowOff + rowStride > bitsOff + bitsLen) break;
     if (biBitCount === 32) {
       for (let x = 0; x < width; x++) {
         const o = rowOff + x * 4;
@@ -179,7 +181,12 @@ export function decodeDib(
  * {@link decodeDib}. `dibOff`/`dibLen` bound the packed blob within `dv`.
  */
 export function decodePackedDib(dv: DataView, dibOff: number, dibLen: number): DecodedDib | null {
-  if (dibLen < 40 || dibOff + 40 > dv.byteLength) return null;
+  if (dibOff < 0 || dibLen < 40 || dibOff + dibLen > dv.byteLength) return null;
+  // MS-WMF 2.3.1.6: the packed bitmap belongs to this record alone. Bound
+  // every header/palette/pixel read before decodeDib tests truncation or admits
+  // a surface; following records cannot supply this bitmap's missing bytes.
+  dv = new DataView(dv.buffer, dv.byteOffset + dibOff, dibLen);
+  dibOff = 0;
   const biSize = dv.getUint32(dibOff, true);
   if (biSize < 40) return null;
   const biBitCount = dv.getUint16(dibOff + 14, true);

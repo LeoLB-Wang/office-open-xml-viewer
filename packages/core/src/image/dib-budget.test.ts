@@ -19,6 +19,12 @@ function bitmap(width: number, height: number, bits = width * height * 4): DataV
 }
 
 describe('DIB decoded-surface admission', () => {
+  it('does not use bytes outside an explicit pixel span as proof of a surface', () => {
+    const view = bitmap(17, 2);
+    // The complete containing record has other data after four bitmap bytes.
+    expect(decodeDib(view, 0, 40, 40, 4)).toBeNull();
+  });
+
   it.each([
     ['explicit offsets (EMF)', (view: DataView) => decodeDib(view, 0, 40, 40, view.byteLength - 40)],
     ['packed bitmap (WMF)', (view: DataView) => decodePackedDib(view, 0, view.byteLength)],

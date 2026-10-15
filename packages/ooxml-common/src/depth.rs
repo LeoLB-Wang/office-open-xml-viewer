@@ -227,42 +227,80 @@ fn apparent_xml_nesting_exceeds(bytes: &[u8], limit: u32) -> bool {
     false
 }
 
-/// Return a proven depth crossing, leaving lexically invalid XML to ordinary
+/// Return a proven depth crossing, leaving invalid markup to ordinary
 /// content-error handling. The fast screen avoids a second lexer pass for the
 /// usual shallow part. Only apparent crossings need the strict, non-recursive
 /// XML 1.0 tokenizer (including names, attributes and the exact `/>` grammar).
-/// It borrows tokens without building a tree or an unbounded element stack.
-fn checked_xml_nesting_exceeds(xml: &str, limit: u32) -> Result<bool, xmlparser::Error> {
+/// Opening-name offsets validate matching end tags without a DOM or copied
+/// names. Scratch is O(depth), at most one usize per opening tag in the bounded
+/// input; the ordinary shallow-part screen remains allocation-free.
+fn checked_xml_nesting_exceeds(xml: &str, limit: u32) -> Result<bool, GuardedParseError> {
     if !apparent_xml_nesting_exceeds(xml.as_bytes(), limit) {
         return Ok(false);
     }
-    let mut depth = 0u64;
+    let mut openings = Vec::new();
+    let mut name_start = 0;
     let mut exceeds = false;
     for token in xmlparser::Tokenizer::from(xml) {
-        match token? {
+        match token.map_err(GuardedParseError::Lexical)? {
+            xmlparser::Token::ElementStart { prefix, local, .. } => {
+                name_start = if prefix.is_empty() {
+                    local.start()
+                } else {
+                    prefix.start()
+                };
+            }
             xmlparser::Token::ElementEnd {
                 end: xmlparser::ElementEnd::Open,
                 ..
             } => {
-                depth = depth.saturating_add(1);
-                exceeds |= depth > u64::from(limit);
+                openings.push(name_start);
+                exceeds |= openings.len() as u64 > u64::from(limit);
             }
             xmlparser::Token::ElementEnd {
-                end: xmlparser::ElementEnd::Close(_, _),
+                end: xmlparser::ElementEnd::Close(prefix, local),
                 ..
             } => {
-                depth = depth.saturating_sub(1);
+                let start = openings
+                    .pop()
+                    .ok_or(GuardedParseError::Xml(roxmltree::Error::UnclosedRootNode))?;
+                // The opening token was lexically validated, so its QName
+                // ends at XML whitespace, '/' or '>'. Rescanning names at close
+                // is linear in input bytes and avoids retaining copied names.
+                let end = xml[start..]
+                    .find([' ', '\t', '\r', '\n', '/', '>'])
+                    .unwrap_or(xml.len() - start);
+                let expected = &xml[start..start + end];
+                let close_start = if prefix.is_empty() {
+                    local.start()
+                } else {
+                    prefix.start()
+                };
+                let actual = &xml[close_start..local.end()];
+                if expected != actual {
+                    let pos = xmlparser::Stream::from(xml).gen_text_pos_from(close_start);
+                    return Err(GuardedParseError::Xml(
+                        roxmltree::Error::UnexpectedCloseTag(
+                            expected.to_string(),
+                            actual.to_string(),
+                            roxmltree::TextPos::new(pos.row, pos.col),
+                        ),
+                    ));
+                }
             }
             _ => {}
         }
     }
-    // Finish lexical validation even after a crossing: malformed input remains
-    // a content error. The caller must not then hand an over-deep invalid part
+    if !openings.is_empty() {
+        return Err(GuardedParseError::Xml(roxmltree::Error::UnclosedRootNode));
+    }
+    // Finish lexical and structural validation even after a crossing: malformed
+    // input remains a content error. Do not hand an over-deep invalid part
     // to roxmltree, whose recursive builder could overflow before that error.
     Ok(exceeds)
 }
 
-/// Scan raw UTF-8 XML for nesting beyond `limit`. Lexical errors are not proof
+/// Scan raw UTF-8 XML for nesting beyond `limit`. Invalid markup is not proof
 /// of a resource crossing; guarded DOM entry points return them separately.
 pub fn xml_nesting_exceeds(bytes: &[u8], limit: u32) -> bool {
     std::str::from_utf8(bytes)
@@ -379,7 +417,7 @@ pub enum GuardedParseError {
     /// `roxmltree::Document::parse` would risk a stack-overflow trap, so the
     /// caller must reject the package operation instead.
     TooDeep,
-    /// `roxmltree::Document::parse` rejected the (in-depth-budget) input.
+    /// Structural preflight or `roxmltree::Document::parse` rejected the input.
     Xml(roxmltree::Error),
     /// The strict preflight rejected malformed syntax before DOM construction.
     Lexical(xmlparser::Error),
@@ -400,7 +438,7 @@ impl std::fmt::Display for GuardedParseError {
 impl std::error::Error for GuardedParseError {}
 
 /// Parse `xml` into a [`roxmltree::Document`], but **only after** the
-/// allocation-free [`xml_too_deep`] pre-check confirms the element nesting is
+/// fast-screened [`xml_too_deep`] pre-check confirms the element nesting is
 /// within [`MAX_XML_DEPTH`].
 ///
 /// `roxmltree`'s tree builder recurses per element-nesting level, so a part
@@ -416,7 +454,7 @@ impl std::error::Error for GuardedParseError {}
 /// optional parts without accidentally accepting a resource-limit failure.
 #[inline]
 pub fn parse_guarded(xml: &str) -> Result<roxmltree::Document<'_>, GuardedParseError> {
-    if checked_xml_nesting_exceeds(xml, MAX_XML_DEPTH).map_err(GuardedParseError::Lexical)? {
+    if checked_xml_nesting_exceeds(xml, MAX_XML_DEPTH)? {
         report_depth_limit(MAX_XML_DEPTH);
         return Err(GuardedParseError::TooDeep);
     }
@@ -435,7 +473,7 @@ pub fn parse_guarded_with_node_limit(
     xml: &str,
     nodes_limit: u32,
 ) -> Result<roxmltree::Document<'_>, GuardedParseError> {
-    if checked_xml_nesting_exceeds(xml, MAX_XML_DEPTH).map_err(GuardedParseError::Lexical)? {
+    if checked_xml_nesting_exceeds(xml, MAX_XML_DEPTH)? {
         report_depth_limit(MAX_XML_DEPTH);
         return Err(GuardedParseError::TooDeep);
     }
@@ -662,6 +700,28 @@ mod tests {
                 parse_guarded_with_node_limit(&xml, 1000),
                 Err(GuardedParseError::Lexical(_))
             ));
+        }
+    }
+
+    #[test]
+    fn unclosed_and_mismatched_tags_never_become_depth_failures() {
+        use crate::resource::{OoxmlFormat, ResourceGovernor};
+        for xml in [
+            "<a>".repeat(257),
+            format!("{}{}", "<a>".repeat(257), "</b>".repeat(257)),
+        ] {
+            let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, None, None, None);
+            let _scope = governor.scope("malformed-depth-test");
+            assert!(!xml_too_deep(xml.as_bytes()));
+            assert!(matches!(
+                parse_guarded(&xml),
+                Err(GuardedParseError::Xml(_))
+            ));
+            assert!(matches!(
+                parse_guarded_with_node_limit(&xml, 1000),
+                Err(GuardedParseError::Xml(_))
+            ));
+            assert!(governor.first_error().is_none());
         }
     }
 

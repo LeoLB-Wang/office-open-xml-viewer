@@ -1502,7 +1502,7 @@ export class OoxmlDecodedImageLimitError extends RangeError {
     readonly code: 'ooxml-decoded-image-limit';
     constructor(metric: OoxmlDecodedImageLimitMetric, limit: number, observed: number);
 }
-export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work';
+export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work' | 'metafile-path-commands' | 'metafile-record-points' | 'metafile-record-polygons';
 export class OoxmlError extends Error {
     readonly code: OoxmlErrorCode;
     constructor(code: OoxmlErrorCode, message: string);

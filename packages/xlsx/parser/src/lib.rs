@@ -8628,6 +8628,16 @@ mod rb7_partial_degradation_tests {
     }
 
     #[test]
+    fn unresolved_oversized_sparkline_keeps_empty_data_on_native_and_cursor_paths() {
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><sheetData/><extLst><ext uri="spark"><x14:sparklineGroups><x14:sparklineGroup><x14:sparklines><x14:sparkline><xm:f>Missing!A1:A1000001</xm:f><xm:sqref>B1</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext></extLst></worksheet>"#;
+        let model = assert_cursor_parity(build_sheet_xml_workbook(sheet));
+        assert_eq!(
+            model["sparklineGroups"][0]["sparklines"][0]["values"],
+            serde_json::json!([]),
+        );
+    }
+
+    #[test]
     fn wasm_cursor_current_sheet_sparkline_matches_legacy_drain() {
         let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><sheetData><row r="1"><c r="A1"><v>5</v></c></row><row r="2"><c r="A2"><v>7</v></c></row></sheetData><extLst><ext uri="spark"><x14:sparklineGroups><x14:sparklineGroup><x14:sparklines><x14:sparkline><xm:f>Sheet1!A1:A2</xm:f><xm:sqref>C1</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext></extLst></worksheet>"#;
         let model = assert_cursor_parity(build_sheet_xml_workbook(sheet));

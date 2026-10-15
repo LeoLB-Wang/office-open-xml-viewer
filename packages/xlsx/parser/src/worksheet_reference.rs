@@ -629,18 +629,21 @@ fn parse_package_worksheet_cells(
         return LookupBuildResult::Unavailable;
     };
     let mut builder = WorksheetCellLookupBuilder::new(max_cells, max_string_bytes);
+    let mut refusal = None;
     loop {
         match projector.next_item() {
             Ok(WorksheetProjectorItem::Row(row)) => {
-                if builder.push_row(&row.row, shared_strings).is_none() {
-                    return LookupBuildResult::LimitExceeded(
-                        builder
-                            .limit_failure()
-                            .expect("bounded builder records its refusal"),
-                    );
+                if refusal.is_none() && builder.push_row(&row.row, shared_strings).is_none() {
+                    // Stop growing the index, but finish source validation.
+                    // A malformed/truncated tail makes this source unavailable;
+                    // its provisional index refusal must not poison the package.
+                    refusal = builder.limit_failure();
                 }
             }
             Ok(WorksheetProjectorItem::Finished(tail)) => {
+                if let Some(failure) = refusal {
+                    return LookupBuildResult::LimitExceeded(failure);
+                }
                 if builder
                     .mark_hidden_columns(&hidden_columns_from_shell(&tail.shell_xml))
                     .is_none()
@@ -712,7 +715,7 @@ fn range_contains(ranges: &[(u32, u32)], value: u32) -> bool {
 fn extract_from_sparse_cells(
     worksheet: &WorksheetCellLookup,
     range: &CellRange,
-) -> Option<(Vec<ReferencedCellValue>, Vec<bool>, usize)> {
+) -> Option<(Vec<ReferencedCellValue>, Vec<bool>)> {
     let total = reference_cell_count(range)?;
     if total > MAX_REFERENCE_CELLS {
         return None;
@@ -720,7 +723,6 @@ fn extract_from_sparse_cells(
     let col_count = (range.right - range.left + 1) as usize;
     let mut values = vec![ReferencedCellValue::Empty; total];
     let mut hidden = vec![false; total];
-    let mut string_bytes = 0usize;
     for row in range.top..=range.bottom {
         for col in range.left..=range.right {
             let index = (row - range.top) as usize * col_count + (col - range.left) as usize;
@@ -729,11 +731,10 @@ fn extract_from_sparse_cells(
             let Some(value) = worksheet.cells.get(&(row, col)) else {
                 continue;
             };
-            string_bytes = string_bytes.checked_add(value.value.string_bytes())?;
             values[index] = value.value.clone();
         }
     }
-    Some((values, hidden, string_bytes))
+    Some((values, hidden))
 }
 
 fn extract_visibility_from_sparse_cells(
@@ -773,7 +774,7 @@ pub(crate) fn extract_reference_cells(
     )
     .as_ref()
     .and_then(|worksheet| extract_from_sparse_cells(worksheet, range))
-    .map(|(values, _, _)| values)
+    .map(|(values, _)| values)
     .unwrap_or_default()
 }
 
@@ -797,7 +798,6 @@ fn resolve_worksheet_reference_projected(
 ) -> Option<ResolvedWorksheetReference> {
     let (source_sheet, reference) = split_sheet_ref(formula)?;
     let range = parse_a1_range(&reference)?;
-    let cell_count = session.reservable_cell_count(&range)?;
     let sheet_name = source_sheet.as_deref().unwrap_or(current_sheet_name);
     if !session.sheets.contains_key(sheet_name) {
         if sheet_name == current_sheet_name {
@@ -897,26 +897,39 @@ fn resolve_worksheet_reference_projected(
             session.sheets.insert(sheet_name.to_string(), worksheet);
         }
     }
-    session.sheets.get(sheet_name).and_then(Option::as_ref)?;
-    // Only successful source resolution consumes the cumulative dense-output
-    // budget. Broken sheet names and unreadable parts must not starve later,
-    // valid references in the same worksheet parse.
+    // Only a resolved source can produce dense output. This is library resource
+    // policy, not formula validation (ECMA-376 CT_NumRef/CT_StrRef f is a string).
+    // Missing sheets/relationships and unreadable parts keep content fallback,
+    // even for oversized ranges or after earlier results exhausted the budget.
     let worksheet = session.sheets.get(sheet_name).and_then(Option::as_ref)?;
-    let (values, hidden, string_bytes) = if include_values {
-        extract_from_sparse_cells(worksheet, &range)?
-    } else {
-        (
-            Vec::new(),
-            extract_visibility_from_sparse_cells(worksheet, &range)?,
-            0,
-        )
-    };
+    let cell_count = session.reservable_cell_count(&range)?;
+    // Count only resolved cells in the admitted range, without cloning strings
+    // or scanning unrelated index entries. Both output budgets are admitted
+    // before allocating the dense vectors or any duplicated string payload.
+    let mut string_bytes = 0usize;
+    if include_values {
+        for row in range.top..=range.bottom {
+            for col in range.left..=range.right {
+                if let Some(cell) = worksheet.cells.get(&(row, col)) {
+                    string_bytes = string_bytes.saturating_add(cell.value.string_bytes());
+                }
+            }
+        }
+    }
     reference_limit(
         HardResourceLimitKind::WorksheetReferenceStringBytes,
         MAX_TOTAL_REFERENCE_STRING_BYTES,
         (MAX_TOTAL_REFERENCE_STRING_BYTES - session.remaining_string_bytes)
             .saturating_add(string_bytes),
     )?;
+    let (values, hidden) = if include_values {
+        extract_from_sparse_cells(worksheet, &range)?
+    } else {
+        (
+            Vec::new(),
+            extract_visibility_from_sparse_cells(worksheet, &range)?,
+        )
+    };
     session.consume_result(cell_count, string_bytes);
     Some(ResolvedWorksheetReference { values, hidden })
 }
@@ -1268,6 +1281,66 @@ mod tests {
                 if strings { "bytes" } else { "cells" }
             );
         }
+    }
+
+    #[test]
+    fn unavailable_sources_do_not_admit_dense_output_even_after_budget_exhaustion() {
+        for formula in ["Missing!A1:A1000001", "Source!A1:A1000001", "Source!A1"] {
+            let (mut archive, rels, sheets) = one_sheet_xml_reference_archive("<worksheet>");
+            let mut session = WorksheetReferenceSession {
+                remaining_cells: 0,
+                remaining_string_bytes: 0,
+                ..Default::default()
+            };
+            archive
+                .run_operation("unavailable-source-test", |archive| {
+                    for include_values in [false, true] {
+                        assert!(resolve_worksheet_reference_projected(
+                            archive,
+                            formula,
+                            None,
+                            None,
+                            "Dashboard",
+                            &sheets,
+                            &rels,
+                            &[],
+                            &mut session,
+                            include_values,
+                        )
+                        .is_none());
+                    }
+                    Ok(())
+                })
+                .expect("missing and unreadable sources have no dense output to admit");
+        }
+    }
+
+    #[test]
+    fn malformed_source_tail_does_not_turn_an_index_refusal_into_a_package_failure() {
+        // Cross the 512-row projection batch so index admission runs before
+        // the projector discovers the malformed tail in the next batch.
+        let xml = format!(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{}</sheetData><bad / ></worksheet>"#,
+            r#"<row><c><v>1</v></c><c><v>2</v></c></row>"#.repeat(513),
+        );
+        let (mut archive, rels, sheets) = one_sheet_xml_reference_archive(&xml);
+        let mut session = reduced_session(1, 8);
+        archive
+            .run_operation("malformed-source-test", |archive| {
+                assert!(resolve_worksheet_reference(
+                    archive,
+                    "Source!A1:B1",
+                    None,
+                    "Dashboard",
+                    &sheets,
+                    &rels,
+                    &[],
+                    &mut session,
+                )
+                .is_none());
+                Ok(())
+            })
+            .expect("a failed source parse keeps its existing unavailable fallback");
     }
 
     #[test]

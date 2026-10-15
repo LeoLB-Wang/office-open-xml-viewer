@@ -615,6 +615,30 @@ describe('playWmf — robustness', () => {
 // ── playWmf: STRETCHDIBITS embedded raster DIB ──────────────────────────────
 
 describe('playWmf — STRETCHDIBITS (embedded raster DIB)', () => {
+  it('does not borrow a following record to admit a truncated packed DIB', () => {
+    const bitmap = record(FN.STRETCHDIBITS, (w) => {
+      w.u32(0x00cc0020);
+      for (let i = 0; i < 9; i++) w.u16(1);
+      w.u32(40).u32(40000).u32(2).u16(1).u16(32).u32(0).u32(0)
+        .u32(0).u32(0).u32(0).u32(0).raw(0, 0, 0, 0);
+    });
+    const following = new Uint8Array(320006);
+    const view = new DataView(following.buffer);
+    view.setUint32(0, following.length / 2, true);
+    view.setUint16(4, 0xffff, true); // unsupported record, skipped by size
+    for (const tail of [new Uint8Array(0), following]) {
+      const m = makeRecordingCtx();
+      expect(() => playWmf(concat(
+        wmfHeader(), bitmap, tail,
+        record(FN.CREATEPENINDIRECT, (w) => w.u16(0).i16(1).i16(0).u32(0xff)),
+        record(FN.SELECTOBJECT, (w) => w.u16(0)),
+        record(FN.RECTANGLE, (w) => w.i16(10).i16(10).i16(0).i16(0)),
+        record(FN.EOF, () => {}),
+      ), m.ctx, 100, 100)).not.toThrow();
+      expect(m.calls.some((call) => call.op === 'stroke')).toBe(true);
+    }
+  });
+
   it('propagates a packed DIB budget crossing out of WMF playback', () => {
     const bitmap = record(FN.STRETCHDIBITS, (w) => {
       w.u32(0x00cc0020);
