@@ -1,5 +1,4 @@
 import { readingPaintHooks } from './reading-hooks.js';
-import { readingPictureBulletKeys } from './reading-picture-bullets.js';
 import {
   withBitmapCacheLease,
   clampCanvasSize,
@@ -45,7 +44,6 @@ import {
 import {
   createProductionPaintResourceSession,
   unavailablePaintResourceHandle,
-  isUnavailablePaintResourceHandle,
 } from './resource-session.js';
 import type { PaintCanvas2D } from './types.js';
 
@@ -523,10 +521,8 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
 
     // Changed resource owners must all be validated before clearing. Strict
     // pages retain their established background-before-error behavior.
-    const readingBulletKeys = readingPictureBulletKeys(page);
-    const readingPage = readingBulletKeys.length !== 0 || page.layers.body.some(node =>
-      node.kind === 'paragraph' && (node.nativeReadingRelocations?.length ?? 0) > 0);
-    if (outcome.kind === 'failed') { if (!readingPage) clearPage(); throw outcome.error; }
+    const readingAdmission = readingPaintHooks.pageAdmission(page);
+    if (outcome.kind === 'failed') { if (!readingAdmission) clearPage(); throw outcome.error; }
     const { images, chartImages } = outcome.images;
 
     const session = createProductionPaintResourceSession(options.registry, (descriptor) => {
@@ -555,29 +551,7 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
       }
       return undefined;
     });
-    for (const node of page.layers.body) {
-      if (node.kind !== 'paragraph' || !node.nativeReadingRelocations?.length) continue;
-      for (const id of node.nativeReadingRelocations) {
-        const drawing = node.drawings.find(candidate => candidate.id === id);
-        if (!drawing) throw new Error('Reading page lost a complete drawing');
-        for (const command of drawing.commands) {
-          if (command.kind !== 'resource') continue;
-          if (command.resourceKind !== 'image') throw new Error('Reading scene changed its resource class');
-          if (!command.nativeImagePlan || command.nativeImagePlan.source.resourceKey !== command.resourceKey
-            || command.orientation !== undefined) throw new Error('Reading image lost its acquired projection');
-          readingPaintHooks.assertNativeReadingImageAvailable(session, command.nativeImagePlan, command.rect);
-        }
-      }
-    }
-    // Reading publication cannot replace a missing owned image with an
-    // optional-codec placeholder or silently paint nothing. Verify every
-    // selected marker before clearing the caller's existing surface.
-    for (const key of readingBulletKeys) {
-      const resource = session.resolve(key, 'picture-bullet');
-      if (isUnavailablePaintResourceHandle(resource.handle)) {
-        throw new Error('Reading picture bullet has no decoded owned image');
-      }
-    }
+    if (readingAdmission) readingPaintHooks.assertPageImages(session, page, readingAdmission);
     // From this single clear through completed painting there is no await.
     clearPage();
 

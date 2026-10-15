@@ -1,5 +1,6 @@
 import { NativeReadingSceneError } from '../layout/reading-scene-error.js';
 import { installReadingPaintHooks } from '../paint/reading-hooks.js';
+import { readingPageAdmission, assertReadingPageImages } from '../paint/native-reading-page-admission.js';
 import { installReadingHooks } from './reading-hooks.js';
 import { acquireNativeReadingWordBreaking } from '../native-reading-word-breaking.js';
 import { acquireNativeReadingPictureBullet } from '../native-reading-picture-bullet.js';
@@ -8,7 +9,7 @@ import { nativeReadingOccurrenceIds, appendNativeReadingScenes, acquireRequested
 import { nativeReadingAnchorRuns, composeNativeReadingAnchorRun } from '../layout/native-reading-anchor-run.js';
 import { nativeReadingRequiresFreshColumn } from '../layout/native-reading-admission.js';
 import { nativeReadingImageFrame } from '../layout/native-reading-image-frame.js';
-import { assertNativeReadingImageAvailable, assertNativeReadingImageBinding } from '../paint/native-reading-image-availability.js';
+import { assertNativeReadingImageBinding } from '../paint/native-reading-image-availability.js';
 
 /** Called by selected-source entry points before source normalization. Keep
  * activation explicit: the package is sideEffects:false, so a side-effect-only
@@ -32,5 +33,8 @@ export function installNativeReadingRuntime(): void {
     imageFrame: nativeReadingImageFrame,
   });
 
-  installReadingPaintHooks({ assertNativeReadingImageAvailable, assertNativeReadingImageBinding });
+  installReadingPaintHooks({
+    pageAdmission: readingPageAdmission, assertPageImages: assertReadingPageImages,
+    assertNativeReadingImageBinding,
+  });
 }

@@ -110,7 +110,10 @@ export async function load(options = {}) {
 
 test('ordinary DOCX entry and worker exclude reading implementations; selected-source paths retain them', () => {
   for (const entry of ['packages/docx/src/index.ts', 'packages/docx/src/render-worker.ts']) {
-    assert.doesNotThrow(() => assertEagerSourceEntries([entry]));
+    assert.doesNotThrow(() => assertEagerSourceEntries([entry], [
+      'packages/docx/src/paint/reading-picture-bullets.ts',
+      'packages/docx/src/paint/native-reading-page-admission.ts',
+    ]));
   }
   for (const entry of ['packages/docx/src/internal/document-model-source.ts',
     'packages/docx/src/internal/worker-document-source.ts']) {

@@ -21,21 +21,29 @@ interface ReadingHooks {
  * before source acquisition. Only stateless functions are retained: document
  * policies and archive/resource ownership remain with acquired source facts.
  * OOXML consumers retain empty defaults and fail-closed admission guards;
- * installing a source never changes the interpretation of ordinary OOXML. */
+ * installing a source never changes the interpretation of ordinary OOXML.
+ * Absence is contract-specific: word breaking accepts only undefined, picture
+ * bullets also accept null, and disclosures accept undefined or an empty array.
+ * requests/occurrences/anchorRuns/notices have empty ordinary results. The four
+ * fail-closed hooks require acquired reading owners (or a reading-only error);
+ * they have no successful ordinary-input invocation. */
 function unavailable(): never { throw new Error('Reading source runtime is not initialized'); }
-const emptyOccurrences: readonly string[] = Object.freeze([]);
+const emptyReadingFacts: readonly never[] = Object.freeze([]);
 export const readingHooks: ReadingHooks = {
   wordBreaking: value => value === undefined ? undefined : unavailable(),
-  pictureBullet: numbering => numbering?.__nativeReadingPictureBullet === undefined ? undefined : unavailable(),
+  pictureBullet: numbering => numbering?.__nativeReadingPictureBullet == null ? undefined : unavailable(),
   requests: () => noNativeReadingRequests,
   requested: () => false,
   notices: () => noReadingNotices,
   retainNotices: value => value === undefined || (Array.isArray(value) && value.length === 0)
     ? noReadingNotices : unavailable(),
-  occurrences: () => emptyOccurrences,
+  occurrences: () => emptyReadingFacts,
   anchorRuns: () => new Map(),
-  appendScenes: unavailable,
-  scenes: unavailable,
+  // Without selected-source facts these functions have ordinary empty results,
+  // including direct acquisition of an empty anchor stage. Capability-bearing
+  // composition/admission below is reachable only after source activation.
+  appendScenes: (_paragraph, input) => input,
+  scenes: () => emptyReadingFacts,
   composeAnchorRun: unavailable,
   freshColumn: unavailable,
   imageFrame: unavailable,
