@@ -381,6 +381,7 @@ const DECODED_IMAGE_LIMIT_METRICS = {
   'active-decoded-bytes': true,
   'image-effect-count': true,
   'image-effect-work': true,
+  'metafile-path-commands': true,
 } satisfies Record<OoxmlDecodedImageLimitMetric, true>;
 
 function isDecodedImageLimitMetric(value: unknown): value is OoxmlDecodedImageLimitMetric {

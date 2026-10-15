@@ -1125,7 +1125,7 @@ describe('playEmf — picture frame mapping + path clip', () => {
     expect(m.calls.filter((call) => call.op === 'fill')).toHaveLength(1);
   });
 
-  it('discards a path bracket that exceeds the cumulative geometry budget', () => {
+  it('rejects a picture that exceeds the cumulative geometry budget', () => {
     const file = concat(
       emfHeader(0, 0, 100, 100),
       record(EMR.CREATEBRUSHINDIRECT, (w) => w.u32(1).u32(0).u32(0x0000ff00).u32(0)),
@@ -1156,9 +1156,9 @@ describe('playEmf — picture frame mapping + path clip', () => {
       height: number,
       limits: { maxPathCommands: number },
     ) => boolean;
-    expect(playWithLimits(file, m.ctx, 100, 100, { maxPathCommands: 4 })).toBe(true);
+    expect(() => playWithLimits(file, m.ctx, 100, 100, { maxPathCommands: 4 })).toThrow(expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric: 'metafile-path-commands', limit: 4, observed: 5 }));
     expect(m.calls.filter((call) => call.op === 'fill')).toHaveLength(0);
-    expect(m.calls.filter((call) => call.op === 'stroke')).toHaveLength(1);
+    expect(m.calls.filter((call) => call.op === 'stroke')).toHaveLength(0);
   });
 
   it('rejects a poly-polygon whose per-polygon counts exceed its declared total', () => {
@@ -1769,16 +1769,16 @@ describe('playEmf — the device context path ([MS-EMF] 2.3.10, 2.3.11)', () => 
   // A RECTANGLE is 5 path commands; the budget covers the current path plus
   // every prefix a SAVEDC snapshot keeps, counting a shared buffer once.
   const hold = (l: number) => [record(EMR.BEGINPATH, () => {}), rect(l, l, l + 10, l + 10), record(EMR.ENDPATH, () => {})];
-  const BUDGET = ['EMF path (path command budget)'];
 
   it('bounds the paths kept by repeated SAVEDC and reports the one past the budget', () => {
     // Two saved 5-command paths retain 10 of 12; a third bracket would hold 15.
-    const r = play([
+    expect(() => play([
       ...hold(10), saveDc, ...hold(50), saveDc, ...hold(70),
       fillPath, restoreDc, fillPath, restoreDc, fillPath,
-    ], 12);
-    expect(r.reported).toEqual(BUDGET);
-    expect(r.fills).toEqual([B, A]); // the over-budget bracket paints nothing
+    ], 12)).toThrow(expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'metafile-path-commands',
+      limit: 12, observed: 15,
+    }));
     // Snapshots of one buffer are one retained copy: A saved three times
     // still leaves room for a second 5-command path.
     const shared = play([...holdA, saveDc, saveDc, saveDc, ...hold(50), fillPath, restoreDc, fillPath], 12);

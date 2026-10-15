@@ -17,11 +17,11 @@
 //! unreachable` **trap** — the browser tab loses the document, not just the
 //! pathological subtree.
 //!
-//! [`DepthGuard`] bounds that recursion. Each recursive call descends the guard
-//! by one; when the configured limit is reached the caller stops descending and
-//! returns whatever it has parsed so far, so the *rest* of the document still
-//! renders (graceful degradation, matching the "skip the blit / drop the
-//! picture, keep rendering" contract used elsewhere in these parsers).
+//! [`DepthGuard`] bounds that recursion. Crossing it latches the existing typed
+//! hard-resource failure in the active package operation. Walkers stop recursing;
+//! their provisional output must never be published after a crossing. Package
+//! operations and cursor pulls check health before returning output. Malformed
+//! XML remains a separate, recoverable content error.
 //!
 //! ## Why 64
 //!
@@ -52,7 +52,7 @@ pub const MAX_PARSE_DEPTH: u32 = 64;
 /// Callers create one at the top of a recursion with [`DepthGuard::root`], then
 /// obtain a child guard for each descent with [`DepthGuard::descend`]. When
 /// `descend` returns `None` the limit has been reached and the caller must stop
-/// recursing (return the partial result) instead of calling itself again.
+/// recursing. The package operation rejects the provisional result.
 ///
 /// The type is `Copy` and holds a single `u32`, so threading it as a by-value
 /// parameter adds no allocation and no borrow-checker friction.
@@ -116,11 +116,12 @@ impl DepthGuard {
     /// A child guard one level deeper, or `None` when the limit is reached.
     ///
     /// `Some(child)` ⇒ recurse with `child`; `None` ⇒ stop and return the
-    /// partial result. The parent guard is unchanged (`Copy`), so sibling
-    /// descents each get their own fresh child.
+    /// provisional result; the package operation must fail. The parent guard is
+    /// unchanged (`Copy`), so sibling descents each get their own fresh child.
     #[inline]
-    pub const fn descend(self) -> Option<Self> {
+    pub fn descend(self) -> Option<Self> {
         if self.depth >= self.limit {
+            report_depth_limit(self.limit);
             None
         } else {
             Some(Self {
@@ -129,6 +130,19 @@ impl DepthGuard {
             })
         }
     }
+}
+
+/// Library resource policy, not a schema restriction. Shared walkers may be
+/// infallible, so latch before returning a bounded provisional projection. This
+/// uses the package-owned governor selected by the synchronous resource scope;
+/// no caller compatibility/unsupported-content policy can clear the failure.
+fn report_depth_limit(limit: u32) {
+    let _ = crate::resource::observe_hard_limit(
+        crate::resource::HardResourceLimitKind::XmlNestingDepth,
+        None,
+        u64::from(limit),
+        u64::from(limit) + 1,
+    );
 }
 
 impl Default for DepthGuard {
@@ -331,7 +345,7 @@ pub fn xml_too_deep(bytes: &[u8]) -> bool {
 pub enum GuardedParseError {
     /// The raw XML nests deeper than [`MAX_XML_DEPTH`]; handing it to
     /// `roxmltree::Document::parse` would risk a stack-overflow trap, so the
-    /// caller must degrade gracefully (skip the part) instead.
+    /// caller must reject the package operation instead.
     TooDeep,
     /// `roxmltree::Document::parse` rejected the (in-depth-budget) input.
     Xml(roxmltree::Error),
@@ -362,13 +376,13 @@ impl std::error::Error for GuardedParseError {}
 /// through this wrapper rather than calling `roxmltree::Document::parse`
 /// directly, so the pre-check is impossible to forget at an individual site.
 ///
-/// On success the returned [`roxmltree::Document`] borrows from `xml`, exactly as
-/// `Document::parse` does. On failure the caller degrades gracefully (skip the
-/// part, keep the rest of the document) — matching the existing
-/// "unsupported/oversized ⇒ skip it, keep rendering" contract in these parsers.
+/// On success the returned document borrows from `xml`. A depth crossing also
+/// poisons the active package operation, so callers may still ignore malformed
+/// optional parts without accidentally accepting a resource-limit failure.
 #[inline]
 pub fn parse_guarded(xml: &str) -> Result<roxmltree::Document<'_>, GuardedParseError> {
     if xml_too_deep(xml.as_bytes()) {
+        report_depth_limit(MAX_XML_DEPTH);
         return Err(GuardedParseError::TooDeep);
     }
     roxmltree::Document::parse(xml).map_err(GuardedParseError::Xml)
@@ -387,6 +401,7 @@ pub fn parse_guarded_with_node_limit(
     nodes_limit: u32,
 ) -> Result<roxmltree::Document<'_>, GuardedParseError> {
     if xml_too_deep(xml.as_bytes()) {
+        report_depth_limit(MAX_XML_DEPTH);
         return Err(GuardedParseError::TooDeep);
     }
     roxmltree::Document::parse_with_options(

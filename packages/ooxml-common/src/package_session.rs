@@ -854,6 +854,7 @@ impl PackageSessionHandle {
         run: impl FnOnce(&PackageOperation) -> Result<T, String>,
     ) -> Result<T, String> {
         let mut operation = self.begin_operation(name)?;
+        let _resource_scope = operation.resource_scope()?;
         let result = run(&operation);
         if let Err(resource_error) = self.assert_healthy() {
             let _ = operation.cancel();
@@ -933,6 +934,15 @@ pub struct PackageOperation {
 }
 
 impl PackageOperation {
+    /// Route shared infallible XML/model walkers to this operation's governor.
+    /// Their bounded projections are provisional: check package health before
+    /// publishing output, including at each cursor pull. Keep this lexical
+    /// scope within one synchronous call, never across a yield.
+    pub fn resource_scope(&self) -> Result<resource::ResourceScope, String> {
+        self.assert_active()?;
+        self.handle.inner.borrow().governor.scope_operation(self.id)
+    }
+
     /// Derive format-model limit reporting from this logical operation. This is
     /// used by materializing compatibility paths that do not have an entry
     /// stream in hand when their retained-model or serialization ceiling is

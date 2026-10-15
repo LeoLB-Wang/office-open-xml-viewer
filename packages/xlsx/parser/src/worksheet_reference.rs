@@ -3,6 +3,7 @@ use crate::{attr_bool, resolve_sheet_path, Row};
 use crate::{CellRange, CellValue, SharedString, SheetMeta, XlsxZip};
 use ooxml_common::depth::parse_guarded;
 use ooxml_common::ns::is_x_ns;
+use ooxml_common::resource::{observe_hard_limit, HardResourceLimitKind};
 use std::collections::{BTreeMap, HashMap};
 
 pub(crate) const MAX_REFERENCE_CELLS: usize = 1_000_000;
@@ -12,6 +13,17 @@ const MAX_TOTAL_INDEXED_CELLS: usize = MAX_TOTAL_REFERENCE_CELLS;
 const MAX_TOTAL_INDEXED_STRING_BYTES: usize = MAX_TOTAL_REFERENCE_STRING_BYTES;
 const MAX_COL: u32 = 16_384;
 const MAX_ROW: u32 = 1_048_576;
+
+/// Reference admission is library resource policy, not an unsupported formula.
+/// Latch before returning a provisional absence so every package/cursor boundary
+/// rejects it, including callers that intentionally default unresolved formulas.
+fn reference_limit(kind: HardResourceLimitKind, limit: usize, observed: usize) -> Option<()> {
+    if observed <= limit {
+        return Some(());
+    }
+    let _ = observe_hard_limit(kind, None, limit as u64, observed as u64);
+    None
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ReferencedCellValue {
@@ -65,10 +77,17 @@ impl WorksheetCellLookup {
     }
 }
 
+pub(crate) type ReferenceIndexLimit = (HardResourceLimitKind, usize, usize);
+
+fn report_index_limit((kind, limit, observed): ReferenceIndexLimit) {
+    let _ = reference_limit(kind, limit, observed);
+}
+
 pub(crate) struct WorksheetCellLookupBuilder {
     worksheet: WorksheetCellLookup,
     max_cells: usize,
     max_string_bytes: usize,
+    limit_failure: Option<ReferenceIndexLimit>,
 }
 
 impl WorksheetCellLookupBuilder {
@@ -86,7 +105,28 @@ impl WorksheetCellLookupBuilder {
             },
             max_cells,
             max_string_bytes,
+            limit_failure: None,
         }
+    }
+
+    pub(crate) fn limit_failure(&self) -> Option<ReferenceIndexLimit> {
+        self.limit_failure
+    }
+
+    // A bounded cache admission may recover by evicting an unused prebuilt
+    // index. Preserve the refusal until the resolver knows whether content
+    // would be lost; only an unrecoverable refusal poisons the operation.
+    fn check_limit(
+        &mut self,
+        kind: HardResourceLimitKind,
+        limit: usize,
+        observed: usize,
+    ) -> Option<()> {
+        if observed > limit {
+            self.limit_failure = Some((kind, limit, observed));
+            return None;
+        }
+        Some(())
     }
 
     fn push_cell(&mut self, row: u32, col: u32, value: ReferencedCellValue) -> Option<()> {
@@ -116,14 +156,18 @@ impl WorksheetCellLookupBuilder {
             .string_bytes
             .checked_sub(old_string_bytes)?
             .checked_add(value.string_bytes())?;
-        if next_cell_count
-            .saturating_add(self.worksheet.hidden_row_ranges.len())
-            .saturating_add(self.worksheet.hidden_column_ranges.len())
-            > self.max_cells
-            || next_string_bytes > self.max_string_bytes
-        {
-            return None;
-        }
+        self.check_limit(
+            HardResourceLimitKind::WorksheetReferenceIndexCells,
+            self.max_cells,
+            next_cell_count
+                .saturating_add(self.worksheet.hidden_row_ranges.len())
+                .saturating_add(self.worksheet.hidden_column_ranges.len()),
+        )?;
+        self.check_limit(
+            HardResourceLimitKind::WorksheetReferenceIndexStringBytes,
+            self.max_string_bytes,
+            next_string_bytes,
+        )?;
         self.worksheet.cells.insert(key, ReferencedCell { value });
         self.worksheet.string_bytes = next_string_bytes;
         Some(())
@@ -153,9 +197,11 @@ impl WorksheetCellLookupBuilder {
                 return Some(());
             }
         }
-        if self.worksheet.resource_units() >= self.max_cells {
-            return None;
-        }
+        self.check_limit(
+            HardResourceLimitKind::WorksheetReferenceIndexCells,
+            self.max_cells,
+            self.worksheet.resource_units().saturating_add(1),
+        )?;
         self.worksheet.hidden_row_ranges.push((row, row));
         Some(())
     }
@@ -177,9 +223,11 @@ impl WorksheetCellLookupBuilder {
             }
             ranges.push((column, column));
         }
-        if self.worksheet.resource_units().saturating_add(ranges.len()) > self.max_cells {
-            return None;
-        }
+        self.check_limit(
+            HardResourceLimitKind::WorksheetReferenceIndexCells,
+            self.max_cells,
+            self.worksheet.resource_units().saturating_add(ranges.len()),
+        )?;
         self.worksheet.hidden_column_ranges = ranges;
         Some(())
     }
@@ -205,16 +253,17 @@ pub(crate) fn extend_lookup_transactionally(
     lookup: &mut Option<WorksheetCellLookupBuilder>,
     rows: &[Row],
     shared_strings: &[SharedString],
-) {
-    let Some(builder) = lookup.as_mut() else {
-        return;
-    };
+) -> Option<ReferenceIndexLimit> {
+    let builder = lookup.as_mut()?;
     if rows
         .iter()
         .any(|row| builder.push_row(row, shared_strings).is_none())
     {
+        let failure = builder.limit_failure();
         *lookup = None;
+        return failure;
     }
+    None
 }
 
 /// Per-worksheet-parse state shared by charts and sparklines. Source sheets
@@ -240,6 +289,7 @@ enum CurrentSheetLookupEntry {
     },
     Unavailable {
         name: String,
+        limit_failure: Option<ReferenceIndexLimit>,
     },
 }
 
@@ -276,17 +326,56 @@ impl WorksheetReferenceSession {
                     lookup,
                 }
             }
-            _ => CurrentSheetLookupEntry::Unavailable {
+            Some(lookup) => CurrentSheetLookupEntry::Unavailable {
                 name: sheet_name.to_string(),
+                limit_failure: Some(
+                    if lookup.resource_units() > self.remaining_physical_indexed_cells {
+                        (
+                            HardResourceLimitKind::WorksheetReferenceIndexCells,
+                            self.remaining_physical_indexed_cells,
+                            lookup.resource_units(),
+                        )
+                    } else {
+                        (
+                            HardResourceLimitKind::WorksheetReferenceIndexStringBytes,
+                            self.remaining_physical_indexed_string_bytes,
+                            lookup.string_bytes,
+                        )
+                    },
+                ),
+            },
+            None => CurrentSheetLookupEntry::Unavailable {
+                name: sheet_name.to_string(),
+                limit_failure: None,
             },
         };
     }
 
+    pub(crate) fn seed_current_sheet_failure(
+        &mut self,
+        sheet_name: &str,
+        failure: ReferenceIndexLimit,
+    ) {
+        self.current_sheet = CurrentSheetLookupEntry::Unavailable {
+            name: sheet_name.to_string(),
+            limit_failure: Some(failure),
+        };
+    }
+
     fn reservable_cell_count(&self, range: &CellRange) -> Option<usize> {
-        let total = reference_cell_count(range)?;
-        if total > MAX_REFERENCE_CELLS || total > self.remaining_cells {
-            return None;
-        }
+        // A valid Excel grid can exceed usize on wasm32. Saturating the
+        // observation still proves the existing one-million-cell crossing.
+        let total = reference_cell_count(range).unwrap_or(usize::MAX);
+        reference_limit(
+            HardResourceLimitKind::WorksheetReferenceCells,
+            MAX_REFERENCE_CELLS,
+            total,
+        )?;
+        reference_limit(
+            HardResourceLimitKind::WorksheetReferenceCells,
+            MAX_TOTAL_REFERENCE_CELLS,
+            (MAX_TOTAL_REFERENCE_CELLS - self.remaining_cells).saturating_add(total),
+        )?;
         Some(total)
     }
 
@@ -316,11 +405,19 @@ impl WorksheetReferenceSession {
         );
         for row in rows {
             if builder.push_row(row, shared_strings).is_none() {
-                return LookupBuildResult::LimitExceeded;
+                return LookupBuildResult::LimitExceeded(
+                    builder
+                        .limit_failure()
+                        .expect("bounded builder records its refusal"),
+                );
             }
         }
         if hidden_columns.is_some_and(|columns| builder.mark_hidden_columns(columns).is_none()) {
-            return LookupBuildResult::LimitExceeded;
+            return LookupBuildResult::LimitExceeded(
+                builder
+                    .limit_failure()
+                    .expect("bounded builder records its refusal"),
+            );
         }
         LookupBuildResult::Built(builder.finish())
     }
@@ -345,12 +442,30 @@ impl WorksheetReferenceSession {
                     self.remaining_indexed_string_bytes -= lookup.string_bytes;
                     Some(lookup)
                 } else {
+                    let _ = reference_limit(
+                        HardResourceLimitKind::WorksheetReferenceIndexCells,
+                        self.remaining_indexed_cells,
+                        lookup.resource_units(),
+                    );
+                    let _ = reference_limit(
+                        HardResourceLimitKind::WorksheetReferenceIndexStringBytes,
+                        self.remaining_indexed_string_bytes,
+                        lookup.string_bytes,
+                    );
                     self.remaining_physical_indexed_cells += lookup.resource_units();
                     self.remaining_physical_indexed_string_bytes += lookup.string_bytes;
                     None
                 }
             }
-            CurrentSheetLookupEntry::Unavailable { name } if name == sheet_name => None,
+            CurrentSheetLookupEntry::Unavailable {
+                name,
+                limit_failure,
+            } if name == sheet_name => {
+                if let Some(failure) = limit_failure {
+                    report_index_limit(failure);
+                }
+                None
+            }
             other => {
                 self.current_sheet = other;
                 match rows
@@ -359,6 +474,10 @@ impl WorksheetReferenceSession {
                     Some(LookupBuildResult::Built(lookup)) => {
                         self.consume_new_index(&lookup);
                         Some(lookup)
+                    }
+                    Some(LookupBuildResult::LimitExceeded(failure)) => {
+                        report_index_limit(failure);
+                        None
                     }
                     _ => None,
                 }
@@ -397,7 +516,7 @@ impl WorksheetReferenceSession {
 
 enum LookupBuildResult {
     Built(WorksheetCellLookup),
-    LimitExceeded,
+    LimitExceeded(ReferenceIndexLimit),
     Unavailable,
 }
 
@@ -514,7 +633,11 @@ fn parse_package_worksheet_cells(
         match projector.next_item() {
             Ok(WorksheetProjectorItem::Row(row)) => {
                 if builder.push_row(&row.row, shared_strings).is_none() {
-                    return LookupBuildResult::LimitExceeded;
+                    return LookupBuildResult::LimitExceeded(
+                        builder
+                            .limit_failure()
+                            .expect("bounded builder records its refusal"),
+                    );
                 }
             }
             Ok(WorksheetProjectorItem::Finished(tail)) => {
@@ -522,7 +645,11 @@ fn parse_package_worksheet_cells(
                     .mark_hidden_columns(&hidden_columns_from_shell(&tail.shell_xml))
                     .is_none()
                 {
-                    return LookupBuildResult::LimitExceeded;
+                    return LookupBuildResult::LimitExceeded(
+                        builder
+                            .limit_failure()
+                            .expect("bounded builder records its refusal"),
+                    );
                 }
                 return LookupBuildResult::Built(builder.finish());
             }
@@ -701,7 +828,7 @@ fn resolve_worksheet_reference_projected(
                             .min(session.remaining_physical_indexed_string_bytes),
                     )
                 });
-            if matches!(build, LookupBuildResult::LimitExceeded) {
+            if matches!(build, LookupBuildResult::LimitExceeded(_)) {
                 if let Some((current_name, prebuilt)) = session.take_unreferenced_prebuilt() {
                     let retried = part
                         .as_deref()
@@ -718,9 +845,28 @@ fn resolve_worksheet_reference_projected(
                                     .min(session.remaining_physical_indexed_string_bytes),
                             )
                         });
-                    if matches!(retried, LookupBuildResult::Built(_)) {
-                        session.current_sheet =
-                            CurrentSheetLookupEntry::Unavailable { name: current_name };
+                    if let LookupBuildResult::Built(worksheet) = &retried {
+                        let remaining_cells =
+                            session.remaining_indexed_cells - worksheet.resource_units();
+                        let remaining_bytes =
+                            session.remaining_indexed_string_bytes - worksheet.string_bytes;
+                        let failure = if prebuilt.resource_units() > remaining_cells {
+                            (
+                                HardResourceLimitKind::WorksheetReferenceIndexCells,
+                                remaining_cells,
+                                prebuilt.resource_units(),
+                            )
+                        } else {
+                            (
+                                HardResourceLimitKind::WorksheetReferenceIndexStringBytes,
+                                remaining_bytes,
+                                prebuilt.string_bytes,
+                            )
+                        };
+                        session.current_sheet = CurrentSheetLookupEntry::Unavailable {
+                            name: current_name,
+                            limit_failure: Some(failure),
+                        };
                     } else {
                         session.restore_unreferenced_prebuilt(current_name, prebuilt);
                     }
@@ -732,7 +878,11 @@ fn resolve_worksheet_reference_projected(
                     session.consume_new_index(&worksheet);
                     Some(worksheet)
                 }
-                _ => None,
+                LookupBuildResult::LimitExceeded(failure) => {
+                    report_index_limit(failure);
+                    None
+                }
+                LookupBuildResult::Unavailable => None,
             };
             session.sheets.insert(sheet_name.to_string(), worksheet);
         }
@@ -751,9 +901,12 @@ fn resolve_worksheet_reference_projected(
             0,
         )
     };
-    if string_bytes > session.remaining_string_bytes {
-        return None;
-    }
+    reference_limit(
+        HardResourceLimitKind::WorksheetReferenceStringBytes,
+        MAX_TOTAL_REFERENCE_STRING_BYTES,
+        (MAX_TOTAL_REFERENCE_STRING_BYTES - session.remaining_string_bytes)
+            .saturating_add(string_bytes),
+    )?;
     session.consume_result(cell_count, string_bytes);
     Some(ResolvedWorksheetReference { values, hidden })
 }
@@ -1060,6 +1213,172 @@ mod tests {
     }
 
     #[test]
+    fn reference_cell_and_string_crossings_are_typed_package_failures() {
+        for strings in [false, true] {
+            let (mut archive, rels, sheets) = one_sheet_text_reference_archive("abc");
+            let mut session = WorksheetReferenceSession {
+                remaining_cells: if strings {
+                    MAX_TOTAL_REFERENCE_CELLS
+                } else {
+                    0
+                },
+                remaining_string_bytes: 2,
+                ..Default::default()
+            };
+            let error = archive
+                .run_operation("reference-test", |archive| {
+                    let _provisional = resolve_worksheet_reference(
+                        archive,
+                        "Source!A1",
+                        None,
+                        "Dashboard",
+                        &sheets,
+                        &rels,
+                        &[],
+                        &mut session,
+                    );
+                    Ok(())
+                })
+                .unwrap_err();
+            let payload: serde_json::Value =
+                serde_json::from_str(error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error))
+                    .unwrap();
+            assert_eq!(
+                payload["details"]["violation"]["resource"],
+                "worksheet-reference"
+            );
+            assert_eq!(
+                payload["details"]["violation"]["metric"],
+                if strings { "bytes" } else { "cells" }
+            );
+        }
+    }
+
+    #[test]
+    fn unused_prebuilt_index_can_be_evicted_without_poisoning_complete_references() {
+        for strings in [false, true] {
+            for request_evicted_sheet in [false, true] {
+                let (mut archive, rels, sheets) = if strings {
+                    one_sheet_text_reference_archive("yz")
+                } else {
+                    one_sheet_reference_archive(&[7.0, 8.0])
+                };
+                let mut builder = WorksheetCellLookupBuilder::new(2, 2);
+                builder
+                    .push_cell(
+                        1,
+                        1,
+                        if strings {
+                            ReferencedCellValue::Text("x".into())
+                        } else {
+                            ReferencedCellValue::Number(1.0)
+                        },
+                    )
+                    .unwrap();
+                let mut session = reduced_session(2, 2);
+                session.seed_current_sheet("Dashboard", Some(builder.finish()));
+                let result = archive.run_operation("index-eviction-test", |archive| {
+                    let resolved = resolve_worksheet_reference(
+                        archive,
+                        if strings { "Source!A1" } else { "Source!A1:B1" },
+                        None,
+                        "Dashboard",
+                        &sheets,
+                        &rels,
+                        &[],
+                        &mut session,
+                    );
+                    assert!(
+                        resolved.is_some(),
+                        "eviction admits the complete cross-sheet reference"
+                    );
+                    if request_evicted_sheet {
+                        let _provisional = resolve_worksheet_reference(
+                            archive,
+                            "Dashboard!A1",
+                            None,
+                            "Dashboard",
+                            &sheets,
+                            &rels,
+                            &[],
+                            &mut session,
+                        );
+                    }
+                    Ok(())
+                });
+                if request_evicted_sheet {
+                    let error = result.unwrap_err();
+                    assert!(error.starts_with("OOXML_RESOURCE_LIMIT:"), "{error}");
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failed_streamed_index_is_terminal_only_when_a_reference_needs_it() {
+        let (mut archive, rels, sheets) = one_sheet_reference_archive(&[1.0]);
+        let mut builder = WorksheetCellLookupBuilder::new(0, 0);
+        assert!(builder
+            .push_cell(1, 1, ReferencedCellValue::Number(1.0))
+            .is_none());
+        let mut session = WorksheetReferenceSession::default();
+        session.seed_current_sheet_failure("Dashboard", builder.limit_failure().unwrap());
+        let error = archive
+            .run_operation("streamed-index-test", |archive| {
+                let _provisional = resolve_worksheet_reference(
+                    archive,
+                    "Dashboard!A1",
+                    None,
+                    "Dashboard",
+                    &sheets,
+                    &rels,
+                    &[],
+                    &mut session,
+                );
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.starts_with("OOXML_RESOURCE_LIMIT:"), "{error}");
+    }
+
+    #[test]
+    fn reference_index_cell_and_string_crossings_are_typed_package_failures() {
+        for strings in [false, true] {
+            let (mut archive, rels, sheets) = one_sheet_text_reference_archive("abc");
+            let mut session =
+                reduced_session(if strings { 1 } else { 0 }, if strings { 2 } else { 3 });
+            let error = archive
+                .run_operation("reference-index-test", |archive| {
+                    let _provisional = resolve_worksheet_reference(
+                        archive,
+                        "Source!A1",
+                        None,
+                        "Dashboard",
+                        &sheets,
+                        &rels,
+                        &[],
+                        &mut session,
+                    );
+                    Ok(())
+                })
+                .unwrap_err();
+            let payload: serde_json::Value =
+                serde_json::from_str(error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error))
+                    .unwrap();
+            assert_eq!(
+                payload["details"]["violation"]["resource"],
+                "worksheet-reference-index"
+            );
+            assert_eq!(
+                payload["details"]["violation"]["metric"],
+                if strings { "bytes" } else { "cells" }
+            );
+        }
+    }
+
+    #[test]
     fn cumulative_budget_rejects_individually_valid_ranges() {
         let mut session = WorksheetReferenceSession {
             remaining_cells: 4,
@@ -1160,7 +1479,7 @@ mod tests {
             hidden: false,
         }];
         let mut lookup = Some(WorksheetCellLookupBuilder::new(1, 100));
-        extend_lookup_transactionally(&mut lookup, &rows, &[]);
+        let _ = extend_lookup_transactionally(&mut lookup, &rows, &[]);
         assert!(lookup.is_none());
     }
 

@@ -2916,9 +2916,8 @@ pub(crate) fn parse_sp_tree_node(
                 group_fill.cloned()
             };
 
-            // Bound the group nesting: once the shared depth limit is reached,
-            // stop descending into this group's children (drop the subtree) so a
-            // pathologically deep `<p:grpSp>` nest cannot overflow the stack.
+            // Stop recursion at the existing ceiling. descend() latches a
+            // typed resource failure, so the package rejects this projection.
             let start = out.len();
             if let Some(child_depth) = depth.descend() {
                 for child_node in node.children().filter(|n| n.is_element()) {
@@ -5397,6 +5396,30 @@ mod hidden_tests {
             .unwrap()
             .join()
             .unwrap()
+    }
+
+    #[test]
+    fn group_depth_crossing_is_a_typed_resource_failure() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let governor = ooxml_common::resource::ResourceGovernor::from_wasm(
+                    ooxml_common::resource::OoxmlFormat::Pptx,
+                    None,
+                    None,
+                    None,
+                );
+                let _scope = governor.scope("group-depth-test");
+                let _provisional = run(&nested_groups(65));
+                let error = governor
+                    .first_error()
+                    .expect("group depth must fail closed");
+                assert!(error.starts_with("OOXML_RESOURCE_LIMIT:"), "{error}");
+                assert!(error.contains("\"limit\":64"), "{error}");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

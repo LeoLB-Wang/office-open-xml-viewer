@@ -42,6 +42,9 @@ use crate::xml_util::*;
 use docx_model::paragraph_breaks::{split_para_on_page_breaks, ParaPiece};
 
 #[cfg(test)]
+#[path = "parser/fail_closed_tests.rs"]
+mod fail_closed_tests;
+#[cfg(test)]
 #[path = "parser/relationship_target_tests.rs"]
 mod relationship_target_tests;
 #[cfg(test)]
@@ -98,6 +101,7 @@ impl Zip {
         run: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
         self.begin_operation(name)?;
+        let _resource_scope = self.operation()?.resource_scope()?;
         let result = run(self);
         self.operation.settle(&self.session, result)
     }
@@ -5489,6 +5493,8 @@ fn load_header_footer_set(
 
         let xml_doc = match parse_guarded(&xml) {
             Ok(d) => d,
+            // Corrupt optional stories may degrade; depth failures have already
+            // poisoned the operation and cannot publish missing headers/footers.
             Err(_) => continue,
         };
         let Some(root) = xml_doc
@@ -11301,9 +11307,8 @@ fn parse_text_box_content_at_depth(
             content_depth,
         )
     } else {
-        // Keep the authored container observable when the shared recursion
-        // budget is exhausted. Downstream layout can surface one deterministic
-        // diagnostic instead of mistaking a skipped subtree for an empty box.
+        // descend() has latched a typed resource failure. This provisional
+        // container is never published by the package/cursor boundary.
         (
             vec![TextBoxBlockWire::Unsupported {
                 kind: "unsupportedTextBoxBlock".to_string(),
@@ -15087,10 +15092,9 @@ fn parse_table_cell(
             // formatting; the outer cell's `cond` does not propagate into it.
             //
             // Descend the depth guard here — this `<w:tbl>` inside a `<w:tc>` is
-            // the one real recursion level. Once the shared limit is reached the
-            // nested table is dropped (not recursed into) so a pathologically deep
-            // table nest cannot overflow the stack; the cell's other content is
-            // unaffected.
+            // the one real recursion level. A crossing latches a typed hard
+            // resource failure before stopping recursion; this provisional
+            // table cannot be published by the package operation.
             "tbl" => {
                 if let Some(child_depth) = depth.descend() {
                     content.push(CellElement::Table(Box::new(parse_table_with_diagnostics(

@@ -1315,9 +1315,8 @@ pub(crate) fn collect_shapes(
             continue;
         }
         if tag == "grpSp" {
-            // Bound the group nesting: once the shared depth limit is reached,
-            // drop this group's subtree rather than recurse into it, so a
-            // pathologically deep `<xdr:grpSp>` nest cannot overflow the stack.
+            // Stop recursion at the existing ceiling. descend() latches a
+            // typed resource failure, so the package rejects this projection.
             let Some(child_depth) = depth.descend() else {
                 continue;
             };
@@ -3725,6 +3724,35 @@ mod hidden_tests {
             .unwrap()
             .join()
             .unwrap()
+    }
+
+    #[test]
+    fn group_depth_crossing_is_a_typed_resource_failure() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let governor = ooxml_common::resource::ResourceGovernor::from_wasm(
+                    ooxml_common::resource::OoxmlFormat::Xlsx,
+                    None,
+                    None,
+                    None,
+                );
+                let _scope = governor.scope("group-depth-test");
+                let _provisional = parse_shape_anchors(
+                    &nested_group_anchor(66),
+                    &theme(),
+                    &ThemeFormatScheme::default(),
+                    &HashMap::new(),
+                );
+                let error = governor
+                    .first_error()
+                    .expect("group depth must fail closed");
+                assert!(error.starts_with("OOXML_RESOURCE_LIMIT:"), "{error}");
+                assert!(error.contains("\"limit\":64"), "{error}");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

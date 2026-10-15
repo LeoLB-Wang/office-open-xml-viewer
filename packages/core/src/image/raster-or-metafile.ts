@@ -31,6 +31,7 @@ import { isEmf, isWmf, renderWmfToBitmap, wmfRasterTarget } from './wmf.js';
  * What the loading path does with a metafile whose playback could not
  * reproduce all of its content (unimplemented records, an EMF+-only stream
  * that fails validation, damaged records; see `EmfRasterResult` in emf.ts).
+ * Resource ceilings always throw a typed limit error before this policy runs.
  * WMF detection currently covers EXTTEXTOUT exclusions, not every skipped
  * drawing record; a missing report is not a general fidelity guarantee.
  *

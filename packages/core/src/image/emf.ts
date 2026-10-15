@@ -1,3 +1,4 @@
+import { OoxmlDecodedImageLimitError, isOoxmlDecodedImageLimitError } from './pixel-budget.js';
 // ── EMF (Enhanced Metafile) player ───────────────────────────────────────────
 //
 // Browsers cannot decode EMF via `createImageBitmap`, so the renderer falls back
@@ -561,12 +562,10 @@ function discardPath(s: PlayState): void {
   s.pathDiscarded = false;
 }
 
-const PATH_BUDGET_FAILURE = 'EMF path (path command budget)';
-
 /** Charge `additional` commands to the open bracket before they are recorded.
  *  Past MAX_EMF_PATH_COMMANDS for everything the DC retains, the bracket is
- *  discarded (never a paintable prefix) and the picture is reported as
- *  incomplete. */
+ *  rejected. This is a resource ceiling, independent of the caller's
+ *  incomplete-metafile compatibility policy. */
 function reservePathCommands(s: PlayState, additional: number): boolean {
   if (!s.inPath) return true;
   if (s.pathDiscarded) return false;
@@ -574,8 +573,10 @@ function reservePathCommands(s: PlayState, additional: number): boolean {
   if (!Number.isSafeInteger(next) || additional < 0 || next > s.maxPathCommands) {
     replacePathBuffer(s);
     s.pathDiscarded = true;
-    s.unsupported.add(PATH_BUDGET_FAILURE);
-    return false;
+    throw new OoxmlDecodedImageLimitError(
+      'metafile-path-commands', s.maxPathCommands,
+      Number.isSafeInteger(next) && next > s.maxPathCommands ? next : Number.MAX_SAFE_INTEGER,
+    );
   }
   s.pathRetained = next;
   s.path.buf.commands += additional;
@@ -1996,7 +1997,22 @@ function replayRecords(
   // save, so a clip reset can restore to it, and playback leaves the caller's
   // context state (including clips) as it found it.
   ctx.save();
+  try {
+    replayRecordStream(s, plus, stopOnPlusFailure, dv, bytes);
+  } finally {
+    // Unwind even on a resource failure; the caller may reuse the context.
+    for (let i = 0; i <= s.stack.length; i++) ctx.restore();
+  }
+}
 
+function replayRecordStream(
+  s: PlayState,
+  plus: EmfPlusPlayer | null,
+  stopOnPlusFailure: boolean,
+  dv: DataView,
+  bytes: Uint8Array,
+): void {
+  const ctx = s.ctx;
   let pos = 0;
   while (pos + 8 <= bytes.length) {
     const iType = dv.getUint32(pos, true);
@@ -2570,7 +2586,8 @@ function replayRecords(
           break;
         }
       }
-    } catch {
+    } catch (error) {
+      if (isOoxmlDecodedImageLimitError(error)) throw error;
       // A malformed record must never abort the whole render: it is reported
       // and playback advances to the next record.
       s.unsupported.add(`EMF record ${iType} (malformed)`);
@@ -2578,9 +2595,6 @@ function replayRecords(
 
     pos = recEnd;
   }
-
-  // Unwind the SAVEDC levels left open by the metafile and the base save.
-  for (let i = 0; i <= s.stack.length; i++) ctx.restore();
 }
 
 /**

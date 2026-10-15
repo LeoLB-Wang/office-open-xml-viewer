@@ -270,7 +270,13 @@ impl DocxArchive {
         self.last_document_usage = None;
         let zip = &mut self.archive;
         zip.begin_operation("document-cursor")?;
-        match parser::DocxBodyCursor::start(zip) {
+        let _resource_scope = zip.operation()?.resource_scope()?;
+        let result = parser::DocxBodyCursor::start(zip);
+        if let Err(error) = zip.assert_healthy() {
+            zip.cancel_operation();
+            return Err(error);
+        }
+        match result {
             Ok(cursor) => {
                 self.document_cursor = Some(DocumentCursorState {
                     operation_id,
@@ -360,6 +366,7 @@ impl DocxArchive {
         }
         self.archive.assert_healthy()?;
 
+        let _resource_scope = self.archive.operation()?.resource_scope()?;
         let result = (|| -> Result<(Vec<u8>, bool), String> {
             let state = self
                 .document_cursor
@@ -378,6 +385,7 @@ impl DocxArchive {
             let done = matches!(unit, parser::StreamedDocumentUnit::Complete { .. });
             let reporter = self.archive.operation()?.limit_reporter()?;
             let bytes = serialize_document_unit(&unit, Some(&reporter))?;
+            self.archive.assert_healthy()?;
             Ok((bytes, done))
         })();
         let (bytes, done) = match result {

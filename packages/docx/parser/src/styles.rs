@@ -492,6 +492,8 @@ impl StyleMap {
     pub fn parse(xml: &str) -> Self {
         let doc = match parse_guarded(xml) {
             Ok(d) => d,
+            // Malformed optional styles may degrade. A depth crossing has
+            // already poisoned the package operation in parse_guarded.
             Err(_) => return Self::empty(),
         };
         let root = doc.root_element();
@@ -2923,13 +2925,16 @@ mod tests {
         }
         xml.push_str("</w:styles>");
 
-        // Must return (not trap). The rejected part yields an empty style map —
-        // the "skip the part, keep the document" degradation contract.
-        let map = StyleMap::parse(&xml);
-        assert!(
-            map.styles.is_empty(),
-            "an over-deep styles.xml must be rejected, yielding no styles"
+        let governor = ooxml_common::resource::ResourceGovernor::from_wasm(
+            ooxml_common::resource::OoxmlFormat::Docx,
+            None,
+            None,
+            None,
         );
+        let _scope = governor.scope("styles-test");
+        let _provisional = StyleMap::parse(&xml);
+        let error = governor.first_error().expect("styles must fail closed");
+        assert!(error.starts_with("OOXML_RESOURCE_LIMIT:"), "{error}");
     }
 
     #[test]
