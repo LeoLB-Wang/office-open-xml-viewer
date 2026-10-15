@@ -4658,8 +4658,8 @@ function paragraphAcquisitionKey(
   } = options.placement;
   const context = options.context;
   const environment = options.environment;
-  // Page-field values (ECMA-376 §17.16.5.44 PAGE, §17.16.5.42 NUMPAGES,
-  // §17.16.5.16 DATE, §17.16.5.72 TIME) reach measurement only through a field
+  // Page-field values (ECMA-376 Part 1 §17.16.5.44 PAGE, §17.16.5.42 NUMPAGES,
+  // §17.16.5.13 DATE, §17.16.5.65 TIME) reach measurement only through a field
   // run's result (resolveFieldText), and note numbers (§17.11) only through a
   // note reference mark (segment-builder). A paragraph of nothing but text,
   // break and ptab runs therefore lays out identically under any of them, so
