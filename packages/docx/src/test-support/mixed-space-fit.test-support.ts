@@ -153,9 +153,9 @@ export function mixedSpaceSummaryWork(reset = false): number {
   return value;
 }
 
-export function instrumentMixedSpace(module: typeof import('../line-breaker/mixed-space-fit.js')) {
+export function instrumentMixedSpace(mixedSpaceFit: typeof import('../line-breaker/mixed-space-fit.js')) {
   const wrap = <K extends 'performMixedSpaceRequirement' | 'performSettleMixedSpaces'>(name: K) =>
-    (...args: Parameters<(typeof module)[K]>) => {
+    (...args: Parameters<(typeof mixedSpaceFit)[K]>) => {
       const operation = args[0];
       if (operation.breakerState.mixedSpaceEnabled) {
         operation.breakerState.currentLine = observeReads(operation.breakerState.currentLine);
@@ -163,11 +163,11 @@ export function instrumentMixedSpace(module: typeof import('../line-breaker/mixe
       }
       if (assertions) assertSummary(operation);
       // The two functions have different arities; Reflect preserves the argument tuple.
-      const result = Reflect.apply(module[name], undefined, args);
+      const result = Reflect.apply(mixedSpaceFit[name], undefined, args);
       if (assertions && name === 'performMixedSpaceRequirement') assertSummary(operation);
       return result;
     };
-  return { ...module,
+  return { ...mixedSpaceFit,
     performMixedSpaceRequirement: wrap('performMixedSpaceRequirement'),
     performSettleMixedSpaces: wrap('performSettleMixedSpaces'),
   };
