@@ -12579,13 +12579,17 @@ fn parse_vml_shape(
         stroke_width: resolved_stroke.width_pt,
         stroke_dash: resolved_stroke.dash,
         stroke_cap: resolved_stroke.cap,
-        // ECMA-376 Part 4 §19.1.2.21: resolve VML defaults only after
-        // instance/shapetype inheritance; DrawingML/Canvas defaults differ.
-        stroke_join: Some(
-            vml_decoration_attr(shape, shape_type, "stroke", "joinstyle")
-                .unwrap_or("round")
-                .to_string(),
-        ),
+        // ECMA-376 Part 4 §19.1.2.21 specifies round when joinstyle is
+        // omitted. Library policy: retain the pre-existing miter paint fallback
+        // for omission; applying round regresses rectangle outlines against
+        // Word-exported PDF paths. MS-OE376 §§2.1.1707/.1708/.1712 and the
+        // corresponding MS-OI29500 Part 4 rect/roundrect/stroke notes do not
+        // document a join-default deviation, so this is not a general Office
+        // compatibility rule. Explicit instance/shapetype joins still win;
+        // standalone and grouped leaves share this acquisition path.
+        stroke_join: vml_decoration_attr(shape, shape_type, "stroke", "joinstyle")
+            .map(str::to_string),
+        // Part 4 §19.1.2.21: VML's miter limit defaults to eight.
         stroke_miter_limit: Some(
             vml_decoration_attr(shape, shape_type, "stroke", "miterlimit")
                 .and_then(|s| s.parse().ok())
@@ -31369,6 +31373,8 @@ mod vml_pict_tests {
 
         assert_eq!(shapes[2].stroke.as_deref(), Some("000000"));
         assert!((shapes[2].stroke_width - 1.0).abs() < 1e-6);
+        assert_eq!(shapes[2].stroke_join, None);
+        assert_eq!(shapes[2].stroke_miter_limit, Some(8.0));
     }
 
     #[test]

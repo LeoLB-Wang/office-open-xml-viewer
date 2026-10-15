@@ -349,20 +349,37 @@ it('paints solid fill opacity independently of stroke and shadow and inherits ea
   expect([...noStroke.diagnostics, ...hidden.diagnostics, ...partial.diagnostics, ...inherited.diagnostics]).toEqual([]);
 });
 
-it('uses VML round joins and an inherited miter limit of eight when omitted', async () => {
-  // This corner's miter ratio lies between VML's 8 and Canvas's 10,
-  // so the limit control distinguishes the defaults even with a miter join.
-  const render = (definition: string, stroke: string) => renderVml(`<v:group style="width:100pt;height:100pt" coordsize="100,100">${definition}<v:polyline type="#pen" points="34.5,80 40,30 45.5,80" filled="f" strokecolor="red" strokeweight="8pt">${stroke}</v:polyline></v:group>`);
-  const omitted = await render('', '');
-  const explicit = await render('', '<v:stroke joinstyle="round" miterlimit="8"/>');
-  expect(omitted.pixels).toEqual(explicit.pixels);
-  const inherited = await render('<v:shapetype id="pen"><v:stroke joinstyle="miter"/></v:shapetype>', '<v:stroke color="red"/>');
+it.each(['rect', 'polyline'])('preserves omitted %s joins and explicit pen inheritance in standalone and grouped VML', async kind => {
+  const render = (definition: string, stroke: string, grouped = true) => {
+    // The polyline's acute corner distinguishes miter limits 8 and 10;
+    // the rectangle catches the square-corner regression at ordinary joins.
+    const geometry = kind === 'rect'
+      ? '<v:rect type="#pen" style="position:absolute;left:30pt;top:30pt;width:50pt;height:50pt"'
+      : '<v:polyline type="#pen" points="34.5pt,80pt 40pt,30pt 45.5pt,80pt"';
+    const content = `${definition}${geometry} filled="f" strokecolor="red" strokeweight="8pt">${stroke}</v:${kind}>`;
+    return renderVml(grouped
+      ? `<v:group style="position:absolute;width:150pt;height:150pt" coordsize="150,150">${content}</v:group>`
+      : content);
+  };
   const miter = await render('', '<v:stroke joinstyle="miter" miterlimit="8"/>');
-  expect(inherited.pixels).toEqual(miter.pixels);
-  const largerLimit = await render('', '<v:stroke joinstyle="miter" miterlimit="10"/>');
-  expect(miter.pixels).not.toEqual(largerLimit.pixels);
-  expect(miter.pixels).not.toEqual(explicit.pixels);
-  expect([...omitted.diagnostics, ...explicit.diagnostics, ...inherited.diagnostics, ...miter.diagnostics, ...largerLimit.diagnostics]).toEqual([]);
+  const round = await render('', '<v:stroke joinstyle="round"/>');
+  expect(miter.pixels).not.toEqual(round.pixels);
+  expect(counter(miter.pixels)(255, 0, 0)).toBeGreaterThan(100);
+  expect([...miter.diagnostics, ...round.diagnostics]).toEqual([]);
+  for (const grouped of [false, true]) {
+    const omitted = await render('', '', grouped);
+    const inherited = await render('<v:shapetype id="pen"><v:stroke joinstyle="round"/></v:shapetype>', '<v:stroke color="red"/>', grouped);
+    const overridden = await render('<v:shapetype id="pen"><v:stroke joinstyle="round"/></v:shapetype>', '<v:stroke joinstyle="miter"/>', grouped);
+    expect(Buffer.compare(Buffer.from(omitted.pixels), Buffer.from(miter.pixels))).toBe(0);
+    expect(Buffer.compare(Buffer.from(inherited.pixels), Buffer.from(round.pixels))).toBe(0);
+    expect(Buffer.compare(Buffer.from(overridden.pixels), Buffer.from(miter.pixels))).toBe(0);
+    expect([...omitted.diagnostics, ...inherited.diagnostics, ...overridden.diagnostics]).toEqual([]);
+  }
+  if (kind === 'polyline') {
+    const largerLimit = await render('', '<v:stroke joinstyle="miter" miterlimit="10"/>');
+    expect(miter.pixels).not.toEqual(largerLimit.pixels);
+    expect(largerLimit.diagnostics).toEqual([]);
+  }
 });
 
 
