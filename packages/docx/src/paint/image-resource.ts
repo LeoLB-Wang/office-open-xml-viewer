@@ -28,6 +28,7 @@ export function drawableHandle(
 export function paintImageResource(
   resource: ResolvedPaintResource<'image'> | ResolvedPaintResource<'picture-bullet'>,
   bounds: LayoutRect, ctx: PaintCanvas2D, nativeImagePlan?: NativeReadingImagePlan,
+  coverageBounds: LayoutRect = bounds,
 ): void {
   const descriptor = resource.descriptor as ImagePaintResourceDescriptor;
   if (nativeImagePlan) {
@@ -47,9 +48,9 @@ export function paintImageResource(
         ctx.translate(x, y);
         ctx.scale(width / brush.pixelWidth, height / brush.pixelHeight);
         ctx.fillStyle = pattern;
-        ctx.fillRect((bounds.xPt - x) * brush.pixelWidth / width,
-          (bounds.yPt - y) * brush.pixelHeight / height,
-          bounds.widthPt * brush.pixelWidth / width, bounds.heightPt * brush.pixelHeight / height);
+        ctx.fillRect((coverageBounds.xPt - x) * brush.pixelWidth / width,
+          (coverageBounds.yPt - y) * brush.pixelHeight / height,
+          coverageBounds.widthPt * brush.pixelWidth / width, coverageBounds.heightPt * brush.pixelHeight / height);
       } else {
         ctx.drawImage(brush.image, x, y, width, height);
       }

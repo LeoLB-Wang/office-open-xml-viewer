@@ -79,3 +79,8 @@ export function chartResourceKey(source: SourceRef): string {
 export function anchorOccurrenceKey(source: SourceRef, parserLocalId: string): string {
   return `anchor:${sourceKey(source)}:${encodeURIComponent(parserLocalId)}`;
 }
+
+/** Separate ownership permits the same part to have different fill/pen effects. */
+export function vmlStrokeResourceKey(source: SourceRef, partPath: string): string {
+  return `${imageResourceKey(source, partPath)}:vml-stroke`;
+}

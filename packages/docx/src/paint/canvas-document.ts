@@ -545,6 +545,7 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
           descriptor.partPath,
           descriptor.colorReplaceFrom,
           descriptor.duotone as Duotone | undefined,
+          descriptor.vmlStrokePattern as Duotone | undefined,
         ));
         if (isOptionalImageCodecUnavailableError(image, 'tiff')) {
           return unavailablePaintResourceHandle(

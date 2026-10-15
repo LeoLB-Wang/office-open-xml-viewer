@@ -2145,6 +2145,19 @@ pub struct ShapeRun {
     /// from this image are consumed; placement belongs to the host shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vml_picture: Option<Box<ImageRun>>,
+    /// Part 4 §19.1.2.21: independently acquired textured pen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_stroke_fill: Option<ShapeFill>,
+    /// Part 4 §19.1.2.21: pattern strokes map black and coloured pixels separately.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_stroke_pattern: Option<Duotone>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vml_inset_pen: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vml_concentric_gradient: bool,
+    /// Part 4 §19.1.2.14: normalized clipping rectangles, in authored order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vml_text_rects: Vec<[f64; 4]>,
     /// normalized [0,1] custom path commands (one or more sub-paths). Empty
     /// when `preset_geometry` is set; the renderer chooses between
     /// buildCustomPath (custGeom) and buildShapePath (prstGeom).

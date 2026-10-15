@@ -525,6 +525,7 @@ function requireRetainedCollisionGeometry(node: PaintNode, path: string): void {
     return;
   }
   if (node.kind === 'textbox') {
+    node.clipRects?.forEach((rect, index) => requireRect(rect, `${path}.clipRects[${index}]`));
     node.story.blocks.forEach((block, index) =>
       requireRetainedCollisionGeometry(block, `${path}.story.blocks[${index}]`));
   }
@@ -551,6 +552,12 @@ function requireDrawingGeometry(node: DrawingLayout, path: string): void {
     if (command.kind === 'noop') return;
     if (command.kind === 'drawingml-shape') {
       requireDrawingMLShapePlan(command, commandPath);
+      if (command.concentricFill) {
+        const fill = command.concentricFill;
+        if (fill.bounds) requireRect(fill.bounds, `${commandPath}.concentricFill.bounds`);
+        for (const [key,value] of Object.entries(fill.focus)) requireFinite(value, `${commandPath}.concentricFill.focus.${key}`);
+        fill.rings.forEach((ring,i) => { requireFinite(ring.outside, `${commandPath}.concentricFill.rings[${i}]`); });
+      }
       return;
     }
     if (command.kind === 'drawingml-image-fill') {
@@ -558,6 +565,7 @@ function requireDrawingGeometry(node: DrawingLayout, path: string): void {
       if (command.resourceKey.length === 0) {
         throw new LayoutInvariantError('INVALID_GEOMETRY', `${commandPath}.resourceKey is empty`);
       }
+      if (command.maskBounds) requireRect(command.maskBounds, `${commandPath}.maskBounds`);
       if (command.fillRect) {
         for (const edge of ['l', 't', 'r', 'b'] as const) {
           requireFinite(command.fillRect[edge], `${commandPath}.fillRect.${edge}`);
@@ -589,6 +597,7 @@ function requireDrawingGeometry(node: DrawingLayout, path: string): void {
       requireFinite(command.fontWeight, `${commandPath}.fontWeight`);
     }
     if (command.kind === 'watermark-text') {
+      if (command.maskBounds) requireRect(command.maskBounds, `${commandPath}.maskBounds`);
       requireRect(command.sourceBounds, `${commandPath}.sourceBounds`);
       if (command.sourceBounds.widthPt <= 0 || command.sourceBounds.heightPt <= 0) {
         throw new LayoutInvariantError(
@@ -602,6 +611,9 @@ function requireDrawingGeometry(node: DrawingLayout, path: string): void {
       if (command.opacity < 0 || command.opacity > 1 || command.fontSizePt <= 0) {
         throw new LayoutInvariantError('INVALID_GEOMETRY', `${commandPath} has invalid textPath paint metrics`);
       }
+      command.pathSlices?.forEach((slice, i) => {
+        for (const [key, value] of Object.entries(slice)) requireFinite(value, `${commandPath}.pathSlices[${i}].${key}`);
+      });
       command.spans.forEach((span, spanIndex) => {
         requireFinite(span.advancePt, `${commandPath}.spans[${spanIndex}].advancePt`);
         requireFinite(span.fontWeight, `${commandPath}.spans[${spanIndex}].fontWeight`);

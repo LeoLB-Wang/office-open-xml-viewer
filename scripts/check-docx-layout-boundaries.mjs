@@ -167,6 +167,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['normalizeImageResourceOptions', 'value'],
     ['planDecodedImageTargets', 'value'],
     ['paintDrawingMLShape', 'value'],
+    // Bounded VML mask/concentric compositing allocates temporary paint-only surfaces.
+    ['createAuxCanvas', 'value'],
     ['withVertFeature', 'value'],
     ['preferVectorBlip', 'value'],
     ['releaseOwnedBitmap', 'value'],

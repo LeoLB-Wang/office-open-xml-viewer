@@ -377,3 +377,155 @@ it('applies host fill opacity with per-property shapetype and decoration overrid
   expect(counter(expected.pixels)(255, 128, 128)).toBeGreaterThan(1000);
   expect([...expected.diagnostics, ...reset.diagnostics]).toEqual([]);
 });
+
+it('retains path-shaped radial fills and effective text rectangles', async () => {
+  const triangle = (enabled: boolean) =>
+    `<v:shape style="width:100pt;height:100pt" coordsize="1000,1000" path="m0,0l1000,1000,0,1000xe" stroked="f"><v:path gradientshapeok="${enabled}"/><v:fill type="gradientradial" color="red" color2="blue" focusposition="25%,75%"/></v:shape>`;
+  const ordinary = await renderVml(triangle(false));
+  const shaped = await renderVml(triangle(true));
+  expect(shaped.pixels).not.toEqual(ordinary.pixels);
+  expect(shaped.diagnostics).toEqual([]);
+  const translucent = await renderVml(
+    '<v:rect style="width:100pt;height:100pt" stroked="f"><v:path gradientshapeok="t"/><v:fill type="gradientradial" color="red" color2="red" opacity=".5" opacity2=".5"/></v:rect>',
+  );
+  expect([...translucent.pixels.slice((25 * 200 + 25) * 4, (25 * 200 + 25) * 4 + 4)]).toEqual([
+    255, 127, 127, 255,
+  ]);
+  const box = (inherited: boolean, half: boolean) =>
+    `<v:group style="width:120pt;height:80pt" coordsize="120,80"><v:shapetype id="box" coordsize="1000,1000">${inherited ? `<v:path textboxrect="0,0,${half ? 500 : 1000},1000"/>` : ''}</v:shapetype><v:shape type="#box" style="width:100;height:60" filled="f" stroked="f">${inherited ? '' : `<v:path textboxrect="0,0,${half ? 500 : 1000},1000"/>`}<v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:r><w:rPr><w:color w:val="FF0000"/><w:sz w:val="40"/></w:rPr><w:t>MMMMMMMMMMMM</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></v:group>`;
+  const full = await renderVml(box(false, false));
+  const half = await renderVml(box(false, true));
+  const inherited = await renderVml(box(true, true));
+  expect(half.pixels).not.toEqual(full.pixels);
+  let fullOverflow = 0,
+    halfOverflow = 0;
+  for (let y = 0; y < 60; y++)
+    for (let x = 50; x < 100; x++) {
+      const i = (y * 200 + x) * 4;
+      if (full.pixels[i] === 255 && full.pixels[i + 1] === 0 && full.pixels[i + 2] === 0)
+        fullOverflow++;
+      if (half.pixels[i] === 255 && half.pixels[i + 1] === 0 && half.pixels[i + 2] === 0)
+        halfOverflow++;
+    }
+  expect(fullOverflow).toBeGreaterThan(0);
+  expect(halfOverflow).toBe(0);
+  expect(inherited.pixels).toEqual(half.pixels);
+  expect(half.diagnostics).toEqual([]);
+});
+
+it('paints inherited textured and inset pens, including the path veto', async () => {
+  const draw = (texture: boolean, inset: boolean, inherited = false, veto = false) =>
+    renderVml(
+      `<v:group style="width:100pt;height:100pt" coordsize="100,100"><v:shapetype id="pen">${inherited ? `<v:stroke color="red" weight="10pt" insetpen="${inset}" ${texture ? 'filltype="tile" src="media/two.png" imagesize="20pt,10pt"' : ''}/>` : ''}</v:shapetype><v:rect type="#pen" style="left:20;top:20;width:60;height:60" filled="f">${inherited ? '' : `<v:stroke color="red" weight="10pt" insetpen="${inset}" ${texture ? 'filltype="tile" src="media/two.png" imagesize="20pt,10pt"' : ''}/>`}${veto ? '<v:path insetpenok="f"/>' : ''}</v:rect></v:group>`,
+    );
+  const centered = await draw(false, false);
+  const inset = await draw(false, true);
+  expect(inset.pixels).not.toEqual(centered.pixels);
+  expect((await draw(false, true, true)).pixels).toEqual(inset.pixels);
+  expect((await draw(false, true, false, true)).pixels).toEqual(centered.pixels);
+  const textured = await draw(true, true);
+  expect(counter(textured.pixels)(0, 0, 255)).toBeGreaterThan(50);
+  expect((await draw(true, true, true)).pixels).toEqual(textured.pixels);
+  expect([...inset.diagnostics, ...textured.diagnostics]).toEqual([]);
+});
+
+it('paints fitted straight text paths and effective inherited pattern brushes', async () => {
+  const draw = (mode: string, inherited = false, pattern = false) =>
+    renderVml(
+      `<v:group style="width:100pt;height:70pt" coordsize="100,70"><v:shapetype id="text" coordsize="1000,1000" path="m0,900l1000,900e">${inherited ? `<v:path textpathok="t"/><v:textpath on="t" ${mode} string="MMMM" style="font:20pt Arial"/>` : ''}</v:shapetype><v:shape type="#text" style="width:100;height:60" fillcolor="red" stroked="f">${pattern ? '<v:fill type="pattern" r:id="pic" color="red" color2="blue" size="10pt,10pt"/>' : ''}${inherited ? '' : `<v:path textpathok="t"/><v:textpath on="t" ${mode} string="MMMM" style="font:20pt Arial"/>`}</v:shape></v:group>`,
+      true,
+    );
+  for (const mode of ['fitpath="t"', 'xscale="t"', 'fitshape="t"']) {
+    const direct = await draw(mode);
+    const inherited = await draw(mode, true);
+    expect(counter(direct.pixels)(255, 0, 0)).toBeGreaterThan(50);
+    expect(inherited.pixels).toEqual(direct.pixels);
+    expect(direct.diagnostics).toEqual([]);
+  }
+  const direct = await draw('fitpath="t"', false, true);
+  expect(
+    counter(direct.pixels)(0, 0, 255),
+    JSON.stringify({
+      d: direct.diagnostics,
+      red: counter(direct.pixels)(255, 0, 0),
+      white: counter(direct.pixels)(255, 255, 255),
+    }),
+  ).toBeGreaterThan(10);
+  expect((await draw('fitpath="t"', true, true)).pixels).toEqual(direct.pixels);
+  expect(direct.diagnostics).toEqual([]);
+});
+
+it('keeps rotated image text, miter tips and pen alpha in their acquired ink frames', async () => {
+  const text = (pattern: boolean) =>
+    `<v:shape style="left:50pt;top:50pt;width:100pt;height:20pt;rotation:90" fillcolor="red" stroked="f"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="MMMMMM" style="font-size:20pt;font-family:Arial"/>${pattern ? '<v:fill type="pattern" r:id="pic" color="red" color2="red" size="10pt,10pt"/>' : ''}</v:shape>`;
+  const solid = await renderVml(text(false), true);
+  const pattern = await renderVml(text(true), true);
+  const inkCount = (pixels: Uint8ClampedArray) => {
+    let count = 0;
+    for (let i = 0; i < pixels.length; i += 4)
+      if (pixels[i] !== 255 || pixels[i + 1] !== 255 || pixels[i + 2] !== 255) count++;
+    return count;
+  };
+  // Rasterizing a brush may change antialiasing, but must preserve the full
+  // tall rotated text rather than clipping it to the short authored box.
+  expect(inkCount(pattern.pixels)).toBeGreaterThan(inkCount(solid.pixels) * 0.9);
+  const pen = (texture: boolean, alpha: number) =>
+    `<v:shape style="left:50pt;top:50pt;width:100pt;height:100pt" coordsize="1000,1000" path="m0,0l1000,1000,700,1000xe" filled="f"><v:stroke color="red" weight="10pt" joinstyle="miter" miterlimit="10" opacity="${alpha}" ${texture ? 'filltype="tile" src="media/two.png" imagesize="20pt,10pt"' : ''}/></v:shape>`;
+  const plain = await renderVml(pen(false, 1));
+  const textured = await renderVml(pen(true, 1));
+  const topInk = (pixels: Uint8ClampedArray) => {
+    for (let y = 0; y < 200; y++)
+      for (let x = 0; x < 200; x++) {
+        const i = (y * 200 + x) * 4;
+        if (pixels[i] !== 255 || pixels[i + 1] !== 255 || pixels[i + 2] !== 255) return y;
+      }
+    return 200;
+  };
+  expect(topInk(textured.pixels)).toBeLessThanOrEqual(topInk(plain.pixels) + 1);
+  const translucent = await renderVml(pen(true, 0.5));
+  expect(
+    counter(translucent.pixels)(255, 127, 127) + counter(translucent.pixels)(127, 127, 255),
+  ).toBeGreaterThan(100);
+  expect([...pattern.diagnostics, ...textured.diagnostics, ...translucent.diagnostics]).toEqual([]);
+});
+
+it('lets instance path and pen properties override inherited drawing modes', async () => {
+  const brush = '<v:fill type="gradientradial" color="red" color2="blue" focusposition="25%,75%"/>';
+  const triangle = (inherited: boolean, override: string) =>
+    `<v:shapetype id="path" coordsize="1000,1000" path="m0,0l1000,1000,0,1000xe"><v:path gradientshapeok="${inherited}"/></v:shapetype><v:shape type="#path" style="width:100pt;height:100pt" stroked="f">${override}${brush}</v:shape>`;
+  const ordinary = await renderVml(triangle(false, ''));
+  const concentric = await renderVml(triangle(true, ''));
+  expect((await renderVml(triangle(true, '<v:path gradientshapeok="f"/>'))).pixels).toEqual(
+    ordinary.pixels,
+  );
+  expect((await renderVml(triangle(false, '<v:path gradientshapeok="t"/>'))).pixels).toEqual(
+    concentric.pixels,
+  );
+  const pen = (inherited: boolean) =>
+    `<v:shapetype id="pen">${inherited ? '<v:stroke color="red" weight="10pt" insetpen="t" filltype="tile" src="media/two.png"/>' : ''}</v:shapetype><v:rect type="#pen" style="left:20pt;top:20pt;width:60pt;height:60pt" filled="f" insetpen="f"><v:stroke color="red" weight="10pt" filltype="solid"/></v:rect>`;
+  const reset = await renderVml(pen(true));
+  expect(reset.pixels).toEqual((await renderVml(pen(false))).pixels);
+  expect([...reset.diagnostics, ...concentric.diagnostics]).toEqual([]);
+});
+
+it('preserves complete shaped text on an affine baseline, including combining clusters', async () => {
+  const draw = (path: string) => renderVml(`<v:${path ? 'shape' : 'rect'} style="width:100pt;height:60pt" coordsize="1000,1000" ${path} fillcolor="red" stroked="f"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="Áffi" style="font-size:20pt;font-family:Arial"/></v:${path ? 'shape' : 'rect'}>`);
+  const box = await draw('');
+  const baseline = await draw('path="m0,1000l1000,1000e"');
+  expect(baseline.pixels).toEqual(box.pixels);
+  expect(baseline.diagnostics).toEqual([]);
+});
+
+it('maps VML pattern pens by exact black versus coloured source pixels', async () => {
+  const pen = '<v:stroke filltype="pattern" src="media/two.png" color="lime" color2="blue" weight="10pt"/>';
+  const direct = `<v:rect style="left:20pt;top:20pt;width:60pt;height:60pt" filled="f">${pen}</v:rect>`;
+  const mono = await renderVml(direct, true);
+  expect(counter(mono.pixels)(0,0,255)).toBeGreaterThan(50);
+  expect(counter(mono.pixels)(0,255,0)).toBeGreaterThan(50);
+  const coloured = await renderVml(direct);
+  expect(counter(coloured.pixels)(0,0,255)).toBe(0);
+  expect(counter(coloured.pixels)(0,255,0)).toBeGreaterThan(200);
+  const inherited = await renderVml(`<v:shapetype id="pattern">${pen}</v:shapetype><v:rect type="#pattern" style="left:20pt;top:20pt;width:60pt;height:60pt" filled="f"/>`, true);
+  expect(inherited.pixels).toEqual(mono.pixels);
+  expect([...mono.diagnostics,...coloured.diagnostics,...inherited.diagnostics]).toEqual([]);
+});

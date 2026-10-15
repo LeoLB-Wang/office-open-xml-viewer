@@ -375,12 +375,12 @@ impl Builder {
     }
 }
 
-pub(super) fn acquire(
+fn context(
     shape: roxmltree::Node,
     definition: Option<roxmltree::Node>,
     width: f64,
     height: f64,
-) -> Option<Geometry> {
+) -> Option<(Values, (f64, f64), (f64, f64))> {
     let size = pair(attr(shape, definition, "coordsize").unwrap_or("1000,1000"))?;
     let origin = pair(attr(shape, definition, "coordorigin").unwrap_or("0,0"))?;
     if size.0 <= 0.0 || size.1 <= 0.0 {
@@ -444,6 +444,42 @@ pub(super) fn acquire(
             values.guides.push(values.formula(f.attribute("eqn")?)?);
         }
     }
+    Some((values, size, origin))
+}
+
+/// Part 4 §19.1.2.14: retain all authored text rectangles in normalized
+/// geometry coordinates, including adjustment/formula references.
+pub(super) fn text_rects(
+    shape: roxmltree::Node,
+    definition: Option<roxmltree::Node>,
+    width: f64,
+    height: f64,
+) -> Option<Vec<[f64; 4]>> {
+    let raw = path_attr(shape, definition, "textboxrect")?;
+    let (values, size, origin) = context(shape, definition, width, height)?;
+    raw.split(';')
+        .map(|rect| {
+            let p = parameters(rect, &values)?;
+            if p.len() != 4 || p[2] < p[0] || p[3] < p[1] {
+                return None;
+            }
+            Some([
+                (p[0] - origin.0) / size.0,
+                (p[1] - origin.1) / size.1,
+                (p[2] - origin.0) / size.0,
+                (p[3] - origin.1) / size.1,
+            ])
+        })
+        .collect()
+}
+
+pub(super) fn acquire(
+    shape: roxmltree::Node,
+    definition: Option<roxmltree::Node>,
+    width: f64,
+    height: f64,
+) -> Option<Geometry> {
+    let (values, size, origin) = context(shape, definition, width, height)?;
     let mut b = Builder {
         paths: Vec::new(),
         paint: Vec::new(),
@@ -802,25 +838,6 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
     if incomplete_host(shape, definition) {
         return true;
     }
-    let inset = vml_decoration_attr(shape, definition, "stroke", "insetpen")
-        .or_else(|| attr(shape, definition, "insetpen"))
-        .and_then(parse_vml_true_false)
-        .unwrap_or(false);
-    if inset
-        && path_attr(shape, definition, "insetpenok").and_then(parse_vml_true_false) != Some(false)
-    {
-        return true;
-    }
-    if path_attr(shape, definition, "gradientshapeok").and_then(parse_vml_true_false) == Some(true)
-        && vml_fill::property(shape, definition, "type") == Some("gradientradial")
-    {
-        return true;
-    }
-    if path_attr(shape, definition, "textboxrect").is_some()
-        && vml_direct_child(shape, "textbox").is_some()
-    {
-        return true;
-    }
     for host in std::iter::once(shape).chain(definition) {
         if let Some(path) = vml_direct_child(host, "path") {
             if path.attributes().any(|a| {
@@ -930,6 +947,13 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
                 "title",
                 "detectmouseclick",
                 "insetpen",
+                "filltype",
+                "src",
+                "relid",
+                "imageaspect",
+                "imagesize",
+                "imagealignshape",
+                "color2",
             ][..],
         ),
         (

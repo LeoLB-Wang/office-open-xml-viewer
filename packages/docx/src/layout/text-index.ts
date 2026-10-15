@@ -175,6 +175,9 @@ function collectDrawingRasterPaintOccurrences(
       );
       continue;
     }
+    if (command.kind === 'watermark-text' && command.imageResourceKey) {
+      appendRasterPaintOccurrence(context, command.imageResourceKey, 'image', command.rect, projection.pointToPage);
+    }
     if (command.kind !== 'drawingml-image-fill') continue;
     const { x, y, w, h } = command.plan.rect;
     const fillRect = command.fillRect ?? { l: 0, t: 0, r: 0, b: 0 };

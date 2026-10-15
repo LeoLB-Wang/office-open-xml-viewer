@@ -116,6 +116,14 @@ export type DrawingPaintCommand =
     }>
   | Readonly<{
       kind: 'drawingml-shape';
+      insetStroke?: boolean;
+      shadowPass?: boolean;
+      concentricFill?: Readonly<{
+        bounds?: LayoutRect;
+        focus: Readonly<{ l: number; t: number; width: number; height: number }>;
+        rings: readonly Readonly<{ outside: number; inside: number; color: string }>[];
+        centerColor: string;
+      }>;
       /** Retained VML fill/shadow pass opacity, independent of other passes. */
       opacity?: number;
       plan: DeepReadonly<DrawingMLShapePaintPlan & { readonly resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> }>;
@@ -123,6 +131,9 @@ export type DrawingPaintCommand =
   | Readonly<{
       /** A retained image resource clipped to the authored DrawingML shape. */
       kind: 'drawingml-image-fill';
+      strokeMask?: boolean;
+      maskBounds?: LayoutRect;
+      insetStroke?: boolean;
       plan: DeepReadonly<DrawingMLShapePaintPlan & { readonly resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> }>;
       resourceKey: string;
       imageRotationDeg?: number;
@@ -161,6 +172,11 @@ export type DrawingPaintCommand =
       fill: DeepReadonly<Fill> | null;
       opacity: number;
       rotationDeg: number;
+      imageResourceKey?: string;
+      maskBounds?: LayoutRect;
+      imageRotationDeg?: number;
+      /** Acquired glyph placements for §19.1.2.23 path fitting. */
+      pathSlices?: readonly Readonly<{ sourceX: number; sourceWidth: number; xPt: number; yPt: number; a: number; b: number; c: number; d: number }>[];
       /** True applies §19.1.2.23 fitshape; false preserves authored font size. */
       fitShape: boolean;
       fontSizePt: number;
@@ -506,6 +522,8 @@ export type ImagePaintResourceDescriptor = Readonly<{
   alpha?: number;
   colorReplaceFrom?: string;
   duotone?: DeepReadonly<Duotone>;
+  /** Part 4 §19.1.2.21: clr1 replaces black, clr2 replaces coloured pixels. */
+  vmlStrokePattern?: DeepReadonly<Duotone>;
   vmlFill?: DeepReadonly<Extract<import('../types.js').ShapeFill, { fillType: 'image' }>['vml']>;
 }>;
 
@@ -974,6 +992,7 @@ export interface ResolvedFloatingTablePlacementLayout {
 
 export interface TextBoxLayout extends LayoutNodeBase {
   readonly kind: 'textbox';
+  readonly clipRects?: readonly LayoutRect[];
   readonly story: StoryLayout;
   /** DrawingML fontRef color inherited by runs without an explicit w:color. */
   readonly defaultTextColor?: string;
@@ -1615,4 +1634,13 @@ export interface BlockLayoutAlgorithms {
     placement: FlowBlockPlacement,
     services: LayoutServices,
   ): BlockLayoutResult<TableLayout>;
+}
+
+/** Effective private VML parser facts, projected before layout acquisition. */
+export interface VmlShapeAcquisitionFacts {
+  readonly vmlStrokeFill?: Extract<import('../types.js').ShapeFill, { fillType: 'image' }>;
+  readonly vmlStrokePattern?: import('@silurus/ooxml-core').Duotone;
+  readonly vmlInsetPen?: boolean;
+  readonly vmlConcentricGradient?: boolean;
+  readonly vmlTextRects?: Array<[number, number, number, number]>;
 }

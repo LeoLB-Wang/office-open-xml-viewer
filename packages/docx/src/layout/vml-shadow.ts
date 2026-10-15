@@ -105,7 +105,7 @@ export function planVmlShadows(
     }
     const resolvedGeometry = resolveDrawingMLGeometry(shadowPlan, 1, maximumWork - work);
     charge(resolvedGeometry.workUnits);
-    retained.push({ kind: 'drawingml-shape', plan: { ...shadowPlan, resolvedGeometry }, opacity: shadow.opacity });
+    retained.push({ kind: 'drawingml-shape', shadowPass: true, plan: { ...shadowPlan, resolvedGeometry }, opacity: shadow.opacity });
   }
   return retained;
 }

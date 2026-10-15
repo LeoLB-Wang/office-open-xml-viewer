@@ -58,6 +58,7 @@ interface ImageDecodeRequest {
   svgImagePath?: string;
   colorReplaceFrom?: string;
   duotone?: Duotone;
+  vmlStrokePattern?: Duotone;
   widthPt: number;
   heightPt: number;
   hasCrop: boolean;
@@ -72,15 +73,16 @@ export function imageKey(
   imagePath: string,
   colorReplaceFrom?: string,
   duotone?: Duotone,
+  vmlStrokePattern?: Duotone,
 ): string {
   const clr = colorReplaceFrom ? `|clr:${colorReplaceFrom}` : '';
   const duo = duotone ? `|duo:${duotone.clr1}:${duotone.clr2}` : '';
-  return `${imagePath}${clr}${duo}`;
+  return `${imagePath}${clr}${duo}${vmlStrokePattern ? `|vml-pen:${vmlStrokePattern.clr1}:${vmlStrokePattern.clr2}` : ''}`;
 }
 
 function requestKey(request: ImageDecodeRequest): string {
   return request.cacheKey
-    ?? imageKey(request.imagePath, request.colorReplaceFrom, request.duotone);
+    ?? imageKey(request.imagePath, request.colorReplaceFrom, request.duotone, request.vmlStrokePattern);
 }
 
 const DOCX_COLOR_EFFECT_CACHE_NAMESPACE = 'docx-color-effects';
@@ -107,6 +109,7 @@ async function applyColorEffects(
   colorReplaceFrom: string | undefined,
   duotone: Duotone | undefined,
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
+  vmlStrokePattern?: Duotone,
 ): Promise<ImageBitmap | null> {
   // Reuse the shared source-grid transform used by PPTX/XLSX. DOCX combines
   // exact clrChange alpha replacement and §20.1.8.23 duotone in one buffer.
@@ -115,6 +118,16 @@ async function applyColorEffects(
   const transformed = await applyImageDataTransform(bitmap, data => {
     if (colorReplaceFrom) applyExactColorReplacement(data, colorReplaceFrom);
     if (duotone) duotoneImageData(data, duotone.clr1, duotone.clr2);
+    if (vmlStrokePattern) {
+      // Part 4 §19.1.2.21 color2 is a black/coloured predicate, not a
+      // luminance transfer. Preserve source alpha and the exact native grid.
+      const rgb = (hex: string) => [0,2,4].map(i => parseInt(hex.slice(i,i+2),16));
+      const black=rgb(vmlStrokePattern.clr1), colored=rgb(vmlStrokePattern.clr2);
+      for(let i=0;i<data.data.length;i+=4) {
+        const value=data.data[i]===0 && data.data[i+1]===0 && data.data[i+2]===0 ? black : colored;
+        data.data[i]=value[0]!; data.data[i+1]=value[1]!; data.data[i+2]=value[2]!;
+      }
+    }
   }, {
     width: bitmap.width,
     height: bitmap.height,
@@ -144,17 +157,18 @@ export async function decodeRaster(
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
   plannedPixelLimit?: number,
   svgDecoder?: import('@silurus/ooxml-core').SvgBlobDecoder,
+  vmlStrokePattern?: Duotone,
 ): Promise<ImageBitmap | null> {
   // Pixel effects temporarily retain more than their cached input/output:
   // source + offscreen backing + ImageData + result = four surfaces. clrChange
   // and duotone mutate the same ImageData before the one final bitmap bake, so
   // chaining them does not add another full-size intermediate.
-  const effectSurfaceCount = colorReplaceFrom || duotone ? 4 : 1;
+  const effectSurfaceCount = colorReplaceFrom || duotone || vmlStrokePattern ? 4 : 1;
   const effectPixelLimit = Math.floor(MAX_RASTER_PIXELS / effectSurfaceCount);
   const maxRetainedPixels = Number.isSafeInteger(plannedPixelLimit) && (plannedPixelLimit ?? 0) > 0
     ? Math.min(effectPixelLimit, plannedPixelLimit as number)
     : effectPixelLimit;
-  const epoch = colorReplaceFrom || duotone
+  const epoch = colorReplaceFrom || duotone || vmlStrokePattern
     ? captureDecodedBitmapCacheEpoch(fetchImage, DOCX_COLOR_EFFECT_CACHE_NAMESPACE)
     : undefined;
   const sourceBitmapOptions = {
@@ -175,7 +189,7 @@ export async function decodeRaster(
     ...sourceBitmapOptions,
   });
   if (!base) return null;
-  if (!colorReplaceFrom && !duotone) return base;
+  if (!colorReplaceFrom && !duotone && !vmlStrokePattern) return base;
   // Injected SVG decoders share the decoded owner but can return a larger
   // vector raster than the effect's four-surface working-set allowance.
   const pixels = base.width * base.height;
@@ -199,7 +213,7 @@ export async function decodeRaster(
   const resizeKey = resizeOptions
     ? `|resize:${resizeOptions.resizeWidth}x${resizeOptions.resizeHeight}`
     : '';
-  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone)}${resizeKey}`;
+  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone, vmlStrokePattern)}${resizeKey}`;
   return getCachedDerivedBitmap(
     DOCX_COLOR_EFFECT_CACHE_NAMESPACE,
     key,
@@ -210,6 +224,7 @@ export async function decodeRaster(
         colorReplaceFrom,
         duotone,
         target,
+        vmlStrokePattern,
       );
       return { bitmap, owned: bitmap !== null && bitmap !== base };
     },
@@ -262,6 +277,7 @@ function imageDecodeRequests(
       ...(image.svgImagePath === undefined ? {} : { svgImagePath: image.svgImagePath }),
       ...(image.colorReplaceFrom === undefined ? {} : { colorReplaceFrom: image.colorReplaceFrom }),
       ...(image.duotone === undefined ? {} : { duotone: image.duotone as Duotone }),
+      ...(image.vmlStrokePattern === undefined ? {} : { vmlStrokePattern: image.vmlStrokePattern as Duotone }),
       widthPt: raster.widthPt,
       heightPt: raster.heightPt,
       hasCrop: image.srcRect != null,
@@ -410,7 +426,7 @@ export async function preloadPaintImages(
     // DrawingML pixel effects consume the authored source grid. They may
     // resample only after the exact transform, so an adaptive pre-decode target
     // would change semantics instead of merely reducing display quality.
-    if (request.colorReplaceFrom || request.duotone) return null;
+    if (request.colorReplaceFrom || request.duotone || request.vmlStrokePattern) return null;
     const dataIsSvg = request.mimeType === 'image/svg+xml';
     const blip = { svgImagePath: request.svgImagePath, srcRect: request.hasCrop || null };
     if (dataIsSvg || preferVectorBlip(blip)) return null;
@@ -442,7 +458,7 @@ export async function preloadPaintImages(
   const plan = planDecodedImageTargets(demands, policy);
   for (const request of requests) {
     const dataIsSvg = request.mimeType === 'image/svg+xml';
-    const usesVector = dataIsSvg || (!request.colorReplaceFrom && !request.duotone
+    const usesVector = dataIsSvg || (!request.colorReplaceFrom && !request.duotone && !request.vmlStrokePattern
       && preferVectorBlip({
         svgImagePath: request.svgImagePath,
         srcRect: request.hasCrop || null,
@@ -462,7 +478,7 @@ export async function preloadPaintImages(
       const dataIsSvg = request.mimeType === 'image/svg+xml';
       const blip = { svgImagePath: request.svgImagePath, srcRect: request.hasCrop || null };
       let image: DecodedImage | null;
-      if (preferVectorBlip(blip) && !request.colorReplaceFrom && !request.duotone) {
+      if (preferVectorBlip(blip) && !request.colorReplaceFrom && !request.duotone && !request.vmlStrokePattern) {
         try {
           image = await decodeSvg(blip.svgImagePath, request);
         } catch (vectorError) {
@@ -482,12 +498,12 @@ export async function preloadPaintImages(
                   ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
                   : undefined,
                 request.plannedPixelLimit,
-                svgDecoder,
+                svgDecoder, request.vmlStrokePattern,
               );
           if (!fallback) throw vectorError;
           image = fallback;
         }
-      } else if (dataIsSvg && !request.colorReplaceFrom && !request.duotone) {
+      } else if (dataIsSvg && !request.colorReplaceFrom && !request.duotone && !request.vmlStrokePattern) {
         image = await decodeSvg(request.imagePath, request);
       } else {
         const decodeEffect = (path: string, mime: string) => decodeRaster(
@@ -496,7 +512,7 @@ export async function preloadPaintImages(
           request.targetWidthPx && request.targetHeightPx
             ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
             : undefined,
-          request.plannedPixelLimit, svgDecoder,
+          request.plannedPixelLimit, svgDecoder, request.vmlStrokePattern,
         );
         if (preferVectorBlip(blip)) {
           try { image = await decodeEffect(blip.svgImagePath, 'image/svg+xml'); }

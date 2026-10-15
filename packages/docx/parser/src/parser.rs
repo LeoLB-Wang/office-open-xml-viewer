@@ -12392,7 +12392,29 @@ fn parse_vml_shape(
         ),
         None => (Vec::new(), Vec::new()),
     };
+    let stroke_image = resolved_stroke
+        .color
+        .as_ref()
+        .and_then(|_| vml_fill::stroke_image(shape, shape_type, media_map));
+    // Formula names such as emuwidth/pixelwidth use the same physical child
+    // frame for text rectangles and visible paths, including scaled groups.
+    let text_rects = vml_geometry::text_rects(
+        shape,
+        shape_type,
+        width_pt * physical_scale.0,
+        height_pt * physical_scale.1,
+    );
+    let missing_pen = resolved_stroke.color.is_some()
+        && matches!(
+            vml_decoration_attr(shape, shape_type, "stroke", "filltype"),
+            Some("tile" | "pattern" | "frame")
+        )
+        && stroke_image.is_none();
+    let malformed_text_rects =
+        vml_geometry::path_attr(shape, shape_type, "textboxrect").is_some() && text_rects.is_none();
     if geometry_unavailable
+        || missing_pen
+        || malformed_text_rects
         || resolved_fill.incomplete
         || vml_geometry::incomplete_leaf(shape, shape_type)
     {
@@ -12484,6 +12506,38 @@ fn parse_vml_shape(
         preset_geometry,
         vml_shadow: vml_geometry::shadow(shape, shape_type),
         adj_values,
+        vml_concentric_gradient: vml_geometry::path_attr(shape, shape_type, "gradientshapeok")
+            .and_then(parse_vml_true_false)
+            == Some(true)
+            && vml_fill::property(shape, shape_type, "type") == Some("gradientradial"),
+        // Part 4 §19.1.2.21 color2: black source pixels use the alternate
+        // colour; every coloured pixel uses the effective primary stroke colour.
+        vml_stroke_pattern: (stroke_image.is_some()
+            && vml_decoration_attr(shape, shape_type, "stroke", "filltype") == Some("pattern"))
+        .then(|| Duotone {
+            clr1: vml_decoration_attr(shape, shape_type, "stroke", "color2")
+                .and_then(vml_color_hex6)
+                .unwrap_or_else(|| "000000".into()),
+            clr2: resolved_stroke.color.as_deref().unwrap_or("000000")[..6].to_string(),
+        }),
+        vml_stroke_fill: stroke_image,
+        vml_text_rects: text_rects.unwrap_or_default(),
+        // Part 4 §§19.1.2.19/.21/.14: the path veto wins over both
+        // host and decoration requests; omission uses the centered pen.
+        vml_inset_pen: {
+            let layer = |host| {
+                vml_direct_child(host, "stroke")
+                    .and_then(|n| n.attribute("insetpen"))
+                    .or_else(|| host.attribute("insetpen"))
+                    .and_then(parse_vml_true_false)
+            };
+            layer(shape)
+                .or_else(|| shape_type.and_then(layer))
+                .unwrap_or(false)
+                && vml_geometry::path_attr(shape, shape_type, "insetpenok")
+                    .and_then(parse_vml_true_false)
+                    != Some(false)
+        },
         fill: resolved_fill.fill,
         fill_opacity,
         stroke: resolved_stroke.color,
@@ -13287,6 +13341,17 @@ fn parse_vml_opacity(raw: &str) -> Option<f64> {
 /// element's CSS `style` (`font-family`, `font-weight`, `font-style`, and the
 /// `bold`/`italic` keywords of the `font` shorthand). Quotes around the family
 /// are stripped. Returns `None` when the element carries no `string`.
+fn vml_font_shorthand_size(raw: &str) -> Option<f64> {
+    raw.split_whitespace()
+        .filter_map(|token| token.split('/').next())
+        .find(|token| {
+            ["pt", "px", "in", "cm", "mm", "pc"]
+                .iter()
+                .any(|unit| token.ends_with(unit))
+        })
+        .and_then(parse_vml_length_pt)
+}
+
 fn parse_vml_textpath(
     textpath: roxmltree::Node,
     inherited: Option<roxmltree::Node>,
@@ -13362,7 +13427,9 @@ fn parse_vml_textpath(
                 resolved_vml_textpath_bool(textpath, inherited, "xscale").unwrap_or(false),
             ),
             font_size_pt: vml_css_length_pt(style, "font-size")
-                .or_else(|| vml_css_length_pt(inherited_style, "font-size")),
+                .or_else(|| vml_css_str(style, "font").and_then(vml_font_shorthand_size))
+                .or_else(|| vml_css_length_pt(inherited_style, "font-size"))
+                .or_else(|| vml_css_str(inherited_style, "font").and_then(vml_font_shorthand_size)),
         },
     })
 }
@@ -31484,7 +31551,7 @@ mod vml_pict_tests {
     }
 
     #[test]
-    fn image_pattern_on_vml_textpath_uses_word_pdf_solid_ink() {
+    fn image_pattern_on_vml_textpath_retains_the_image_brush() {
         let body = format!(
             r##"<w:document{ns}><w:body><w:p><w:r><w:pict>
               <v:shape id="PowerPlusWaterMarkObject1"
@@ -31506,8 +31573,11 @@ mod vml_pict_tests {
         assert_eq!(shapes.len(), 1);
         assert!(shapes[0].text_path.is_some());
         match &shapes[0].fill {
-            Some(ShapeFill::Solid { color }) => assert_eq!(color, "d21d54"),
-            other => panic!("expected solid textpath ink, got {other:?}"),
+            Some(ShapeFill::Image {
+                duotone: Some(colors),
+                ..
+            }) => assert_eq!(colors.clr1, "d21d54"),
+            other => panic!("expected patterned textpath ink, got {other:?}"),
         }
     }
 

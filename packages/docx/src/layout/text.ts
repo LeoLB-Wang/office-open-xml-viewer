@@ -188,7 +188,7 @@ export type ParagraphMathRun = Readonly<{
   fallbackText: string;
 }>;
 
-export type ParagraphShapeRun = DeepReadonly<Extract<DocRun, { type: 'shape' }>> & Readonly<{
+export type ParagraphShapeRun = DeepReadonly<Extract<DocRun, { type: 'shape' }> & import('./types.js').VmlShapeAcquisitionFacts> & Readonly<{
   vmlTextPathInput?: VmlTextPathAcquisitionInput;
   textBoxInput?: TextBoxAcquisitionInput;
   anchorAcquisitionInput?: AnchorAcquisitionInput;

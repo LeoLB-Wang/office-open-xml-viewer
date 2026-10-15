@@ -363,26 +363,6 @@ describe('ShapeRun drawing command planner', () => {
     expect(result.command).toEqual({ kind: 'noop' });
   });
 
-  it.each(['fitPath', 'xScale'] as const)('isolates unsupported active %s semantics as a diagnostic noop', (control) => {
-    const text = { shape: () => { throw new Error('unsupported mode must be rejected before shaping'); } } as unknown as TextLayoutService;
-    const result = textPathPlan(shape({
-      textPath: {
-        string: 'DRAFT', textPathOk: true, on: true, fitShape: false,
-        fitPath: false, trim: false, xScale: false, [control]: true,
-      } as NonNullable<InternalShapeRun['textPath']>,
-    }), { xPt: 0, yPt: 0, widthPt: 20, heightPt: 20 }, text);
-
-    expect(result).toEqual({
-      status: 'unsupported',
-      command: { kind: 'noop' },
-      diagnostics: [{
-        code: 'UNSUPPORTED_FEATURE',
-        severity: 'error',
-        message: `VML textPath ${control}=true is not rendered`,
-      }],
-    });
-  });
-
   it.each([
     [Number.NaN, /must contain finite numbers/],
     [-1, /must be finite and non-negative/],

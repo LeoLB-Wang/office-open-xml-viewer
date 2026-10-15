@@ -451,6 +451,24 @@ mod tests {
     }
 
     #[test]
+    fn text_rect_formulas_use_the_same_physical_frame_as_group_geometry() {
+        let (group, _) = parse(
+            r##"<v:group style="width:200pt;height:100pt" coordsize="100,100">
+          <v:shapetype id="region" coordsize="1000,1000">
+            <v:formulas><v:f eqn="prod emuwidth 1 2540"/></v:formulas>
+            <v:path textboxrect="0,0,@0,1000"/>
+          </v:shapetype>
+          <v:rect type="#region" style="width:100;height:100"/>
+        </v:group>"##,
+        );
+        let runs = children(&group);
+        let DocRun::Shape(shape) = &runs[0] else {
+            panic!("shape retained")
+        };
+        assert_eq!(shape.vml_text_rects, vec![[0.0, 0.0, 1.0, 1.0]]);
+    }
+
+    #[test]
     fn visibility_retains_flow_extent_without_inheriting_from_shapetype() {
         let (hidden, diagnostics) = parse(
             r##"<v:group style="width:100pt;height:80pt;visibility:hidden"><v:rect style="width:100;height:100"/></v:group>"##,
@@ -532,19 +550,19 @@ mod tests {
                 .text_box_content
                 .iter()
                 .any(|b| matches!(b, TextBoxBlockWire::Unsupported { .. }));
-            assert_eq!(incomplete, i != 0);
+            assert_eq!(incomplete, i >= 2);
         }
     }
 
     #[test]
     fn property_sweep_discloses_active_unacquired_modes_and_honors_path_gates() {
         for (attributes, property, incomplete) in [
-            ("insetpen=\"t\"", "", true),
+            ("insetpen=\"t\"", "", false),
             ("insetpen=\"t\"", "<v:path insetpenok=\"f\"/>", false),
             (
                 "",
                 "<v:fill type=\"gradientradial\"/><v:path gradientshapeok=\"t\"/>",
-                true,
+                false,
             ),
             (
                 "",

@@ -10,7 +10,7 @@ import type {
 } from '../types.js';
 import type { ImageMetadataRecord, MathOccurrence, PictureBulletSizeResolver } from './resources.js';
 import type { BodyAcquisitionInputProjections } from './acquisition-input-projections.js';
-import { chartResourceKey, imageResourceKey, vmlPictureResourceKey } from './source-key.js';
+import { chartResourceKey, imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey } from './source-key.js';
 import {
   createPaintResourceRegistry,
 } from './paint-resources.js';
@@ -24,7 +24,7 @@ export function chartPaintResourceKey(source: import('./types.js').SourceRef): s
   return chartResourceKey(source);
 }
 
-type ImageDescriptorOptions = Partial<ImageRun> & Pick<ImagePaintResourceDescriptor, 'vmlFill'>;
+type ImageDescriptorOptions = Partial<ImageRun> & Pick<ImagePaintResourceDescriptor, 'vmlFill' | 'vmlStrokePattern'>;
 
 type ImageDescriptorCandidate = Omit<ImagePaintResourceDescriptor, 'intrinsicSize' | 'mimeType'>;
 
@@ -48,6 +48,7 @@ function imageCandidate(
     // every authored string; only None/omission has no decoded effect owner.
     ...(run.colorReplaceFrom == null ? {} : { colorReplaceFrom: run.colorReplaceFrom }),
     ...(run.duotone === undefined ? {} : { duotone: { ...run.duotone } }),
+    ...(run.vmlStrokePattern === undefined ? {} : { vmlStrokePattern: run.vmlStrokePattern }),
     ...(run.vmlFill === undefined ? {} : { vmlFill: run.vmlFill }),
   };
 }
@@ -89,7 +90,7 @@ function collectDescriptorCandidates(
       return;
     }
     if (run.type !== 'shape') return;
-    const shape = run as ShapeRun & Readonly<{ textBoxContent?: BodyElement[] }>;
+    const shape = run as ShapeRun & import('./types.js').VmlShapeAcquisitionFacts & Readonly<{ textBoxContent?: BodyElement[] }>;
     if (shape.fill?.fillType === 'image') {
       addImage(
         'image', source, shape.fill.imagePath, shape.fill.mimeType,
@@ -106,6 +107,12 @@ function collectDescriptorCandidates(
           ...(shape.fill.vml === undefined ? {} : { vmlFill: shape.fill.vml }),
         },
       );
+    }
+    if (shape.vmlStrokeFill) {
+      const fill = shape.vmlStrokeFill;
+      addImage('image', source, fill.imagePath, fill.mimeType, shape.widthPt + (shape.vmlInsetPen === true ? 0 : shape.strokeWidth ?? 0), shape.heightPt + (shape.vmlInsetPen === true ? 0 : shape.strokeWidth ?? 0),
+        { alpha: fill.alpha, duotone: fill.duotone, vmlFill: fill.vml, vmlStrokePattern: shape.vmlStrokePattern },
+        vmlStrokeResourceKey(source, fill.imagePath));
     }
     if (shape.vmlPicture) {
       const picture = shape.vmlPicture;
