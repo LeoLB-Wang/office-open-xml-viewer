@@ -493,7 +493,33 @@ pub(crate) fn load_sheet_charts(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn load_sheet_charts_with_theme_images(
+    archive: &mut crate::XlsxZip,
+    sheet_path: &str,
+    reference_context: Option<ChartReferenceContext<'_, '_, '_>>,
+    theme_colors: &[String],
+    theme_fonts: (Option<&str>, Option<&str>),
+    theme_format_scheme: Option<&ooxml_common::theme::ThemeFormatScheme>,
+    theme_images: &ooxml_common::chart::ChartImageRelationships,
+) -> Vec<ChartAnchor> {
+    load_sheet_charts_observing_frames(
+        archive,
+        sheet_path,
+        reference_context,
+        theme_colors,
+        theme_fonts,
+        theme_format_scheme,
+        theme_images,
+        &mut false,
+    )
+}
+
+/// Load a sheet's drawing chart anchors and report whether any drawing anchor
+/// carried a graphic frame. Without one, the result is empty for every
+/// reference context, so a caller may reuse it for the same sheet part.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_sheet_charts_observing_frames(
     archive: &mut crate::XlsxZip,
     sheet_path: &str,
     mut reference_context: Option<ChartReferenceContext<'_, '_, '_>>,
@@ -501,6 +527,7 @@ pub(crate) fn load_sheet_charts_with_theme_images(
     theme_fonts: (Option<&str>, Option<&str>),
     theme_format_scheme: Option<&ooxml_common::theme::ThemeFormatScheme>,
     theme_images: &ooxml_common::chart::ChartImageRelationships,
+    saw_graphic_frame: &mut bool,
 ) -> Vec<ChartAnchor> {
     let Some((sheet_dir, sheet_file)) = sheet_path.rsplit_once('/') else {
         return Vec::new();
@@ -667,6 +694,7 @@ pub(crate) fn load_sheet_charts_with_theme_images(
             // recurse through groups without ever visiting its Fallback.
             let mut graphic_frames = Vec::new();
             collect_selected_graphic_frames(anchor, &mut graphic_frames);
+            *saw_graphic_frame |= !graphic_frames.is_empty();
             for graphic_frame in graphic_frames {
                 let retention_site = format!("anchor:{chart_anchor_ordinal}");
                 chart_anchor_ordinal = chart_anchor_ordinal.saturating_add(1);
