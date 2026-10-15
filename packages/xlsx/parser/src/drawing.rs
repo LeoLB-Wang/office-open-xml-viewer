@@ -3707,10 +3707,8 @@ mod hidden_tests {
     }
 
     fn anchors_deep(levels: usize) -> Vec<ShapeAnchor> {
-        // roxmltree::Document::parse itself recurses on nesting depth, so parse on
-        // a generous stack; this test targets OUR collect_shapes guard. (The
-        // roxmltree layer is bounded separately by the raw-XML depth pre-check in
-        // `ooxml_common::depth`.)
+        // Exercise the recursive drawing-group walker with native stack headroom;
+        // trusted fixtures bypass the separate production XML depth policy.
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)
             .spawn(move || {
@@ -3779,19 +3777,12 @@ mod hidden_tests {
         );
     }
 
-    // ── RB2 neutralization (roxmltree layer): a pathologically deep drawing XML
-    //    is rejected by the depth pre-check in `parse_guarded` BEFORE roxmltree's
-    //    recursive tree builder runs, so `parse_shape_anchors` returns gracefully
-    //    instead of trapping. Unlike the two tests above (which spawn a 256 MB
-    //    stack to exercise OUR collect_shapes guard), this runs on the DEFAULT
-    //    (small) test-thread stack ON PURPOSE: handing 5 000-deep XML straight to
-    //    roxmltree here would overflow and abort the process. That it returns is
-    //    the guarantee.
+    // Extreme XML depth is rejected before retaining a DOM or entering the
+    // recursive OOXML walker. Streaming validation fits the default test stack.
     #[test]
     fn deeply_nested_drawing_xml_is_rejected_not_trapped() {
         let mut xml = format!(r#"<xdr:wsDr {NS}>"#, NS = NS);
-        // 5 000 levels — ~20× MAX_XML_DEPTH and far past roxmltree's ~1 000-deep
-        // small-stack overflow threshold.
+        // Approximately twenty times the production XML depth ceiling.
         for _ in 0..5_000 {
             xml.push_str("<xdr:grpSp>");
         }

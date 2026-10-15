@@ -14,5 +14,8 @@ quick-xml = { workspace = true }
 roxmltree = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-xmlparser = "0.13.6"
 zip = { workspace = true }
+
+[dev-dependencies]
+# Unmodified DOM oracle for the streaming well-formedness equivalence corpus.
+roxmltree-reference = { package = "roxmltree", version = "=0.20.0" }

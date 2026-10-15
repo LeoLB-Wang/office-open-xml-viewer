@@ -368,3 +368,6 @@ authorization of the copyright holder.
 
    END OF TERMS AND CONDITIONS
 ```
+
+The modified roxmltree 0.20.0 sources are vendored under `vendor/roxmltree/`.
+Its original licenses and the local modification notes are retained there.

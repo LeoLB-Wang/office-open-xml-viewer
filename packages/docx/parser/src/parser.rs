@@ -14,7 +14,7 @@ use ooxml_common::rels::{
 };
 use ooxml_common::resource::ResourceUsage;
 // Production parses go through `ooxml_common::depth::parse_guarded` (depth-guarded
-// before roxmltree's recursive tree builder). The `XmlDoc` alias survives only for
+// before retaining a DOM). The `XmlDoc` alias survives only for
 // the in-module unit tests, which parse trusted, hand-written fixtures directly.
 use crate::chartex_choice::{self, Verdict, CHARTEX_NS, CHARTEX_REL};
 #[cfg(test)]
@@ -1300,10 +1300,9 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
         Ok(xml) => xml,
         Err(e) => return Ok(degraded_document(theme, format!("word/document.xml: {e}"))),
     };
-    // `parse_guarded` runs the allocation-free depth pre-check BEFORE roxmltree's
-    // tree builder (which recurses per element-nesting level and would overflow
-    // the fixed WASM stack, trapping the whole parse, on a pathologically deep
-    // `word/document.xml`). Every attacker-controllable part is parsed this way.
+    // Streaming validation shares the DOM's well-formedness rules before any
+    // depth crossing can poison the operation. Malformed optional content still
+    // follows this established degradation path.
     let xml_doc = match parse_guarded(&doc_xml) {
         Ok(doc) => doc,
         Err(e) => return Ok(degraded_document(theme, format!("word/document.xml: {e}"))),
@@ -15942,10 +15941,8 @@ mod tests {
         depth
     }
 
-    /// Parse on a generous stack: `roxmltree::Document::parse` itself recurses on
-    /// nesting depth, so give it room. This test targets OUR table-recursion
-    /// guard; the raw-XML depth pre-check in `ooxml_common::depth` guards the
-    /// roxmltree layer separately (with its own tests).
+    /// Exercise the recursive table walker with generous native stack headroom.
+    /// Trusted fixtures bypass the separate production XML depth policy.
     fn parse_tbl_deep(levels: usize) -> DocTable {
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)

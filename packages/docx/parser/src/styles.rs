@@ -2903,19 +2903,12 @@ mod tests {
         assert!(unlocked_wire.get("__anchorLock").is_none());
     }
 
-    // ── RB2 neutralization: a pathologically deep styles.xml is rejected by the
-    //    depth pre-check in `parse_guarded` BEFORE roxmltree's recursive tree
-    //    builder runs, so `StyleMap::parse` returns gracefully instead of trapping
-    //    the whole parse on a stack overflow. This test runs on the DEFAULT
-    //    (small) test-thread stack ON PURPOSE — if `StyleMap::parse` handed the
-    //    5 000-deep XML straight to roxmltree it would overflow and abort the
-    //    process here. That it returns at all is the guarantee. §17.7 (styles).
+    // Extreme XML depth is rejected before retaining a DOM or entering the
+    // recursive OOXML walker. Streaming validation fits the default test stack.
     #[test]
     fn deeply_nested_styles_xml_is_rejected_not_trapped() {
         let mut xml = format!(r#"<w:styles xmlns:w="{ns}">"#, ns = W_NS);
-        // 5 000 levels — ~20× MAX_XML_DEPTH and well past roxmltree's ~1 000-deep
-        // small-stack overflow threshold. Nest an arbitrary element (styles.xml is
-        // shallow in the wild, so this can only be an attack).
+        // Approximately twenty times the production XML depth ceiling.
         for _ in 0..5_000 {
             xml.push_str("<w:x>");
         }

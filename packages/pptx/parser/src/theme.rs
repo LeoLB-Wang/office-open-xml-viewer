@@ -631,21 +631,14 @@ mod tests {
         assert_eq!(map.get("lt1").map(String::as_str), Some("FFFFFF"));
     }
 
-    // ── RB2 neutralization (roxmltree layer): a pathologically deep theme/part
-    //    XML is rejected by the depth pre-check in the PPTX parser BEFORE
-    //    roxmltree's recursive tree builder runs, so `parse_theme_colors` returns
-    //    gracefully instead of trapping. This runs on the DEFAULT (small)
-    //    test-thread stack ON PURPOSE: handing 5 000-deep XML straight to
-    //    roxmltree here would overflow and abort the process. That it returns is
-    //    the guarantee. (The shape-walk DepthGuard is covered separately in
-    //    shape.rs on a generous stack.)
+    // Extreme XML depth is rejected before retaining a DOM or entering the
+    // recursive OOXML walker. Streaming validation fits the default test stack.
     #[test]
     fn deeply_nested_theme_xml_is_rejected_not_trapped() {
         let mut xml = String::from(
             r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">"#,
         );
-        // 5 000 levels — ~20× MAX_XML_DEPTH and far past roxmltree's ~1 000-deep
-        // small-stack overflow threshold.
+        // Approximately twenty times the production XML depth ceiling.
         for _ in 0..5_000 {
             xml.push_str("<a:x>");
         }

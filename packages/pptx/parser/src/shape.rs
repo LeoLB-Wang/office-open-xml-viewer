@@ -5386,10 +5386,8 @@ mod hidden_tests {
     }
 
     fn run_deep(levels: usize) -> Vec<SlideElement> {
-        // roxmltree::Document::parse itself recurses on nesting, so parse on a
-        // generous stack; this test targets OUR grpSp guard. (The roxmltree layer
-        // is bounded separately by the raw-XML depth pre-check in
-        // `ooxml_common::depth`.)
+        // Exercise the recursive group-shape walker with native stack headroom;
+        // trusted fixtures bypass the separate production XML depth policy.
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)
             .spawn(move || run(&nested_groups(levels)))

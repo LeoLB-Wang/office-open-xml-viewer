@@ -1669,11 +1669,8 @@ fn parse_slide(
     }
 
     note_layout_master_parse();
-    // Guard against a pathologically deep slide XML: roxmltree's tree builder
-    // recurses per element-nesting level, so a slide nested thousands deep
-    // overflows the fixed WASM stack and traps *inside* `Document::parse` before
-    // our own depth-guarded shape walk runs. The nesting-depth pre-check that
-    // rejects it now lives in `parse_preflighted_pptx_xml`.
+    // Streaming DOM-equivalent validation establishes a well-formed part before
+    // the shared depth policy can reject it; no over-deep DOM is retained.
     let doc = parse_preflighted_pptx_xml_with_limit(
         xml,
         pptx_internal_limits().slide_xml_dom_complexity,
@@ -12731,6 +12728,32 @@ mod tests {
             parses_before,
             "complexity limit+1 is rejected before the primary slide DOM parser"
         );
+    }
+
+    mod depth_corpus {
+        include!("../../../ooxml-common/tests/support/depth_corpus.rs");
+    }
+
+    #[test]
+    fn optional_deep_relationships_preserve_dom_error_fallback() {
+        let base = build_three_slide_deck(usize::MAX, "");
+        let path = "ppt/slides/_rels/slide1.xml.rels";
+        let baseline = rewrite_deck_xml(base.clone(), path, |_| "<broken".into());
+        let expected = parse_pptx_native(&baseline).unwrap();
+        for (name, xml, valid) in depth_corpus::depth_corpus(257) {
+            let bytes = rewrite_deck_xml(base.clone(), path, |_| xml.clone());
+            let result = parse_pptx_native(&bytes);
+            if valid {
+                let error = result.unwrap_err();
+                let payload: serde_json::Value = serde_json::from_str(
+                    error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(&error),
+                )
+                .unwrap();
+                assert_eq!(payload["details"]["violation"]["metric"], "depth", "{name}");
+            } else {
+                assert_eq!(result.expect(&name), expected, "{name}");
+            }
+        }
     }
 
     #[test]

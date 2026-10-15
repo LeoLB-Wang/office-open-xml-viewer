@@ -15,6 +15,7 @@ import {
   metafileRasterSize,
   sourceRasterTargetSize,
   isOoxmlDecodedImageLimitError,
+  OoxmlResourceLimitError,
   isTiffDecodeError,
   isOptionalImageCodecUnavailableError,
   EMU_PER_PT,
@@ -333,7 +334,10 @@ export async function decodeImageSource(
         maxRetainedPixels: plannedPixelLimit,
         workerDecoder: svgDecoder,
       });
-    } catch {
+    } catch (error) {
+      // Archive governance failures terminate the render; only content/codec
+      // failures may select the authored raster twin.
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
       return dataIsSvg
         ? getCachedSvgImageByPath(imagePath, fetchImage, {
             ...target,
@@ -654,7 +658,10 @@ export async function prefetchImages(
       ref.imagePath,
       ref.mimeType,
       fetch,
-    ).catch(() => null);
+    ).catch((error: unknown) => {
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+      return null;
+    });
     if (!inspection?.dimensions
       || !isDecodeTargetResizableRasterFormat(inspection.format, opts?.tiff !== undefined)) return null;
     return {
@@ -717,7 +724,8 @@ export async function prefetchImages(
           markOptionalImageUnavailable(imageCache, key, 'tiff');
           return;
         }
-        if (isOoxmlDecodedImageLimitError(error)) throw error;
+        // Lazy extraction has the same terminal policy as image decode budgets.
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
         // Transient failure: DELETE any prior lookup entry rather than leaving
         // it. A prior entry is re-resolved precisely because its shared-cache
         // backing may be gone (LRU-evicted and GPU-closed); when the re-resolve
