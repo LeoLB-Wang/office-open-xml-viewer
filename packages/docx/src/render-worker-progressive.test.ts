@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { vi, afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLayoutServices } from './layout-runtime.js';
 import { layoutSourceStore } from './layout-source-model-adapter.js';
 import { retainRenderWorkerDocumentLayout } from './render-worker-layout.js';
@@ -11,7 +11,7 @@ import { paginateBody } from './layout/body-paginator.js';
 import { PaginationAbortError } from './layout/pagination-scheduler.js';
 import { layoutFingerprint } from './layout/invariants.js';
 import { layoutOptionsForRender, normalizeLayoutOptions } from './layout/options.js';
-import { setDocumentLayoutValidation } from './layout/validation-policy.js';
+import { setDocumentLayoutValidation } from './testing/validation-policy.js';
 import type { DocumentLayout } from './layout/types.js';
 import {
   paginateRenderWorkerDocumentProgressively,
@@ -280,3 +280,5 @@ describe('render worker progressive layout', () => {
     expect(retained.layoutVariants.defaultLayout.pages.length).toBeGreaterThan(0);
   }, 300_000);
 });
+
+vi.mock('./layout/validation-policy.js', () => ({ documentLayoutValidationEnabled: vi.fn(() => true) }));

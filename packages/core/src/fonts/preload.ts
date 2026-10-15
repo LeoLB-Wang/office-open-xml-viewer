@@ -76,11 +76,6 @@ export function withFontCeiling<T>(p: Promise<T>): Promise<T | void> {
  *  awaiter never throws. */
 const cssFetches = new Map<string, Promise<ParsedFontFace[]>>();
 
-/** Test hook — clears the per-context CSS fetch cache. */
-export function _resetCssCacheForTests(): void {
-  cssFetches.clear();
-}
-
 export interface ParsedFontFace {
   family: string;
   src: string;

@@ -1,3 +1,4 @@
+import { bindCellFontLanguage, snapshotJapaneseCellFonts } from './internal/cell-font-language.js';
 import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
 import { xlsxCjkFallback } from './google-fonts.js';
 import InlineWorker from './worker.ts?worker&inline';
@@ -152,6 +153,7 @@ export class XlsxWorkbook {
   private metrics: OoxmlResourceMetricsSession | null = null;
   private bridge: WorkbookBridge | null = null;
   private delimitedTextBacked = false;
+  private readonly japaneseCellFonts = snapshotJapaneseCellFonts();
   private parsedWorkbook: ParsedWorkbook | null = null;
   private sheetCache = new Map<number, Worksheet>();
   /** Cache insertion order is the workbook session's LRU order. A lease pins a
@@ -360,7 +362,8 @@ export class XlsxWorkbook {
     }
   }
 
-  /** Parse an XLSX from a URL or ArrayBuffer. */
+  /** Parse an XLSX from a URL or ArrayBuffer. Cell-font theme selection uses a
+   * snapshot of the viewer language; re-open to apply a language change. */
   static async load(source: string | ArrayBuffer, opts: LoadOptions = {}): Promise<XlsxWorkbook> {
     const worksheetPolicy = normalizeXlsxWorksheetPolicy(opts);
     opts = { ...opts, xlsxWorksheetLimits: worksheetPolicy.worksheet };
@@ -513,6 +516,7 @@ export class XlsxWorkbook {
               useGoogleFonts: !!opts.useGoogleFonts,
               cjkFallback: this.cjkFallback,
               renderers: rendererDescriptors,
+              japaneseCellFonts: this.japaneseCellFonts,
             } satisfies RenderWorkerRequest)
           : ({
               type: 'parse',
@@ -591,6 +595,7 @@ export class XlsxWorkbook {
     const response = await bridge.request(
       (id) => ({
         type: 'parseDelimitedText',
+        japaneseCellFonts: this.japaneseCellFonts,
         id,
         data,
         options,
@@ -606,6 +611,7 @@ export class XlsxWorkbook {
       new TextDecoder().decode(response.worksheetJson),
     ) as Worksheet;
     bindWorksheetPolicy(worksheet, worksheetPolicy);
+    bindCellFontLanguage(worksheet, this.japaneseCellFonts);
     const sheets = response.workbook.workbook.sheets;
     if (sheets.length !== 1 || sheets[0]?.name !== worksheet.name) {
       throw new Error('Delimited text worker returned inconsistent worksheet metadata');
@@ -922,7 +928,10 @@ export class XlsxWorkbook {
     try {
       for await (const unit of client.stream(sheetIndex, sheetName)) {
         if (unit.kind === 'preview') {
-          if (unit.worksheet) bindWorksheetPolicy(unit.worksheet, policy);
+          if (unit.worksheet) {
+            bindWorksheetPolicy(unit.worksheet, policy);
+            bindCellFontLanguage(unit.worksheet, this.japaneseCellFonts);
+          }
           progress.preview(unit.worksheet, unit.reason, unit.maxRow, unit.maxCol);
           if (unit.worksheet) {
             setWorksheetPreviewBounds(unit.worksheet, { maxRow: unit.maxRow, maxCol: unit.maxCol });
@@ -948,6 +957,7 @@ export class XlsxWorkbook {
         }
         const worksheet = unit.worksheet;
         bindWorksheetPolicy(worksheet, policy);
+        bindCellFontLanguage(worksheet, this.japaneseCellFonts);
         worksheet.rows = worksheet.parseError ? [] : rows;
         // Terminal metadata contains no rows, but measure the final public model
         // to cover exact monolithic JSON before its cache admission.
