@@ -103,6 +103,19 @@ describe('pptx stacked vertical text (wordArtVert / wordArtVertRtl)', () => {
     expect(r.calls[0].x).toBeCloseTo(60 - 7.2 - CELL / 2, 6);
   });
 
+  it('uses the font-table cell for an exceptional drawing face and its Latin column face', () => {
+    const { ctx, calls } = mockCtx();
+    const b = body('日日', 'wordArtVert', 'Yu Gothic');
+    renderTextBody(ctx, b, 0, 0, 100, 470, SCALE);
+    const cell = (7 / 6) * (2636 / 2048) * 24; // OS/2 usWin box, not a fitted pitch.
+    expect(calls[1].y - calls[0].y).toBeCloseTo(cell, 6);
+    const latin = mockCtx();
+    const mixed = body('日日', 'wordArtVert', 'MS Mincho');
+    (mixed.paragraphs[0].runs[0] as TextRunData).fontFamily = 'Yu Gothic';
+    renderTextBody(latin.ctx, mixed, 0, 0, 100, 470, SCALE);
+    expect(latin.calls[0].x).toBeCloseTo(7.2 + cell / 2, 6);
+  });
+
   it('turns ASCII brackets 90° and draws CJK brackets with the face vertical glyph', () => {
     const { ctx, calls } = mockCtx();
     renderTextBody(ctx, body('(A「', 'wordArtVert', 'Yu Gothic'), 0, 0, 60, 470, SCALE);

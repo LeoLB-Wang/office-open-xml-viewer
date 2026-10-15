@@ -59,6 +59,31 @@ import SiteFooter from '../components/SiteFooter.astro';
           </tbody>
         </table>
       </div>
+      <h2>Optional add-on package</h2>
+      <p>
+        Upcoming experimental <code>@silurus/ooxml-legacy-office</code> assets, measured separately
+        from the v0.88.0 viewer totals above. Entry rows exclude the add-on's shared helper, counted
+        once below, and the viewer peer. Creating a source fetches nothing; its reader module and
+        dedicated WASM load only for a claimed file. Ordinary OOXML imports include none of these
+        readers. <a href="/legacy-office">See legacy Office loading and deployment →</a>
+      </p>
+      <div class="size-table-wrap">
+        <table>
+          <thead><tr><th>Add-on asset</th><th>Raw</th><th>gzip</th></tr></thead>
+          <tbody>
+            <tr><th>DOC entry (/doc)</th><td>1.1 KiB</td><td>0.4 KiB</td></tr>
+            <tr><th>XLS entry (/xls)</th><td>0.4 KiB</td><td>0.3 KiB</td></tr>
+            <tr><th>PPT entry (/ppt)</th><td>0.4 KiB</td><td>0.3 KiB</td></tr>
+            <tr><th>Shared source helper</th><td>6.2 KiB</td><td>2.3 KiB</td></tr>
+            <tr><th>DOC reader module</th><td>12.7 KiB</td><td>4.4 KiB</td></tr>
+            <tr><th>XLS reader module</th><td>10.3 KiB</td><td>3.9 KiB</td></tr>
+            <tr><th>PPT reader module</th><td>9.9 KiB</td><td>3.8 KiB</td></tr>
+            <tr><th>DOC reader WASM</th><td>1,181.0 KiB</td><td>480.4 KiB</td></tr>
+            <tr><th>XLS reader WASM</th><td>1,272.9 KiB</td><td>500.2 KiB</td></tr>
+            <tr><th>PPT reader WASM</th><td>1,233.2 KiB</td><td>508.2 KiB</td></tr>
+          </tbody>
+        </table>
+      </div>
       <h2>Runtime assets</h2>
       <div class="size-table-wrap">
         <table>

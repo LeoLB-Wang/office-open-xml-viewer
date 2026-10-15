@@ -1,5 +1,17 @@
 # Experimental legacy Office sources
 
+Install the viewer and its separate optional companion at matching versions:
+
+```sh
+npm i @silurus/ooxml @silurus/ooxml-legacy-office
+```
+
+The companion pins its `@silurus/ooxml` peer to the exact same version.
+A stale runtime or model-source protocol fails before input loading with
+`CompanionRuntimeMismatchError` (`code: 'companion-runtime-mismatch'`), exported
+from the internal `@silurus/ooxml/internal/companion` ABI. That entry is reserved
+for companion packages; applications use the ordinary viewer/loader entries.
+
 Legacy binary Office files can be opened with the ordinary viewers and
 loaders through optional model sources:
 
@@ -29,7 +41,7 @@ session options (`openDocxDocument`, `materializeDocxDocument`,
 
 ```typescript
 import { DocxViewer } from '@silurus/ooxml/docx';
-import { legacyDocSource } from '@silurus/ooxml/legacy-doc';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
 
 const canvas = document.querySelector('canvas') as HTMLCanvasElement;
 const viewer = new DocxViewer(canvas, { modelSources: [legacyDocSource()] });
@@ -38,9 +50,9 @@ await viewer.load(docOrDocxBytes);
 
 | Input | Entry | Factory | Loaders and viewers |
 | --- | --- | --- | --- |
-| DOC | `@silurus/ooxml/legacy-doc` | `legacyDocSource()` | `DocxViewer`, `DocxDocument.load`, `openDocxDocument`, `materializeDocxDocument` |
-| XLS | `@silurus/ooxml/legacy-xls` | `legacyXlsSource()` | `XlsxViewer`, `XlsxWorkbook.load`, `openXlsxWorkbook` |
-| PPT | `@silurus/ooxml/legacy-ppt` | `legacyPptSource()` | `PptxViewer`, `PptxPresentation.load`, `openPptxPresentation` |
+| DOC | `@silurus/ooxml-legacy-office/doc` | `legacyDocSource()` | `DocxViewer`, `DocxDocument.load`, `openDocxDocument`, `materializeDocxDocument` |
+| XLS | `@silurus/ooxml-legacy-office/xls` | `legacyXlsSource()` | `XlsxViewer`, `XlsxWorkbook.load`, `openXlsxWorkbook` |
+| PPT | `@silurus/ooxml-legacy-office/ppt` | `legacyPptSource()` | `PptxViewer`, `PptxPresentation.load`, `openPptxPresentation` |
 
 Each factory accepts the same optional settings:
 
@@ -105,7 +117,7 @@ structural, never filename-based.
 
 ```typescript
 import { DocxDocument } from '@silurus/ooxml/docx';
-import { legacyDocSource } from '@silurus/ooxml/legacy-doc';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
 
 const document = await DocxDocument.load(legacyDocArrayBuffer, {
   modelSources: [legacyDocSource()],
@@ -123,7 +135,7 @@ Node supports DOC through the same reader:
 
 ```typescript
 import { openDocxDocument } from '@silurus/ooxml/node';
-import { legacyDocSource } from '@silurus/ooxml/legacy-doc';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
 
 const session = await openDocxDocument(legacyDocBytes, {
   factory,
@@ -208,7 +220,7 @@ Browser:
 
 ```typescript
 import { PptxPresentation } from '@silurus/ooxml/pptx';
-import { legacyPptSource } from '@silurus/ooxml/legacy-ppt';
+import { legacyPptSource } from '@silurus/ooxml-legacy-office/ppt';
 
 const presentation = await PptxPresentation.load(legacyPptArrayBuffer, {
   modelSources: [legacyPptSource()],
@@ -226,7 +238,7 @@ Node:
 
 ```typescript
 import { openPptxPresentation } from '@silurus/ooxml/node';
-import { legacyPptSource } from '@silurus/ooxml/legacy-ppt';
+import { legacyPptSource } from '@silurus/ooxml-legacy-office/ppt';
 
 const session = await openPptxPresentation(legacyPptBytes, {
   modelSources: [legacyPptSource()],
@@ -308,7 +320,7 @@ direct PPT source adopts that XML under the rule described below.
 
 ```typescript
 import { XlsxViewer } from '@silurus/ooxml/xlsx';
-import { legacyXlsSource } from '@silurus/ooxml/legacy-xls';
+import { legacyXlsSource } from '@silurus/ooxml-legacy-office/xls';
 
 const container = document.querySelector('#workbook') as HTMLElement;
 const viewer = new XlsxViewer(container, { modelSources: [legacyXlsSource()] });
@@ -362,7 +374,7 @@ extract the supported passive PNG, JPEG, EMF and WMF entries from a BIFF8 global
 image store without requiring font metrics:
 
 ```sh
-cargo run -p legacy-office-converter --features inspection \
+cargo run -p legacy-office-parser --features inspection \
   --example inspect_xls_images -- sample.xls fresh-output-directory
 ```
 
@@ -390,7 +402,7 @@ The companion `inspect_xls_anchors` native example prints raw worksheet anchor
 metadata without extracting images:
 
 ```sh
-cargo run -p legacy-office-converter --features inspection \
+cargo run -p legacy-office-parser --features inspection \
   --example inspect_xls_anchors -- sample.xls
 ```
 
@@ -438,7 +450,7 @@ helpers remain separate from the direct XLS reader.
 ## Current implementation boundary
 
 The repository contains only the direct readers; legacy input is never
-converted to OOXML. The Rust crate `legacy-office-converter` builds one reader
+converted to OOXML. The Rust crate `legacy-office-parser` builds one reader
 per feature: `direct-doc`, `direct-xls` and `direct-ppt`. Building it for
 `wasm32` with none of them enabled is a compile error. The `inspection`
 feature adds the native-only examples above, and `fuzzing` exposes the fuzz
@@ -469,7 +481,7 @@ Office, with macros disabled and Word/Excel external-link updates disabled,
 and writes a PDF to a fresh output path:
 
 ```bash
-osascript packages/legacy-converter/tools/legacy-office-export.applescript \
+osascript packages/legacy-office/tools/legacy-office-export.applescript \
   doc disposable-copy.doc fresh-output.pdf
 ```
 

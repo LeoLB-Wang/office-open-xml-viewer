@@ -814,6 +814,19 @@ describe('measureParagraph', () => {
     expect(result.lines[0].advancePt).toBe(24);
   });
 
+  it('keeps a text-dominated line with a small inline picture on the text grid policy', () => {
+    const result = measureParagraph(
+      paragraph({ spaceBefore: 0, runs: [
+        { type: 'text', ...textRun('Tall', { fontSize: 30, fontFamily: 'Synthetic Untabled Serif' }) },
+        { type: 'image', imagePath: 'word/media/inline.png', mimeType: 'image/png',
+          widthPt: 5, heightPt: 5, anchor: false },
+      ] }),
+      layoutContext({ spaceBeforePt: 0, lineGrid: { active: true, pitchPt: 20 } }),
+      placement(), measurer, environment(),
+    );
+    expect(result.lines[0].advancePt).toBe(30);
+  });
+
   it('takes an image-only line’s auto leading from its selected paragraph-mark face', () => {
     const multiple = 259 / 240;
     const imageHeightPt = 360000 / 12700;
