@@ -18,6 +18,7 @@ import {
   measureRows,
   measureWorksheet,
   addWorksheetCacheUsage,
+  worksheetLimitError,
 } from './worksheet-resource-limits.js';
 
 const row = (value: Row['cells'][number]['value'], formula?: string): Row => ({
@@ -27,6 +28,38 @@ const row = (value: Row['cells'][number]['value'], formula?: string): Row => ({
 });
 
 describe('worksheet retained resource measurements', () => {
+  it.each([
+    {
+      resource: 'worksheet-json' as const, metric: 'bytes' as const,
+      part: 'xl/worksheets/sheet1.xml', stage: 'serialization',
+      message: 'OOXML resource limit exceeded for xl/worksheets/sheet1.xml (worksheet-json, serialization): bytes 20 > 10',
+    },
+    {
+      resource: 'worksheet-cache' as const, metric: 'cells' as const,
+      part: undefined, stage: 'parsing',
+      message: 'OOXML resource limit exceeded (worksheet-cache, parsing): cells 20 > 10',
+    },
+  ])('identifies $resource and its stage in host-side errors', ({
+    resource, metric, part, stage, message,
+  }) => {
+    const error = worksheetLimitError('get-worksheet', part, resource, metric, 10, 20);
+    expect(error).toBeInstanceOf(OoxmlResourceLimitError);
+    expect(error.message).toBe(message);
+    expect(error.code).toBe('ooxml-resource-limit');
+    expect(error.details).toEqual({
+      stage,
+      violation: {
+        format: 'xlsx', operation: 'get-worksheet', resource, metric,
+        ...(part === undefined ? {} : { part }),
+        limit: 10, observed: 11, configurable: true,
+        usage: {
+          archiveEntryCount: 0, declaredInflatedBytes: 0,
+          distinctInflatedBytes: 0, operationInflatedBytes: 0,
+        },
+      },
+    });
+  });
+
   it('uses exact inclusive boundaries and canonical +1 observations', () => {
     expect(() => assertWorksheetModelUsage({
       rows: XLSX_MAX_MATERIALIZED_ROWS,

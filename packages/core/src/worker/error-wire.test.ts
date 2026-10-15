@@ -46,6 +46,42 @@ describe('worker error wire', () => {
   const rustError =
     'OOXML_RESOURCE_LIMIT:{"code":"ooxml-resource-limit","details":{"stage":"decompression","violation":{"format":"xlsx","operation":"parse","resource":"archive-entry","part":"xl/worksheets/sheet1.xml","metric":"actual-inflated-bytes","limit":5,"observed":6,"configurable":true,"usage":{"archiveEntryCount":1,"declaredInflatedBytes":6,"largestInflatedEntryBytes":6,"distinctInflatedBytes":6,"operationInflatedBytes":6}}}}';
 
+  it.each([
+    {
+      stage: 'serialization', resource: 'docx-retained-model-json', metric: 'bytes',
+      part: 'word/document.xml', limit: 134217728, observed: 134217729,
+      message: 'OOXML resource limit exceeded for word/document.xml (docx-retained-model-json, serialization): bytes 134217729 > 134217728',
+    },
+    {
+      stage: 'container', resource: 'archive', metric: 'entry-count',
+      part: undefined, limit: 1, observed: 2,
+      message: 'OOXML resource limit exceeded (archive, container): entry-count 2 > 1',
+    },
+  ])('identifies $resource and its stage in parser and worker errors', ({
+    stage, resource, metric, part, limit, observed, message,
+  }) => {
+    const details = {
+      stage,
+      violation: {
+        format: 'docx', operation: 'parse', resource, metric,
+        ...(part === undefined ? {} : { part }),
+        limit, observed, configurable: false, usage: USAGE,
+      },
+    };
+    const envelope = `OOXML_RESOURCE_LIMIT:${JSON.stringify({ code: 'ooxml-resource-limit', details })}`;
+    const parsed = parseResourceLimitError(envelope);
+    expect(parsed).toBeInstanceOf(OoxmlResourceLimitError);
+    expect(parsed?.message).toBe(message);
+    const wire = structuredClone(serializeWorkerError(new Error(envelope)));
+    expect(wire).toEqual({
+      message, errorName: 'OoxmlResourceLimitError', code: 'ooxml-resource-limit',
+      resourceLimit: details,
+    });
+    const restored = deserializeWorkerError(wire);
+    expect(restored).toBeInstanceOf(OoxmlResourceLimitError);
+    expect(restored).toMatchObject({ message, code: 'ooxml-resource-limit', details });
+  });
+
   it('parses an exact Rust envelope into the public typed error', () => {
     const error = parseResourceLimitError(new Error(rustError));
     expect(error).toBeInstanceOf(OoxmlResourceLimitError);
