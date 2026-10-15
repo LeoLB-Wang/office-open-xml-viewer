@@ -74,6 +74,7 @@ import type {
   BodyParagraphAcquisitionInput,
 } from './body-layout-kernel.js';
 import { NoteCapacityExceededError } from './body-layout-kernel.js';
+import { NoteStack } from './note-stack.js';
 import { FlowCapacityExceededError } from './flow.js';
 import { projectBodyOccurrence } from './occurrence-projection.js';
 import {
@@ -1662,11 +1663,12 @@ function layoutBodyNotes(
     effectiveTablePositioning,
   } = context;
   const notes: NoteLayout[] = [];
-  let cursorYPt = request.container.bounds.yPt;
+  const stack = new NoteStack();
   let first = request.firstOnPage;
   for (const id of request.referenceIds) {
     const sourceNotes = request.kind === 'footnote' ? footnotesById : endnotesById;
     if (!sourceNotes.has(id)) continue;
+    const noteTopPt = stack.topAt(request.container.bounds.yPt);
     const source: SourceRef = {
       story: request.kind,
       storyInstance: id,
@@ -1681,7 +1683,7 @@ function layoutBodyNotes(
     const leading = first && nativeDefinitions
       ? acquireNativeNoteSeparator(context, request, nativeDefinitions[
         request.continuing === true ? 'continuationSeparator' : 'separator'
-      ], cursorYPt, `${request.kind}:${id}:page:${request.pageIndex}:separator`)
+      ], noteTopPt, `${request.kind}:${id}:page:${request.pageIndex}:separator`)
       : undefined;
     // An ordinary DOCX formatted listed story (§17.11.9) replaces only the
     // scalar band height of its role with its own acquired paragraph advance
@@ -1695,12 +1697,12 @@ function layoutBodyNotes(
       ]
       : undefined;
     const selectedBand = selectedDefinition
-      ? acquireSelectedNoteSeparatorBand(context, request, selectedDefinition, cursorYPt)
+      ? acquireSelectedNoteSeparatorBand(context, request, selectedDefinition, noteTopPt)
       : undefined;
     const separatorHeightPt = nativeDefinitions
       ? leading?.advancePt ?? 0
       : selectedBand?.advancePt ?? (first ? FOOTNOTE_SEPARATOR_GAP_PT : 0);
-    const ruleYPt = cursorYPt + (selectedBand?.ruleOffsetPt ?? separatorHeightPt / 2);
+    const ruleYPt = noteTopPt + (selectedBand?.ruleOffsetPt ?? separatorHeightPt / 2);
     const storyContainer = {
       ...request.container,
       // Acquire the source once before page partitioning; this is a resource
@@ -1710,20 +1712,20 @@ function layoutBodyNotes(
       id: `${request.container.id}:${request.kind}:${id}`,
       bounds: {
         ...request.container.bounds,
-        yPt: cursorYPt + separatorHeightPt,
+        yPt: noteTopPt + separatorHeightPt,
         heightPt: Math.max(
           0,
           request.container.bounds.yPt +
             request.container.bounds.heightPt -
-            cursorYPt -
+            noteTopPt -
             separatorHeightPt,
         ),
       },
     };
-    // A planned page-final top moves this note's flow top (cursorYPt) there.
+    // A planned page-final top moves this note's flow top there.
     const plannedTopPt = request.plannedTopsPt?.[id];
     const bandTranslationPt = request.bandTranslationPt
-      ?? (plannedTopPt === undefined ? undefined : { xPt: 0, yPt: plannedTopPt - cursorYPt });
+      ?? (plannedTopPt === undefined ? undefined : { xPt: 0, yPt: plannedTopPt - noteTopPt });
     let story: StoryLayout;
     try {
       story = acquireBodyStoryLayout(storyAcquisitionContext, {
@@ -1788,7 +1790,7 @@ function layoutBodyNotes(
     const advancePt = separatorHeightPt + story.advancePt;
     const flowBounds = Object.freeze({
       xPt: request.container.bounds.xPt,
-      yPt: cursorYPt,
+      yPt: noteTopPt,
       widthPt: request.container.bounds.widthPt,
       heightPt: advancePt,
     });
@@ -1820,7 +1822,7 @@ function layoutBodyNotes(
       story,
     });
     notes.push(note);
-    cursorYPt += advancePt;
+    stack.append(advancePt);
     first = false;
   }
   return Object.freeze(notes);

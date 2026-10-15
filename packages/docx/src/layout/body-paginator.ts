@@ -14,6 +14,7 @@ import type {
   PageAnchorPrescanInput,
 } from './body-layout-kernel.js';
 import { NoteCapacityExceededError } from './body-layout-kernel.js';
+import { NoteStack } from './note-stack.js';
 import { createFloatLineBandPredicate, type FloatRect } from './float-wrap.js';
 import {
   commitPageFlowTransition,
@@ -2745,19 +2746,17 @@ function footnoteStack(
   page: LayoutPage,
   notes: readonly NoteLayout[],
 ): Readonly<{ advancePt: number; targetTopPt: number; topsPt: readonly number[] }> {
-  const advancePt = notes.reduce((sum, note) => sum + note.advancePt, 0);
+  const stack = new NoteStack();
+  notes.forEach((note) => stack.append(note.advancePt));
+  const advancePt = stack.advancePt;
+  // ECMA-376 §17.11.21 defaults footnotes to the current page's bottom.
   const blockEndPt = page.sectionRegions.at(-1)?.blockEndPt
     ?? Math.max(
       0,
       page.section.geometry.pageHeight - Math.abs(page.section.geometry.marginBottom),
     );
   const targetTopPt = blockEndPt - advancePt;
-  let cursorPt = targetTopPt;
-  const topsPt = notes.map((note) => {
-    const topPt = cursorPt;
-    cursorPt += note.advancePt;
-    return topPt;
-  });
+  const topsPt = notes.map((_, index) => stack.topAt(targetTopPt, index));
   return { advancePt, targetTopPt, topsPt };
 }
 
@@ -3148,6 +3147,7 @@ function composeDocumentEndnotes(
     pageFootnoteTopPt,
   );
   const id = `endnotes:page:${page.pageIndex}`;
+  // ECMA-376 §17.11.22 defaults endnotes to the document end.
   // The container is the notes' painted position in the region's logical
   // frame, so note story coordinates are that frame's page coordinates; the
   // region's own transform (applied to the whole note layer) relates them to
@@ -3172,12 +3172,13 @@ function composeDocumentEndnotes(
       firstOnPage: true,
     });
     if (notes.length === 0) return layout;
-    const advancePt = notes.reduce((sum, note) => sum + note.advancePt, 0);
+    const stack = new NoteStack();
+    notes.forEach((note) => stack.append(note.advancePt));
     const endnoteLogicalBounds = Object.freeze({
       xPt: bodyDomain.logicalBounds.xPt,
       yPt: blockStartPt,
       widthPt: bodyDomain.logicalBounds.widthPt,
-      heightPt: advancePt,
+      heightPt: stack.advancePt,
     });
     const endnoteDomain = Object.freeze({
       id,
