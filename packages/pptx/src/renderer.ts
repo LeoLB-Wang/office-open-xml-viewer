@@ -1757,13 +1757,16 @@ export function paragraphInputRuns(
       const ch = String.fromCodePoint(cluster.codePointAt(0) ?? 0);
       let glyph = cluster;
       const cp = ch.codePointAt(0) ?? 0;
-      const eaGlyph = isCjkBreakChar(cp)
-        || (!!run.fontFamilyEa && isEastAsianSlotSymbol(cp, run.lang));
+      // An East Asian-slot symbol resolves its stack from its own cluster, so
+      // the run's other scripts never pick its fallback face.
+      const eaSymbol = !isCjkBreakChar(cp) && !!run.fontFamilyEa && isEastAsianSlotSymbol(cp, run.lang);
+      const eaGlyph = eaSymbol || isCjkBreakChar(cp);
       const csGlyph = isComplexScriptCodePoint(cp) || INDIC_CS_GLYPH_RE.test(ch);
       const csFace = csGlyph ? familyCs ?? complexScriptDefaultFace(ch) : family;
-      let font = eaGlyph ? eaFont : csGlyph ? csFontFor(csFace, cluster) : stackFontFor(
-        family, cluster, hasNamedFontFamily(run.fontFamily ?? para.defFontFamily),
-      );
+      let font = eaSymbol ? stackFontFor(familyEa, cluster, true)
+        : eaGlyph ? eaFont : csGlyph ? csFontFor(csFace, cluster) : stackFontFor(
+          family, cluster, hasNamedFontFamily(run.fontFamily ?? para.defFontFamily),
+        );
       let face = eaGlyph ? familyEa : csFace;
       let share = lineMetricFor(face, bold, italic, rc);
       if (/[\uf020-\uf0ff]/u.test(ch) && (familySym != null || isSymbolFontFamily(family))) {
