@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as paragraphMeasurement from './paragraph-measure.js';
 import type { AnchorAcquisitionInput, AnchorEdgesInput } from './layout/anchor-input.js';
 import type { ParagraphLayout } from './layout/types.js';
 import { createLayoutServices } from './layout-runtime.js';
@@ -1115,6 +1116,66 @@ describe('line-relative wrap frames across containers and objects', () => {
     expect(drawing.flowBounds.yPt).toBe(baseline.lines[1]!.bounds.yPt + 5);
     const host = result.lines.find((line) => line.placements.some((placement) => placement.kind === 'anchor-host'))!;
     expect(host.bounds.yPt).toBeGreaterThanOrEqual(drawing.flowBounds.yPt + 40);
+  });
+
+  it('shares reference work for many exclusions below every queried line band', () => {
+    const measure = vi.spyOn(paragraphMeasurement, 'measureParagraph');
+    try {
+      const result = bodyParagraphs([paragraph([
+        textRun('A'),
+        ...Array.from({ length: 500 }, (_, index) => anchoredImageRuns({
+          occurrenceId: `noninterfering-${index}`, horizontalOffsetPt: 80,
+          verticalOffsetPt: 60, widthPt: 1, heightPt: 1, wrapKind: 'square',
+        })).flat(),
+      ])], 15)[0]!;
+      expect(result.drawings).toHaveLength(500);
+      expect(result.lines).toHaveLength(1);
+      expect(result.lines[0]!.bounds.yPt).toBe(20);
+      expect(result.drawings.every((drawing) => drawing.flowBounds.yPt === 80)).toBe(true);
+      // A resource contract: unrelated objects must not multiply whole-paragraph
+      // measurement by occurrence count. The spy still executes production code.
+      expect(measure.mock.calls.length).toBeLessThanOrEqual(3);
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
+  it('includes later-line probes when deciding which references can be shared', () => {
+    const result = bodyParagraphs([paragraph([
+      textRun('A'.repeat(9)),
+      ...anchoredImageRuns({
+        occurrenceId: 'later-interfering', horizontalOffsetPt: 0,
+        verticalOffsetPt: 5, widthPt: 160, heightPt: 20, wrapKind: 'topAndBottom',
+      }),
+      ...anchoredImageRuns({
+        occurrenceId: 'later-noninterfering', horizontalOffsetPt: 80,
+        verticalOffsetPt: 60, widthPt: 1, heightPt: 1, wrapKind: 'square',
+      }),
+    ])], 15)[0]!;
+    const first = result.drawings.find((drawing) => drawing.anchorLayer?.occurrenceId.endsWith('later-interfering'))!;
+    const second = result.drawings.find((drawing) => drawing.anchorLayer?.occurrenceId.endsWith('later-noninterfering'))!;
+    // The first exclusion is below the initial line but intersects the second.
+    // Its own counterfactual host is at 40; the other object's host includes
+    // that exclusion and moves to 65. Its counterfactual must retain that shift.
+    expect(first.flowBounds.yPt).toBe(45);
+    expect(second.flowBounds.yPt).toBe(125);
+    expect(result.lines[1]!.bounds.yPt).toBe(65);
+  });
+
+  it('fails closed before counterfactual work exceeds the structural work budget', () => {
+    const measure = vi.spyOn(paragraphMeasurement, 'measureParagraph');
+    try {
+      expect(() => bodyParagraphs([paragraph([
+        textRun('A'),
+        ...Array.from({ length: 200 }, (_, index) => anchoredImageRuns({
+          occurrenceId: `interfering-${index}`, horizontalOffsetPt: index / 200,
+          verticalOffsetPt: 5, widthPt: 160, heightPt: 20, wrapKind: 'topAndBottom',
+        })).flat(),
+      ])], 15)).toThrow('Paragraph anchor reference work budget exceeded');
+      expect(measure.mock.calls.length).toBeLessThan(64);
+    } finally {
+      measure.mockRestore();
+    }
   });
 
   it('acquires each reference with the other line-relative object present', () => {

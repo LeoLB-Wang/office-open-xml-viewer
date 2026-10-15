@@ -1,3 +1,5 @@
+import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
+import { addExactRational, exactRationalFromNumber, exactRationalToNumberUp } from './exact-geometry.js';
 import { readingHooks } from '../internal/reading-hooks.js';
 import { revisionIsOmitted } from './revision-visibility.js';
 import { wordKerningApplies } from './line-compatibility.js';
@@ -4513,6 +4515,7 @@ function wordMode14ColumnOriginApplies(
 function measurementPlacement(
   options: ParagraphAcquisitionOptions,
   exclusions: readonly WrapExclusion[],
+  observeBand?: (topPt: number, heightPt: number, moved: boolean) => void,
 ): MeasurementPlacement {
   if (exclusions.length === 0) return options.placement;
   if (options.placement.wrap) {
@@ -4528,7 +4531,20 @@ function measurementPlacement(
         });
   return {
     ...options.placement,
-    wrap: exclusionOracle,
+    wrap: observeBand ? {
+      hasExclusions: exclusionOracle.hasExclusions,
+      lineWindow(input) {
+        const result = exclusionOracle.lineWindow(input);
+        observeBand(Math.max(input.topYPt, result.topYPt), input.probeHeightPt,
+          result.topYPt !== input.topYPt);
+        return result;
+      },
+      skipTopAndBottomBands(input) {
+        const result = exclusionOracle.skipTopAndBottomBands(input);
+        observeBand(Math.max(input.yPt, result), 0, result !== input.yPt);
+        return result;
+      },
+    } : exclusionOracle,
   };
 }
 
@@ -4992,10 +5008,13 @@ function acquireParagraphCandidate(
   const acquisitionOptions = numberingPlan && !options.context.numberingMarkerGeometry
     ? { ...options, context: { ...options.context, numberingMarkerGeometry: numberingPlan } }
     : options;
-  const measureWithExclusions = (exclusions: readonly WrapExclusion[]) => measureParagraph(
+  const measureWithExclusions = (
+    exclusions: readonly WrapExclusion[],
+    observeBand?: (topPt: number, heightPt: number, moved: boolean) => void,
+  ) => measureParagraph(
     paragraph,
     acquisitionOptions.context,
-    measurementPlacement(options, exclusions),
+    measurementPlacement(options, exclusions, observeBand),
     options.measurer,
     {
       ...options.environment,
@@ -5049,24 +5068,78 @@ function acquireParagraphCandidate(
           // preserving external exclusions and the other objects' seed geometry,
           // then retain it for this acquisition, independently of the final host.
           // This counterfactual step is library solver policy.
-          // At most one extra paragraph measurement per participating occurrence
-          // (none when no other owned exclusion exists), plus one seed projection;
-          // counterfactuals project lines only, never drawing/textbox stories.
+          // Counterfactual work has its own size-weighted aggregate budget;
+          // neither cache misses nor the convergence-pass guard bound this loop.
+          // Projections here acquire only lines, never drawing/textbox stories.
+          const referenceWork = createParagraphAnchorReferenceWorkBudget(paragraph);
           const seedOwned = canonicalOwnedExclusions(layout, occurrenceIds);
+          const hostReferences = (lines: ParagraphLayout['lines']) => {
+            const references = new Map<string, AnchorLineReference>();
+            lines.forEach((line, index) => {
+              for (const placement of line.placements) {
+                if (placement.kind === 'anchor-host' && placement.anchorOccurrenceId
+                  && !references.has(placement.anchorOccurrenceId)) {
+                  references.set(placement.anchorOccurrenceId, { bounds: line.bounds, firstLine: index === 0 });
+                }
+              }
+            });
+            return references;
+          };
+          const initialReferences = hostReferences(layout.lines);
+          let sharedReferences = initialReferences;
+          let queriedBottomPt = Number.NEGATIVE_INFINITY;
+          let sharedQueriesUnshifted = true;
+          // Measure all seed objects together once. Share only when every wrap
+          // query succeeds at its input Y: there is then no vertical search whose
+          // intermediate probes/events must also be proved independent. An object
+          // strictly below every queried band cannot affect those same queries
+          // when removed. All other objects' exclusions remain in that reference.
+          // A moved query conservatively uses individual budgeted measurements.
+          if (seedOwned.length > 1) {
+            const sharedExclusions = mergeParagraphExclusions(options.exclusions, seedOwned);
+            referenceWork.charge(sharedExclusions);
+            const sharedMeasured = measureWithExclusions(sharedExclusions, (topPt, heightPt, moved) => {
+              sharedQueriesUnshifted &&= !moved;
+              // Round the exact binary sum upward: strict separation must
+              // never discard a tight-wrap top-edge touch through rounding.
+              const bottomPt = exactRationalToNumberUp(addExactRational(
+                exactRationalFromNumber(topPt), exactRationalFromNumber(heightPt),
+              ));
+              queriedBottomPt = Math.max(queriedBottomPt, bottomPt);
+            });
+            sharedReferences = hostReferences(projectAcquiredParagraphLines(
+              paragraph, acquisitionOptions, sharedMeasured,
+            ).lines);
+          }
+          const seedByOccurrence = new Map(seedOwned.map((exclusion) =>
+            [exclusion.anchorOccurrenceId, exclusion]));
           const references = new Map<string, AnchorLineReference>();
           let measuredOtherObjects = false;
           for (const occurrenceId of lineRelativeOccurrenceIds) {
-            const otherOwned = seedOwned.filter((exclusion) =>
-              exclusion.anchorOccurrenceId !== occurrenceId);
-            measuredOtherObjects ||= otherOwned.length > 0;
-            const referenceLines = otherOwned.length === 0 ? layout.lines
-              : projectAcquiredParagraphLines(paragraph, acquisitionOptions,
-                measureWithExclusions(mergeParagraphExclusions(options.exclusions, otherOwned))).lines;
-            const index = referenceLines.findIndex((line) => line.placements.some((placement) =>
-              placement.kind === 'anchor-host' && placement.anchorOccurrenceId === occurrenceId));
-            if (index >= 0) references.set(occurrenceId, {
-              bounds: referenceLines[index]!.bounds, firstLine: index === 0,
-            });
+            const own = seedByOccurrence.get(occurrenceId);
+            let reference: AnchorLineReference | undefined;
+            // Check padded bounds and authored contour; either can extend
+            // higher. Equality stays on the independent-measurement path.
+            if (seedOwned.length > 1 && (!own || (
+              sharedQueriesUnshifted && own.bounds.yPt > queriedBottomPt
+              && own.polygon.every((point) => point.yPt > queriedBottomPt)
+            ))) {
+              reference = sharedReferences.get(occurrenceId);
+              measuredOtherObjects = true;
+            } else {
+              const otherOwned = seedOwned.filter((exclusion) =>
+                exclusion.anchorOccurrenceId !== occurrenceId);
+              measuredOtherObjects ||= otherOwned.length > 0;
+              if (otherOwned.length === 0) {
+                reference = initialReferences.get(occurrenceId);
+              } else {
+                const exclusions = mergeParagraphExclusions(options.exclusions, otherOwned);
+                referenceWork.charge(exclusions);
+                reference = hostReferences(projectAcquiredParagraphLines(paragraph, acquisitionOptions,
+                  measureWithExclusions(exclusions)).lines).get(occurrenceId);
+              }
+            }
+            if (reference) references.set(occurrenceId, reference);
           }
           lineReferences = references;
           // Host-line policy B: after reference acquisition, all exclusions still
