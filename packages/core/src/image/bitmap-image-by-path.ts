@@ -515,7 +515,7 @@ export interface CachedBitmapOptions {
   targetHeightPx?: number;
   /** Retained base-surface pixel ceiling for multi-surface effect pipelines. */
   maxRetainedPixels?: number;
-  /** Worker-only SVG decoder. Window renderers use HTMLImageElement instead. */
+  /** SVG rasterizer for pixel effects or worker rendering. */
   svgDecoder?: SvgBlobDecoder;
   /** Policy for a metafile that cannot be fully played (default
    *  `'draw-supported'`, the OOXML renderers' compatibility policy); see
@@ -971,14 +971,23 @@ export function getCachedBitmapByPath(
       BASE_CACHE_NAMESPACE,
       cachedBitmapVariantKey(imagePath, normalized),
       owner,
-      async () => ({
-        bitmap: await svgDecoder(await fetchImage(imagePath, mimeType), {
+      async () => {
+        const bitmap = await svgDecoder(await fetchImage(imagePath, mimeType), {
           targetWidthPx,
           targetHeightPx,
-        }),
-        owned: true,
-      }),
-    );
+        });
+        // The host decoder has the ordinary image ceiling; effect callers can
+        // require a smaller base because several pixel surfaces coexist. Check
+        // before transferring ownership to the cache or allocating effects.
+        try {
+          enforceCachedRetainedBudget(bitmap, normalized);
+        } catch (error) {
+          closeBitmapOnce(bitmap);
+          throw error;
+        }
+        return { bitmap, owned: true };
+      },
+    ).then((bitmap) => enforceCachedRetainedBudget(bitmap, normalized));
   }
   const decode = (
     cacheKey: string,

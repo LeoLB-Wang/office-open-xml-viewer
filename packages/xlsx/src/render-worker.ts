@@ -1,3 +1,4 @@
+import { bindCellFontLanguage } from './internal/cell-font-language.js';
 import type { CjkLang } from '@silurus/ooxml-core';
 import { xlsxCjkFallback } from './google-fonts.js';
 /**
@@ -85,6 +86,7 @@ function sourceUsage(): Uint8Array | undefined {
   return source ? source.resourceUsage() : host.run(() => host.archive?.resource_usage());
 }
 let cjkFallback: CjkLang = 'jp';
+let japaneseCellFonts = false;
 let workbook: ParsedWorkbook | null = null;
 let archiveBacked = false;
 /** Normalized worksheet policy of the current document. Replaced only when a
@@ -155,6 +157,7 @@ const worksheetPull = new WorksheetPullWorker(
       worksheetPolicy,
     );
     bindWorksheetPolicy(worksheet, worksheetPolicy);
+    bindCellFontLanguage(worksheet, japaneseCellFonts);
     sheetCache.set(sheetIndex, worksheet);
     return {
       commit: () => {
@@ -177,6 +180,7 @@ const worksheetPull = new WorksheetPullWorker(
   {
     preview: (sheetIndex, worksheet) => {
       bindWorksheetPolicy(worksheet, worksheetPolicy);
+      bindCellFontLanguage(worksheet, japaneseCellFonts);
       provisionalSheets.set(sheetIndex, worksheet);
       sheetCache.set(sheetIndex, worksheet);
     },
@@ -287,6 +291,7 @@ self.onmessage = async (e: MessageEvent<
       // zip path. Symmetric with XlsxWorkbook.destroy() and the docx/pptx render
       // workers (issue #781).
       cjkFallback = req.cjkFallback ?? 'jp';
+      japaneseCellFonts = req.japaneseCellFonts === true;
       await fontsLoaded;
       await officeSheetLoadQueue;
       unloadOfficeFontFallbacks(officeFontFaces);
@@ -312,6 +317,7 @@ self.onmessage = async (e: MessageEvent<
         const { parseDelimitedWorksheet } = await delimitedTextModule;
         const parsed = parseDelimitedWorksheet(req.data, req.options, worksheetPolicy);
         bindWorksheetPolicy(parsed.worksheet, worksheetPolicy);
+        bindCellFontLanguage(parsed.worksheet, japaneseCellFonts);
         const measured = measureWorksheet(parsed.worksheet, worksheetPolicy);
         assertWorksheetCacheUsage(
           measured, 'parse-delimited-text-worker', undefined, undefined, worksheetPolicy,

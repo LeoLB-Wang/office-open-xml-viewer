@@ -84,6 +84,9 @@ pub enum HardResourceLimitKind {
     XmlDomComplexity,
     ChartexAllocationElements,
     ChartexAllocationBytes,
+    ChartStyleFormats,
+    ChartCustomNumberFormats,
+    ChartNumberFormatBytes,
     PptxSharedDependencyProjectionBytes,
     PptxSharedCacheEntries,
     PptxSharedCacheProjectionBytes,
@@ -122,6 +125,9 @@ impl HardResourceLimitKind {
             }
             Self::ChartexAllocationElements => ("parsing", "chartex-allocation", "elements"),
             Self::ChartexAllocationBytes => ("parsing", "chartex-allocation", "bytes"),
+            Self::ChartStyleFormats => ("parsing", "chart-style-formats", "entries"),
+            Self::ChartCustomNumberFormats => ("parsing", "chart-custom-number-formats", "entries"),
+            Self::ChartNumberFormatBytes => ("parsing", "chart-number-format-bytes", "bytes"),
             Self::XmlDomComplexity => ("parsing", "xml-dom", "complexity-units"),
             Self::PptxSharedDependencyProjectionBytes => {
                 ("parsing", "pptx-shared-dependency", "projected-bytes")

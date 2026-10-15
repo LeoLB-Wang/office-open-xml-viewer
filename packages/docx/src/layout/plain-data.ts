@@ -244,9 +244,9 @@ export function snapshotPlainData<T>(value: T, label: string, ownedProjectionOf?
     return value as DeepReadonly<T>;
   }
   // Path-precise contract check on engine-produced data — see
-  // validation-policy.ts. The clone below still rejects the fatal structural
-  // violations without this development pass; the native preflight additionally
-  // pins the platform's Proxy brand check while validation is enabled.
+  // validation-policy.ts. The clone below still rejects non-finite numbers,
+  // functions, symbols, and foreign prototypes without this diagnostic pass;
+  // only the pre-pass promises strict descriptor, cycle, and Proxy rejection.
   if (documentLayoutValidationEnabled()) {
     validatePlainData(value, label);
   }

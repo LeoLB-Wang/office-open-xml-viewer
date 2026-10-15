@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { _resetFontRegistryForTests } from './font-registry.js';
-import { loadOfficeFontFallbacks, unloadOfficeFontFallbacks } from './office-fallback.js';
+let { loadOfficeFontFallbacks, unloadOfficeFontFallbacks } = await import('./office-fallback.js');
 import referenceData from './reference-font-metrics-data.json';
+
+beforeEach(async () => {
+  vi.resetModules();
+  ({ loadOfficeFontFallbacks, unloadOfficeFontFallbacks } = await import('./office-fallback.js'));
+});
 
 const globals = globalThis as unknown as Record<string, unknown>;
 const originals = Object.fromEntries(
@@ -57,9 +61,6 @@ function fontSet(
   return { set, added, deleted, peak: () => peak };
 }
 
-beforeEach(() => {
-  _resetFontRegistryForTests();
-});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -67,7 +68,6 @@ afterEach(() => {
     if (value === undefined) delete globals[name];
     else globals[name] = value;
   }
-  _resetFontRegistryForTests();
 });
 
 describe('loadOfficeFontFallbacks', () => {
