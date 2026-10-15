@@ -6,6 +6,7 @@ import {
   TiffDecodeError,
 } from './tiff.js';
 import { isTiff } from './tiff-contract.js';
+import { getOoxmlDecodedImageLimitDetails, OoxmlDecodedImageLimitError } from './pixel-budget.js';
 
 type ByteOrder = 'little' | 'big';
 
@@ -578,6 +579,75 @@ describe('TIFF 6.0 decoder', () => {
         expect(Buffer.from(decoded?.data ?? []).equals(Buffer.from(expected?.data ?? []))).toBe(true);
       }
     }
+  });
+
+  it.each(['before pixels', 'after pixels'])('bounds repeated LZW ClearCodes %s across strips', (position) => {
+    const clear = '100000000';
+    const pixel = '001001101'; // 77
+    const end = '100000001';
+    const strip = bits(position === 'before pixels'
+      ? clear.repeat(3) + pixel + end
+      : clear + pixel + clear.repeat(2) + end);
+    const bytes = classicTiff({
+      width: 1,
+      height: 2,
+      rowsPerStrip: 1,
+      bitsPerSample: [8],
+      compression: 5,
+      photometric: 1,
+      strips: [strip, strip],
+    });
+    // Each strip fits the image allowance; both must charge reads (including
+    // EOI) and expanded bytes without resetting the image's work allowance.
+    let failure: unknown;
+    try { decodeTiffRgba(bytes); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(OoxmlDecodedImageLimitError);
+    expect(getOoxmlDecodedImageLimitDetails(failure)).toMatchObject({ metric: 'tiff-lzw-work' });
+  });
+
+  it.each([
+    ['missing EOI', [256, 77], /truncated/],
+    ['excess literal', [256, 77, 78, 257], /exceeds its declared rows/],
+    ['excess string', [256, 77, 258, 257], /exceeds its declared rows/],
+    ['excess pending string', [256, 77, 258, 257], /exceeds its declared rows/, 2],
+    ['invalid code after pixels', [256, 77, 300, 257], /Invalid TIFF LZW code: 300/],
+  ] as const)('rejects LZW strip termination with %s', (_name, codes, diagnostic, width: number = 1) => {
+    const bytes = classicTiff({
+      width,
+      height: 1,
+      bitsPerSample: [8],
+      compression: 5,
+      photometric: 1,
+      strips: [bits(codes.map((code) => code.toString(2).padStart(9, '0')).join(''))],
+    });
+    expect(() => decodeTiffRgba(bytes)).toThrowError(TiffDecodeError);
+    expect(() => decodeTiffRgba(bytes)).toThrowError(diagnostic);
+  });
+
+  it('accepts a final LZW ClearCode and padding after EOI', () => {
+    const bytes = classicTiff({
+      width: 1,
+      height: 1,
+      bitsPerSample: [8],
+      compression: 5,
+      photometric: 1,
+      strips: [bits('100000000' + '001001101' + '100000000' + '100000001')],
+    });
+    expect(rgbaRows(decodeTiffRgba(bytes))).toEqual([[77]]);
+  });
+
+  it('validates non-final LZW strips when downsampling', () => {
+    const bytes = classicTiff({
+      width: 1,
+      height: 2,
+      rowsPerStrip: 1,
+      bitsPerSample: [8],
+      compression: 5,
+      photometric: 1,
+      strips: [bits('100000000' + '001001101'), tiffLzw(new Uint8Array([88]))],
+    });
+    expect(() => decodeTiffRgba(bytes, { targetWidthPx: 1, targetHeightPx: 1 }))
+      .toThrowError(/TIFF LZW data is truncated/);
   });
 
   it('rejects predictors and LZW streams outside the implemented TIFF 6.0 rules', () => {

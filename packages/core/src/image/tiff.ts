@@ -647,7 +647,13 @@ function spanBytes(layout: ChunkyLayout, pixels: number): number {
  * row, strip or frame.
  */
 function lzwRowReader(parsed: ParsedTiff, layout: ChunkyLayout): SourceRowReader {
-  const decoder = new TiffLzwDecoder(parsed.directory.reader.bytes);
+  // Library work policy derived from the source-pixel envelope: at most four
+  // decoded bytes per pixel (including byte-padded bilevel rows). Data codes
+  // cannot outnumber decoded bytes; allow even one clear per data code plus
+  // an initial clear and EOI per strip. Expansion + reads thus fit 3B + 2S,
+  // bounded by 14 * MAX_RASTER_SOURCE_PIXELS, without a compressed-size gate.
+  const workLimit = 3 * layout.bytesPerRow * parsed.height + 2 * parsed.stripCount;
+  const decoder = new TiffLzwDecoder(parsed.directory.reader.bytes, workLimit);
   const spanPixels = Math.min(parsed.width, LZW_SPAN_PIXELS);
   const buffer = new Uint8Array(spanBytes(layout, spanPixels));
   const stride = parsed.differencingStride;
@@ -677,6 +683,9 @@ function lzwRowReader(parsed: ParsedTiff, layout: ChunkyLayout): SourceRowReader
       span.endX = endX;
       span.rowOffset = -spanBytes(layout, firstX);
       visit(span);
+    }
+    if (nextSourceY === parsed.height || nextSourceY % parsed.rowsPerStrip === 0) {
+      decoder.finishStrip();
     }
   };
 }
@@ -1001,9 +1010,8 @@ const LZW_TABLE_SIZE = 1 << LZW_MAX_CODE_WIDTH;
  *   does not implement.
  *
  * The table stores each string as (prefix code, final byte, first byte,
- * length), so expansion costs one write per output byte. Work is linear in the
- * compressed strip plus the decoded rows actually requested, and decoding
- * stops once the declared rows are filled.
+ * length), so expansion costs one write per output byte. Code reads and
+ * expansion bytes share an image-wide budget, including strip finalization.
  */
 class TiffLzwDecoder {
   private readonly prefix = new Uint16Array(LZW_TABLE_SIZE);
@@ -1020,8 +1028,12 @@ class TiffLzwDecoder {
   private nextCode = LZW_FIRST_STRING_CODE;
   private previousCode = -1;
   private ended = false;
+  private work = 0;
 
-  constructor(private readonly bytes: Uint8Array) {
+  constructor(
+    private readonly bytes: Uint8Array,
+    private readonly workLimit: number,
+  ) {
     for (let code = 0; code < 256; code++) {
       this.suffix[code] = code;
       this.first[code] = code;
@@ -1045,10 +1057,26 @@ class TiffLzwDecoder {
     let written = 0;
     while (written < row.length) {
       if (this.pendingStart === this.pendingEnd) this.decodeNextString();
+      if (this.ended) fail('TIFF LZW strip ended before its declared rows');
       const count = Math.min(row.length - written, this.pendingEnd - this.pendingStart);
       row.set(this.pending.subarray(this.pendingStart, this.pendingStart + count), written);
       this.pendingStart += count;
       written += count;
+    }
+  }
+
+  finishStrip(): void {
+    if (this.pendingStart !== this.pendingEnd) fail('TIFF LZW data exceeds its declared rows');
+    // TIFF 6.0 §13 requires EOI at strip end. libtiff's LZWPostEncode may
+    // emit a final ClearCode before EOI, then only byte-alignment padding.
+    // Stop at EOI; padding is not another code or decoded data.
+    this.decodeNextString(false);
+  }
+
+  private chargeWork(amount: number): void {
+    this.work += amount;
+    if (this.work > this.workLimit) {
+      throw new OoxmlDecodedImageLimitError('tiff-lzw-work', this.workLimit, this.work);
     }
   }
 
@@ -1062,6 +1090,7 @@ class TiffLzwDecoder {
     if (this.bitOffset + this.codeWidth > this.byteLength * 8) {
       fail('TIFF LZW data is truncated');
     }
+    this.chargeWork(1);
     let code = 0;
     for (let bit = 0; bit < this.codeWidth; bit++) {
       const offset = this.bitOffset + bit;
@@ -1072,7 +1101,7 @@ class TiffLzwDecoder {
     return code;
   }
 
-  private decodeNextString(): void {
+  private decodeNextString(allowData = true): void {
     for (;;) {
       if (this.ended) fail('TIFF LZW strip ended before its declared rows');
       const code = this.readCode();
@@ -1082,13 +1111,14 @@ class TiffLzwDecoder {
       }
       if (code === LZW_END_OF_INFORMATION) {
         this.ended = true;
-        continue;
+        return;
       }
       if (this.previousCode < 0) {
         if (code >= LZW_CLEAR_CODE) fail(`Invalid TIFF LZW code: ${code}`);
       } else {
         this.addString(code);
       }
+      if (!allowData) fail('TIFF LZW data exceeds its declared rows');
       this.expand(code);
       this.previousCode = code;
       return;
@@ -1114,6 +1144,7 @@ class TiffLzwDecoder {
   private expand(code: number): void {
     let current = code;
     const length = this.length[current];
+    this.chargeWork(length);
     for (let index = length - 1; index >= 0; index--) {
       this.pending[index] = this.suffix[current];
       current = this.prefix[current];
