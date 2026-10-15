@@ -32,6 +32,12 @@ export interface CameraInput {
    * resizing changes geometry, not this document-to-render conversion.
    */
   unitsPerInch?: number;
+  /**
+   * Extent of the rendered solid along object −Z, in projection units. Bind
+   * once for all front/back/effect calls; scale with unitsPerInch for device
+   * coordinates. This is renderer context, not an OOXML camera attribute.
+   */
+  sceneDepth?: number;
   /** Preset camera name (`ST_PresetCameraType`). */
   prst: string;
   /** Field-of-view override in degrees. Omitted = preset default. */
@@ -138,7 +144,8 @@ interface PresetDef {
 // extraction; this tolerance is for measured front-plane correspondences.
 // Interior fiducials measure the z=0 texture plane, not bevel/wall silhouettes.
 // Omitted lenses are 45 degrees (80 for both heroic-extreme presets). Near-plane
-// nudging, larger depths and other group/angle combinations remain unvalidated.
+// nudging, larger depths and other group/angle combinations remain unvalidated
+// Office fidelity; cameraDistance below supplies a non-crossing library fallback.
 const MODERN_SCENE_INCHES = 6.28;
 
 // Legacy ST_PresetCameraType names intentionally keep the previous parallel
@@ -294,13 +301,42 @@ function presetDef(prst: string): PresetDef {
 }
 
 /** Shared by the face and extrusion so their coordinate scales agree. */
-function cameraDistance(camera: CameraInput, def: PresetDef, w: number, h: number): number {
+function cameraDistance(
+  camera: CameraInput, def: PresetDef, rotation: Mat3,
+  w: number, h: number, surfaceDepth: number,
+): number {
   const fovDeg = camera.fov ?? def.fovDeg;
   // Retain the finite-lens guard; endpoint/near-plane fidelity is unvalidated.
   const fov = (Math.max(1, Math.min(179, fovDeg)) * Math.PI) / 180;
   const numerator = def.sceneInches === undefined
     ? Math.max(w, h) / 2 : def.sceneInches * (camera.unitsPerInch ?? 96);
-  return numerator / Math.tan(fov / 2);
+  const distance = numerator / Math.tan(fov / 2);
+  // ECMA-376 §20.1.5.5 does not define camera near-plane handling. Microsoft
+  // Open Specifications support question 769795 describes moving the camera
+  // behind the scene with a gap of 2% of its projection-space z-volume.
+  // Windows PowerPoint 16.0 front-plane markers support the unchanged lens
+  // for flat 4in shape/picture and a 12in shape with 8in receding extrusion
+  // (lon60/FOV90, no bevel); raised-bevel probes remain unresolved.
+  // A 20in crossing shape and a shared-camera group FAIL Office PDF export;
+  // they establish no numerical nudge, framing or scene-ownership rule.
+  //
+  // Outside that measured domain this is LIBRARY POLICY, not an Office fit:
+  // use the rendered leaf solid's rotated bounds, move only along view +Z,
+  // and use the moved distance in the numerator too (retain z=0 framing).
+  // Do not infer shared-group scene bounds from flattened leaf geometry.
+  // Bevel shading is baked onto these planes, not independent raised geometry.
+  const depth = Math.max(0, camera.sceneDepth ?? 0, surfaceDepth);
+  const halfRange = Math.abs(rotation[6]) * w / 2 + Math.abs(rotation[7]) * h / 2;
+  const rearZ = -rotation[8] * depth;
+  const nearest = halfRange + Math.max(0, rearZ);
+  const volume = 2 * halfRange + Math.abs(rearZ);
+  // Mathematical guard: the solid contains z=0, hence volume >= nearest >= 0.
+  // If nearest is positive the 2% gap dominates roundoff; if it is zero the
+  // positive lens distance already clears every point. Thus 1-rz/d >= 1/51
+  // throughout the solid (perspective magnification <= 51 before zoom).
+  // One scene distance preserves a convex projective map instead of clamping
+  // corners separately.
+  return Math.max(distance, nearest + .02 * volume);
 }
 
 /**
@@ -348,16 +384,12 @@ export function computeScene3dQuad(camera: CameraInput, w: number, h: number, su
   let projected: Array<[number, number]>;
 
   if (def.kind === 'perspective') {
-    const d = cameraDistance(camera, def, w, h);
+    const d = cameraDistance(camera, def, R, w, h, surfaceDepth);
     projected = srcCorners.map(([sx, sy]) => {
       const [rx, ry, rz] = applyMat3(R, sx, sy, -surfaceDepth);
       // Camera at +Z = d looking toward -Z (origin). A point at object-z rz is
       // at camera-relative depth (d - rz); perspective divide by that depth.
-      const depth = d - rz;
-      // Guard against a corner crossing the camera plane (shouldn't happen for
-      // sane tilts, but clamp to keep the map finite).
-      const safeDepth = Math.abs(depth) < 1e-6 ? 1e-6 * Math.sign(depth || 1) : depth;
-      const f = d / safeDepth;
+      const f = d / (d - rz);
       return [rx * f, ry * f] as [number, number];
     });
   } else {
@@ -418,6 +450,7 @@ export function isScene3dNonIdentity(camera: CameraInput, w?: number, h?: number
     // contracts the rear plane inside the front: that hidden surface does not
     // expose a wall and must not introduce another front-face resampling.
     // The planar compositor does not draw independent translucent rear faces.
+    camera = { ...camera, sceneDepth: Math.max(camera.sceneDepth ?? 0, depth) };
     if (!computeScene3dQuad(camera, w, h).isIdentity) return true;
     if (depth <= 0) return false;
     const back = computeScene3dQuad(camera, w, h, depth);
@@ -471,6 +504,8 @@ export function computeDepthOffset(camera: CameraInput, w: number, h: number, de
   if (w <= 0 || h <= 0 || depthPx === 0) return { x: 0, y: 0 };
 
   const zoom = camera.zoom ?? 1;
+  const distance = def.kind === 'perspective'
+    ? cameraDistance(camera, def, R, w, h, depthPx) : 0;
 
   // Project the centre at object-z 0 and at object-z −depthPx, take the screen
   // delta. Use the same lens, distance and parallel shear as the front face.
@@ -480,10 +515,7 @@ export function computeDepthOffset(camera: CameraInput, w: number, h: number, de
   const project = (oz: number): [number, number] => {
     const [rx, ry, rz] = applyMat3(R, 0, 0, oz);
     if (def.kind === 'perspective') {
-      const d = cameraDistance(camera, def, w, h);
-      const depth = d - rz;
-      const safe = Math.abs(depth) < 1e-6 ? 1e-6 * Math.sign(depth || 1) : depth;
-      const f = d / safe;
+      const f = distance / (distance - rz);
       return [rx * f * zoom, ry * f * zoom];
     }
     return [(rx + rz * def.shearX) * zoom, (ry + rz * def.shearY) * zoom];

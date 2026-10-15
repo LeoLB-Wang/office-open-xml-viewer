@@ -323,6 +323,63 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
       expect(deep).toEqual(plain);
     });
 
+    it(`keeps camera-crossing geometry on the same side at CSS and device scales (${adapter})`, async () => {
+      const shape = orthographicBeveledShape();
+      Object.assign(shape, { x: (200 - 768) * 9525, y: 8 * 9525,
+        width: 1536 * 9525, height: 384 * 9525, geometry: 'rect', sp3d: undefined,
+        scene3d: { camera: { prst: 'perspectiveFront', fov: 90, zoom: .01,
+          rot: { lat: 0, lon: 60, rev: 0 } } } });
+      // Independent view-Z fallback for a 16in-wide solid: nearest=8*sin60,
+      // gap=.02*(16*sin60). Positive depth puts the near edge to the RIGHT;
+      // a signed corner clamp projects it left and folds the texture.
+      const near = 768 * Math.sin(Math.PI / 3), distance = near * 1.04;
+      const expected = [200 - 384 * .01 / (1 + near / distance),
+        200 + 384 * .01 / (1 - near / distance)];
+      for (const [width, dpr] of [[300, 1], [600, 2]]) {
+        const data = await render(element(shape), 400, 1, width, dpr);
+        const side = width * dpr, bounds = [side, -1];
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] > 200 || data[i + 2] < 150) continue;
+          const x = i / 4 % side;
+          bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.max(bounds[1], x);
+        }
+        expect(Math.abs(bounds[0] + .5 - expected[0] * side / 400)).toBeLessThanOrEqual(1);
+        // Test an interior ray rather than the near silhouette: the existing
+        // triangle warp can truncate that extremely magnified raster edge.
+        const sampleX = Math.floor((200 + expected[1]) / 2 * side / 400);
+        const sampleY = Math.floor(200 * side / 400);
+        const sample = (sampleY * side + sampleX) * 4;
+        expect([...data.subarray(sample, sample + 3)]).toEqual([68, 114, 196]);
+      }
+    });
+
+    it(`binds the full extrusion to the front camera before device-space wall painting (${adapter})`, async () => {
+      const shape = orthographicBeveledShape();
+      Object.assign(shape, { x: (200 - 384) * 9525, y: 152 * 9525,
+        width: 768 * 9525, height: 96 * 9525, geometry: 'rect',
+        sp3d: { extrusionH: 768 * 9525, extrusionClr: '404040' },
+        scene3d: { camera: { prst: 'perspectiveFront', fov: 90, zoom: .3,
+          rot: { lat: 0, lon: 120, rev: 0 } } } });
+      const extent = 384 * Math.sin(Math.PI / 3);
+      const distance = extent + 384 + .02 * (2 * extent + 384);
+      const expected = [200 - 192 * .3 / (1 - extent / distance),
+        200 + 192 * .3 / (1 + extent / distance)];
+      // Keep the existing pixel-by-pixel extrusion sweep small; physical
+      // document dimensions and the camera boundary are identical at any DPI.
+      for (const [width, dpr] of [[40, 1], [80, 2]]) {
+        const data = await render(element(shape), 400, 1, width, dpr);
+        const side = width * dpr, bounds = [side, -1];
+        for (let i = 0; i < data.length; i += 4) {
+          // The blue front is distinct from the neutral extrusion walls.
+          if (data[i] > 150 || data[i + 2] < 150) continue;
+          const x = i / 4 % side;
+          bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.max(bounds[1], x);
+        }
+        bounds.forEach((v, i) => expect(Math.abs(v + .5 - expected[i] * side / 400),
+          `edge ${i}, width ${width}, dpr ${dpr}`).toBeLessThanOrEqual(1));
+      }
+    });
+
     it(`uses geometry and shadow color independently of body opacity (${adapter})`, async () => {
       const shape = projectedBeveledShape();
       shape.geometry = 'rect';

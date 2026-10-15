@@ -64,6 +64,28 @@ describe('shape effect bounds', () => {
     expect(geometry.anchor[1]).toBe(0);
   });
 
+  it('keeps a camera-crossing rear face and its effect anchor in the same finite scene', () => {
+    const units = 96, w = 8 * units, h = units, depth = 8 * units;
+    const extent = 2 * Math.sqrt(3) * units;
+    const distance = extent + 4 * units + .02 * (2 * extent + 4 * units);
+    const q = [-1, 1].flatMap(sx => [-1, 1].map(sy => {
+      const z = sx * extent + 4 * units;
+      return [w / 2 + (-sx * 2 + 4 * Math.sqrt(3)) * units / (1 - z / distance),
+        h / 2 + sy * h / 2 / (1 - z / distance)];
+    }));
+    const geometry = projectedEffectGeometry(
+      { prst: 'perspectiveFront', fov: 90, rot: { lat: 0, lon: 120, rev: 0 } },
+      { a: 2, b: 0, c: 0, d: 2, e: 5, f: 7 },
+      0, 0, w, h, 0, 'tr', depth,
+    );
+    expect(geometry.bbox.x).toBeCloseTo(5 + 2 * Math.min(...q.map(p => p[0])), 7);
+    expect(geometry.bbox.y).toBeCloseTo(7 + 2 * Math.min(...q.map(p => p[1])), 7);
+    expect(geometry.bbox.w).toBeCloseTo(2 * (Math.max(...q.map(p => p[0])) - Math.min(...q.map(p => p[0]))), 7);
+    expect(geometry.bbox.h).toBeCloseTo(2 * (Math.max(...q.map(p => p[1])) - Math.min(...q.map(p => p[1]))), 7);
+    expect(geometry.anchor[0]).toBeCloseTo(5 + 2 * q[2][0], 7);
+    expect(geometry.anchor[1]).toBeCloseTo(7 + 2 * q[2][1], 7);
+  });
+
   it('reuses one device-space projection across multiple effect passes', () => {
     const cacheContext = { setTransform: vi.fn() };
     class TestOffscreenCanvas {

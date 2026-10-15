@@ -3384,6 +3384,9 @@ function projectedSurface(
   camera: CameraInput, w: number, h: number, backDepthCss = 0,
   edgePadCss = 0, devScale = 1,
 ) {
+  // The selected face and its effect footprint belong to one solid, including
+  // when a caller supplies a rear plane without pre-binding sceneDepth.
+  if (backDepthCss > (camera.sceneDepth ?? 0)) camera = { ...camera, sceneDepth: backDepthCss };
   const front = computeScene3dQuad(camera, w, h);
   const [p0, p1, , p3] = front.corners;
   const backFacing = (p1.x - p0.x) * (p3.y - p0.y) - (p1.y - p0.y) * (p3.x - p0.x) < 0;
@@ -3650,7 +3653,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   // (onTextRun is suppressed below). See README "Bevel / 3D" note.
   // Camera framing uses document inches, even when the slide renders at an
   // arbitrary target width. Group sizing is already folded into w/h by Annex L.
-  const spCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale };
+  const spCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale,
+    sceneDepth: (el.sp3d?.extrusionH ?? 0) * scale };
   const spScene3d = spCamera && isScene3dNonIdentity(
     spCamera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
   ) ? { ...el.scene3d, camera: spCamera } : null;
@@ -6103,7 +6107,8 @@ function buildExtrusion(
   // Depth offset is computed in the device-px box (w·devScale × h·devScale) so
   // it matches the device-resolution offscreen the side wall is baked into.
   const off = computeDepthOffset(
-    { ...camera, unitsPerInch: (camera.unitsPerInch ?? 96) * devScale },
+    { ...camera, unitsPerInch: (camera.unitsPerInch ?? 96) * devScale,
+      sceneDepth: (camera.sceneDepth ?? 0) * devScale },
     w * devScale, h * devScale, depthDev,
   );
   if (Math.hypot(off.x, off.y) < 0.75) return null;
@@ -6826,7 +6831,8 @@ function paintResolvedPicture(
     // to the normal flat draw (but sp3d bevel/extrusion still apply via the flat
     // path below). sp3d bevel/extrusion shading is wired in just after this; the
     // contour edge is the flat approximation in strokeContourEdge.
-    const pictureCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale };
+    const pictureCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale,
+      sceneDepth: (el.sp3d?.extrusionH ?? 0) * scale };
     const scene3d = pictureCamera && isScene3dNonIdentity(
       pictureCamera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
     ) ? { ...el.scene3d, camera: pictureCamera } : null;

@@ -327,3 +327,55 @@ describe('modern camera families', () => {
       .toEqual(computeDepthOffset({ ...camera, prst: 'orthographicFront' }, W, H, 40));
   });
 });
+
+describe('perspective scene boundary safety', () => {
+  it.each([.99, 1, 1.01])('keeps a flat scene convex at %s times the camera distance', ratio => {
+    const angle = Math.PI / 3;
+    const base = 6.28 * 96;
+    const w = 2 * base * ratio / Math.sin(angle), h = 96;
+    const near = w / 2 * Math.sin(angle);
+    // Library fallback retains a two-percent gap to the rotated z-volume,
+    // moving only along view Z and retaining the centre-plane framing.
+    const distance = Math.max(base, near + .02 * 2 * near);
+    const q = computeScene3dQuad({ prst: 'perspectiveFront', fov: 90,
+      rot: { lat: 0, lon: 60, rev: 0 } }, w, h);
+    expect(q.corners[1].x).toBeCloseTo(w / 2 + w / 2 * Math.cos(angle) / (1 - near / distance), 7);
+    const turns = q.corners.map((a, i, p) => {
+      const b = p[(i + 1) % 4], c = p[(i + 2) % 4];
+      return (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    });
+    expect(turns.every(v => v > 0)).toBe(true);
+  });
+
+  it('uses the complete solid for the face, rear surface and centre displacement at every raster scale', () => {
+    // lon=120 turns an 8-inch extrusion toward the camera. The face alone is
+    // in front of it; only the rear corners force the distance adjustment.
+    for (const units of [72, 96, 384]) {
+      const w = 8 * units, h = units, depth = 8 * units;
+      const camera = { prst: 'perspectiveFront', fov: 90, unitsPerInch: units,
+        sceneDepth: depth, rot: { lat: 0, lon: 120, rev: 0 } };
+      const extent = 2 * Math.sqrt(3) * units;
+      const distance = extent + 4 * units + .02 * (2 * extent + 4 * units);
+      const face = computeScene3dQuad(camera, w, h);
+      const back = computeScene3dQuad(camera, w, h, depth);
+      expect(face.corners[1].x).toBeCloseTo(w / 2 - 2 * units / (1 - extent / distance), 7);
+      expect(back.corners[1].x).toBeCloseTo(w / 2 + (4 * Math.sqrt(3) - 2) * units / (1 - (extent + 4 * units) / distance), 7);
+      const offset = computeDepthOffset(camera, w, h, depth);
+      expect(offset.x).toBeCloseTo(4 * Math.sqrt(3) * units / (1 - 4 * units / distance), 7);
+      expect(offset.y).toBeCloseTo(0, 7);
+    }
+  });
+
+  it('keeps endpoint lenses and combined rotation finite without reversing any projected edge', () => {
+    for (const fov of [0, 180]) {
+      const q = computeScene3dQuad({ prst: 'perspectiveFront', fov,
+        rot: { lat: 50, lon: 65, rev: 17 } }, 2000, 1000);
+      expect(q.corners.every(p => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
+      const turns = q.corners.map((a, i, p) => {
+        const b = p[(i + 1) % 4], c = p[(i + 2) % 4];
+        return (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      });
+      expect(turns.every(v => v > 0)).toBe(true);
+    }
+  });
+});
