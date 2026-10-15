@@ -10,7 +10,8 @@ import {
   type ModelSourceTarget,
 } from '@silurus/ooxml-core';
 import { cfbDirectoryNames } from '@silurus/ooxml-core/internal/cfb-directory-names';
-import { MODEL_SOURCE_MODULE_PROTOCOL } from '@silurus/ooxml-core/internal/model-source';
+import { assertCompanionRuntime, MODEL_SOURCE_MODULE_PROTOCOL } from '@silurus/ooxml/internal/companion';
+import { COMPANION_VERSION } from '../../../src/companion-version.js';
 
 import { MAX_LEGACY_SOURCE_BYTES } from './legacy-source-limits.js';
 import { readNativeDocReadingPolicies, type NativeDocReadingPolicies } from './source-module-config.js';
@@ -62,6 +63,9 @@ export function createLegacySource<T extends ModelSourceTarget>(
   defaults: Readonly<{ wasmUrl: string; moduleUrl: string }>,
   docConfig?: NativeDocReadingPolicies,
 ): ModelSource<T> {
+  // The installed viewer owns protocol and transport. Pin our compiled
+  // expectation too: copying its current protocol would hide a stale add-on.
+  assertCompanionRuntime(COMPANION_VERSION, 'ooxml-model-source-module/v1');
   const label = `legacy ${family.toUpperCase()} source`;
   if (docConfig !== undefined) {
     if (family !== 'doc') throw new TypeError('Native reading policies belong only to the DOC source');

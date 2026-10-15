@@ -209,19 +209,25 @@ shapes / text boxes the same way.)
 Legacy binary Office files can be read directly into the ordinary document,
 workbook and presentation models through **model sources**, a format-generic
 `modelSources` load option. The legacy readers are separate opt-in entries, one
-per format; each returns a model source for the matching loader or viewer:
+per format in `@silurus/ooxml-legacy-office`. Install matching versions of both packages:
+
+```sh
+npm i @silurus/ooxml @silurus/ooxml-legacy-office
+```
+
+Each entry returns a model source for the matching loader or viewer:
 
 ```typescript
 import { DocxViewer } from '@silurus/ooxml/docx';
-import { legacyDocSource } from '@silurus/ooxml/legacy-doc';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
 
 const canvas = document.querySelector('canvas') as HTMLCanvasElement;
 const viewer = new DocxViewer(canvas, { modelSources: [legacyDocSource()] });
 await viewer.load(docOrDocxBytes);
 ```
 
-`legacyXlsSource()` (`@silurus/ooxml/legacy-xls`) and `legacyPptSource()`
-(`@silurus/ooxml/legacy-ppt`) work the same way for XLSX and PPTX. A source
+`legacyXlsSource()` (`@silurus/ooxml-legacy-office/xls`) and `legacyPptSource()`
+(`@silurus/ooxml-legacy-office/ppt`) work the same way for XLSX and PPTX. A source
 claims only its own binary family; every other input takes the unchanged OOXML
 path, and without a source a legacy file still rejects with the typed
 `legacy-binary-format` error. Creating a source fetches nothing: its

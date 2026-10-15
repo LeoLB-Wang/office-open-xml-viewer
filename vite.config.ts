@@ -102,13 +102,12 @@ export function legacyBundleBoundary(): Plugin {
   return {
     name: 'legacy-bundle-boundary',
     generateBundle(_options, bundle) {
-      // Optional legacy-* entries are allowed to contain the reader. Follow
-      // static and dynamic edges from ordinary entries and workers; a relay
-      // outside the guarded source roots cannot hide the reader in a chunk.
+      // Every root entry and worker must stay independent of the companion.
+      // Follow static and dynamic edges so a relay outside the guarded
+      // source roots cannot hide a reader in a shared chunk.
       const entries = Object.values(bundle).filter((output) =>
         output.type === 'chunk' && output.isEntry
-        && !output.fileName.startsWith('.types-work/')
-        && !/(?:^|[\\/])legacy-(?:doc|xls|ppt)\./.test(output.fileName));
+        && !output.fileName.startsWith('.types-work/'));
       const visited = new Set<string>();
       const pending = [...entries];
       while (pending.length > 0) {
@@ -118,7 +117,7 @@ export function legacyBundleBoundary(): Plugin {
         visited.add(output.fileName);
         for (const moduleId of Object.keys(output.modules)) {
           if (/(?:^|[\\/])packages[\\/]legacy-converter(?:[\\/]|$)/.test(moduleId)
-            || moduleId.includes('@silurus/ooxml-legacy-converter')) {
+            || /@silurus\/ooxml-legacy-(?:converter|office)/.test(moduleId)) {
             this.error(`${output.fileName} contains forbidden legacy module ${moduleId}`);
           }
         }
@@ -212,12 +211,7 @@ export default defineConfig(({ command, mode }) => ({
         // Opt-in TIFF 6.0 software decoder. Native raster users retain only the
         // lightweight codec contract and header guard.
         tiff: resolve(__dirname, 'src/tiff.ts'),
-        // Opt-in legacy Office model sources (ModelSource factories). Each
-        // entry emits its reader's WASM and self-contained source module as
-        // assets; nothing is fetched until a claimed input is loaded.
-        'legacy-doc': resolve(__dirname, 'src/legacy-doc.ts'),
-        'legacy-ppt': resolve(__dirname, 'src/legacy-ppt.ts'),
-        'legacy-xls': resolve(__dirname, 'src/legacy-xls.ts'),
+        'internal-companion': resolve(__dirname, 'src/internal-companion.ts'),
         // Node-only bounded sessions and server render helpers. Kept as a
         // separate entry so browser consumers never load Node built-ins.
         node:  resolve(__dirname, 'src/node.ts'),

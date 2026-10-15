@@ -1,6 +1,5 @@
 {
-  "name": "@silurus/ooxml-legacy-converter",
-  "private": true,
+  "name": "@silurus/ooxml-legacy-office",
   "version": "0.88.0",
   "description": "Optional legacy Office (DOC/XLS/PPT) model sources for @silurus/ooxml",
   "license": "MIT",
@@ -13,25 +12,30 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    "./legacy-doc": "./src/legacy-doc.ts",
-    "./legacy-xls": "./src/legacy-xls.ts",
-    "./legacy-ppt": "./src/legacy-ppt.ts",
-    "./legacy-doc-source-module": "./src/legacy-doc-source-module.ts",
-    "./legacy-xls-source-module": "./src/legacy-xls-source-module.ts",
-    "./legacy-ppt-source-module": "./src/legacy-ppt-source-module.ts",
-    "./wasm-direct-doc-binary": "./src/wasm-direct-doc/legacy_doc_direct_bg.wasm",
-    "./wasm-direct-xls-binary": "./src/wasm-direct-xls/legacy_xls_direct_bg.wasm",
-    "./wasm-direct-ppt-binary": "./src/wasm-direct-ppt/legacy_ppt_direct_bg.wasm"
+    "./doc": {
+      "types": "./dist/types/doc.d.ts",
+      "import": "./dist/doc.mjs",
+      "default": "./dist/doc.mjs"
+    },
+    "./xls": {
+      "types": "./dist/types/xls.d.ts",
+      "import": "./dist/xls.mjs",
+      "default": "./dist/xls.mjs"
+    },
+    "./ppt": {
+      "types": "./dist/types/ppt.d.ts",
+      "import": "./dist/ppt.mjs",
+      "default": "./dist/ppt.mjs"
+    }
   },
   "scripts": {
     "wasm:direct-doc": "cd parser && wasm-pack build --target web --out-dir ../src/wasm-direct-doc --out-name legacy_doc_direct --features direct-doc && node ../../../scripts/append-wasm-reinit.mjs ../src/wasm-direct-doc/legacy_doc_direct.js",
     "wasm:direct-ppt": "cd parser && wasm-pack build --target web --out-dir ../src/wasm-direct-ppt --out-name legacy_ppt_direct --features direct-ppt && node ../../../scripts/append-wasm-reinit.mjs ../src/wasm-direct-ppt/legacy_ppt_direct.js",
     "wasm:direct-xls": "cd parser && wasm-pack build --target web --out-dir ../src/wasm-direct-xls --out-name legacy_xls_direct --features direct-xls && node ../../../scripts/append-wasm-reinit.mjs ../src/wasm-direct-xls/legacy_xls_direct.js",
     "typecheck": "tsc --noEmit",
-    "survey": "playwright test --config playwright.config.ts"
-  },
-  "dependencies": {
-    "@silurus/ooxml-core": "workspace:*"
+    "survey": "playwright test --config playwright.config.ts",
+    "build": "vite build && node ../../scripts/bundle-declarations.mjs doc xls ppt",
+    "test": "cd ../.. && vitest run packages/legacy-converter/src"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
@@ -42,6 +46,29 @@
     "pngjs": "^7.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.0.8",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "@silurus/ooxml-core": "workspace:*",
+    "@silurus/ooxml": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "ooxml",
+    "office",
+    "doc",
+    "xls",
+    "ppt",
+    "viewer",
+    "wasm"
+  ],
+  "peerDependencies": {
+    "@silurus/ooxml": "0.88.0"
   }
 }

@@ -31,7 +31,8 @@ await build({
       '@silurus/ooxml/three-d': entry('three-d'),
       '@silurus/ooxml/region-map': entry('region-map'),
       '@silurus/ooxml/chart-ex': entry('chart-ex'),
-      '@silurus/ooxml/legacy-doc': entry('legacy-doc'),
+      '@silurus/ooxml-legacy-office/doc': resolve(root, 'packages/legacy-converter/dist/doc.mjs'),
+      '@silurus/ooxml/internal/companion': entry('internal-companion'),
     },
   },
   build: {

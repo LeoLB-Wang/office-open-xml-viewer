@@ -34,6 +34,9 @@
       ],
       "@silurus/ooxml-xlsx/internal/host-layout-measure": [
         "../xlsx/src/internal/host-layout-measure.ts"
+      ],
+      "@silurus/ooxml/internal/companion": [
+        "../../src/internal-companion.ts"
       ]
     },
     "composite": false

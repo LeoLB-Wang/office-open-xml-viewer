@@ -8,7 +8,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-const distDir = resolve(process.argv[2] ?? 'dist');
+const distDir = resolve(process.argv[2] ?? 'packages/legacy-converter/dist');
 const glueDir = resolve('packages/legacy-converter/src');
 const FORBIDDEN = /convert|prepare_legacy|conversionoutput|preparedlegacy/i;
 const CLASSES = {

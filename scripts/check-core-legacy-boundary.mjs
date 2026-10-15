@@ -41,7 +41,7 @@ const CHECKED_EXTENSIONS = /\.(?:[cm]?[jt]sx?|rs|json|toml|md|astro|html)$/;
  * stream-name table predate the legacy module and stay allowed.
  */
 export const RULES = [
-  { id: 'legacy-package', pattern: /ooxml-legacy-converter|legacy-converter|legacy_office_converter/ },
+  { id: 'legacy-package', pattern: /ooxml-legacy-(?:converter|office)|legacy-converter|legacy_office_converter/ },
   { id: 'legacy-format-name', pattern: /legacy[-_ ]?(?:doc|xls|ppt)(?![a-z])/i },
   { id: 'legacy-office-api', pattern: /LegacyOffice|legacyConversion|legacy-office|legacy_office/ },
   { id: 'legacy-sniffer', pattern: /sniffLegacyOfficeFormat|LegacyCfbFormat/ },
@@ -162,7 +162,7 @@ function isPropertyName(node, parent) {
 }
 
 function isLegacyModule(path) {
-  return /ooxml-legacy-converter|(?:^|[\\/])legacy-converter(?:[\\/]|$)/.test(path);
+  return /ooxml-legacy-(?:converter|office)|(?:^|[\\/])legacy-converter(?:[\\/]|$)/.test(path);
 }
 
 /** Use the same compiler options and module resolver as TypeScript's program. */

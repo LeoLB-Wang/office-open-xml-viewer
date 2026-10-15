@@ -9,9 +9,11 @@ const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript-compiler-api');
 const typesDir = path.resolve(process.cwd(), 'dist/types');
 const formats = ['docx', 'pptx', 'xlsx'];
-const files = ['index', ...formats, 'math', 'three-d', 'region-map', 'chart-ex', 'tiff', 'legacy-doc', 'legacy-ppt', 'legacy-xls']
+const files = ['index', ...formats, 'math', 'three-d', 'region-map', 'chart-ex', 'tiff', 'internal-companion']
   .map((entry) => path.join(typesDir, `${entry}.d.ts`));
 
+const legacyTypesDir = path.resolve('packages/legacy-converter/dist/types');
+files.push(...['doc', 'xls', 'ppt'].map(entry => path.join(legacyTypesDir, `${entry}.d.ts`)));
 const program = ts.createProgram(files, {
   module: ts.ModuleKind.ESNext,
   moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -96,17 +98,20 @@ assert.deepEqual(
 );
 
 for (const [entry, factory, options] of [
-  ['legacy-doc', 'legacyDocSource', 'LegacyDocSourceOptions'],
-  ['legacy-ppt', 'legacyPptSource', 'LegacyPptSourceOptions'],
-  ['legacy-xls', 'legacyXlsSource', 'LegacyXlsSourceOptions'],
+  ['doc', 'legacyDocSource', 'LegacyDocSourceOptions'],
+  ['ppt', 'legacyPptSource', 'LegacyPptSourceOptions'],
+  ['xls', 'legacyXlsSource', 'LegacyXlsSourceOptions'],
 ]) {
-  const exports = moduleExports(path.join(typesDir, `${entry}.d.ts`));
+  const exports = moduleExports(path.join(legacyTypesDir, `${entry}.d.ts`));
   assert.deepEqual(
     [...exports.keys()].sort(),
-    [options, factory].sort(),
-    `The ./${entry} declaration entry must expose only its model source factory and options.`,
+    [options, factory, ...(entry === 'doc' ? ['NativePictureBulletPolicy', 'NativeWordBreakingPolicy'] : [])].sort(),
+    `The ./${entry} declaration entry must preserve its model source factory and option types.`,
   );
 }
+
+assert.deepEqual([...moduleExports(path.join(typesDir, 'internal-companion.d.ts')).keys()].sort(),
+  ['CompanionRuntimeMismatchError', 'MODEL_SOURCE_MODULE_PROTOCOL', 'assertCompanionRuntime'].sort());
 
 process.stdout.write(
   'Published declaration entries compile; root namespace exports and shared OOXML contracts match.\n',

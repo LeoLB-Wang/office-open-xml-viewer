@@ -10,8 +10,8 @@ import { build } from 'vite';
 const rules = (text) => findViolations([{ path: 'packages/docx/src/x.ts', text }]).map((v) => v.rule);
 
 test('flags legacy imports, options, branches and names in the OOXML packages', () => {
-  assert.deepEqual(rules("import { x } from '@silurus/ooxml-legacy-converter/internal/direct-doc-engine';"),
-    ['legacy-package', 'direct-format-name']);
+  assert.deepEqual(rules("import { x } from '@silurus/ooxml-legacy-office/internal/direct-doc-engine';"),
+    ['legacy-package', 'legacy-office-api', 'direct-format-name']);
   assert.deepEqual(rules('await DocxDocument.load(bytes, { legacyConversion: {} });'), ['legacy-office-api']);
   assert.deepEqual(rules("if (kind === 'legacy-xls') return;"), ['legacy-format-name']);
   assert.deepEqual(rules('const nativeDoc = await openNative();'), ['native-legacy-source']);
@@ -184,7 +184,7 @@ test('built chunk graph rejects a resolved legacy module even after aliasing', (
     () => invoke('/repo/packages/legacy-converter/src/index.ts'),
     /forbidden legacy module/,
   );
-  assert.doesNotThrow(() => invoke('/repo/packages/legacy-converter/src/index.ts', 'legacy-ppt.mjs'));
+  assert.throws(() => invoke('/repo/packages/legacy-converter/src/index.ts', 'legacy-ppt.mjs'), /forbidden legacy module/);
   assert.throws(() => hook.call(
     { error(message) { throw new Error(message); } },
     {},

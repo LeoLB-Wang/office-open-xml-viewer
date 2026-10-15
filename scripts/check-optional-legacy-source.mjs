@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Verify one legacy Office model source entry of the published dist:
 //
-//  - `legacy-<f>.mjs` exports its ModelSource factory and reaches neither the
+//  - `<f>.mjs` exports its ModelSource factory and reaches neither the
 //    reader runtime nor the WASM glue (creating a source fetches nothing);
 //  - it references its WASM asset and its source module asset;
 //  - the source module asset is one self-contained ES module (no import of any
@@ -22,8 +22,9 @@ const FORMATS = {
 const family = process.argv[2];
 const format = FORMATS[family];
 if (!format) throw new Error('usage: check-optional-legacy-source.mjs <doc|xls|ppt> [dist]');
-const distDir = resolve(process.argv[3] ?? 'dist');
-const entry = `legacy-${family}.mjs`;
+const distDir = resolve(process.argv[3] ?? 'packages/legacy-converter/dist');
+const entry = `${family}.mjs`;
+const rootDistDir = resolve('dist');
 const wasmAsset = `legacy_${family}_direct_bg.wasm`;
 const moduleAssetPattern = new RegExp(`^legacy-${family}-source-module(?:-[\\w-]+)?\\.m?js$`);
 const runtimeMarkers = [
@@ -125,15 +126,17 @@ const wasm = await stat(join(distDir, wasmAsset));
 if (!wasm.isFile() || wasm.size === 0) throw new Error(`${wasmAsset} is missing or empty`);
 
 // 3. Nothing else reaches this reader.
-const otherEntries = ['index.mjs', 'docx.mjs', 'xlsx.mjs', 'pptx.mjs', 'node.mjs',
-  ...Object.keys(FORMATS).filter((other) => other !== family).map((other) => `legacy-${other}.mjs`)];
+const otherEntries = [
+  ...['index', 'docx', 'xlsx', 'pptx', 'node', 'internal-companion'].map(other => join(rootDistDir, `${other}.mjs`)),
+  ...Object.keys(FORMATS).filter(other => other !== family).map(other => join(distDir, `${other}.mjs`)),
+];
 for (const other of otherEntries) {
-  const otherClosure = await dependencyClosure(join(distDir, other));
+  const otherClosure = await dependencyClosure(other);
   assertAbsent(otherClosure, wasmAsset, other);
   assertAbsent(otherClosure, moduleName, other);
   assertAbsent(otherClosure, format.nativeClass, other);
 }
-const workers = all.filter((path) => /render-worker|(?:^|[/\\])worker-[\w-]+\.js$/.test(path) && path.endsWith('.js'));
+const workers = (await filesUnder(rootDistDir)).filter((path) => /render-worker|(?:^|[/\\])worker-[\w-]+\.js$/.test(path) && path.endsWith('.js'));
 for (const worker of workers) {
   const text = await readFile(worker, 'utf8');
   for (const marker of [format.nativeClass, wasmAsset, 'legacy-converter']) {
