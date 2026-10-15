@@ -1,14 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { vi, afterEach, describe, expect, it } from 'vitest';
+import { documentLayoutValidationEnabled } from './validation-policy.js';
 import {
   assertAndDeepFreezeDocumentLayout,
   deepFreezeDocumentLayout,
 } from './invariants.js';
 import { LayoutInvariantError } from './diagnostics.js';
 import { sealPlainData, snapshotPlainData } from './plain-data.js';
-import {
-  documentLayoutValidationEnabled,
-  setDocumentLayoutValidation,
-} from './validation-policy.js';
+import { setDocumentLayoutValidation } from '../testing/validation-policy.js';
 import type { DocumentLayout } from './types.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,7 +34,12 @@ afterEach(() => {
 });
 
 describe('document layout validation policy', () => {
-  it('defaults to enabled under a test runner', () => {
+  it('production omits the redundant pre-pass even under a test runner', async () => {
+    const policy = await vi.importActual<typeof import('./validation-policy.js')>('./validation-policy.js');
+    expect(policy.documentLayoutValidationEnabled()).toBe(false);
+  });
+
+  it('enables extra reports through the test mock', () => {
     expect(documentLayoutValidationEnabled()).toBe(true);
   });
 
@@ -112,3 +115,5 @@ describe('document layout validation policy', () => {
     expect(snapshotPlainData(accessor, 'test')).toEqual({ a: 1 });
   });
 });
+
+vi.mock('./validation-policy.js', () => ({ documentLayoutValidationEnabled: vi.fn(() => true) }));

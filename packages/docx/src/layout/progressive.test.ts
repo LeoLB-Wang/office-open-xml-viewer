@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { vi, afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLayoutServices } from '../layout-runtime.js';
 import { layoutSourceStore } from '../layout-source-model-adapter.js';
 import {
@@ -16,7 +16,7 @@ import {
   layoutDocumentProgressively,
   type ProgressiveLayoutPreview,
 } from './progressive.js';
-import { setDocumentLayoutValidation } from './validation-policy.js';
+import { setDocumentLayoutValidation } from '../testing/validation-policy.js';
 import type { DocumentLayout, LayoutPage } from './types.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -333,3 +333,5 @@ describe('preview pages match the final layout', () => {
     expect(previews).toEqual([]);
   }, 300_000);
 });
+
+vi.mock('./validation-policy.js', () => ({ documentLayoutValidationEnabled: vi.fn(() => true) }));

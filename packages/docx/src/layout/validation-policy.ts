@@ -23,11 +23,9 @@
  * on every convergence pass, so the duplicate pre-pass walk is a real cost on
  * big documents. The policy is:
  *
- * - ON by default under a test runner, so every suite (and therefore CI) keeps
- *   the path-precise reports.
- * - OFF otherwise. Internal tests and benchmarks can change the policy
- *   explicitly when they need to compare validated and production-equivalent
- *   execution.
+ * - OFF in every production realm. Tests may mock this internal policy to
+ *   exercise the additional reports; runtime environment variables never alter
+ *   the layout contract or add a second traversal.
  *
  * Freezing is NOT part of this policy and always runs: retained-layout
  * immutability is load-bearing (the identity WeakSets here and in
@@ -35,30 +33,7 @@
  * the assumption that a cached layout cannot be mutated by a consumer).
  */
 
-/** Whether a test runner is driving this process. Vitest sets `VITEST`; the
- *  `NODE_ENV` check covers other runners and Node's own test tooling. Guarded
- *  for realms without `process` (browser bundles, workers). */
-function detectTestEnvironment(): boolean {
-  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-    .process?.env;
-  if (!env) return false;
-  return env.VITEST !== undefined || env.NODE_ENV === 'test';
-}
-
-let enabled = detectTestEnvironment();
-
-/** Whether the recursive retained-layout contract checks should run. */
+/** Production omits only the redundant path-precise pre-pass. */
 export function documentLayoutValidationEnabled(): boolean {
-  return enabled;
-}
-
-/**
- * Turn the retained-layout contract checks on or off for this realm.
- *
- * This is an internal test and benchmark control, not a public runtime option.
- * Keeping the mutable policy inside the layout module avoids exposing realm-wide
- * process state as part of the document API.
- */
-export function setDocumentLayoutValidation(next: boolean): void {
-  enabled = next;
+  return false;
 }

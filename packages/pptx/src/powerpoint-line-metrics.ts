@@ -47,11 +47,6 @@ const OBSERVED_SUBSTITUTES: Readonly<Record<string, string>> = {
 export const SHARE_CACHE_LIMIT = 256;
 const shareCache = new Map<string, number | null>();
 
-/** @internal Test hook: current number of cached face keys. */
-export function powerPointShareCacheSize(): number {
-  return shareCache.size;
-}
-
 export function powerPointAscentShare(
   family: string,
   bold: boolean,
