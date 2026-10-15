@@ -89,7 +89,8 @@ export interface EmbeddedFontRef {
 }
 
 export interface DocSettings {
-  /** ECMA-376 Part 4 §14.8.3.38; applied by the parser to terminal page breaks. */
+  /** @internal ECMA-376 Part 4 §14.8.3.38; the parser already applies this
+   *  setting to terminal page breaks, so it is not a renderer model option. */
   splitPgBreakAndParaMark?: boolean;
   /** ECMA-376 Part 4 §14.8.3.15 fixed HTML automatic paragraph margins. */
   doNotUseHtmlParagraphAutoSpacing?: boolean;
