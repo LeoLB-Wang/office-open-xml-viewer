@@ -7,7 +7,8 @@ use wasm_bindgen::prelude::*;
 
 use ooxml_common::depth::parse_guarded;
 use ooxml_common::json_measurement::{
-    measure_json, serialize_json_with_limit, serialize_json_with_policy_limit,
+    measure_json, serialize_json, serialize_json_string, serialize_json_with_limit,
+    serialize_json_with_policy_limit,
 };
 use ooxml_common::ns::{attr_ns, is_r_ns, is_x_ns, relationships};
 use ooxml_common::package_session::{
@@ -359,7 +360,7 @@ pub fn parse_xlsx(
 ) -> Result<Vec<u8>, JsValue> {
     console_error_panic_hook::set_once();
     parse_xlsx_inner_with_limits(data, max_archive_entry_bytes, max_total_inflated_bytes)
-        .and_then(|wb| serde_json::to_vec(&wb).map_err(|e| format!("serialize error: {e}")))
+        .and_then(|wb| serialize_json(&wb).map_err(|e| format!("serialize error: {e}")))
         .map_err(|error| JsValue::from_str(&error))
 }
 
@@ -3971,7 +3972,7 @@ pub(crate) fn resolve_implicit_ordinal(
 /// Native equivalent of `parse_xlsx` for use from the MCP server.
 pub fn parse_workbook_native(data: &[u8]) -> Result<String, String> {
     parse_workbook_model_native(data)
-        .and_then(|wb| serde_json::to_string(&wb).map_err(|e| e.to_string()))
+        .and_then(|wb| serialize_json_string(&wb).map_err(|e| e.to_string()))
 }
 
 /// Native typed workbook overview through the same parse and resource limits.
@@ -4287,7 +4288,7 @@ impl XlsxArchive {
             };
             let shared = self.shared.as_ref().expect("shared loaded above");
             let workbook = parse_xlsx_inner_with(&mut self.archive, shared, styles)?;
-            serde_json::to_vec(&workbook).map_err(|error| format!("serialize error: {error}"))
+            serialize_json(&workbook).map_err(|error| format!("serialize error: {error}"))
         })();
         let zip = &mut self.archive;
         let result = settle_xlsx_operation(zip, result);
@@ -4308,7 +4309,7 @@ impl XlsxArchive {
     /// operation. This is diagnostic data, not an allocator-memory estimate.
     pub fn resource_usage(&self) -> Result<Vec<u8>, JsValue> {
         let usage = self.archive.usage();
-        serde_json::to_vec(&usage)
+        serialize_json(&usage)
             .map_err(|error| JsValue::from_str(&format!("serialize error: {error}")))
     }
 
@@ -4557,7 +4558,7 @@ impl XlsxArchive {
                     kind: &'static str,
                     rows: &'a [Row],
                 }
-                serde_json::to_vec(&Rows {
+                serialize_json(&Rows {
                     kind: "rows",
                     rows: &rows,
                 })
@@ -4671,7 +4672,7 @@ impl XlsxArchive {
             .usage()
             .or(self.last_cursor_usage)
             .ok_or_else(|| JsValue::from_str("worksheet cursor usage is unavailable"))?;
-        serde_json::to_vec(&usage)
+        serialize_json(&usage)
             .map_err(|error| JsValue::from_str(&format!("serialize error: {error}")))
     }
 

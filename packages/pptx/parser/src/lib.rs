@@ -2,7 +2,9 @@ use ooxml_common::content_types::PackageContentTypes;
 use ooxml_common::depth::{
     parse_guarded_with_node_limit, xml_dom_complexity_exceeds, GuardedParseError,
 };
-use ooxml_common::json_measurement::{measure_json, serialize_json_with_limit};
+use ooxml_common::json_measurement::{
+    measure_json, serialize_json, serialize_json_string, serialize_json_with_limit,
+};
 use ooxml_common::ns::{is_p_ns, is_r_ns};
 use ooxml_common::package_session::{
     PackageLimitReporter, PackageOperation, PackageSessionHandle, RetainedPackageOperation,
@@ -199,8 +201,7 @@ pub fn parse_pptx(
         "parse",
     )
     .map_err(pptx_parser_js_error)?;
-    serde_json::to_vec(&presentation)
-        .map_err(|e| JsValue::from_str(&format!("serialize error: {e}")))
+    serialize_json(&presentation).map_err(|e| JsValue::from_str(&format!("serialize error: {e}")))
 }
 
 /// WASM-callable markdown projection. Shares the body of `to_markdown_native`
@@ -220,7 +221,7 @@ pub fn pptx_to_markdown(
 /// Native equivalent of `parse_pptx` for use from the MCP server.
 pub fn parse_pptx_native(data: &[u8]) -> Result<String, String> {
     let presentation = parse_pptx_model_native(data)?;
-    serde_json::to_string(&presentation).map_err(|e| e.to_string())
+    serialize_json_string(&presentation).map_err(|e| e.to_string())
 }
 
 /// Native typed equivalent of `parse_pptx_native` with identical limits.
@@ -620,7 +621,7 @@ impl PptxArchive {
             shared.finish(slides).map_err(|e| e.to_string())
         })();
         let presentation = settle_pptx_operation(&mut self.archive, result)?;
-        serde_json::to_vec(&presentation).map_err(|e| format!("serialize error: {e}"))
+        serialize_json(&presentation).map_err(|e| format!("serialize error: {e}"))
     }
 
     /// Open presentation metadata without parsing any slide parts. Hidden state,
@@ -816,7 +817,7 @@ impl PptxArchive {
             .usage()
             .or(self.last_slide_usage)
             .ok_or_else(|| JsValue::from_str("slide cursor usage is unavailable"))?;
-        serde_json::to_vec(&usage)
+        serialize_json(&usage)
             .map_err(|error| JsValue::from_str(&format!("serialize error: {error}")))
     }
 
@@ -825,7 +826,7 @@ impl PptxArchive {
     /// allocator-memory estimate.
     pub fn resource_usage(&self) -> Result<Vec<u8>, JsValue> {
         let usage = self.archive.usage();
-        serde_json::to_vec(&usage)
+        serialize_json(&usage)
             .map_err(|error| JsValue::from_str(&format!("serialize error: {error}")))
     }
 
