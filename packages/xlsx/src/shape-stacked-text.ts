@@ -1,5 +1,5 @@
 import {
-  layoutStackedText, STACKED_CELL_FACTOR, stackedFaceBox, stackedCellBoxOverride,
+  layoutStackedText, STACKED_CELL_FACTOR, stackedFaceBox,
   stackedSidewaysCharacter, stackedVerticalGlyph,
   type DrawingMlInputRun, type DrawingMlTextRect, type StackedGlyph, type StackedParagraph,
 } from '@silurus/ooxml-core/internal/drawingml-text';
@@ -23,8 +23,9 @@ type Glyph = StackedGlyph<Style> & { cell: number; ascent: number; descent: numb
  * Issue #1668 Excel controls measured unequal Arial 24 pt baseline gaps
  * 26.16, 25.92, 22.08, 20.88, 26.16 pt, and Yu Gothic 24 pt gaps
  * 33.84, 34.08, 32.88, 34.08, 30.96, 33.12 pt. The shared 7/6 face-cell
- * metrics and overrides are PowerPoint observations, not an Excel fidelity
- * claim. Glyph metrics, vertical forms and shaping follow the available font.
+ * factor comes from PowerPoint observations; the face box always comes from
+ * font tables (see core stacked-faces.ts). This is not an Excel fidelity claim.
+ * Glyph metrics, vertical forms and shaping follow the available font.
  * Excel's PDF clips at the worksheet print region, not at each shape: keep
  * overflow for the caller's worksheet/viewport clip (no added body clip).
  * OMML uses an atomic upright box from the existing equation renderer; its
@@ -48,8 +49,7 @@ export function drawShapeStackedText(
     // fallback when that engine does not expose font-box metrics.
     const ascent = box ? box.ascent * style.px : probe?.fontBoundingBoxAscent ?? style.px;
     const descent = box ? box.descent * style.px : probe?.fontBoundingBoxDescent ?? 0;
-    const override = stackedCellBoxOverride(style.face ?? '');
-    const cell = STACKED_CELL_FACTOR * (override !== undefined ? override * style.px : ascent + descent);
+    const cell = STACKED_CELL_FACTOR * (ascent + descent);
     const ends = [...graphemeClusterOffsets(text), text.length];
     let start = 0;
     const glyphs: Glyph[] = [];

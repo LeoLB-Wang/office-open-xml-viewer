@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+// Exercise only installed tarballs in an isolated consumer: no workspace aliases.
+// Authored synthetic inputs keep this PR/release gate redistributable.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { build, preview } from 'vite';
+import { rolldown } from 'rolldown';
+import { chromium } from '@playwright/test';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const scratch = await realpath(await mkdtemp(join(tmpdir(), 'ooxml-packed-companions-')));
+let server, browser;
+const run = (command, args, cwd = scratch) => execFileSync(command, args, { cwd, stdio: 'pipe', encoding: 'utf8' });
+try {
+  run(process.execPath, ['scripts/sync-companion-version.mjs'], root);
+  const tarballs = [];
+  for (const directory of [root, join(root, 'packages/legacy-office')]) {
+    const packed = JSON.parse(run('npm', ['pack', '--json', '--pack-destination', scratch], directory));
+    const wasm = packed[0].files.map(file => file.path).filter(path => path.endsWith('.wasm')).sort();
+    if (directory !== root) {
+      assert.deepEqual(wasm, ['doc', 'ppt', 'xls'].map(f => `dist/legacy_${f}_direct_bg.wasm`));
+    } else {
+      assert.ok(packed[0].files.every(file => !/^dist\/legacy[-_]/.test(file.path)), 'root tarball contains a legacy reader asset');
+    }
+    tarballs.push(join(scratch, packed[0].filename));
+  }
+  await writeFile(join(scratch, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', ...tarballs]);
+  // Fixture bundling is test setup only; the consumer itself resolves exclusively
+  // from its installed packages. Extension aliases support the TS fixture imports.
+  const fixtureEntry = join(scratch, 'fixtures.ts');
+  await writeFile(fixtureEntry, `export { buildDocFixture, buildXlsFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/test-fixtures.ts'))};\nexport { buildPptShapeImageFillFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/ppt-shape-image-fill-fixture.ts'))};`);
+  const fixturesBuild = await rolldown({ input: fixtureEntry, platform: 'node', resolve: { extensionAlias: { '.js': ['.ts', '.js'] } } });
+  try { await fixturesBuild.write({ file: join(scratch, 'fixtures.mjs'), format: 'es', codeSplitting: false }); }
+  finally { await fixturesBuild.close(); }
+  const fixtures = await import(pathToFileURL(join(scratch, 'fixtures.mjs')).href);
+  await mkdir(join(scratch, 'public'));
+  for (const [family, bytes] of Object.entries({ doc: fixtures.buildDocFixture(), xls: fixtures.buildXlsFixture(), ppt: fixtures.buildPptShapeImageFillFixture() })) {
+    await writeFile(join(scratch, 'public', `sample.${family}`), bytes);
+  }
+  await writeFile(join(scratch, 'node-smoke.mjs'), `
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { DocxViewer } from '@silurus/ooxml/docx';
+import { XlsxViewer } from '@silurus/ooxml/xlsx';
+import { PptxViewer } from '@silurus/ooxml/pptx';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
+import { legacyXlsSource } from '@silurus/ooxml-legacy-office/xls';
+import { legacyPptSource } from '@silurus/ooxml-legacy-office/ppt';
+import { materializeDocxDocument, materializeXlsxWorkbook, materializePptxPresentation } from '@silurus/ooxml/node';
+import { assertCompanionRuntime, CompanionRuntimeMismatchError } from '@silurus/ooxml/internal/companion';
+for (const value of [DocxViewer, XlsxViewer, PptxViewer, legacyDocSource, legacyXlsSource, legacyPptSource]) assert.equal(typeof value, 'function');
+for (const [entry, key] of [['chart-ex','chartEx'], ['tiff','tiff']]) assert.equal(typeof (await import('@silurus/ooxml/' + entry))[key].render, 'function');
+assert.equal(typeof globalThis.document, 'undefined');
+assert.throws(() => assertCompanionRuntime('0.0.0', 'stale'), error => error instanceof CompanionRuntimeMismatchError && error.code === 'companion-runtime-mismatch');
+for (const entry of ['legacy-doc','legacy-xls','legacy-ppt']) await assert.rejects(import('@silurus/ooxml/' + entry), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+const doc = await materializeDocxDocument(await readFile('public/sample.doc'), { modelSources: [legacyDocSource()] });
+assert.match(JSON.stringify(doc.body), /Hello/);
+const xls = await materializeXlsxWorkbook(await readFile('public/sample.xls'), { modelSources: [legacyXlsSource()] });
+assert.equal(xls.worksheets.length, 1);
+const ppt = await materializePptxPresentation(await readFile('public/sample.ppt'), { modelSources: [legacyPptSource()] });
+assert.match(JSON.stringify(ppt), /Picture fill text/);
+console.log('Packed Node imports and all three legacy readers passed');
+`);
+  process.stdout.write(run(process.execPath, ['node-smoke.mjs']));
+  await writeFile(join(scratch, 'index.html'), '<div id="result">loading</div><script type="module" src="/main.js"></script>');
+  await writeFile(join(scratch, 'main.js'), `
+import { DocxDocument, DocxViewer } from '@silurus/ooxml/docx';
+import { XlsxWorkbook, XlsxViewer } from '@silurus/ooxml/xlsx';
+import { PptxPresentation, PptxViewer } from '@silurus/ooxml/pptx';
+import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
+import { legacyXlsSource } from '@silurus/ooxml-legacy-office/xls';
+import { legacyPptSource } from '@silurus/ooxml-legacy-office/ppt';
+try {
+  for (const [family, Loader, Viewer, source] of [
+    ['doc', DocxDocument, DocxViewer, legacyDocSource],
+    ['xls', XlsxWorkbook, XlsxViewer, legacyXlsSource],
+    ['ppt', PptxPresentation, PptxViewer, legacyPptSource],
+  ]) {
+    for (const mode of ['main', 'worker']) {
+      const bytes = await (await fetch('/sample.' + family)).arrayBuffer();
+      const options = { mode, modelSources: [source()] };
+      const loaded = await Loader.load(bytes.slice(0), options);
+      try { if (loaded.mode !== mode) throw new Error(family + ': expected ' + mode + ', got ' + loaded.mode); }
+      finally { loaded.destroy(); }
+      const element = document.createElement(family === 'xls' ? 'div' : 'canvas');
+      element.style.cssText = 'width:600px;height:400px';
+      document.body.append(element);
+      const viewer = new Viewer(element, options);
+      try { await viewer.load(bytes); }
+      finally { viewer.destroy(); element.remove(); }
+    }
+  }
+  window.packedResult = 'passed';
+} catch (error) { window.packedResult = String(error?.stack || error); }
+`);
+  await build({ configFile: false, root: scratch, base: './', logLevel: 'warn', build: { target: 'esnext' } });
+  server = await preview({ configFile: false, root: scratch, preview: { host: '127.0.0.1', port: 0, open: false } });
+  browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(server.resolvedUrls.local[0]);
+  await page.waitForFunction(() => window.packedResult !== undefined, undefined, { timeout: 90_000 });
+  assert.equal(await page.evaluate(() => window.packedResult), 'passed');
+  assert.deepEqual(errors, []);
+  console.log('Packed Vite viewers/loaders: DOC/XLS/PPT main + worker passed');
+} finally {
+  await browser?.close();
+  await server?.close();
+  await rm(scratch, { recursive: true, force: true });
+}

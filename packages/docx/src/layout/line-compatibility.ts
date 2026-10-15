@@ -292,6 +292,15 @@ export const WORD_CONTIGUOUS_UNDERLINE_GEOMETRY = defineCompatibilityRule({
   description: 'Adjacent compatible underlined source runs share one safe baseline and continuous authored cadence while style, color, and thickness boundaries remain distinct.',
 });
 
+export const WORD_INLINE_OBJECT_GRID_LINE_ALLOCATION = defineCompatibilityRule({
+  id: 'word-inline-object-grid-line-allocation',
+  evidence: {
+    kind: 'regression-test',
+    reference: 'packages/docx/src/line-spacing-baseline.test.ts#advances the following paragraph with grid=%s, snap=%s, spacing=%j',
+  },
+  description: 'Word 16.0 build 20430 on Windows, compatibility mode 14, allocates a single-spaced inline-picture line to ceil(natural height / line pitch) whole cells and centers the object in the extra space. ECMA-376 §20.4.2.8 makes inline objects affect line height like glyphs; §17.6.5 and §17.3.1.32 define grid participation but not this tall-object rounding. Library policy reuses the existing grid allocation and centered baseline when inline pictures, charts or shapes supply the natural ascent and the font design height does not exceed that natural box, with automatic or omitted spacing. Smaller objects retain the taller text line\'s grid policy. The Office evidence establishes the single-spaced picture class only; automatic multiples and other inline payloads reuse that allocation without claiming separately measured Office parity. Off-grid, snap-disabled, exact and atLeast lines retain their existing paths; floating-anchor reference origins are independent.',
+});
+
 export const WORD_GRID_AT_LEAST_TALL_LINE_UNSNAPPED = defineCompatibilityRule({
   id: 'word-grid-at-least-tall-line-unsnapped',
   evidence: {

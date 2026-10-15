@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   deferDocxLayout: false,
   deferPptxLayout: false,
   rejectXlsx: false,
+  legacyDoc: vi.fn(() => ({ target: 'docx' })),
+  legacyXls: vi.fn(() => ({ target: 'xlsx' })),
+  legacyPpt: vi.fn(() => ({ target: 'pptx' })),
   math: { loadMathJax: vi.fn(), mathMLToSvg: vi.fn() },
   threeD: { render: vi.fn() },
   regionMap: { render: vi.fn() },
@@ -156,6 +159,10 @@ vi.mock('@silurus/ooxml-xlsx', () => ({
   },
 }));
 
+vi.mock('@silurus/ooxml-legacy-office/doc', () => ({ legacyDocSource: mocks.legacyDoc }));
+vi.mock('@silurus/ooxml-legacy-office/xls', () => ({ legacyXlsSource: mocks.legacyXls }));
+vi.mock('@silurus/ooxml-legacy-office/ppt', () => ({ legacyPptSource: mocks.legacyPpt }));
+
 vi.mock('../../../src/math', () => ({ math: mocks.math }));
 vi.mock('../../../src/three-d', () => ({ threeD: mocks.threeD }));
 vi.mock('../../../src/region-map', () => ({ regionMap: mocks.regionMap }));
@@ -229,6 +236,24 @@ afterEach(() => {
 });
 
 describe('Try Yours ScrollViewer integration', () => {
+  it.each([
+    { ext: 'DOC', format: 'docx', instances: mocks.docx, factory: mocks.legacyDoc },
+    { ext: 'xls', format: 'xlsx', instances: mocks.xlsx, factory: mocks.legacyXls },
+    { ext: 'ppt', format: 'pptx', instances: mocks.pptx, factory: mocks.legacyPpt },
+  ])('opens .$ext through only its matching experimental source', async ({ ext, format, instances, factory }) => {
+    const result = await renderFile(stage(), file(`legacy.${ext}`));
+    expect(result.format).toBe(format);
+    expect(instances[0].opts.modelSources).toEqual([{ target: format }]);
+    for (const candidate of [mocks.legacyDoc, mocks.legacyXls, mocks.legacyPpt]) {
+      expect(candidate).toHaveBeenCalledTimes(candidate === factory ? 1 : 0);
+    }
+  });
+
+  it('keeps ordinary OOXML loads free of legacy sources', async () => {
+    for (const ext of ['docx', 'xlsx', 'pptx']) await renderFile(stage(), file(`modern.${ext}`));
+    for (const factory of [mocks.legacyDoc, mocks.legacyXls, mocks.legacyPpt]) expect(factory).not.toHaveBeenCalled();
+  });
+
   it('lets DOCX fit the preview width and mounts every selectable page for native Find', async () => {
     const hostStage = stage();
     const result = await renderFile(hostStage, file('sample.docx'));

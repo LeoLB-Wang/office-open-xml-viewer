@@ -1,3 +1,4 @@
+import { mergeConfig } from 'vite';
 import type { StorybookConfig } from '@storybook/html-vite';
 import { docxCompatibilityMetadata } from '../scripts/docx-compatibility-build.mjs';
 
@@ -20,8 +21,13 @@ const config: StorybookConfig = {
   ],
   async viteFinal(config) {
     const { default: wasm } = await import('vite-plugin-wasm');
+    const resolvedConfig = mergeConfig(config, {
+      resolve: { alias: {
+        '@silurus/ooxml/internal/companion': new URL('../src/internal-companion.ts', import.meta.url).pathname,
+      } },
+    });
     return {
-      ...config,
+      ...resolvedConfig,
       // Default '/' for local dev and standalone deploys; the unified Pages
       // workflow sets STORYBOOK_BASE=/storybook/ to nest it under the site.
       base: process.env.STORYBOOK_BASE ?? '/',

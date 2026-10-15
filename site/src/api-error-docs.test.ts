@@ -33,6 +33,13 @@ describe('public error documentation', () => {
     expect(errorPage).toContain('<code>TiffDecodeError</code>');
   });
 
+  it('distinguishes an absent legacy source from an unsupported claimed file', () => {
+    expect(errorPage).toContain('no matching legacy source');
+    expect(errorPage).toContain('@silurus/ooxml-legacy-office');
+    expect(errorPage).toContain('no dedicated typed');
+    expect(errorPage).toContain('href="/legacy-office"');
+  });
+
   it('makes the callback-versus-Promise behavior explicit in the README', () => {
     expect(readme).toContain('## Error handling');
     expect(readme).toContain('Viewer APIs report failures from awaitable operations by rejecting');
