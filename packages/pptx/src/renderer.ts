@@ -703,13 +703,11 @@ export function resolveShapeFill(
   return resolveFillCore(fill, ctx, x, y, w, h, shapeRotationDeg, patternPtToUserUnits, undefined, outline, paintBounds);
 }
 
-/** Shared DrawingML run decorations (§20.1.10.82, §21.1.2.3.9).
- * Coordinates are in the text reading frame; stacked text supplies a frame
- * whose advance points down its column, independently of glyph orientation. */
-function paintRunDecorations(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
+/** DrawingML underline (§20.1.10.82, §21.1.2.3.9). Horizontal runs use
+ * their drawing size; stacked text supplies its column's common size/frame. */
+function paintRunUnderline(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
   x: number, baseline: number, width: number, glyphPaint: string | CanvasGradient | CanvasPattern,
-  scale: number, dpr: number): void {
-  const drawSizePx = seg.drawSizePx ?? seg.sizePx;
+  scale: number, dpr: number, drawSizePx = seg.drawSizePx ?? seg.sizePx): void {
   if (seg.underline && !seg.underlineLineNoFill
     && (!seg.noFill || seg.underlineFill || seg.underlineColor || seg.underlineLine?.fill)) {
     // §21.1.2.3.13 uFillTx follows the actual glyph fill (including
@@ -727,7 +725,12 @@ function paintRunDecorations(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
       underlinePaint, seg.underlineStyle, dpr,
       seg.underlineLine?.width ? emuToPx(seg.underlineLine.width, scale) : undefined);
   }
+}
 
+function paintRunStrike(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
+  x: number, baseline: number, width: number, glyphPaint: string | CanvasGradient | CanvasPattern,
+  dpr: number): void {
+  const drawSizePx = seg.drawSizePx ?? seg.sizePx;
   if (seg.strikethrough && !seg.noFill) {
     const lineW = Math.max(1, drawSizePx * 0.05);
     ctx.strokeStyle = glyphPaint;
@@ -759,6 +762,14 @@ function paintRunDecorations(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
       ctx.stroke();
     }
   }
+}
+
+/** Horizontal text uses the same frame for both decorations. */
+function paintRunDecorations(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
+  x: number, baseline: number, width: number, glyphPaint: string | CanvasGradient | CanvasPattern,
+  scale: number, dpr: number): void {
+  paintRunUnderline(ctx, seg, x, baseline, width, glyphPaint, scale, dpr);
+  paintRunStrike(ctx, seg, x, baseline, width, glyphPaint, dpr);
 }
 
 // ===== Text layout helpers =====
@@ -4615,7 +4626,9 @@ function paragraphBullet(body: TextBody, para: Paragraph, paraDefaultColor: stri
   })();
 
   let bulletLabel  = '';
-  let bulletFont   = buildFont(false, false, bulletBaseSizePx, 'sans-serif', rc);
+  let bulletSizePx = bulletBaseSizePx;
+  let bulletFamily = 'sans-serif';
+  let bulletFont   = buildFont(false, false, bulletSizePx, bulletFamily, rc);
   let bulletColor  = bulletInheritedColor;
   let bulletFollowsText = false;
   // Picture bullet (`<a:buBlip>`, §21.1.2.4.2). Resolved to its image + drawn
@@ -4646,6 +4659,8 @@ function paragraphBullet(body: TextBody, para: Paragraph, paraDefaultColor: stri
     // If the char was mapped to a Unicode symbol, use sans-serif for reliable rendering.
     // Otherwise use the specified font (e.g. Wingdings on systems that have it).
     const convertedFamily = bulletLabel !== b.char ? 'sans-serif' : normalizeFontFamily(b.fontFamily ?? null, rc);
+    bulletSizePx = bSizePx;
+    bulletFamily = convertedFamily;
     bulletFont  = buildFont(false, false, bSizePx, convertedFamily, rc, bulletLabel,
       hasNamedFontFamily(b.fontFamily));
     bulletColor = b.color ? hexToRgba(b.color) : bulletInheritedColor;
@@ -4657,6 +4672,8 @@ function paragraphBullet(body: TextBody, para: Paragraph, paraDefaultColor: stri
       : b.sizePct != null
         ? bulletBaseSizePx * (b.sizePct / 100)
         : bulletBaseSizePx;
+    bulletSizePx = bSizePx;
+    bulletFamily = normalizeFontFamily(b.fontFamily ?? firstRunFontFamily, rc);
     bulletFont = buildFont(
       false,
       false,
@@ -4685,7 +4702,7 @@ function paragraphBullet(body: TextBody, para: Paragraph, paraDefaultColor: stri
     bulletImage = { imagePath: b.imagePath, mimeType: b.mimeType, sizePx };
   }
 
-  return { bulletLabel, bulletFont, bulletColor, bulletFollowsText, bulletImage };
+  return { bulletLabel, bulletFont, bulletSizePx, bulletFamily, bulletColor, bulletFollowsText, bulletImage };
 }
 
 /**
@@ -4724,7 +4741,8 @@ function renderStackedTextBody(
   const paragraphs: StackedParagraphInput<LayoutSegment>[] = body.paragraphs.map((para) => {
     const sizePx = para.defFontSize != null ? para.defFontSize * pxPerPt * fontScale : bodyDefaultFontSizePx;
     const color = para.defColor ? hexToRgba(para.defColor) : bodyDefaultColor;
-    markers.push(paragraphBullet(body, para, color, scale, fontScale, rc, autoNumCounters));
+    const marker = paragraphBullet(body, para, color, scale, fontScale, rc, autoNumCounters);
+    markers.push(marker);
     const built = paragraphInputRuns(para, sizePx, color, scale, bodyDefaultBold, bodyDefaultItalic, fontScale,
       slideNumber, rc, false, ctx);
     sameStyle ??= built.sameStyle;
@@ -4736,6 +4754,12 @@ function renderStackedTextBody(
       text: '', font: buildFont(bold, italic, sizePx, family, rc, ''), sizePx, color,
       underline: false, strikethrough: false, lineMetric: lineMetricFor(family, bold, italic, rc), faceFamily: family,
     };
+    // §21.1.2.2.2: the insertion position has its own run properties. In
+    // particular an explicit noStrike must stop inherited final-mark strokes.
+    const endRun = para.endRunProperties;
+    const endInput = endRun ? paragraphInputRuns({ ...para, runs: [{ ...endRun, text: ' ' }] },
+      sizePx, color, scale, bodyDefaultBold, bodyDefaultItalic, fontScale, slideNumber, rc, false, ctx)
+      .input.find(item => item.type === 'text') : undefined;
     const spacing = (pts: number | null, pct: number | undefined): DrawingMlLineSpacing =>
       pct != null ? { type: 'pct', val: pct }
         : pts != null ? { type: 'pts', val: (pts / 100) * fontScale } : undefined;
@@ -4743,13 +4767,22 @@ function renderStackedTextBody(
       runs: built.input,
       marginStart: emuToPx(para.marL, scale),
       marginEnd: emuToPx(para.marR, scale),
-      firstLineIndent: paragraphHasBullet(para) ? 0 : emuToPx(para.indent, scale),
+      firstLineIndent: emuToPx(para.indent, scale),
+      marker: !paragraphHasRenderableContent(para) ? undefined : marker.bulletLabel ? {
+        text: marker.bulletLabel,
+        style: { text: marker.bulletLabel, font: marker.bulletFont, sizePx: marker.bulletSizePx,
+          color: marker.bulletColor, underline: false, strikethrough: false,
+          faceFamily: marker.bulletFamily, lineMetric: lineMetricFor(marker.bulletFamily, false, false, rc) },
+      } : marker.bulletImage ? {
+        advance: marker.bulletImage.sizePx, thickness: marker.bulletImage.sizePx,
+      } : undefined,
       alignment: para.alignment,
       lineSpacing: para.spaceLine?.type === 'pts'
         ? { type: 'pts', val: powerPointExactLinePoints(para.spaceLine.val) } : para.spaceLine,
       spaceBefore: spacing(para.spaceBefore, para.spaceBeforePct),
       spaceAfter: spacing(para.spaceAfter, para.spaceAfterPct),
       markStyle,
+      endMarkStyle: endInput?.type === 'text' ? endInput.style : undefined,
       eastAsianLineBreak: para.eaLnBrk !== false,
     };
   });
@@ -4768,17 +4801,12 @@ function renderStackedTextBody(
       const para = body.paragraphs[index];
       if (!paragraphHasRenderableContent(para)) return;
       const marker = markers[index];
-      const y = top + emuToPx(para.marL + para.indent, scale);
-      // The marker is a single label in the column gutter; character and
-      // auto-number labels retain their authored font and picture aspect ratio.
+      const y = top;
+      // §21.1.2.4.2: keep a picture marker per paragraph, sized by the shared
+      // buSzPct/buSzPts resolver. Electronic PDF export has shown a single
+      // image at the box upper-left for stacked text, but that observation is
+      // not isolated across image classes/export paths: no compatibility rule.
       ctx.save();
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.font = marker.bulletFont;
-      const first = paragraphs[index].runs.find(run => run.type === 'text');
-      ctx.fillStyle = marker.bulletFollowsText && first?.type === 'text' && first.style.patternFill
-        ? resolveSegmentTextPaint(ctx, first.style, axisX, y, scale) : marker.bulletColor;
-      if (marker.bulletLabel) ctx.fillText(marker.bulletLabel, axisX, y);
       const image = marker.bulletImage;
       const bitmap = image ? rc.pictureBulletImages?.has(image.imagePath)
         ? rc.pictureBulletImages.get(image.imagePath) : fetchImage
@@ -4790,8 +4818,21 @@ function renderStackedTextBody(
       }
       ctx.restore();
     },
-    drawDecorations: (style, width) => {
-      paintRunDecorations(ctx, style, 0, 0, width, style.color, scale, rc.dpr);
+    markerPaint: (index, axisX, baseline) => {
+      const marker = markers[index];
+      const first = paragraphs[index].runs.find(run => run.type === 'text');
+      return marker.bulletFollowsText && first?.type === 'text' && first.style.patternFill
+        ? resolveSegmentTextPaint(ctx, first.style, axisX, baseline, scale) : marker.bulletColor;
+    },
+    drawUnderline: (style, width, columnSizePx) => {
+      paintRunUnderline(ctx, style, 0, 0, width, style.color, scale, rc.dpr, columnSizePx);
+    },
+    sameUnderline: (a, b) => a.underline === b.underline && a.underlineStyle === b.underlineStyle
+      && a.underlineColor === b.underlineColor && a.underlineFill === b.underlineFill
+      && a.underlineLine === b.underlineLine && a.underlineLineNoFill === b.underlineLineNoFill
+      && a.color === b.color && a.noFill === b.noFill,
+    drawStrike: (style, x, baseline, width) => {
+      paintRunStrike(ctx, style, x, baseline, width, style.color, rc.dpr);
     },
     drawObject: (style, x, y) => {
       paintEquation(ctx, style, x, y);

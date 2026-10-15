@@ -20,8 +20,15 @@
 // inside its 1 em cell, which is how those faces design the remaining forms
 // (ー ～ ＝ ＿ ￣ ｜ … ‥ ‐ arrows ― ∥).
 //
-// Underline and strike use the column reading frame; glyph orientation does
-// not change the direction of a run decoration (§20.1.10.82).
+// §20.1.10.82 names decoration styles but does not place them in stacked text.
+// PowerPoint electronic PDF controls (Arial 18/24/32pt, both modes, mixed sizes
+// and wrapped columns) put one underline on the LEFT of each column, independently
+// of its progression; strikes cross each upright glyph in its own frame.
+// Character/number markers are upright stacked prefixes (including punctuation),
+// consuming cells only at paragraph start. marL + indent moves the whole prefix;
+// continuation columns start at marL (§21.1.2.2.7). These controls establish the
+// frames, not new per-face decoration metrics: offsets/weights and dash/wave
+// shapes reuse the horizontal painter's policy in the font-derived cell frame.
 
 import {
   layoutStackedText,
@@ -45,6 +52,7 @@ export interface StackedSegmentStyle {
   sizePx: number;
   color: string;
   noFill?: boolean;
+  strikethrough?: boolean;
   letterSpacingPx?: number;
   faceFamily?: string;
   faceFamilyLatin?: string;
@@ -67,7 +75,10 @@ export interface StackedParagraphInput<T extends StackedSegmentStyle> {
   spaceAfter?: DrawingMlLineSpacing;
   /** Style of the paragraph mark (sizes an empty column). */
   markStyle: T;
+  /** Explicit endParaRPr; absent inherits the last visible run's decoration. */
+  endMarkStyle?: T;
   eastAsianLineBreak?: boolean;
+  marker?: { text: string; style: T } | { advance: number; thickness: number };
 }
 
 export interface StackedBodyInput<T extends StackedSegmentStyle> {
@@ -82,9 +93,13 @@ export interface StackedBodyInput<T extends StackedSegmentStyle> {
   paragraphs: readonly StackedParagraphInput<T>[];
   /** Existing equation painter, supplied by the renderer's math-resource owner. */
   drawObject?(style: T, x: number, y: number): void;
-  /** Paint run decorations in a +90° reading frame, at baseline (0,0). */
-  drawDecorations?(style: T, width: number): void;
+  /** Underlines use the common +90° column frame and column font size. */
+  drawUnderline?(style: T, width: number, columnSizePx: number): void;
+  sameUnderline?(a: T, b: T): boolean;
+  /** Strikes use each glyph's own frame, baseline and measured width. */
+  drawStrike?(style: T, x: number, baseline: number, width: number): void;
   drawMarker?(paragraph: number, axisX: number, top: number): void;
+  markerPaint?(paragraph: number, axisX: number, baseline: number): string | CanvasGradient | CanvasPattern;
   sameStyle?(a: T, b: T): boolean;
 }
 
@@ -130,7 +145,7 @@ interface Measured<T> extends StackedGlyph<T> {
 
 function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
   const boxes = new Map<T, { ascent: number; descent: number }>();
-  return (text: string, style: T): Measured<T>[] => {
+  return (text: string, style: T, upright = false): Measured<T>[] => {
     let box = boxes.get(style);
     if (!box) {
       box = faceBox(ctx, style);
@@ -166,7 +181,7 @@ function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
       const cp = ch.codePointAt(0) ?? 0;
       let kind: Measured<T>['kind'] = 'upright';
       let advance = cell;
-      if (stackedSidewaysCharacter(cp)) {
+      if (!upright && stackedSidewaysCharacter(cp)) {
         if (stackedVerticalGlyph(family, cp)) {
           kind = 'verticalGlyph';
           advance = style.sizePx;
@@ -193,7 +208,9 @@ export function renderStackedText<T extends StackedSegmentStyle>(
   body: StackedBodyInput<T>,
 ): StackedGlyphRun[] {
   const measure = makeMeasurer<T>(ctx);
-  const paragraphs: StackedParagraph<T>[] = body.paragraphs.map((p) => ({
+  const markers = body.paragraphs.map(p => p.marker && 'text' in p.marker
+    ? measure(p.marker.text, p.marker.style, true) : []);
+  const paragraphs: StackedParagraph<T>[] = body.paragraphs.map((p, index) => ({
     // Upright OMML's height is the advance along a stacked column; the
     // horizontal equation width remains its cross-column extent.
     runs: p.runs.map((run) => run.type === 'object' && run.style.math
@@ -202,6 +219,10 @@ export function renderStackedText<T extends StackedSegmentStyle>(
     marginStart: p.marginStart,
     marginEnd: p.marginEnd,
     firstLineIndent: p.firstLineIndent,
+    firstLinePrefix: p.marker && ('text' in p.marker ? {
+      advance: markers[index].reduce((sum, g) => sum + g.advance, 0),
+      thickness: markers[index].reduce((max, g) => Math.max(max, g.thickness), 0),
+    } : p.marker),
     lineSpacing: p.lineSpacing,
     spaceBefore: p.spaceBefore,
     spaceAfter: p.spaceAfter,
@@ -226,76 +247,145 @@ export function renderStackedText<T extends StackedSegmentStyle>(
         space: false, box: { ascent: 0, descent: 0 }, cell: height };
     },
   });
-  if (body.drawMarker) {
-    let previous = -1;
-    for (const column of layout.columns) {
-      if (column.paragraph !== previous) {
-        body.drawMarker(column.paragraph, column.axisX, body.rect.top);
-        previous = column.paragraph;
+  // One pass gathers column metrics; painting below never scans the document
+  // again per column. Keep the stacked cell's extra leading on the ascent side:
+  // rotated baseline = column left + face descent, not the raw face-box centre.
+  // Omitting that leading moves uniform underlines right by half (cell-faceBox).
+  const columnMetrics = layout.columns.map(() => ({ descent: 0, size: 0 }));
+  for (const g of layout.glyphs) {
+    if (g.style.math) continue;
+    const metric = columnMetrics[g.column];
+    metric.descent = Math.max(metric.descent, g.box.descent * g.style.sizePx);
+    metric.size = Math.max(metric.size, g.style.sizePx);
+  }
+  if (body.drawUnderline) {
+    let span: { style: T; column: number; top: number; bottom: number } | undefined;
+    const flush = () => {
+      if (!span) return;
+      const column = layout.columns[span.column];
+      const metric = columnMetrics[span.column];
+      ctx.save();
+      ctx.translate(column.axisX - column.thickness / 2 + metric.descent, span.top);
+      ctx.rotate(Math.PI / 2);
+      body.drawUnderline!(span.style, span.bottom - span.top, metric.size);
+      ctx.restore();
+    };
+    for (const g of layout.glyphs) {
+      if (g.style.math) { flush(); span = undefined; continue; }
+      if (span && span.column === g.column && (body.sameUnderline?.(span.style, g.style) ?? span.style === g.style)) {
+        span.bottom = g.cellTop + g.advance;
+      } else {
+        flush();
+        span = { style: g.style, column: g.column, top: g.cellTop, bottom: g.cellTop + g.advance };
       }
     }
+    flush();
   }
   const runs: StackedGlyphRun[] = [];
   const prevAlign = ctx.textAlign;
   const prevBaseline = ctx.textBaseline;
-  for (const placed of layout.glyphs) {
-    const g = placed;
+  const paintGlyph = (g: Measured<T>, axisX: number, cellTop: number, markerParagraph?: number) => {
+    const marker = markerParagraph !== undefined;
     const { style, box } = g;
     if (style.math) {
-      body.drawObject!(style, placed.axisX - g.thickness / 2, placed.cellTop);
-      continue;
+      body.drawObject!(style, axisX - g.thickness / 2, cellTop);
+      return;
     }
     const size = style.sizePx;
-    runs.push({
+    if (!marker) runs.push({
       text: g.text, font: style.font, fontSize: size,
-      x: placed.axisX - g.thickness / 2, y: placed.cellTop, w: g.thickness, h: g.advance,
+      x: axisX - g.thickness / 2, y: cellTop, w: g.thickness, h: g.advance,
       ...(style.hyperlink ? { hyperlink: style.hyperlink } : {}),
     });
-    if (body.drawDecorations) {
-      // Reuse the horizontal painter in the column reading frame. Its rule
-      // offsets are existing library paint policy, not an Office-measured
-      // WordArt decoration-position compatibility claim.
-      ctx.save();
-      ctx.translate(placed.axisX - (box.ascent - box.descent) * size / 2, placed.cellTop);
-      ctx.rotate(Math.PI / 2);
-      body.drawDecorations(style, g.advance);
-      ctx.restore();
-    }
-    if (g.space || style.noFill) continue;
     ctx.font = style.font;
-    ctx.fillStyle = style.color;
+    const strike = (text: string, x: number, baseline: number, centered = false) => {
+      if (marker || !style.strikethrough || !body.drawStrike) return;
+      const width = ctx.measureText(text).width;
+      body.drawStrike(style, centered ? x - width / 2 : x, baseline, width);
+    };
+    if (style.noFill) return;
+    ctx.fillStyle = marker && body.markerPaint
+      ? body.markerPaint(markerParagraph, axisX, cellTop + g.cell - box.descent * size) : style.color;
     const cp = g.text.codePointAt(0) ?? 0;
     if (g.kind === 'upright') {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText(g.text, placed.axisX, placed.cellTop + g.cell - box.descent * size);
+      const baseline = cellTop + g.cell - box.descent * size;
+      strike(g.text, axisX, baseline, true);
+      if (!g.space) ctx.fillText(g.text, axisX, baseline);
     } else if (g.kind === 'verticalGlyph') {
       // A presentation form replaces a lone character only; a cluster with a
       // mark keeps its own glyphs and takes the turned fallback.
       const single = String.fromCodePoint(cp) === g.text;
       const form = single ? verticalFormSubstitute(cp) ?? verticalBracketFormSubstitute(cp) : null;
-      const left = placed.axisX - (box.ascent + box.descent) * size / 2;
+      const left = axisX - (box.ascent + box.descent) * size / 2;
       if (form !== null) {
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText(String.fromCodePoint(form), left, placed.cellTop + box.ascent * size);
+        const text = String.fromCodePoint(form);
+        const baseline = cellTop + box.ascent * size;
+        strike(text, left, baseline);
+        ctx.fillText(text, left, baseline);
       } else {
         ctx.save();
-        ctx.translate(left + size / 2, placed.cellTop + size / 2);
+        ctx.translate(left + size / 2, cellTop + size / 2);
         ctx.rotate(Math.PI / 2);
         ctx.textAlign = 'center';
+        if (!marker && style.strikethrough && body.drawStrike) {
+          ctx.textBaseline = 'alphabetic';
+          const alphabeticAscent = ctx.measureText(g.text).fontBoundingBoxAscent;
+          ctx.textBaseline = 'middle';
+          const middleAscent = ctx.measureText(g.text).fontBoundingBoxAscent;
+          // TextMetrics ascent is relative to the active baseline. Subtract
+          // to locate the alphabetic strike frame without moving the glyph;
+          // engines without these metrics use the segment's face-box centre.
+          const baseline = Number.isFinite(alphabeticAscent - middleAscent)
+            ? alphabeticAscent - middleAscent : (box.ascent - box.descent) * size / 2;
+          strike(g.text, 0, baseline, true);
+        }
         ctx.textBaseline = 'middle';
         ctx.fillText(g.text, 0, 0);
         ctx.restore();
       }
     } else {
       ctx.save();
-      ctx.translate(placed.axisX - (box.ascent - box.descent) * size / 2, placed.cellTop);
+      ctx.translate(axisX - (box.ascent - box.descent) * size / 2, cellTop);
       ctx.rotate(Math.PI / 2);
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
+      strike(g.text, 0, 0);
       ctx.fillText(g.text, 0, 0);
       ctx.restore();
+    }
+  };
+  let glyphIndex = 0;
+  for (const [columnIndex, column] of layout.columns.entries()) {
+    if (column.prefixTop !== undefined) {
+      let top = column.prefixTop;
+      for (const g of markers[column.paragraph]) {
+        paintGlyph(g, column.axisX, top, column.paragraph);
+        top += g.advance;
+      }
+      body.drawMarker?.(column.paragraph, column.axisX, column.prefixTop);
+    }
+    let last: typeof layout.glyphs[number] | undefined;
+    while (glyphIndex < layout.glyphs.length && layout.glyphs[glyphIndex].column === columnIndex) {
+      const g = layout.glyphs[glyphIndex++];
+      paintGlyph(g, g.axisX, g.cellTop);
+      last = g;
+    }
+    // The same uniform/mixed-size Office controls strike the invisible final
+    // paragraph mark too. Use endParaRPr when authored, otherwise the last
+    // run's face; a measured space supplies the invisible mark's width.
+    // It paints after the last cell but adds no glyph, wrap or selection cell.
+    const endStyle = body.paragraphs[column.paragraph].endMarkStyle ?? last?.style;
+    if (last && endStyle && !endStyle.math && endStyle.strikethrough && body.drawStrike
+      && layout.columns[columnIndex + 1]?.paragraph !== column.paragraph) {
+      const mark = measure(' ', endStyle)[0];
+      ctx.font = endStyle.font;
+      const width = ctx.measureText(' ').width;
+      body.drawStrike(endStyle, column.axisX - width / 2,
+        last.cellTop + last.advance + mark.cell - mark.box.descent * endStyle.sizePx, width);
     }
   }
   ctx.textAlign = prevAlign;

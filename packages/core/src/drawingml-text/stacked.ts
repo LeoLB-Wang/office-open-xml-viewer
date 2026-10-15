@@ -62,6 +62,9 @@ export interface StackedParagraph<T> {
   marginStart?: number;
   marginEnd?: number;
   firstLineIndent?: number;
+  /** Atomic paragraph marker in the reading direction. It precedes text on
+   * the first column only; its advance participates in wrapping/alignment. */
+  firstLinePrefix?: { advance: number; thickness: number };
   lineSpacing?: DrawingMlLineSpacing;
   spaceBefore?: DrawingMlLineSpacing;
   spaceAfter?: DrawingMlLineSpacing;
@@ -100,6 +103,8 @@ export interface StackedColumn {
   /** Natural thickness (largest cell). */
   thickness: number;
   paragraph: number;
+  /** Start of an authored first-column marker, after indent and alignment. */
+  prefixTop?: number;
 }
 
 export interface StackedLayout<G> {
@@ -143,7 +148,7 @@ export function layoutStackedText<T, G extends StackedGlyph<T> = StackedGlyph<T>
   paragraphs.forEach((para, index) => {
     const broken = breakDrawingMlText(para.runs, {
       maxWidth: options.wrap ? Math.max(0, rect.height - (para.marginStart ?? 0) - (para.marginEnd ?? 0)) : Number.POSITIVE_INFINITY,
-      firstLineIndent: para.firstLineIndent,
+      firstLineIndent: (para.firstLineIndent ?? 0) + (para.firstLinePrefix?.advance ?? 0),
       measureText: (text, style) => sumAdvance(options.glyphs(text, style)),
       sameStyle: options.sameStyle,
       eastAsianLineBreak: para.eastAsianLineBreak,
@@ -166,6 +171,7 @@ export function layoutStackedText<T, G extends StackedGlyph<T> = StackedGlyph<T>
       // than a call's argument list (no spread into Math.max).
       let thickness = glyphs.length > 0 ? 0 : para.emptyThickness;
       for (const g of glyphs) if (g.thickness > thickness) thickness = g.thickness;
+      if (i === 0 && para.firstLinePrefix) thickness = Math.max(thickness, para.firstLinePrefix.thickness);
       const natural = { ascent: thickness / 2, descent: thickness / 2 };
       const box = drawingMlSpacedLineBox(natural, para.lineSpacing, pxPerPt, reduction);
       return {
@@ -232,7 +238,9 @@ export function layoutStackedText<T, G extends StackedGlyph<T> = StackedGlyph<T>
   let regionLength = rect.height;
   if (options.anchorCtr) {
     let longest = 0;
-    for (const l of lines) longest = Math.max(longest, sumAdvance(l.glyphs.slice(0, contentGlyphs(l.glyphs))));
+    for (const l of lines) longest = Math.max(longest,
+      sumAdvance(l.glyphs.slice(0, contentGlyphs(l.glyphs)))
+        + (l.firstInParagraph ? paragraphs[l.paragraph].firstLinePrefix?.advance ?? 0 : 0));
     regionTop = rect.top + (rect.height - longest) / 2;
     regionLength = longest;
   }
@@ -241,10 +249,12 @@ export function layoutStackedText<T, G extends StackedGlyph<T> = StackedGlyph<T>
   const columns: StackedColumn[] = [];
   lines.forEach((line, column) => {
     const axisX = rtl ? rect.left + rect.width - offset - axisU[column] : rect.left + offset + axisU[column];
-    columns.push({ axisX, thickness: line.thickness, paragraph: line.paragraph });
     const paragraph = paragraphs[line.paragraph];
     const alignment = paragraph.alignment;
-    const leading = (paragraph.marginStart ?? 0) + (line.firstInParagraph ? paragraph.firstLineIndent ?? 0 : 0);
+    const prefix = line.firstInParagraph ? paragraph.firstLinePrefix : undefined;
+    const prefixAdvance = prefix?.advance ?? 0;
+    const leading = (paragraph.marginStart ?? 0)
+      + (line.firstInParagraph ? paragraph.firstLineIndent ?? 0 : 0) + prefixAdvance;
     const trailing = paragraph.marginEnd ?? 0;
     const columnTop = regionTop + leading;
     const count = contentGlyphs(line.glyphs);
@@ -265,6 +275,9 @@ export function layoutStackedText<T, G extends StackedGlyph<T> = StackedGlyph<T>
     } else if (alignment === 'r') {
       start = columnTop + extra;
     }
+    columns.push({ axisX, thickness: line.thickness, paragraph: line.paragraph,
+      ...(prefix ? { prefixTop: start - prefixAdvance } : {}),
+    });
     let y = start;
     line.glyphs.forEach((g, i) => {
       glyphs.push({ ...g, axisX, cellTop: y, column });
