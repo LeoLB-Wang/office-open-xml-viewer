@@ -80,7 +80,6 @@ pub fn pivot_style_elements(
 ) -> Option<Vec<PivotTableStyleElement>> {
     Some(
         spreadsheet_style_presets::pivot_style(name)?
-            .into_iter()
             .map(|element| PivotTableStyleElement {
                 kind: element.kind.to_string(),
                 size: element.size,
