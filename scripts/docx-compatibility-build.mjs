@@ -1,13 +1,7 @@
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-
-// Vite 6's config bundler prepends import.meta bindings before a dependency's
-// shebang, making a static import of this CLI invalid. Keep the checker as a
-// normal file import in both Vite 6 package builds and Vite 8 root builds.
-const { checkDocxCompatibilityEvidence } = await import(
-  new URL('./check-docx-compatibility-evidence.mjs', import.meta.url).href
-);
+import { checkDocxCompatibilityEvidence } from './check-docx-compatibility-evidence.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript-compiler-api');
