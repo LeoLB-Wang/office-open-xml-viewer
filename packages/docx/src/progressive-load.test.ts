@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { vi, afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLayoutServices } from './layout-runtime.js';
 import { layoutSourceStore } from './layout-source-model-adapter.js';
 import { retainRenderWorkerDocumentLayout } from './render-worker-layout.js';
@@ -12,7 +12,7 @@ import { attachDocumentLayoutRuntime, documentLayoutRuntimeOf } from './layout/r
 import { layoutFingerprint } from './layout/invariants.js';
 import { normalizeLayoutOptions } from './layout/options.js';
 import { layoutDocumentProgressively } from './layout/progressive.js';
-import { setDocumentLayoutValidation } from './layout/validation-policy.js';
+import { setDocumentLayoutValidation } from './testing/validation-policy.js';
 import type { DeepReadonly, DocumentLayout } from './layout/types.js';
 import type { LayoutVariantStore } from './layout/variant-store.js';
 import { DocxDocument } from './document.js';
@@ -296,3 +296,5 @@ describe('progressive layout handover', () => {
     expect(services).toBeDefined();
   });
 });
+
+vi.mock('./layout/validation-policy.js', () => ({ documentLayoutValidationEnabled: vi.fn(() => true) }));
