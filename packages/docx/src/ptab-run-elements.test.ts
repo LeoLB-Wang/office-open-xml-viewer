@@ -475,6 +475,15 @@ describe('noBreakHyphen (§17.3.3.18) and softHyphen (§17.3.3.29)', () => {
       .toBe(whole.at(-1)!.x + whole.at(-1)!.text.length * 10);
   });
 
+  it('lays out an unselected U+00AD in condensed text without a negative advance', async () => {
+    // Canvas measures U+00AD with no advance, as browsers do for an unbroken soft hyphen.
+    const { canvas, fills } = makeRecordingCanvas((text, fontSize) =>
+      [...text].filter((c) => c !== '\u00AD').length * fontSize);
+    const condensed = { ...textRun('br\u00ADeaking'), charSpacing: -0.05 } as DocRun;
+    await renderDocumentToCanvas(doc([para([condensed])]), canvas, 0, { dpr: 1, width: PAGE_W });
+    expect(fills.map((c) => c.text).join('').replace(/[^a-z]/g, '')).toBe('breaking');
+  });
+
   it('selects an authored optional break with its own styled and measured hyphen', () => {
     const marker = { ...textRun(''), optionalHyphen: true, color: 'ff0000', fontSize: 14 } as DocRun;
     const segs = buildSegments([textRun('br'), marker, textRun('eaking')], {} as LineLayoutEnvironment);

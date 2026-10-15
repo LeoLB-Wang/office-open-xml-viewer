@@ -392,7 +392,7 @@ export function charScaleFactor(seg: LayoutTextSeg): number {
 
 /** Canonical advance formula for a text string in a run: natural glyph width
  *  scaled by ECMA-376 §17.3.2.43 `<w:w>`, plus the §17.6.5 character-grid
- *  delta, plus one ECMA-376 §17.3.2.35 `<w:spacing>` pitch per code point. */
+ *  delta, plus one ECMA-376 §17.3.2.35 `<w:spacing>` pitch per character. */
 export function textAdvanceWidth(
   naturalWidthPx: number,
   text: string,
@@ -400,10 +400,30 @@ export function textAdvanceWidth(
   charScale: number,
   charSpacingPx: number,
 ): number {
+  const codePoints = [...text];
   return naturalWidthPx * charScale
-    + [...text].length * characterGridDeltaPx
-    + [...text].length * charSpacingPx;
+    + codePoints.length * characterGridDeltaPx
+    + pitchBearingCharacterCount(codePoints) * charSpacingPx;
 }
+
+/** §17.3.2.35 adds the pitch "after each character … before the following
+ *  character is rendered". Two kinds of code point are not such a character:
+ *  - A combining mark (`\p{M}`) belongs to its base's user-perceived character
+ *    (UAX #29). Canvas `letterSpacing`, which paints this pitch, likewise
+ *    spaces once per grapheme cluster: Chrome and Firefox measure `a` + U+030A
+ *    exactly as `a` under any `letterSpacing`. A mark split from its base by a
+ *    §17.3.2.26 font-slot boundary (U+0300–U+036F is highAnsi, its Basic Latin
+ *    base is ascii) has zero natural advance, so counting it would make that
+ *    segment's advance negative under condensed spacing.
+ *  - An unselected optional hyphen (§17.3.3.29; `<w:softHyphen/>` or a literal
+ *    U+00AD) is not rendered. A selected break paints its own hyphen glyph
+ *    segment, which is spaced as an ordinary character. */
+function pitchBearingCharacterCount(codePoints: readonly string[]): number {
+  return codePoints.filter((c) => c !== OPTIONAL_HYPHEN && !COMBINING_MARK.test(c)).length;
+}
+
+const OPTIONAL_HYPHEN = '\u00AD';
+const COMBINING_MARK = /^\p{M}$/u;
 
 
 /** Total per-code-point letter-spacing (px) a segment draws with: the docGrid
