@@ -34,7 +34,7 @@ jobs:
             packages/pptx/parser
             packages/xlsx/parser
             packages/docx/parser
-            packages/legacy-converter/parser
+            packages/legacy-office/parser
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
