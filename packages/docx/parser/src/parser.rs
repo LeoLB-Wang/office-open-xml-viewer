@@ -18789,6 +18789,97 @@ mod split_page_break_mark_tests {
     use super::*;
 
     #[test]
+    fn retained_mark_does_not_create_another_list_item_or_decoration_owner() {
+        let numbering = format!(
+            r#"<w:numbering xmlns:w="{W_NS}"><w:abstractNum w:abstractNumId="0">
+            <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/>
+            <w:lvlText w:val="%1."/></w:lvl></w:abstractNum>
+            <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>"#
+        );
+        // Without text there is no earlier paragraph piece to own the marker,
+        // decorations, or anchors: the retained mark must keep them exactly once.
+        for text in ["item", ""] {
+            let xml = format!(
+                r#"<w:document xmlns:w="{W_NS}" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
+                <w:body><w:p w14:paraId="12345678"><w:pPr>
+                <w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>
+                <w:pageBreakBefore/><w:outlineLvl w:val="0"/>
+                <w:pBdr><w:bottom w:val="single" w:sz="8"/></w:pBdr><w:shd w:fill="EEEEEE"/>
+                <w:framePr w:w="1440" w:h="720"/>
+                <w:spacing w:after="140"/><w:ind w:left="240"/><w:rPr><w:sz w:val="36"/></w:rPr>
+                </w:pPr><w:bookmarkStart w:id="0" w:name="target"/><w:commentRangeStart w:id="1"/>
+                <w:ins w:id="2" w:author="Editor"><w:r><w:t>{text}</w:t><w:br w:type="page"/></w:r></w:ins>
+                <w:commentRangeEnd w:id="1"/><w:bookmarkEnd w:id="0"/></w:p>
+                <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>
+                <w:r><w:t>next</w:t></w:r></w:p></w:body></w:document>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let mut num_map = NumberingMap::parse(&numbering, &HashMap::new());
+            let elements = parse_body_elements_in_story(
+                child_w(doc.root_element(), "body").unwrap(),
+                &StyleMap::parse(""),
+                &mut num_map,
+                &HashMap::new(),
+                &ChartMap::default(),
+                &HashMap::new(),
+                &ThemeColors::default(),
+                &HashMap::new(),
+                TablePositioningContext::Normal,
+                None,
+                true,
+            );
+            let paragraphs: Vec<_> = elements
+                .iter()
+                .filter_map(|element| match element {
+                    BodyElement::Paragraph(p) => Some(p.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            let has_text = !text.is_empty();
+            assert_eq!(paragraphs.len(), if has_text { 3 } else { 2 });
+            assert_eq!(
+                paragraphs
+                    .iter()
+                    .map(|p| p.numbering.as_ref().map(|n| n.text.as_str()))
+                    .collect::<Vec<_>>(),
+                if has_text {
+                    vec![Some("1."), None, Some("2.")]
+                } else {
+                    vec![Some("1."), Some("2.")]
+                }
+            );
+            let owner = paragraphs[0];
+            assert_eq!(owner.paragraph_id.as_deref(), Some("12345678"));
+            assert_eq!(owner.bookmarks, ["target"]);
+            assert_eq!(owner.comment_marks.len(), 2);
+            assert!(owner.borders.is_some() && owner.shading.is_some() && owner.frame_pr.is_some());
+            assert!(owner.paragraph_typography_acquisition.is_some());
+            assert!(owner.page_break_before);
+            assert_eq!(owner.outline_level, Some(0));
+            let mark = paragraphs[usize::from(has_text)];
+            assert!(mark.runs.is_empty());
+            assert_eq!(mark.default_font_size, Some(18.0));
+            assert_eq!(mark.space_after, 7.0);
+            assert_eq!(mark.indent_left, 12.0);
+            if has_text {
+                assert!(!owner.run_revisions.is_empty());
+                assert!(
+                    mark.paragraph_id.is_none()
+                        && mark.bookmarks.is_empty()
+                        && mark.comment_marks.is_empty()
+                );
+                assert!(mark.run_revisions.is_empty());
+                assert!(
+                    mark.borders.is_none() && mark.shading.is_none() && mark.frame_pr.is_none()
+                );
+                assert!(mark.paragraph_typography_acquisition.is_none());
+                assert!(!mark.page_break_before);
+                assert!(mark.outline_level.is_none());
+            }
+        }
+    }
+
+    #[test]
     fn split_page_break_paragraph_mark_uses_document_settings() {
         use std::io::{Cursor, Write};
         for (setting, tail, section, expected) in [

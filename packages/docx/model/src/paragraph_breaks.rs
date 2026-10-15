@@ -204,6 +204,7 @@ pub fn visit_para_on_page_breaks<E>(
 
     let visibility: Vec<bool> = chunks.iter().map(|runs| has_visible(runs)).collect();
     let mut emitted = false;
+    let mut emitted_paragraph = false;
     for (index, runs) in chunks.into_iter().enumerate() {
         if index == 0 && !has_visible(&runs) {
             continue;
@@ -221,6 +222,7 @@ pub fn visit_para_on_page_breaks<E>(
         chunk.complex_field_boundaries = std::mem::take(&mut boundary_chunks[index]);
         emit(ParaPiece::Para(chunk))?;
         emitted = true;
+        emitted_paragraph = true;
     }
     for sep in trailing {
         emit(match sep {
@@ -232,6 +234,29 @@ pub fn visit_para_on_page_breaks<E>(
         emitted = true;
     }
     if retain_mark || !emitted {
+        if retain_mark && emitted_paragraph {
+            // ECMA-376 Part 4 §14.8.3.38 moves the existing paragraph's
+            // mark; it does not introduce another list item (§17.9) or source
+            // paragraph. Normalization policy: the content piece owns its
+            // marker, decorations, frame, outline entry, and source anchors
+            // (§17.13.4/§17.13.6, MS-DOCX §2.6.2.3). The synthetic mark line
+            // retains font/line metrics, indents, and spacing, but must not
+            // repaint those owners or reapply pageBreakBefore. Clear both
+            // border projections so typography acquisition cannot restore ink.
+            // With no content piece, this is the only paragraph and keeps its
+            // ownership metadata; the page-break pieces do not own it.
+            para.numbering = None;
+            para.paragraph_id = None;
+            para.bookmarks.clear();
+            para.comment_marks.clear();
+            para.run_revisions.clear();
+            para.borders = None;
+            para.paragraph_typography_acquisition = None;
+            para.shading = None;
+            para.frame_pr = None;
+            para.outline_level = None;
+            para.page_break_before = false;
+        }
         emit(ParaPiece::Para(para))?;
     }
     Ok(())
