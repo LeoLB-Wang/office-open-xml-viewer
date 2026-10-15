@@ -615,6 +615,19 @@ describe('playWmf — robustness', () => {
 // ── playWmf: STRETCHDIBITS embedded raster DIB ──────────────────────────────
 
 describe('playWmf — STRETCHDIBITS (embedded raster DIB)', () => {
+  it('propagates a packed DIB budget crossing out of WMF playback', () => {
+    const bitmap = record(FN.STRETCHDIBITS, (w) => {
+      w.u32(0x00cc0020);
+      for (let i = 0; i < 9; i++) w.u16(1);
+      w.u32(40).u32(40000).u32(1).u16(1).u16(24).u32(0).u32(0)
+        .u32(0).u32(0).u32(0).u32(0).raw(0, 0, 0, 0);
+    });
+    expect(() => playWmf(concat(wmfHeader(), bitmap, record(FN.EOF, () => {})), makeRecordingCtx().ctx, 100, 100))
+      .toThrowError(expect.objectContaining({
+        code: 'ooxml-decoded-image-limit', metric: 'image-dimension', limit: 32767, observed: 40000,
+      }));
+  });
+
   // A META_STRETCHDIBITS record wraps a packed DIB. Its params (after the 6-byte
   // header) are: u32 RasterOp, i16 SrcHeight/SrcWidth/YSrc/XSrc, u16 UsageSrc,
   // i16 DestHeight/DestWidth/YDest/XDest, then the packed DIB. OffscreenCanvas is

@@ -31,7 +31,7 @@
 // whose EMF+ part has no drawing records shows the GDI drawing.
 
 import { blitDibToCtx, type DecodedDib } from './dib.js';
-import { HARD_MAX_DECODED_IMAGE_BYTES, MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from './pixel-budget.js';
+import { HARD_MAX_DECODED_IMAGE_BYTES, MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS, OoxmlDecodedImageLimitError, isOoxmlDecodedImageLimitError } from './pixel-budget.js';
 
 const PLUS = {
   HEADER: 0x4001,
@@ -83,10 +83,10 @@ const WRAP_MODE_MAX = 4;
 // DrawImage (the cropped source copy, the helper canvas backing store and its
 // ImageData) — must fit HARD_MAX_DECODED_IMAGE_BYTES: exactly the four
 // coexisting surfaces a single maximal bitmap needs to be retained, cropped
-// and blitted. The dry run applies the same accounting, so a stream that
-// exceeds it is rejected before a GDI alternative is given up.
+// and blitted. The dry run applies the same accounting. A crossing throws a
+// typed resource error through both scan and playback; a GDI alternative must
+// never hide a hard resource failure.
 const MAX_PLAYER_DECODED_BYTES = HARD_MAX_DECODED_IMAGE_BYTES;
-const BUDGET_FAILURE = 'EMF+ bitmap (decoded-image budget)';
 
 interface PlusRecord {
   type: number;
@@ -285,7 +285,10 @@ export class EmfPlusPlayer {
       const reported = this.target.unsupported.size;
       try {
         this.play(dv, record);
-      } catch {
+      } catch (error) {
+        // Resource policy is terminal in scan and playback, including dual
+        // files. Only ordinary malformed/unsupported content may select GDI.
+        if (isOoxmlDecodedImageLimitError(error)) throw error;
         this.target.unsupported.add(`EMF+ record 0x${record.type.toString(16)} (malformed)`);
       }
       if (!this.dry && this.target.unsupported.size > reported) this.drawFailed = true;
@@ -436,11 +439,7 @@ export class EmfPlusPlayer {
       if (!this.pending) {
         // The fragments are views of the file; only the assembled copy
         // allocates, so it is admitted before the first fragment is kept.
-        if (!this.admits(total)) {
-          this.target.unsupported.add(BUDGET_FAILURE);
-          this.objects.delete(id);
-          return;
-        }
+        this.admit(total);
         this.pending = { id, total, parts: [], length: 0 };
       }
       const part = data.subarray(4);
@@ -459,12 +458,7 @@ export class EmfPlusPlayer {
       if (this.pending.length < this.pending.total) return;
       // Re-admit right before allocating: what the table retains now, plus
       // the assembly buffer about to be created.
-      if (!this.admits(this.pending.total)) {
-        this.target.unsupported.add(BUDGET_FAILURE);
-        this.pending = null;
-        this.objects.delete(id);
-        return;
-      }
+      this.admit(this.pending.total);
       const whole = new Uint8Array(this.pending.total);
       let at = 0;
       for (const piece of this.pending.parts) {
@@ -512,12 +506,13 @@ export class EmfPlusPlayer {
     if (width <= 0 || height <= 0 || stride < width * 4 || 28 + stride * height > data.length) {
       throw new RangeError('Invalid EMF+ bitmap');
     }
-    if (width > MAX_RASTER_DIMENSION || height > MAX_RASTER_DIMENSION
-      || width * height > MAX_RASTER_PIXELS
-      || !this.admits(assembled + width * height * 4, id)) {
-      this.target.unsupported.add(BUDGET_FAILURE);
-      return;
+    if (width > MAX_RASTER_DIMENSION || height > MAX_RASTER_DIMENSION) {
+      throw new OoxmlDecodedImageLimitError('image-dimension', MAX_RASTER_DIMENSION, Math.max(width, height));
     }
+    if (width * height > MAX_RASTER_PIXELS) {
+      throw new OoxmlDecodedImageLimitError('image-pixels', MAX_RASTER_PIXELS, width * height);
+    }
+    this.admit(assembled + width * height * 4, id);
     if (this.dry) {
       this.objects.set(id, { kind: 'image', bitmap: { width, height, data: new Uint8ClampedArray(0) } });
       return;
@@ -550,10 +545,13 @@ export class EmfPlusPlayer {
     return bytes;
   }
 
-  /** Whether `transient` more decoded bytes fit MAX_PLAYER_DECODED_BYTES next
-   *  to what the table retains (see the resource note at the top). */
-  private admits(transient: number, replacing?: number): boolean {
-    return this.retainedBytes(replacing) + transient <= MAX_PLAYER_DECODED_BYTES;
+  /** Admit transient bytes next to the retained table. This library ceiling
+   *  throws rather than offering an incomplete/GDI compatibility rendering. */
+  private admit(transient: number, replacing?: number): void {
+    const observed = this.retainedBytes(replacing) + transient;
+    if (observed > MAX_PLAYER_DECODED_BYTES) {
+      throw new OoxmlDecodedImageLimitError('active-decoded-bytes', MAX_PLAYER_DECODED_BYTES, observed);
+    }
   }
 
   /** World → page → device pixels → target. Only UnitPixel pages are
@@ -623,10 +621,7 @@ export class EmfPlusPlayer {
     // helper canvas backing store and its ImageData (dib.ts blitDibToCtx).
     const cropped = x0 !== 0 || y0 !== 0 || x1 !== image.width || y1 !== image.height;
     const sourceBytes = (x1 - x0) * (y1 - y0) * 4;
-    if (!this.admits((cropped ? sourceBytes : 0) + 2 * sourceBytes)) {
-      this.target.unsupported.add(BUDGET_FAILURE);
-      return;
-    }
+    this.admit((cropped ? sourceBytes : 0) + 2 * sourceBytes);
     if (this.dry) return;
     let source: Bitmap = image;
     if (cropped) {

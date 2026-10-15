@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { isEmf } from './wmf.js';
 import { playEmf, renderEmfToBitmap } from './emf.js';
-import { scanEmfPlus } from './emf-plus.js';
+import { EmfPlusPlayer, scanEmfPlus } from './emf-plus.js';
+import { HARD_MAX_DECODED_IMAGE_BYTES, MAX_RASTER_DIMENSION } from './pixel-budget.js';
 import {
   decodeRasterOrMetafile,
   getIncompleteMetafileReport,
@@ -1180,6 +1181,29 @@ describe('playEmf — picture frame mapping + path clip', () => {
     expect(m.calls.filter((call) => call.op === 'fill')).toHaveLength(0);
   });
 
+  it('propagates DIB budget errors through bitmap and pattern-brush playback catches', () => {
+    const dib = new Writer().u32(40).i32(40000).i32(1).u16(1).u16(24)
+      .u32(0).u32(0).i32(0).i32(0).u32(0).u32(0).raw(0, 0, 0, 0).build();
+    const brush = record(EMR.CREATEDIBPATTERNBRUSHPT, (w) => {
+      w.u32(1).u32(0).u32(32).u32(40).u32(72).u32(4);
+      for (const byte of dib) w.raw(byte);
+    });
+    const bitmap = record(81, (w) => {
+      for (let i = 0; i < 10; i++) w.i32(0); // bounds and destination/source fields
+      w.u32(80).u32(40).u32(120).u32(4).u32(0).u32(0x00cc0020).i32(1).i32(1);
+      for (const byte of dib) w.raw(byte);
+    });
+    for (const drawing of [brush, bitmap]) {
+      const m = makeRecordingCtx();
+      expect(() => playEmf(concat(emfHeader(), drawing, record(EMR.EOF, () => {})), m.ctx, 100, 100))
+        .toThrowError(expect.objectContaining({
+          code: 'ooxml-decoded-image-limit', metric: 'image-dimension', limit: MAX_RASTER_DIMENSION, observed: 40000,
+        }));
+      expect(m.calls.filter((c) => c.op === 'save').length)
+        .toBe(m.calls.filter((c) => c.op === 'restore').length);
+    }
+  });
+
   it('decodes a 4bpp DIB pattern brush (MATLAB bar-chart fill colour)', () => {
     // A 2×2 4bpp BI_RGB DIB, 1-entry palette = blue, all pixels index 0. The
     // pattern brush averages to that blue, so a polygon fills blue — exercising
@@ -2162,21 +2186,44 @@ describe('playEmf — EMF+ bitmap records', () => {
     }
   });
 
-  it('applies the shared image budget before a bitmap or a continued object is allocated', () => {
-    // 40,000 × 1 exceeds the shared per-axis ceiling (MAX_RASTER_DIMENSION).
+  it('throws typed bitmap budget errors in scan, playback and dual-mode playback', async () => {
+    // Valid uncompressed data, so the axis ceiling is the only rejection.
     const wide = new Uint8Array(28 + 40000 * 4);
     const v = new DataView(wide.buffer);
     [0xdbc01002, 1, 40000, 1, 160000, 0x0026200a, 0].forEach((x, i) => v.setUint32(i * 4, x, true));
-    const oversize = [comment(header(true), attributes(), plusRecord(0x4008, 0x0501, [...wide]), drawImage([0, 0, 2, 1]))];
-    expect(scanEmfPlus(file(oversize))).toMatchObject({ play: false, failures: expect.arrayContaining(['EMF+ bitmap (decoded-image budget)']) });
-    const played = run(oversize, gdiPolygon());
-    expect(played.draws).toHaveLength(0);
-    expect(played.styles.fill).toEqual(['#000000']);
-    // A continued object declaring more than the player's decoded-byte
-    // ceiling is refused at its first fragment, before any assembly buffer.
+    const oversized = plusRecord(0x4008, 0x0501, [...wide]);
+    // Admission of a continued object is also a hard byte ceiling.
     const huge = plusRecord(0x4008, 0x8501, [...u32(0xffffff00), 1, 2, 3, 4]);
-    expect(scanEmfPlus(file([comment(header(true), attributes(), huge, drawImage([0, 0, 2, 1]))])).failures)
-      .toContain('EMF+ bitmap (decoded-image budget)');
+    for (const [object, metric, limit, observed] of [
+      [oversized, 'image-dimension', MAX_RASTER_DIMENSION, 40000],
+      [huge, 'active-decoded-bytes', HARD_MAX_DECODED_IMAGE_BYTES, 0xffffff00],
+    ] as const) {
+      const records = [comment(header(true), attributes(), object, drawImage([0, 0, 2, 1]))];
+      const expected = { code: 'ooxml-decoded-image-limit', metric, limit, observed };
+      expect(() => scanEmfPlus(file(records))).toThrowError(expect.objectContaining(expected));
+      expect(() => playEmf(file(records, gdiPolygon()), makeRecordingCtx().ctx, 100, 100))
+        .toThrowError(expect.objectContaining(expected));
+      const bytes = records[0];
+      const target = {
+        ctx: null, W: 100, H: 100, left: 0, top: 0, boundsW: 100, boundsH: 100,
+        drew: false, unsupported: new Set<string>(),
+      };
+      expect(() => new EmfPlusPlayer(target).playComment(new DataView(bytes.buffer), 0, bytes.length))
+        .toThrowError(expect.objectContaining(expected));
+      expect(target.unsupported.size).toBe(0);
+      vi.stubGlobal('OffscreenCanvas', class {
+        getContext() { return makeRecordingCtx().ctx; }
+      });
+      try {
+        for (const incompleteMetafile of [undefined, 'draw-supported', 'reject'] as const) {
+          await expect(decodeRasterOrMetafile(new Blob([file(records, gdiPolygon()) as Uint8Array<ArrayBuffer>]), {
+            incompleteMetafile,
+          })).rejects.toMatchObject(expected);
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
   });
 
   it('reports a bitmap blit that fails at run time instead of dropping it silently', () => {

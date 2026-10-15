@@ -1606,7 +1606,8 @@ function readDibPatternBrush(c: EmfCursor, dv: DataView, recStart: number): [num
   try {
     const dib = decodeDib(dv, recStart + offBmi, cbBmi, recStart + offBits, cbBits);
     if (dib) fill = dibAverageColor(dib);
-  } catch {
+  } catch (error) {
+    if (isOoxmlDecodedImageLimitError(error)) throw error;
     /* keep mid-gray fallback */
   }
   return [ih, { kind: 'brush', fill }];

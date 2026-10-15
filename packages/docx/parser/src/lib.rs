@@ -1013,6 +1013,26 @@ mod tests {
     }
 
     #[test]
+    fn shallow_styles_with_quoted_gt_do_not_poison_native_parse() {
+        let document = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>"#;
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+        let mut styles = String::from(
+            r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        );
+        for id in 0..257 {
+            styles.push_str(&format!(r#"<w:style w:styleId="s{id}>"/>"#));
+        }
+        styles.push_str("</w:styles>");
+        let bytes = zip_parts(&[
+            ("word/document.xml", document),
+            ("word/_rels/document.xml.rels", rels),
+            ("word/styles.xml", styles.as_bytes()),
+        ]);
+        parser::parse_from_bytes_with_limits(&bytes, None, None, "parse")
+            .expect("257 sibling styles have depth two, even with quoted greater-than signs");
+    }
+
+    #[test]
     fn optional_styles_resource_overrun_survives_fallback_and_settles_typed() {
         const LIMIT: u64 = 2048;
         let error = parser::parse_from_bytes_with_limits(

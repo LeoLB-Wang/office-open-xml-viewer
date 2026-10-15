@@ -293,14 +293,19 @@ pub fn xml_dom_complexity_exceeds(xml: &str, limit: u64) -> bool {
     }
 }
 
-/// Advance past the next `>` (returns the index just after it, or `bytes.len()`
-/// if none remains).
+/// Advance past the next unquoted `>` (or to EOF). XML 1.0 AttValue permits
+/// `>` and the other quote inside a quoted value; neither terminates the tag.
+/// Resource admission must not mistake such data for a tag boundary.
 #[inline]
 fn skip_to_gt(bytes: &[u8], from: usize) -> usize {
+    let mut quote = None;
     let mut i = from;
     while i < bytes.len() {
-        if bytes[i] == b'>' {
-            return i + 1;
+        match (quote, bytes[i]) {
+            (Some(delimiter), byte) if byte == delimiter => quote = None,
+            (None, byte @ (b'\'' | b'"')) => quote = Some(byte),
+            (None, b'>') => return i + 1,
+            _ => {}
         }
         i += 1;
     }
@@ -525,6 +530,31 @@ mod tests {
         assert!(!xml_nesting_exceeds(s.as_bytes(), 8));
         // With whitespace before the '/>', still a leaf.
         assert!(!xml_nesting_exceeds(b"<root><a b=\"1\" /></root>", 4));
+    }
+
+    #[test]
+    fn quoted_tag_delimiters_do_not_turn_siblings_into_nesting() {
+        for quote in ['\'', '"'] {
+            let mut xml = String::from("<styles>");
+            for id in 0..257 {
+                xml.push_str(&format!("<style id={quote}s{id}>{quote}/>"));
+            }
+            xml.push_str("</styles>");
+            assert!(!xml_too_deep(xml.as_bytes()));
+            assert_eq!(
+                parse_guarded(&xml)
+                    .unwrap()
+                    .root_element()
+                    .children()
+                    .count(),
+                257
+            );
+        }
+        // A quoted '/>' must not hide genuine nesting either.
+        assert!(xml_nesting_exceeds(
+            br#"<a x="/>"><b x='>'><c/></b></a>"#,
+            1
+        ));
     }
 
     #[test]

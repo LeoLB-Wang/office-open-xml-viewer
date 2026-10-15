@@ -8,7 +8,7 @@
 // palette + pixels contiguously — via {@link decodePackedDib}).
 
 import { createAuxCanvas } from '../canvas/aux-canvas.js';
-import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS } from './pixel-budget.js';
+import { MAX_RASTER_DIMENSION, MAX_RASTER_PIXELS, OoxmlDecodedImageLimitError, isOoxmlDecodedImageLimitError } from './pixel-budget.js';
 
 /**
  * Maximum width or height (px) accepted for a decoded DIB, and the megapixel
@@ -61,8 +61,14 @@ export function decodeDib(
   // `new Uint8ClampedArray(width*height*4)` and OOMs the tab (~17 GB). See
   // MAX_DIB_DIMENSION / MAX_DIB_PIXELS.
   if (width <= 0 || height <= 0) return null;
-  if (width > MAX_DIB_DIMENSION || height > MAX_DIB_DIMENSION) return null;
-  if (width * height > MAX_DIB_PIXELS) return null;
+  // Library resource policy is terminal, including inside a metafile's
+  // compatibility fallback. Unsupported encodings still return null above.
+  if (width > MAX_DIB_DIMENSION || height > MAX_DIB_DIMENSION) {
+    throw new OoxmlDecodedImageLimitError('image-dimension', MAX_DIB_DIMENSION, Math.max(width, height));
+  }
+  if (width * height > MAX_DIB_PIXELS) {
+    throw new OoxmlDecodedImageLimitError('image-pixels', MAX_DIB_PIXELS, width * height);
+  }
 
   const out = new Uint8ClampedArray(width * height * 4);
   const rowStride = (((width * biBitCount + 31) >> 5) << 2) >>> 0; // 4-byte aligned
@@ -224,7 +230,8 @@ export function blitDibToCtx(
     const dh = Math.abs(y1 - y0);
     ctx.drawImage(tmp, dx, dy, dw, dh);
     return true;
-  } catch {
+  } catch (error) {
+    if (isOoxmlDecodedImageLimitError(error)) throw error;
     // Unsupported / missing image API → skip the blit, keep rendering.
     return false;
   }

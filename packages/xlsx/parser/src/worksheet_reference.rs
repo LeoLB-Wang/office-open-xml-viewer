@@ -851,22 +851,32 @@ fn resolve_worksheet_reference_projected(
                         let remaining_bytes =
                             session.remaining_indexed_string_bytes - worksheet.string_bytes;
                         let failure = if prebuilt.resource_units() > remaining_cells {
-                            (
+                            Some((
                                 HardResourceLimitKind::WorksheetReferenceIndexCells,
                                 remaining_cells,
                                 prebuilt.resource_units(),
-                            )
-                        } else {
-                            (
+                            ))
+                        } else if prebuilt.string_bytes > remaining_bytes {
+                            Some((
                                 HardResourceLimitKind::WorksheetReferenceIndexStringBytes,
                                 remaining_bytes,
                                 prebuilt.string_bytes,
-                            )
+                            ))
+                        } else {
+                            None
                         };
-                        session.current_sheet = CurrentSheetLookupEntry::Unavailable {
-                            name: current_name,
-                            limit_failure: Some(failure),
-                        };
+                        // A streamed index can peak above its final size when
+                        // duplicate cells replace/remove earlier values. Retry
+                        // admission alone does not prove both final indexes
+                        // cannot coexist; retain the current sheet when they fit.
+                        if let Some(failure) = failure {
+                            session.current_sheet = CurrentSheetLookupEntry::Unavailable {
+                                name: current_name,
+                                limit_failure: Some(failure),
+                            };
+                        } else {
+                            session.restore_unreferenced_prebuilt(current_name, prebuilt);
+                        }
                     } else {
                         session.restore_unreferenced_prebuilt(current_name, prebuilt);
                     }
@@ -1022,6 +1032,12 @@ mod tests {
         let xml = format!(
             r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">{cells}</row></sheetData></worksheet>"#
         );
+        one_sheet_xml_reference_archive(&xml)
+    }
+
+    fn one_sheet_xml_reference_archive(
+        xml: &str,
+    ) -> (XlsxZip, roxmltree::Document<'static>, Vec<SheetMeta>) {
         let cursor = {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             writer
@@ -1313,6 +1329,70 @@ mod tests {
                     result.unwrap();
                 }
             }
+        }
+    }
+
+    #[test]
+    fn successful_retry_restores_current_index_when_source_shrinks_to_fit() {
+        for strings in [false, true] {
+            let cells = if strings {
+                r#"<c r="A1" t="inlineStr"><is><t>x</t></is></c><c r="B1" t="inlineStr"><is><t>y</t></is></c><c r="A1"/>"#
+            } else {
+                r#"<c r="A1"><v>7</v></c><c r="B1"><v>8</v></c><c r="A1"/>"#
+            };
+            let xml = format!(
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">{cells}</row></sheetData></worksheet>"#
+            );
+            let (mut archive, rels, sheets) = one_sheet_xml_reference_archive(&xml);
+            let mut current = WorksheetCellLookupBuilder::new(1, 1);
+            let value = if strings {
+                ReferencedCellValue::Text("z".into())
+            } else {
+                ReferencedCellValue::Number(1.0)
+            };
+            current.push_cell(1, 1, value.clone()).unwrap();
+            // Isolate cell and string-byte admission: the source peaks at two
+            // units but retains one after the duplicate A1 removes its value.
+            let mut session = reduced_session(if strings { 3 } else { 2 }, 2);
+            session.seed_current_sheet("Dashboard", Some(current.finish()));
+            archive
+                .run_operation("index-retry-test", |archive| {
+                    assert_eq!(
+                        resolve_worksheet_reference(
+                            archive,
+                            "Source!A1:B1",
+                            None,
+                            "Dashboard",
+                            &sheets,
+                            &rels,
+                            &[],
+                            &mut session,
+                        ),
+                        Some(vec![
+                            ReferencedCellValue::Empty,
+                            if strings {
+                                ReferencedCellValue::Text("y".into())
+                            } else {
+                                ReferencedCellValue::Number(8.0)
+                            }
+                        ])
+                    );
+                    assert_eq!(
+                        resolve_worksheet_reference(
+                            archive,
+                            "Dashboard!A1",
+                            None,
+                            "Dashboard",
+                            &sheets,
+                            &rels,
+                            &[],
+                            &mut session,
+                        ),
+                        Some(vec![value])
+                    );
+                    Ok(())
+                })
+                .expect("both final indexes fit without a resource crossing");
         }
     }
 

@@ -6,6 +6,7 @@ import { EmfPlusPlayer, scanEmfPlus, type EmfPlusTarget } from './emf-plus.js';
 vi.mock('./pixel-budget.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./pixel-budget.js')>()),
   HARD_MAX_DECODED_IMAGE_BYTES: 256,
+  MAX_RASTER_PIXELS: 32,
 }));
 
 afterEach(() => vi.unstubAllGlobals());
@@ -37,6 +38,15 @@ const drawImage = (image: number) =>
   plusRecord(0x401a, image, [...u32(0), ...u32(2), ...[0, 0, 4, 4].flatMap(f32), ...[0, 0, 4, 4].flatMap(f32)]);
 
 describe('EMF+ decoded-byte budget', () => {
+  it('rejects a per-bitmap pixel crossing before treating it as unsupported content', () => {
+    const bitmap = plusRecord(0x4008, 0x0501, [
+      ...u32(0xdbc01002), ...u32(1), ...u32(8), ...u32(8), ...u32(32), ...u32(0x0026200a), ...u32(0), ...new Array(256).fill(0),
+    ]);
+    expect(() => scanEmfPlus(file(comment(header, bitmap)))).toThrowError(expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'image-pixels', limit: 32, observed: 64,
+    }));
+  });
+
   it('rejects continued-object fragments that overrun TotalObjectSize before allocating, in scan and playback', () => {
     // Declares a 24-byte ImageAttributes object but carries 324 bytes.
     const oversized = plusRecord(0x4008, 0x8800, [...u32(24), ...u32(0xdbc01002), ...new Array(320).fill(0)]);
@@ -69,6 +79,8 @@ describe('EMF+ decoded-byte budget', () => {
     const withBitmaps = (count: number) =>
       file(comment(header, attributes, ...Array.from({ length: count }, (_, i) => bitmap4(i + 1)), drawImage(1)));
     expect(scanEmfPlus(withBitmaps(2)).play).toBe(true); // 2×64 retained + 2×64 blit = 256
-    expect(scanEmfPlus(withBitmaps(3)).play).toBe(false);
+    expect(() => scanEmfPlus(withBitmaps(3))).toThrowError(expect.objectContaining({
+      code: 'ooxml-decoded-image-limit', metric: 'active-decoded-bytes', limit: 256, observed: 320,
+    }));
   });
 });
