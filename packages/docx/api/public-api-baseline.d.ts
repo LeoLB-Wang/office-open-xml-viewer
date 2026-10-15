@@ -1943,7 +1943,7 @@ export class OoxmlDecodedImageLimitError extends RangeError {
     readonly code: 'ooxml-decoded-image-limit';
     constructor(metric: OoxmlDecodedImageLimitMetric, limit: number, observed: number);
 }
-export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work';
+export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work' | 'metafile-path-commands' | 'metafile-record-points' | 'metafile-record-polygons' | 'metafile-record-rectangles' | 'metafile-record-text-units';
 export class OoxmlError extends Error {
     readonly code: OoxmlErrorCode;
     readonly details?: OoxmlUnsupportedContentDetails;
@@ -2377,7 +2377,6 @@ export interface ShapeRun {
     textInsetR?: number;
     textInsetB?: number;
     textVert?: string | null;
-    /** DrawingML bodyPr@upright: keep text independent of the shape rotation. */
     textUpright?: boolean | null;
     textPath?: TextPath | null;
     fillOpacity?: number | null;

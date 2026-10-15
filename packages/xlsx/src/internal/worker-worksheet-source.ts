@@ -1,3 +1,4 @@
+import { withWasmResourceErrors } from '@silurus/ooxml-core/worker';
 import { isWasmTrap, type WasmParserHost } from '@silurus/ooxml-core';
 import {
   copyModelSourceBytes,
@@ -179,7 +180,7 @@ export class WorkerWorksheetSourceOwner<TArchive extends OoxmlWorksheetArchive> 
       return this.ooxmlHost.run(() => operation(archive));
     }
     try {
-      return operation(source.transferArchive);
+      return withWasmResourceErrors(() => operation(source.transferArchive));
     } catch (error) {
       if (isWasmTrap(error) && this.modelSource === source) {
         try { this.closeModelSource(); } catch {}

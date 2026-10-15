@@ -8,6 +8,7 @@ import {
   getCachedBitmapByPath,
   chartImageFillKey,
   OoxmlDecodedImageLimitError,
+  OoxmlResourceLimitError,
   TiffDecodeError,
   type OffscreenFactory,
   type TiffRenderOptions,
@@ -1475,6 +1476,45 @@ describe('render-pass lease: >cap prefetch never draws a closed bitmap', () => {
   const STYLES = {
     fonts: [], fills: [], borders: [], cellXfs: [], numFmts: [],
   } as unknown as ParsedWorkbook['styles'];
+
+  it.each(['raster', 'svg-fallback', 'image-planning'] as const)(
+    'rejects worksheet rendering on archive resource failures during %s', async (site) => {
+      vi.stubGlobal('createImageBitmap', vi.fn(async () => new FakeBitmap('healthy')));
+      const error = new OoxmlResourceLimitError('archive limit', {
+        stage: 'decompression', violation: {
+          format: 'xlsx', operation: 'extract-image', resource: 'archive-entry',
+          metric: 'actual-inflated-bytes', part: 'xl/media/limit.png',
+          limit: 1, observed: 2, configurable: true,
+          usage: { archiveEntryCount: 1, declaredInflatedBytes: 2,
+            distinctInflatedBytes: 2, operationInflatedBytes: 2 },
+        },
+      });
+      const ws = {
+        ...worksheetWithImages(), name: 'S', rows: [], colWidths: {}, rowHeights: {},
+        defaultColWidth: 64, defaultRowHeight: 20, mergeCells: [], freezeRows: 0, freezeCols: 0,
+        conditionalFormats: [], charts: [], shapeGroups: [],
+      } as Worksheet;
+      ws.images = [{ ...ws.images[0],
+        mimeType: site === 'image-planning' ? 'image/emf' : 'image/png',
+        ...(site === 'svg-fallback' ? { svgImagePath: 'xl/media/original.svg' } : {}),
+      }];
+      const fetchImage = vi.fn(async (path: string) => {
+        // Inspection fails once; a swallowed failure would let decode succeed.
+        // For SVG the raster twin remains healthy, isolating the fallback catch.
+        if (site === 'raster' || path.endsWith('.svg')
+          || (site === 'image-planning' && fetchImage.mock.calls.length === 1)) throw error;
+        return new Blob(['healthy'], { type: 'image/png' });
+      });
+      const drawn = { closedAtDraw: [] as boolean[] };
+      await expect(renderWorksheetViewport(
+        { ws, styles: STYLES }, makeRecordingCanvas(drawn),
+        { row: 1, col: 1, rows: 10, cols: 10 },
+        { fetchImage, width: 800, height: 600, dpr: 1 },
+      )).rejects.toBe(error);
+      expect(drawn.closedAtDraw).toEqual([]);
+      expect(fetchImage).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('renders the missing-codec TIFF placeholder without blanking the worksheet', async () => {
     const fetchImage = vi.fn(async () =>
