@@ -193,6 +193,7 @@ export type {
   PptxCommentReply,
   SlideElement,
   ShapeElement,
+  EquationBranchFallback,
   PictureElement,
   // SlideElement union members — reachable via Slide.elements; exported so a
   // consumer that narrows on `el.type` has a name for every variant.
