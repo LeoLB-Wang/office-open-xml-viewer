@@ -442,7 +442,10 @@ export async function preloadPaintImages(
       request.imagePath,
       request.mimeType,
       fetchImage,
-    ).catch(() => null);
+    ).catch((error: unknown) => {
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+      return null;
+    });
     if (!inspection?.dimensions
       || !isDecodeTargetResizableRasterFormat(inspection.format, tiff !== undefined)) return null;
     return {

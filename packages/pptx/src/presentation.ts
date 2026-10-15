@@ -529,6 +529,9 @@ export class PptxPresentation {
         this._embeddedFontTuples = loaded.tuples;
       }
     });
+    // Preflight can outlast a font failure. Observe it immediately while keeping
+    // the original rejection for the authoritative await below.
+    void embeddedFontLoad.catch(() => undefined);
     this._slidePullClient = new PptxSlidePullClient({
       slideCount: bootstrap.slideCount,
       transport: this._bridge.transport(isPptxSlidePullResponse),
@@ -617,6 +620,9 @@ export class PptxPresentation {
         this._embeddedFontTuples = loaded.tuples;
       }
     });
+    // Preflight can outlast a font failure. Observe it immediately while keeping
+    // the original rejection for the authoritative await below.
+    void embeddedFontLoad.catch(() => undefined);
     this._slidePullClient = this._createSlidePullClient(bootstrap.slideCount, timeoutMs, onUsage);
     this._slides = new PptxSlideRepository({
       slideCount: bootstrap.slideCount,

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { deobfuscateOdttf, unregisterEmbeddedFonts } from '@silurus/ooxml-core';
+import { OoxmlDecodedImageLimitError, deobfuscateOdttf, unregisterEmbeddedFonts } from '@silurus/ooxml-core';
 import { loadEmbeddedFonts } from './embedded-fonts.js';
 import { buildSegments, paragraphMarkLineMetrics, type LayoutTextSeg } from './line-layout.js';
 import { snapshotFontMetrics } from './layout/text.js';
@@ -439,4 +439,12 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
     await loadEmbeddedFonts(modelWith(undefined), fetchSpy);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+});
+
+it('preserves other typed resource-limit errors instead of treating them as malformed fonts', async () => {
+  const error = new OoxmlDecodedImageLimitError('active-decoded-bytes', 1, 2);
+  const model = { embeddedFonts: [{
+    fontName: 'Limited', style: 'regular', partPath: 'font.ttf', fontKey: '',
+  }] } as DocxDocumentModel;
+  await expect(loadEmbeddedFonts(model, async () => { throw error; })).rejects.toBe(error);
 });
