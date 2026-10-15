@@ -324,14 +324,22 @@ pub(super) fn stroke_image(
     media: &HashMap<String, String>,
 ) -> Option<ShapeFill> {
     let attr = |name| vml_decoration_attr(shape, definition, "stroke", name);
+    let source = vml_direct_child(shape, "stroke")
+        .filter(|n| n.attribute("src").is_some() || vml_image_relationship(*n).is_some())
+        .or_else(|| definition.and_then(|n| vml_direct_child(n, "stroke")));
+    pen_image(attr, source, media)
+}
+
+pub(super) fn pen_image<'a>(
+    attr: impl Fn(&'static str) -> Option<&'a str>,
+    source: Option<roxmltree::Node>,
+    media: &HashMap<String, String>,
+) -> Option<ShapeFill> {
     let kind = attr("filltype").unwrap_or("solid");
     if !matches!(kind, "tile" | "pattern" | "frame") {
         return None;
     }
-    let source = vml_direct_child(shape, "stroke")
-        .filter(|n| n.attribute("src").is_some() || vml_image_relationship(*n).is_some())
-        .or_else(|| definition.and_then(|n| vml_direct_child(n, "stroke")))?;
-    let path = vml_image_source(source, media)?;
+    let path = vml_image_source(source?, media)?;
     Some(ShapeFill::Image {
         mime_type: mime_from_ext(&path).into(),
         image_path: path,

@@ -2058,6 +2058,33 @@ pub struct VmlShadow {
     pub absolute_perspective: bool,
 }
 
+/// Part 4 §19.2.2.31: vector-only transform, after host rotation.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlSkew {
+    pub offset: VmlShadowOffset,
+    pub origin: (f64, f64),
+    pub matrix: [f64; 6],
+    pub absolute_perspective: bool,
+}
+
+/// Part 4 §§19.2.2.1/.6/.17/.29/.32: an independent edge pen.
+/// Defaults belong to this pen, never to its parent v:stroke.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlEdgeStroke {
+    pub edge: String,
+    pub color: String,
+    pub width_pt: f64,
+    pub dash: Option<String>,
+    pub cap: Option<String>,
+    pub join: String,
+    pub miter_limit: f64,
+    pub compound: Option<String>,
+    pub image: Option<ShapeFill>,
+    pub pattern: Option<Duotone>,
+}
+
 /// A drawn shape (wps:wsp inside wp:anchor). Positioned like an anchor image
 /// and rendered via core's buildCustomPath + paint primitives.
 #[derive(Serialize, Debug, Clone, Default)]
@@ -2140,6 +2167,10 @@ pub struct ShapeRun {
     /// Part 4 §19.1.2.18 shadow acquired independently of its source brush.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vml_shadow: Option<VmlShadow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_skew: Option<VmlSkew>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vml_edge_strokes: Vec<VmlEdgeStroke>,
     /// Part 4 §§19.1.2.10/.11: picture ink is independent of the backing
     /// fill and outline on the implied rectangle. Only resource/effect facts
     /// from this image are consumed; placement belongs to the host shape.

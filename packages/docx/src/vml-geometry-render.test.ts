@@ -32,7 +32,7 @@ async function renderVml(content: string, monochrome: boolean | 'transparent' | 
     ['_rels/.rels', encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="doc" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')],
     ['word/_rels/document.xml.rels', encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="pic" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/two.png"/></Relationships>')],
     ['word/media/two.png', png],
-    ['word/document.xml', encode(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:pict>
+    ['word/document.xml', encode(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:pict>
 ${content}</w:pict></w:r></w:p><w:sectPr><w:pgSz w:w="4000" w:h="4000"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0"/></w:sectPr></w:body></w:document>`)],
   ]));
   const archive = new DocxArchive(bytes);
@@ -528,4 +528,148 @@ it('maps VML pattern pens by exact black versus coloured source pixels', async (
   const inherited = await renderVml(`<v:shapetype id="pattern">${pen}</v:shapetype><v:rect type="#pattern" style="left:20pt;top:20pt;width:60pt;height:60pt" filled="f"/>`, true);
   expect(inherited.pixels).toEqual(mono.pixels);
   expect([...mono.diagnostics,...coloured.diagnostics,...inherited.diagnostics]).toEqual([]);
+});
+
+it('paints fitted text outlines with independent fill, pen alpha and image brushes', async () => {
+  const draw = (filled: boolean, stroke = '<v:stroke color="blue" weight="3pt"/>') => renderVml(`<v:group style="width:160pt;height:100pt" coordsize="160,100"><v:shape style="left:20;top:20;width:120;height:50" coordsize="100,100" path="m0,100l100,100e" filled="${filled ? 't' : 'f'}" fillcolor="red"><v:path textpathok="t"/><v:textpath on="t" fitpath="t" string="Fjp" style="font:24pt Arial"/>${stroke}</v:shape></v:group>`);
+  const both = await draw(true), outline = await draw(false);
+  expect(counter(both.pixels)(255, 0, 0)).toBeGreaterThan(100);
+  expect(counter(both.pixels)(0, 0, 255)).toBeGreaterThan(100);
+  expect(counter(outline.pixels)(255, 0, 0)).toBe(0);
+  expect(counter(outline.pixels)(0, 0, 255)).toBeGreaterThan(100);
+  const translucent = await draw(false, '<v:stroke color="blue" weight="3pt" opacity=".5"/>');
+  expect(counter(translucent.pixels)(127, 127, 255)).toBeGreaterThan(50);
+  const textured = await draw(false, '<v:stroke color="lime" color2="blue" weight="3pt" filltype="pattern" r:id="pic"/>');
+  expect(counter(textured.pixels)(0, 255, 0)).toBeGreaterThan(50);
+  expect([...both.diagnostics, ...outline.diagnostics, ...translucent.diagnostics, ...textured.diagnostics]).toEqual([]);
+});
+
+it('reflects asymmetric text and its image mask through the acquired host rotation and nested frame', async () => {
+  const draw = (flip: string, rotation: number, image = false, nested = false, shadow = false) => renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180">${nested ? `<v:group style="left:20;top:20;width:140;height:140;flip:${flip};rotation:${rotation}" coordsize="140,140">` : ''}<v:shape style="left:${nested ? 10 : 30};top:${nested ? 40 : 60};width:120;height:60;flip:${nested ? '' : flip};rotation:${nested ? 0 : rotation}" stroked="f" fillcolor="red">${image ? '<v:fill type="pattern" r:id="pic" color="red" color2="red" size="10pt,10pt"/>' : ''}${shadow ? '<v:shadow on="t" color="lime" offset="0,70pt"/>' : ''}<v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="Fjp" style="font:24pt Arial"/></v:shape>${nested ? '</v:group>' : ''}</v:group>`, true);
+  const mass = (pixels: Uint8ClampedArray, channel = 1) => {
+    let x = 0, y = 0, n = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const ink = (255 - pixels[i + channel]!) / 255;
+      x += ((i / 4) % 200 + .5) * ink; y += (Math.floor(i / 4 / 200) + .5) * ink; n += ink;
+    }
+    return { x: x / n, y: y / n, n };
+  };
+  const findRect = (value: unknown): {xPt: number; yPt: number; widthPt: number; heightPt: number} | undefined => {
+    if (!value || typeof value !== 'object') return undefined;
+    if ('kind' in value && value.kind === 'watermark-text') return (value as unknown as {rect: {xPt: number; yPt: number; widthPt: number; heightPt: number}}).rect;
+    for (const child of Object.values(value)) { const r = findRect(child); if (r) return r; }
+    return undefined;
+  };
+  const baseResult = await draw('', 0);
+  const frame = findRect(baseResult.layout)!;
+  const cx = frame.xPt + frame.widthPt / 2, cy = frame.yPt + frame.heightPt / 2;
+  const base = mass(baseResult.pixels);
+  const imageBase = mass((await draw('', 0, true)).pixels);
+  const shadowBase = mass((await draw('', 0, false, false, true)).pixels, 0);
+  for (const axis of ['x', 'y']) {
+    const direct = await draw(axis, 0), image = await draw(axis, 0, true);
+    const shadow = mass((await draw(axis, 0, false, false, true)).pixels, 0);
+    expect(axis === 'x' ? shadow.x + shadowBase.x : shadow.y + shadowBase.y)
+      .toBeCloseTo(axis === 'x' ? 2 * cx : 2 * cy + 140, 0);
+    const a = mass(direct.pixels), b = mass(image.pixels);
+
+    expect(a.n).toBeCloseTo(base.n, -1);
+    expect(axis === 'x' ? a.x + base.x : a.y + base.y).toBeCloseTo(axis === 'x' ? 2 * cx : 2 * cy, 0);
+    expect(axis === 'x' ? b.x + imageBase.x : b.y + imageBase.y).toBeCloseTo(axis === 'x' ? 2 * cx : 2 * cy, 0);
+    const rotResult = await draw(axis, 90, true);
+    const rotated = mass(rotResult.pixels);
+    expect(rotated.x).toBeCloseTo(cx + cy - b.y, 0); expect(rotated.y).toBeCloseTo(cy - cx + b.x, 0);
+    const nested = await draw(axis, 0, false, true);
+    expect(mass(nested.pixels).x).toBeCloseTo(a.x, 0);
+    expect(mass(nested.pixels).y).toBeCloseTo(a.y, 0);
+    expect([...direct.diagnostics, ...image.diagnostics, ...nested.diagnostics]).toEqual([]);
+  }
+});
+
+it('acquires skew geometry and independent Office edge pens including inherited defaults and resets', async () => {
+  const shape = (skew: string) => `<v:group style="width:140pt;height:120pt" coordsize="140,120"><v:rect style="left:20;top:20;width:60;height:40" fillcolor="red" stroked="f"><o:skew on="t" matrix="1,0.5,0,1,0,0" offset="0,0" origin="-.5,-.5" ${skew}/></v:rect></v:group>`;
+  const skewed = await renderVml(shape('')), reset = await renderVml(shape('on="f"').replace('on="t"', ''));
+  // Top-left pivot: x=50 is below the original top edge after y += .5*x.
+  const at = (p: Uint8ClampedArray, x: number, y: number) => [...p.slice((y * 200 + x) * 4, (y * 200 + x) * 4 + 3)];
+  expect(at(skewed.pixels, 60, 25)).toEqual([255, 255, 255]);
+  expect(at(skewed.pixels, 60, 65)).toEqual([255, 0, 0]);
+  expect(at(reset.pixels, 60, 25)).toEqual([255, 0, 0]);
+  const edge = await renderVml(`<v:group style="width:160pt;height:100pt" coordsize="160,100"><v:shapetype id="edges" o:spt="202" coordsize="21600,21600" path="m0,0l21600,0,21600,21600,0,21600xe" filled="f" stroked="f"><v:stroke color="red" weight="15pt" insetpen="t" dashstyle="dash"><o:top on="t" color="blue" weight="8pt"/><o:bottom on="t"/><o:left on="t" color="lime" weight="4pt"/></v:stroke></v:shapetype><v:shape type="#edges" style="left:20;top:20;width:100;height:50"><v:stroke><o:left on="f"/></v:stroke></v:shape></v:group>`);
+  expect(counter(edge.pixels)(0, 0, 255)).toBeGreaterThan(500);
+  const grayRows = Array.from({length: 50}, (_, y) => y + 40).filter(y => {
+    const [r, g, b] = at(edge.pixels, 60, y); return r === g && g === b && r! < 250;
+  });
+  expect(grayRows.length).toBeGreaterThan(0); expect(grayRows.length).toBeLessThanOrEqual(2);
+  expect(counter(edge.pixels)(255, 0, 0)).toBe(0);
+  expect(counter(edge.pixels)(0, 255, 0)).toBe(0);
+  expect([...skewed.diagnostics, ...reset.diagnostics, ...edge.diagnostics]).toEqual([]);
+});
+
+it('keeps trim outline overhang and physical width through nonuniform and curved glyph fitting', async () => {
+  for (const path of ['', 'path="m0,20c30,0,70,0,100,20em0,100c30,80,70,80,100,100e"']) {
+    const {pixels, diagnostics} = await renderVml(`<v:group style="width:180pt;height:140pt" coordsize="180,140"><v:shape style="left:30;top:30;width:120;height:45" coordsize="100,100" ${path} fillcolor="red" strokecolor="blue" strokeweight="3pt"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" trim="t" string="Fjp" style="font:24pt Arial"/></v:shape></v:group>`);
+    let redInk = 0;
+    for (let i = 0; i < pixels.length; i += 4)
+      if (pixels[i] === 255 && pixels[i+1] === pixels[i+2]) redInk += (255-pixels[i+1]!)/255;
+    expect(redInk).toBeGreaterThan(100);
+    expect(counter(pixels)(0, 0, 255)).toBeGreaterThan(300);
+    if (!path) {
+      let left = 200, right = 0, redLeft = 200, redRight = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const x = (i/4)%200;
+        if (pixels[i] === 0 && pixels[i+1] === 0 && pixels[i+2] === 255) {
+          left = Math.min(left, x); right = Math.max(right, x);
+        }
+        if (pixels[i] === 255 && pixels[i+1] === 0 && pixels[i+2] === 0) {
+          redLeft = Math.min(redLeft, x); redRight = Math.max(redRight, x);
+        }
+      }
+      expect(left).toBeLessThan(redLeft); expect(right).toBeGreaterThan(redRight);
+    }
+    expect(diagnostics).toEqual([]);
+  }
+});
+
+it('preserves image host transforms with identity skew and renders affine text skew', async () => {
+  for (const flip of ['x', 'y']) {
+    const image = (skew: boolean) => `<v:group style="width:170pt;height:170pt" coordsize="170,170"><v:shape style="left:40;top:50;width:70;height:50;rotation:90;flip:${flip}" stroked="f"><v:imagedata r:id="pic"/>${skew ? '<o:skew on="t" matrix="1,0,0,1,0,0" offset="0,0"/>' : ''}</v:shape></v:group>`;
+    const control = await renderVml(image(false)), candidate = await renderVml(image(true));
+    expect(candidate.pixels).toEqual(control.pixels);
+    expect(candidate.diagnostics).toEqual([]);
+  }
+  const text = (skew: boolean) => `<v:group style="width:180pt;height:150pt" coordsize="180,150"><v:shape style="left:20;top:20;width:100;height:40" fillcolor="red" stroked="f"><v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="Fjp" style="font:20pt Arial"/>${skew ? '<o:skew on="t" matrix="1,0.5,0,1,0,0" offset="0,0" origin="-.5,-.5"/>' : ''}</v:shape></v:group>`;
+  const plain = await renderVml(text(false)), skewed = await renderVml(text(true));
+  const mass = (pixels: Uint8ClampedArray) => {
+    let x = 0, y = 0, n = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const a = (255-pixels[i+1]!)/255;
+      x += ((i/4)%200+.5)*a; y += (Math.floor(i/4/200)+.5)*a; n += a;
+    }
+    return {x:x/n, y:y/n};
+  };
+  const a = mass(plain.pixels), b = mass(skewed.pixels);
+  expect(b.x).toBeCloseTo(a.x, 0);
+  expect(b.y-a.y).toBeCloseTo(.5*(a.x-20), 0);
+  expect(skewed.diagnostics).toEqual([]);
+});
+
+it('keeps acquired arrow tips unchanged under identity skew and diagnoses unacquired skewed heads', async () => {
+  const draw = (matrix?: string) => renderVml(`<v:group style="width:150pt;height:100pt" coordsize="150,100"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block"/>${matrix ? `<o:skew on="t" offset="0,0" matrix="${matrix}"/>` : ''}</v:line></v:group>`);
+  const plain = await draw(), identity = await draw('1,0,0,1,0,0');
+  expect(identity.pixels).toEqual(plain.pixels);
+  expect(identity.diagnostics).toEqual([]);
+  const skewed = await draw('1,.5,0,1,0,0');
+  expect(skewed.diagnostics.length).toBeGreaterThan(0);
+});
+
+it('keeps page-aligned image-text brushes independent of reflected glyph masks', async () => {
+  const {pixels, diagnostics} = await renderVml(`<v:group style="width:170pt;height:120pt" coordsize="170,120"><v:shape style="left:20;top:20;width:120;height:60;flip:x" stroked="f"><v:fill type="frame" r:id="pic" alignshape="f"/><v:path textpathok="t"/><v:textpath on="t" fitshape="t" string="MMMM" style="font:24pt Arial"/></v:shape></v:group>`);
+  let redLeft = 0, blueRight = 0, wrong = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const x = (i/4)%200;
+    if (pixels[i] === 255 && pixels[i+1] === 0 && pixels[i+2] === 0) { if (x < 80) redLeft++; else wrong++; }
+    if (pixels[i] === 0 && pixels[i+1] === 0 && pixels[i+2] === 255) { if (x >= 80) blueRight++; else wrong++; }
+  }
+  expect(redLeft).toBeGreaterThan(100); expect(blueRight).toBeGreaterThan(100); expect(wrong).toBe(0);
+  expect(diagnostics).toEqual([]);
 });

@@ -231,7 +231,7 @@ describe('ShapeRun drawing command planner', () => {
         textPathOk: true, on: true, fitShape: true, fitPath: false,
         trim: false, xScale: false, fontSizePt: 36,
       },
-      fill: { fillType: 'solid', color: '808080' }, fillOpacity: .4, rotation: 315,
+      fill: { fillType: 'solid', color: '808080' }, fillOpacity: .4, rotation: 315, stroke: null,
       vmlShadow: { kind: 'single', color: 'FF0000', color2: 'FFFFFF', opacity: .5,
         offset: { xPt: 10, yPt: 20, xFraction: 0, yFraction: 0 },
         offset2: { xPt: 0, yPt: 0, xFraction: 0, yFraction: 0 },
@@ -455,4 +455,29 @@ describe('ShapeRun drawing command planner', () => {
     } as InternalShapeRun), { xPt: 1, yPt: 2, widthPt: 300, heightPt: 120 }, text))
       .toThrow('Shape textPath acquisition produced non-finite metrics');
   });
+});
+
+it('deforms long contour edges through curved fitting before acquiring a physical pen', () => {
+  const text = { shape: () => ({
+    advancePt: 100, ascentPt: 10, descentPt: 0,
+    inkBounds: { xMinPt: 0, xMaxPt: 100, ascentPt: 10, descentPt: 0 },
+    spans: [{ text: 'F', advancePt: 100,
+      font: {weight: 400, style: 'normal'},
+      fontRoute: {familyList: 'sans-serif', scope: 'native', fingerprint: 'sans'},
+    }],
+  }), glyphContours: () => [[{x: 0, y: -10}, {x: 100, y: -10}, {x: 100, y: 0}, {x: 0, y: 0}]],
+  } as unknown as TextLayoutService;
+  const result = planShapeDrawing(shape({presetGeometry: null, rotation: 0, flipH: false,
+    subpaths: [
+      [{cmd: 'moveTo', x: 0, y: 0}, {cmd: 'quadBezTo', x1: .5, y1: 1, x: 1, y: 0}],
+      [{cmd: 'moveTo', x: 0, y: 1}, {cmd: 'lineTo', x: 1, y: 1}],
+    ], stroke: '0000FF', strokeWidth: 3, strokeCustomDash: undefined,
+    headEnd: null, tailEnd: null,
+  }), {xPt: 0, yPt: 0, widthPt: 100, heightPt: 100}, text,
+  {string: 'F', bold: false, italic: false, textPathOk: true, on: true, fitShape: true, fontSizePt: 10});
+  if (result.command.kind !== 'drawingml-shape' || result.command.plan.geometry.kind !== 'custom')
+    throw new Error('Expected acquired glyph pen');
+  expect(result.command.plan.stroke?.width).toBe(3);
+  expect(result.command.plan.geometry.subpaths[0]?.some(p => 'x' in p && 'y' in p
+    && p.x > .45 && p.x < .55 && p.y > .45 && p.y < .55)).toBe(true);
 });

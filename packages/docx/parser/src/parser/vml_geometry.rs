@@ -648,6 +648,33 @@ pub(super) fn arc(shape: roxmltree::Node) -> Option<Geometry> {
     })
 }
 
+fn component(raw: &str) -> Option<(f64, f64)> {
+    let raw = raw.trim();
+    if let Some(n) = raw.strip_suffix('%') {
+        Some((0.0, n.parse::<f64>().ok()? / 100.0))
+    } else if let Some(n) = raw.strip_suffix('f') {
+        Some((0.0, n.parse::<f64>().ok()? / 65536.0))
+    } else if raw.chars().any(|c| c.is_ascii_alphabetic()) {
+        Some((parse_vml_length_pt(raw)?, 0.0))
+    } else {
+        Some((0.0, raw.parse().ok()?))
+    }
+}
+fn offset(raw: &str) -> Option<VmlShadowOffset> {
+    let (x, y) = raw.split_once(',')?;
+    let (x_pt, x_fraction) = component(x)?;
+    let (y_pt, y_fraction) = component(y)?;
+    [x_pt, y_pt, x_fraction, y_fraction]
+        .iter()
+        .all(|v| v.is_finite())
+        .then_some(VmlShadowOffset {
+            x_pt,
+            y_pt,
+            x_fraction,
+            y_fraction,
+        })
+}
+
 pub(super) fn shadow(
     shape: roxmltree::Node,
     definition: Option<roxmltree::Node>,
@@ -667,32 +694,6 @@ pub(super) fn shadow(
     {
         return None;
     }
-    fn component(raw: &str) -> Option<(f64, f64)> {
-        let raw = raw.trim();
-        if let Some(n) = raw.strip_suffix('%') {
-            Some((0.0, n.parse::<f64>().ok()? / 100.0))
-        } else if let Some(n) = raw.strip_suffix('f') {
-            Some((0.0, n.parse::<f64>().ok()? / 65536.0))
-        } else if raw.chars().any(|c| c.is_ascii_alphabetic()) {
-            Some((parse_vml_length_pt(raw)?, 0.0))
-        } else {
-            Some((0.0, raw.parse().ok()?))
-        }
-    }
-    let offset = |raw: &str| -> Option<VmlShadowOffset> {
-        let (x, y) = raw.split_once(',')?;
-        let (x_pt, x_fraction) = component(x)?;
-        let (y_pt, y_fraction) = component(y)?;
-        [x_pt, y_pt, x_fraction, y_fraction]
-            .iter()
-            .all(|v| v.is_finite())
-            .then_some(VmlShadowOffset {
-                x_pt,
-                y_pt,
-                x_fraction,
-                y_fraction,
-            })
-    };
     let origin = attr("origin").unwrap_or("0,0").split_once(',')?;
     let origin = (component(origin.0)?.1, component(origin.1)?.1);
     let mut matrix: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -750,6 +751,136 @@ pub(super) fn shadow(
         matrix,
         absolute_perspective,
     })
+}
+
+/// Part 4 §19.2.2.31 and MS-OI29500 §2.1.1842: the matrix is
+/// sxx,sxy,syx,syy,px,py. Image data is expressly outside this effect.
+pub(super) fn skew(shape: roxmltree::Node, definition: Option<roxmltree::Node>) -> Option<VmlSkew> {
+    let attr = |name| vml_decoration_attr(shape, definition, "skew", name);
+    if attr("on").and_then(parse_vml_true_false) != Some(true) {
+        return None;
+    }
+    let origin = attr("origin").unwrap_or("0,0").split_once(',')?;
+    let origin = (component(origin.0)?.1, component(origin.1)?.1);
+    let mut matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    if let Some(raw) = attr("matrix") {
+        let values = raw.split(',').collect::<Vec<_>>();
+        if values.len() != 6 {
+            return None;
+        }
+        for (i, value) in values.iter().enumerate() {
+            if !value.trim().is_empty() {
+                matrix[i] = parse_vml_opacity(value.trim())?;
+            }
+        }
+    }
+    // Part 4 calls p reciprocal units, while MS-OI29500 §2.1.1842(b)
+    // pictures a reciprocal-factor expression. Affine zero-p matrices are
+    // unambiguous. Preserve a diagnostic for projective factors until those
+    // interpretations can be reconciled; do not guess a transfer function.
+    if matrix[4] != 0.0 || matrix[5] != 0.0 {
+        return None;
+    }
+    let raw_offset = attr("offset").unwrap_or("2pt,2pt");
+    let offset = offset(raw_offset)?;
+    if !matrix
+        .iter()
+        .chain([&origin.0, &origin.1])
+        .all(|v| v.is_finite())
+    {
+        return None;
+    }
+    Some(VmlSkew {
+        matrix,
+        origin,
+        offset,
+        absolute_perspective: raw_offset.split(',').any(|s| {
+            s.trim()
+                .chars()
+                .any(|c| c.is_ascii_alphabetic() && c != 'f')
+        }),
+    })
+}
+
+/// Part 4 §§19.2.2.1/.6/.17/.29/.32: the edge element supersedes
+/// its parent pen completely. An instance edge still inherits the same edge
+/// from its shapetype per property; explicit on=false clears inherited ink.
+pub(super) fn edge_strokes(
+    shape: roxmltree::Node,
+    definition: Option<roxmltree::Node>,
+    media: &HashMap<String, String>,
+) -> Vec<VmlEdgeStroke> {
+    ["left", "top", "right", "bottom", "column"]
+        .into_iter()
+        .filter_map(|edge| {
+            let edge_node =
+                |host| vml_direct_child(host, "stroke").and_then(|n| vml_direct_child(n, edge));
+            let direct = edge_node(shape);
+            let inherited = definition.and_then(edge_node);
+            let attr = |name| {
+                direct
+                    .and_then(|n| n.attributes().find(|a| a.name() == name).map(|a| a.value()))
+                    .or_else(|| {
+                        inherited.and_then(|n| {
+                            n.attributes().find(|a| a.name() == name).map(|a| a.value())
+                        })
+                    })
+            };
+            if attr("on").and_then(parse_vml_true_false) != Some(true) {
+                return None;
+            }
+            let color = attr("color")
+                .and_then(vml_color_hex6)
+                .unwrap_or_else(|| "000000".into());
+            let image_source = direct
+                .filter(|n| n.attribute("src").is_some() || vml_image_relationship(*n).is_some())
+                .or(inherited);
+            let image = vml_fill::pen_image(attr, image_source, media);
+            let pattern =
+                (image.is_some() && attr("filltype") == Some("pattern")).then(|| Duotone {
+                    clr1: attr("color2")
+                        .and_then(vml_color_hex6)
+                        .unwrap_or_else(|| "000000".into()),
+                    clr2: color.clone(),
+                });
+            Some(VmlEdgeStroke {
+                edge: edge.into(),
+                color: vml_color_alpha(color, attr("opacity").and_then(parse_vml_opacity)),
+                width_pt: attr("weight")
+                    .and_then(parse_vml_stroke_weight_pt)
+                    .unwrap_or(1.0),
+                dash: attr("dashstyle").and_then(normalize_vml_dashstyle),
+                cap: match attr("endcap").unwrap_or("flat") {
+                    "round" => Some("round".into()),
+                    "square" => Some("square".into()),
+                    _ => Some("butt".into()),
+                },
+                join: attr("joinstyle").unwrap_or("round").into(),
+                miter_limit: attr("miterlimit")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(8.0),
+                compound: match attr("linestyle").unwrap_or("single") {
+                    "thinThin" => Some("dbl".into()),
+                    "thinThick" => Some("thinThick".into()),
+                    "thickThin" => Some("thickThin".into()),
+                    "thickBetweenThin" => Some("tri".into()),
+                    _ => None,
+                },
+                image,
+                pattern,
+            })
+        })
+        .collect()
+}
+
+/// Part 4 §19.1.2.14: an authored path defaults arrowok=false;
+/// native primitives without a path decoration retain their own arrow ends.
+pub(super) fn arrows_enabled(shape: roxmltree::Node, definition: Option<roxmltree::Node>) -> bool {
+    let has_path = path_source(shape, definition).is_some()
+        || vml_direct_child(shape, "path").is_some()
+        || definition.is_some_and(|n| vml_direct_child(n, "path").is_some());
+    !has_path
+        || path_attr(shape, definition, "arrowok").and_then(parse_vml_true_false) == Some(true)
 }
 
 pub(super) fn incomplete_host(shape: roxmltree::Node, definition: Option<roxmltree::Node>) -> bool {
@@ -870,7 +1001,8 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
         for child in host.children().filter(|n| n.is_element()) {
             match child.tag_name().name() {
                 "path" | "formulas" | "handles" | "fill" | "stroke" | "shadow" | "textbox"
-                | "textpath" | "imagedata" | "lock" | "wrap" | "anchorlock" | "ClientData" => {}
+                | "textpath" | "imagedata" | "skew" | "lock" | "wrap" | "anchorlock"
+                | "ClientData" => {}
                 _ => return true,
             }
         }
@@ -878,7 +1010,37 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
     // Audit authored paint attributes, not just element names. Unacquired
     // image filters/pen textures and edge-specific Office strokes are real
     // ink; metadata such as title/relationship IDs has no independent paint.
+    if vml_decoration_attr(shape, definition, "skew", "on").and_then(parse_vml_true_false)
+        == Some(true)
+        && skew(shape, definition).is_none()
+    {
+        return true;
+    }
+    if let Some(skew) = skew(shape, definition) {
+        let stroke = resolve_vml_stroke(shape, definition);
+        let identity = skew.matrix == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            && skew.offset.x_pt == 0.0
+            && skew.offset.y_pt == 0.0
+            && skew.offset.x_fraction == 0.0
+            && skew.offset.y_fraction == 0.0;
+        // Arrowheads are separate retained vectors. Nonidentity skew still
+        // needs to acquire their contours with the shaft; disclose this limit
+        // rather than claiming that regenerating an unskewed head is support.
+        if !identity
+            && stroke.color.is_some()
+            && (stroke.head_end.is_some() || stroke.tail_end.is_some())
+            && arrows_enabled(shape, definition)
+            && path_attr(shape, definition, "strokeok").and_then(parse_vml_true_false)
+                != Some(false)
+        {
+            return true;
+        }
+    }
     for (element, allowed) in [
+        (
+            "skew",
+            &["id", "ext", "on", "matrix", "offset", "origin"][..],
+        ),
         (
             "textpath",
             &[
@@ -1000,8 +1162,25 @@ pub(super) fn incomplete_leaf(shape: roxmltree::Node, definition: Option<roxmltr
                         } else {
                             vml_decoration_attr(shape, definition, element, a.name())
                         }) == Some(a.value())
-                }) || node.children().any(|n| n.is_element())
-                {
+                }) || node.children().any(|n| {
+                    if !n.is_element() {
+                        return false;
+                    }
+                    if element != "stroke"
+                        || !matches!(
+                            n.tag_name().name(),
+                            "left" | "top" | "right" | "bottom" | "column"
+                        )
+                    {
+                        return true;
+                    }
+                    // Office border pens have the same attribute vocabulary,
+                    // but do not inherit parent defaults. Audit the enabled
+                    // child as well; recognizing its tag is not paint support.
+                    n.attributes()
+                        .any(|a| !allowed.contains(&a.name()) && a.name() != "ext")
+                        || n.children().any(|c| c.is_element())
+                }) {
                     return true;
                 }
             }

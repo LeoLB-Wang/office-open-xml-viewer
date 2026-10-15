@@ -70,7 +70,13 @@ function translateDrawingCommand(command: DrawingPaintCommand, delta: LayoutTran
       y: command.plan.rect.y + delta.yPt,
     } },
   };
-  return { ...command, ...(command.kind === 'watermark-text' && command.maskBounds ? { maskBounds: translateRect(command.maskBounds, delta) } : {}), rect: translateRect(command.rect, delta) };
+  return { ...command,
+    ...(command.kind === 'watermark-text' && command.glyphTransform ? { glyphTransform: {
+      ...command.glyphTransform,
+      e: command.glyphTransform.e + delta.xPt - command.glyphTransform.a * delta.xPt - command.glyphTransform.c * delta.yPt,
+      f: command.glyphTransform.f + delta.yPt - command.glyphTransform.b * delta.xPt - command.glyphTransform.d * delta.yPt,
+    } } : {}),
+    ...(command.kind === 'watermark-text' && command.maskBounds ? { maskBounds: translateRect(command.maskBounds, delta) } : {}), rect: translateRect(command.rect, delta) };
 }
 
 export function translateDrawing(drawing: DrawingLayout, delta: LayoutTranslation): DrawingLayout {

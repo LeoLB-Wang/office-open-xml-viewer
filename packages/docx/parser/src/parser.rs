@@ -12300,13 +12300,7 @@ fn parse_vml_shape(
     // when effective arrowok is true (default false), independently of the
     // stroke's start/end arrow settings. Primitive lines without a CT_Path
     // retain their native stroke arrows; no path override exists there.
-    let has_path = vml_geometry::path_source(shape, shape_type).is_some()
-        || vml_direct_child(shape, "path").is_some()
-        || shape_type.is_some_and(|n| vml_direct_child(n, "path").is_some());
-    if has_path
-        && vml_geometry::path_attr(shape, shape_type, "arrowok").and_then(parse_vml_true_false)
-            != Some(true)
-    {
+    if !vml_geometry::arrows_enabled(shape, shape_type) {
         resolved_stroke.head_end = None;
         resolved_stroke.tail_end = None;
     }
@@ -12404,6 +12398,18 @@ fn parse_vml_shape(
         width_pt * physical_scale.0,
         height_pt * physical_scale.1,
     );
+    let edge_strokes = vml_geometry::edge_strokes(shape, shape_type, media_map);
+    let missing_edge_pen = edge_strokes.iter().any(|edge| {
+        let attr = |host| {
+            vml_direct_child(host, "stroke")
+                .and_then(|n| vml_direct_child(n, &edge.edge))
+                .and_then(|n| n.attribute("filltype"))
+        };
+        matches!(
+            attr(shape).or_else(|| shape_type.and_then(attr)),
+            Some("tile" | "pattern" | "frame")
+        ) && edge.image.is_none()
+    });
     let missing_pen = resolved_stroke.color.is_some()
         && matches!(
             vml_decoration_attr(shape, shape_type, "stroke", "filltype"),
@@ -12414,6 +12420,7 @@ fn parse_vml_shape(
         vml_geometry::path_attr(shape, shape_type, "textboxrect").is_some() && text_rects.is_none();
     if geometry_unavailable
         || missing_pen
+        || missing_edge_pen
         || malformed_text_rects
         || resolved_fill.incomplete
         || vml_geometry::incomplete_leaf(shape, shape_type)
@@ -12505,6 +12512,15 @@ fn parse_vml_shape(
         subpath_paint,
         preset_geometry,
         vml_shadow: vml_geometry::shadow(shape, shape_type),
+        vml_skew: vml_geometry::skew(shape, shape_type),
+        vml_edge_strokes: if vml_geometry::path_attr(shape, shape_type, "strokeok")
+            .and_then(parse_vml_true_false)
+            == Some(false)
+        {
+            Vec::new()
+        } else {
+            edge_strokes
+        },
         adj_values,
         vml_concentric_gradient: vml_geometry::path_attr(shape, shape_type, "gradientshapeok")
             .and_then(parse_vml_true_false)

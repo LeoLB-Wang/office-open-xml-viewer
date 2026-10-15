@@ -84,3 +84,8 @@ export function anchorOccurrenceKey(source: SourceRef, parserLocalId: string): s
 export function vmlStrokeResourceKey(source: SourceRef, partPath: string): string {
   return `${imageResourceKey(source, partPath)}:vml-stroke`;
 }
+
+/** Each border owns an independent brush even when source parts are shared. */
+export function vmlEdgeResourceKey(source: SourceRef, edge = ''): string {
+  return `vml-edge:${sourceKey(source)}:${edge}`;
+}

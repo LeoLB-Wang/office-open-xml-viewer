@@ -172,9 +172,14 @@ export type DrawingPaintCommand =
       fill: DeepReadonly<Fill> | null;
       opacity: number;
       rotationDeg: number;
+      flipH?: boolean;
+      flipV?: boolean;
+      glyphTransform?: Matrix2DData;
       imageResourceKey?: string;
       maskBounds?: LayoutRect;
       imageRotationDeg?: number;
+      imageFlipH?: boolean;
+      imageFlipV?: boolean;
       /** Acquired glyph placements for §19.1.2.23 path fitting. */
       pathSlices?: readonly Readonly<{ sourceX: number; sourceWidth: number; xPt: number; yPt: number; a: number; b: number; c: number; d: number }>[];
       /** True applies §19.1.2.23 fitshape; false preserves authored font size. */
@@ -1638,6 +1643,24 @@ export interface BlockLayoutAlgorithms {
 
 /** Effective private VML parser facts, projected before layout acquisition. */
 export interface VmlShapeAcquisitionFacts {
+  readonly vmlSkew?: Readonly<{
+    offset: NonNullable<import('../types.js').ShapeRun['vmlShadow']>['offset'];
+    origin: readonly [number, number];
+    matrix: readonly [number, number, number, number, number, number];
+    absolutePerspective: boolean;
+  }>;
+  readonly vmlEdgeStrokes?: readonly Readonly<{
+    edge: 'left' | 'top' | 'right' | 'bottom' | 'column';
+    color: string;
+    widthPt: number;
+    dash?: string | null;
+    cap?: 'butt' | 'square' | 'round' | null;
+    join: 'miter' | 'bevel' | 'round';
+    miterLimit: number;
+    compound?: string | null;
+    image?: Extract<import('../types.js').ShapeFill, { fillType: 'image' }> | null;
+    pattern?: import('@silurus/ooxml-core').Duotone | null;
+  }>[];
   readonly vmlStrokeFill?: Extract<import('../types.js').ShapeFill, { fillType: 'image' }>;
   readonly vmlStrokePattern?: import('@silurus/ooxml-core').Duotone;
   readonly vmlInsetPen?: boolean;

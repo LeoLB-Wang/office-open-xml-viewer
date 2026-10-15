@@ -1,3 +1,5 @@
+import { acquireVmlTextContours } from './vml-text-outline.js';
+import { acquireVmlSkew, acquireVmlSkewMatrix } from './vml-skew.js';
 import { acquireVmlConcentricFill } from './vml-concentric-fill.js';
 import { planVmlPathText } from './vml-text-path.js';
 import { planVmlShadows } from './vml-shadow.js';
@@ -104,6 +106,7 @@ function planShapeDrawingBase(
   imageFillResourceKey?: string,
   maximumGeometryWork?: number,
   vmlPictureResourceKey?: string,
+  vmlStrokeResourceKey?: string,
 ): ShapeDrawingPlanResult {
   const parserControlled = textPath !== undefined && (
     textPath.textPathOk !== undefined
@@ -193,12 +196,21 @@ function planShapeDrawingBase(
         kind: 'watermark-text' as const,
         rect: { ...bounds },
         text: textPath.string,
-        ...(shape.fill?.fillType === 'image' ? { imageResourceKey: imageFillResourceKey, imageRotationDeg: shape.fill.vml?.alignShape === false ? 0 : shape.rotation ?? 0 } : {}),
+        ...(shape.fill?.fillType === 'image' ? { imageResourceKey: imageFillResourceKey,
+          imageRotationDeg: shape.fill.vml?.alignShape === false ? 0 : shape.rotation ?? 0,
+          ...(shape.fill.vml?.alignShape === false ? { imageFlipH: shape.flipH ?? false, imageFlipV: shape.flipV ?? false } : {}),
+        } : {}),
         fill: shape.fill?.fillType === 'image' ? { fillType: 'solid' as const, color: 'FFFFFF' } : shape.fill ? { ...shape.fill, ...(shape.fill.fillType === 'gradient'
           ? { stops: shape.fill.stops.map((stop) => ({ ...stop })) }
           : {}) } : null,
         opacity: Math.max(0, Math.min(1, shape.fillOpacity ?? 1)),
         rotationDeg: shape.rotation ?? 0,
+        flipH: shape.flipH ?? false,
+        flipV: shape.flipV ?? false,
+        ...(shape.vmlSkew ? { glyphTransform: acquireVmlSkewMatrix({
+          rect: { x: bounds.xPt, y: bounds.yPt, w: bounds.widthPt, h: bounds.heightPt },
+          transform: { rotationDeg: shape.rotation ?? 0, flipH: shape.flipH ?? false, flipV: shape.flipV ?? false },
+        }, shape.vmlSkew) } : {}),
         fitShape,
         fontSizePt,
         sourceBounds,
@@ -210,7 +222,7 @@ function planShapeDrawingBase(
           fontStyle: span.font.style,
         })),
       }, 'VML textPath command');
-    let acquiredCommand: Extract<DrawingPaintCommand, { kind: 'watermark-text' }> =
+    let acquiredCommand: Exclude<ShapeDrawingCommand, {kind: 'noop'}> =
       textPath.fitPath || textPath.xScale || shape.subpaths.length
         ? snapshotPlainData(
             {
@@ -220,7 +232,8 @@ function planShapeDrawingBase(
             'VML fitted path text',
           )
         : command;
-    if (acquiredCommand.imageResourceKey) {
+    const pen = shapeStroke(shape);
+    if (acquiredCommand.imageResourceKey || pen) {
       const ink = shaped.inkBounds
         ? {
             xPt: shaped.inkBounds.xMinPt,
@@ -254,6 +267,13 @@ function planShapeDrawingBase(
             y: bounds.yPt + (y! - sourceBounds.yPt) * sy,
           });
       }
+      if (command.glyphTransform) {
+        const m = command.glyphTransform;
+        for (const p of points) {
+          const x = p.x, y = p.y;
+          p.x = m.a * x + m.c * y + m.e; p.y = m.b * x + m.d * y + m.f;
+        }
+      }
       if (points.length) {
         const left = Math.min(...points.map((p) => p.x)),
           top = Math.min(...points.map((p) => p.y));
@@ -261,10 +281,10 @@ function planShapeDrawingBase(
           {
             ...acquiredCommand,
             maskBounds: {
-              xPt: left,
-              yPt: top,
-              widthPt: Math.max(...points.map((p) => p.x)) - left,
-              heightPt: Math.max(...points.map((p) => p.y)) - top,
+              xPt: left - (pen?.width ?? 0),
+              yPt: top - (pen?.width ?? 0),
+              widthPt: Math.max(...points.map((p) => p.x)) - left + 2 * (pen?.width ?? 0),
+              heightPt: Math.max(...points.map((p) => p.y)) - top + 2 * (pen?.width ?? 0),
             },
           },
           'VML image text ink',
@@ -274,25 +294,68 @@ function planShapeDrawingBase(
     const {
       imageResourceKey: _imageKey,
       imageRotationDeg: _imageRotation,
+      imageFlipH: _imageFlipH, imageFlipV: _imageFlipV,
       ...shadowText
     } = acquiredCommand;
     const shadow = shape.vmlShadow;
-    const before = shadow && shadow.kind !== 'perspective' && shadow.opacity > 0
+    const before: Exclude<ShapeDrawingCommand, {kind: 'noop'}>[] = shadow && shadow.kind !== 'perspective' && shadow.opacity > 0
       ? (shadow.kind === 'single' ? [[shadow.offset, shadow.color]] as const
         : [[shadow.offset, shadow.color], [shadow.offset2, shadow.color2]] as const).map(([offset, color]) => snapshotPlainData({
           ...shadowText,
           rect: { ...bounds, xPt: bounds.xPt + offset.xPt + offset.xFraction * bounds.widthPt,
             yPt: bounds.yPt + offset.yPt + offset.yFraction * bounds.heightPt },
-          fill: { fillType: 'solid' as const, color }, opacity: shadow.opacity,
+          ...(shadowText.glyphTransform ? { glyphTransform: {
+            ...shadowText.glyphTransform,
+            e: shadowText.glyphTransform.e + (1 - shadowText.glyphTransform.a) * (offset.xPt + offset.xFraction * bounds.widthPt)
+              - shadowText.glyphTransform.c * (offset.yPt + offset.yFraction * bounds.heightPt),
+            f: shadowText.glyphTransform.f + (1 - shadowText.glyphTransform.d) * (offset.yPt + offset.yFraction * bounds.heightPt)
+              - shadowText.glyphTransform.b * (offset.xPt + offset.xFraction * bounds.widthPt),
+          } } : {}),
+          fill: shape.fill || !shadow.obscured ? { fillType: 'solid' as const, color } : null, opacity: shadow.opacity,
         }, 'VML text shadow')) : [];
+    const diagnostics: Array<Readonly<Omit<LayoutDiagnostic, 'source'>>> = [];
+    // Part 4 §§19.1.2.23/.21: first deform glyph geometry, THEN apply the
+    // physical point-space pen. Native strokeText would deform the pen too.
+    // Font-service contours keep arbitrary affine fits and the scale-neutral
+    // reference font honest, and share ordinary retained stroke machinery.
+    if (pen) {
+      const scales = acquiredCommand.pathSlices?.map(s => Math.hypot(s.a, s.b, s.c, s.d))
+        ?? [fitShape ? Math.max(bounds.widthPt / sourceBounds.widthPt, bounds.heightPt / sourceBounds.heightPt) : 1];
+      // A zero-extent native line needs an independent glyph/brush frame;
+      // do not divide by its zero host extent and fabricate non-finite paths.
+      if (!text.glyphContours || !shaped.inkBounds || bounds.widthPt === 0 || bounds.heightPt === 0) {
+        diagnostics.push({ code: 'UNSUPPORTED_FEATURE', severity: 'error',
+          message: 'VML text outline requires native glyph contours and a nonzero host frame' });
+      } else {
+        const contours = text.glyphContours({ spans: shaped.spans, fontSizePt,
+          ink: shaped.inkBounds, maximumScale: Math.max(...scales) * (command.glyphTransform
+            ? Math.hypot(command.glyphTransform.a, command.glyphTransform.b, command.glyphTransform.c, command.glyphTransform.d) : 1), maximumWork: maximumGeometryWork ?? Infinity });
+        if (!contours?.length) {
+          diagnostics.push({ code: 'UNSUPPORTED_FEATURE', severity: 'error',
+            message: 'Native glyph contours are unavailable at the bounded outline precision' });
+        } else {
+          const fitted = acquireVmlTextContours(contours, acquiredCommand, bounds, maximumGeometryWork);
+          const subpaths = fitted.subpaths;
+          const outline = planShapeDrawingPens({ ...shape, presetGeometry: null, subpaths,
+            subpathPaint: [], fill: null, vmlPicture: undefined, vmlEdgeStrokes: undefined,
+            vmlConcentricGradient: false,
+            vmlShadow: shadow ? { ...shadow, obscured: true } : undefined,
+          }, bounds, undefined, undefined, undefined, Math.min(maximumGeometryWork ?? Infinity, 1_048_576) - fitted.workUnits, undefined, vmlStrokeResourceKey);
+          if (outline.status !== 'planned') throw new Error('VML text outline acquisition failed');
+          before.push(acquiredCommand);
+          before.push(...(outline.before ?? []));
+          if (outline.command.kind === 'noop') throw new Error('VML text outline produced no command');
+          acquiredCommand = outline.command;
+        }
+      }
+    }
+    if (shadow?.kind === 'perspective') diagnostics.push({ code: 'UNSUPPORTED_FEATURE',
+      severity: 'error', message: 'VML perspective text shadow requires glyph outline fill acquisition' });
     return Object.freeze({ status: 'planned', command: acquiredCommand, ...(before.length ? { before } : {}),
-      // A perspective warp needs glyph outlines, which Canvas text shaping
-      // does not expose. Keep the available text and disclose only that effect.
-      ...(shadow?.kind === 'perspective' ? { diagnostics: [{ code: 'UNSUPPORTED_FEATURE' as const,
-        severity: 'error' as const, message: 'VML perspective text shadow requires glyph outlines' }] } : {}),
+      ...(diagnostics.length ? { diagnostics } : {}),
     });
   }
-  const plan: DrawingMLShapePaintPlan = {
+  let plan: DrawingMLShapePaintPlan = {
     rect: { x: bounds.xPt, y: bounds.yPt, w: bounds.widthPt, h: bounds.heightPt },
     geometry: shape.presetGeometry
       ? {
@@ -319,7 +382,8 @@ function planShapeDrawingBase(
       flipV: shape.flipV ?? false,
     },
   };
-  const retainedPlan = { ...plan, resolvedGeometry: resolveDrawingMLGeometry(plan, 1, maximumGeometryWork) };
+  if (shape.vmlSkew) plan = acquireVmlSkew(plan, shape.vmlSkew, maximumGeometryWork);
+  const retainedPlan = { ...plan, resolvedGeometry: plan.resolvedGeometry ?? resolveDrawingMLGeometry(plan, 1, maximumGeometryWork) };
   const shadows = planVmlShadows(shape, retainedPlan, (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits);
   let remainingWork = (maximumGeometryWork ?? Infinity) - retainedPlan.resolvedGeometry.workUnits
     - shadows.reduce((sum, command) => sum + (command.plan.resolvedGeometry?.workUnits ?? 0), 0);
@@ -422,7 +486,7 @@ function planShapeDrawingBase(
 /** Acquire pen passes independently: texture alpha must not multiply body fill
  * alpha, and an inset pen is a double-width stroke clipped to the silhouette
  * (Part 4 §§19.1.2.14/.21). All geometry is retained before paint. */
-export function planShapeDrawing(
+function planShapeDrawingPens(
   shape: DeepReadonly<ShapeRun & VmlShapeAcquisitionFacts>,
   bounds: LayoutRect,
   text?: TextLayoutService,
@@ -440,7 +504,13 @@ export function planShapeDrawing(
     imageFillResourceKey,
     maximumGeometryWork,
     vmlPictureResourceKey,
+    vmlStrokeResourceKey,
   );
+  // Text acquisition has already routed its contour pen through this same
+  // adapter. Reprocessing those passes would double inset width and acquire
+  // image resources a second time.
+  if (result.status === 'planned' && (result.command.kind === 'watermark-text'
+    || result.before?.some(command => command.kind === 'watermark-text'))) return result;
   if (
     result.status !== 'planned' ||
     (!shape.vmlStrokeFill && !shape.vmlInsetPen && !shape.vmlConcentricGradient)
@@ -540,4 +610,58 @@ export function planShapeDrawing(
     },
     'VML pen passes',
   );
+}
+
+/** Acquire independent border pens after the host's own fill/pen passes. */
+export function planShapeDrawing(
+  shape: DeepReadonly<ShapeRun & VmlShapeAcquisitionFacts>, bounds: LayoutRect,
+  text?: TextLayoutService, textPath?: Readonly<VmlTextPathAcquisitionInput>,
+  imageFillResourceKey?: string, maximumGeometryWork?: number,
+  vmlPictureResourceKey?: string, vmlStrokeResourceKey?: string,
+  vmlEdgeResourcePrefix?: string,
+): ShapeDrawingPlanResult {
+  let result = planShapeDrawingPens(shape, bounds, text, textPath, imageFillResourceKey,
+    maximumGeometryWork, vmlPictureResourceKey, vmlStrokeResourceKey);
+  if (result.status === 'planned' && shape.vmlEdgeStrokes?.length) {
+    const edgeCommands: Exclude<ShapeDrawingCommand, {kind: 'noop'}>[] = [];
+    let remaining = maximumGeometryWork ?? Infinity;
+    for (const command of [...(result.before ?? []), result.command])
+      if (command.kind === 'drawingml-shape' || command.kind === 'drawingml-image-fill')
+        remaining -= command.plan.resolvedGeometry.workUnits;
+    for (const edge of shape.vmlEdgeStrokes) {
+      // Part 4 §19.2.2.6 explicitly permits ignoring the interior pen when
+      // multi-column VML text boxes are not supported. No interior line exists
+      // for this adapter's single-column text box; do not invent one.
+      if (edge.edge === 'column') continue;
+      const ends = { left: [0, 0, 0, 1], top: [0, 0, 1, 0],
+        right: [1, 0, 1, 1], bottom: [0, 1, 1, 1] }[edge.edge];
+      const penShape = {
+        ...shape, presetGeometry: null, vmlEdgeStrokes: undefined,
+        vmlShadow: undefined, vmlPicture: undefined, vmlConcentricGradient: false,
+        fill: null, stroke: edge.color, strokeWidth: edge.widthPt,
+        strokeDash: edge.dash, strokeCap: edge.cap, strokeJoin: edge.join,
+        strokeMiterLimit: edge.miterLimit, strokeCompound: edge.compound,
+        headEnd: null, tailEnd: null, vmlStrokeFill: edge.image ?? undefined,
+        vmlStrokePattern: edge.pattern ?? undefined, vmlInsetPen: false,
+        strokeFill: null, strokeCustomDash: undefined, strokeAlignment: undefined,
+        subpaths: [[{ cmd: 'moveTo' as const, x: ends[0]!, y: ends[1]! },
+          { cmd: 'lineTo' as const, x: ends[2]!, y: ends[3]! }]], subpathPaint: [],
+      };
+      if (edge.image && !vmlEdgeResourcePrefix) throw new Error('VML edge image pen requires a retained resource');
+      const acquired = planShapeDrawing(penShape, bounds, undefined, undefined, undefined,
+        remaining, undefined, edge.image ? `${vmlEdgeResourcePrefix}${edge.edge}` : undefined);
+      if (acquired.status !== 'planned') throw new Error('VML edge pen acquisition failed');
+      for (const command of [...(acquired.before ?? []), acquired.command]) {
+        if (command.kind === 'noop') continue;
+        edgeCommands.push(command);
+        if (command.kind === 'drawingml-shape' || command.kind === 'drawingml-image-fill')
+          remaining -= command.plan.resolvedGeometry.workUnits;
+      }
+    }
+    if (edgeCommands.length) result = snapshotPlainData({ ...result,
+      before: [...(result.before ?? []), ...(result.command.kind === 'noop' ? [] : [result.command]), ...edgeCommands.slice(0, -1)],
+      command: edgeCommands.at(-1) ?? result.command,
+    }, 'VML independent edge pens');
+  }
+  return result;
 }

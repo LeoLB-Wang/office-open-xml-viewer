@@ -10,7 +10,7 @@ import type {
 } from '../types.js';
 import type { ImageMetadataRecord, MathOccurrence, PictureBulletSizeResolver } from './resources.js';
 import type { BodyAcquisitionInputProjections } from './acquisition-input-projections.js';
-import { chartResourceKey, imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey } from './source-key.js';
+import { chartResourceKey, imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey, vmlEdgeResourceKey } from './source-key.js';
 import {
   createPaintResourceRegistry,
 } from './paint-resources.js';
@@ -113,6 +113,13 @@ function collectDescriptorCandidates(
       addImage('image', source, fill.imagePath, fill.mimeType, shape.widthPt + (shape.vmlInsetPen === true ? 0 : shape.strokeWidth ?? 0), shape.heightPt + (shape.vmlInsetPen === true ? 0 : shape.strokeWidth ?? 0),
         { alpha: fill.alpha, duotone: fill.duotone, vmlFill: fill.vml, vmlStrokePattern: shape.vmlStrokePattern },
         vmlStrokeResourceKey(source, fill.imagePath));
+    }
+    for (const edge of shape.vmlEdgeStrokes ?? []) {
+      const fill = edge.image;
+      if (fill) addImage('image', source, fill.imagePath, fill.mimeType,
+        shape.widthPt + edge.widthPt, shape.heightPt + edge.widthPt,
+        { alpha: fill.alpha, vmlFill: fill.vml, vmlStrokePattern: edge.pattern ?? undefined },
+        vmlEdgeResourceKey(source, edge.edge));
     }
     if (shape.vmlPicture) {
       const picture = shape.vmlPicture;

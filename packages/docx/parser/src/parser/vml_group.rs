@@ -345,6 +345,8 @@ fn acquire_leaf<'a, 'input>(
             subpaths: Vec::new(),
             subpath_paint: Vec::new(),
             vml_shadow: None,
+            vml_skew: None,
+            vml_edge_strokes: Vec::new(),
             text_path: None,
             text_blocks: Vec::new(),
             ..shape

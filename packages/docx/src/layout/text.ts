@@ -530,6 +530,16 @@ export interface TextShapeResult extends GlyphMeasurement {
   readonly diagnostics: readonly LayoutDiagnostic[];
 }
 
+/** Native font authority acquires glyph contours before layout paint. The
+ * numerical outline precision is in final point space, independent of DPR. */
+export interface GlyphContourRequest {
+  readonly spans: readonly Readonly<{ text: string; advancePt: number; fontRoute: CanvasFontRoute; font: Pick<FontResolution, 'weight' | 'style'> }>[];
+  readonly fontSizePt: number;
+  readonly ink: Readonly<{ xMinPt: number; xMaxPt: number; ascentPt: number; descentPt: number }>;
+  readonly maximumScale: number;
+  readonly maximumWork: number;
+}
+
 export interface TextLayoutService {
   readonly fingerprint: string;
   /** Geometry keyed by a resolved resource identity. This is the authoritative
@@ -539,6 +549,7 @@ export interface TextLayoutService {
   readonly localMetrics: Readonly<Record<string, Readonly<ResolvedFontMetric>>>;
   resolve(request: Readonly<TextFontResolveRequest>): FontResolution;
   shape(request: Readonly<TextShapeRequest>): TextShapeResult;
+  glyphContours?(request: GlyphContourRequest): readonly (readonly Readonly<{x: number; y: number}>[])[] | undefined;
   /** Per-source script-substitute proof, when configured. A mixed scope stays
    * a semantic face-selection boundary; plain runs return no scope key. */
   sourceScopeKey?(request: Readonly<TextShapeRequest>): string | undefined;
@@ -547,6 +558,8 @@ export interface TextLayoutService {
 export interface TextLayoutServiceInput {
   readonly fonts: FontResolver;
   readonly measurer: GlyphMeasurer;
+  readonly glyphContours?: TextLayoutService['glyphContours'];
+  readonly glyphContourFingerprint?: string;
   readonly cjkFallback?: CjkLang;
   readonly fontMetrics?: Readonly<Record<string, Readonly<ResolvedFontMetric>>>;
   /** Exact local aliases also participate in resolution; retained separately
@@ -850,7 +863,11 @@ export function createTextLayoutService(input: TextLayoutServiceInput): TextLayo
       .map(([family, charset]) => [family.trim().toLowerCase(), charset.trim()])
       .sort(([a], [b]) => a.localeCompare(b)),
   ));
+  if (input.glyphContours && !input.glyphContourFingerprint?.trim()) {
+    throw new TypeError('Native glyph contour acquisition requires an authority fingerprint');
+  }
   const fingerprint = stableFingerprint('text', {
+    glyphContours: input.glyphContourFingerprint ?? 'unavailable',
     fonts: input.fonts.fingerprint,
     measurer: input.measurer.fingerprint,
     cjkFallback: input.cjkFallback ?? null,
@@ -984,6 +1001,7 @@ export function createTextLayoutService(input: TextLayoutServiceInput): TextLayo
   let scopeScans = 0;
   let scopeUtf16Units = 0;
   const service: TextLayoutService = Object.freeze({
+    ...(input.glyphContours ? { glyphContours: input.glyphContours } : {}),
     fingerprint,
     fontMetrics,
     localMetrics: fontMetrics,

@@ -61,7 +61,7 @@ import {
   type SegStretch,
 } from '../text-distribute.js';
 import { computeKashidaDistribution, type KashidaLevel } from '../kashida-justify.js';
-import { imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey } from './source-key.js';
+import { imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey, vmlEdgeResourceKey } from './source-key.js';
 import { stableFingerprint } from './fingerprint.js';
 import { chartResourceKey as canonicalChartResourceKey } from './source-key.js';
 import {
@@ -2949,6 +2949,7 @@ function drawingForShape(
     undefined,
     shape.vmlPicture ? vmlPictureResourceKey(source, shape.vmlPicture.imagePath) : undefined,
     shape.vmlStrokeFill ? vmlStrokeResourceKey(source, shape.vmlStrokeFill.imagePath) : undefined,
+    vmlEdgeResourceKey(source),
   );
   const commands = [...(plan.status === 'planned' ? plan.before ?? [] : []), plan.command];
   const diagnostics = shapePlanDiagnostics(plan, source);
@@ -3632,6 +3633,7 @@ function acquireAnchorOccurrence(
         undefined,
         run.vmlPicture ? vmlPictureResourceKey(source, run.vmlPicture.imagePath) : undefined,
         run.vmlStrokeFill ? vmlStrokeResourceKey(source, run.vmlStrokeFill.imagePath) : undefined,
+        vmlEdgeResourceKey(source),
       );
       commands.push(...(plan.status === 'planned' ? plan.before ?? [] : []), plan.command);
       if (plan.status === 'planned') shadowCommands.push(...(plan.before ?? []));

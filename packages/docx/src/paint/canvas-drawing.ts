@@ -164,7 +164,8 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
       continue;
     }
     if (command.kind === 'watermark-text') {
-      const paintText = (context: CanvasPaintContext, rotationDeg = command.rotationDeg) => {
+      if (command.fill === null) continue;
+      const paintText = (context: CanvasPaintContext) => {
         // Use the same resolved OOXML fill primitive as DrawingML shapes. `null`
         // is authored no-fill, not a request for a renderer-chosen fallback ink.
         const fill = resolveFill(
@@ -177,16 +178,17 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
         );
         if (fill === null) return;
         context.ctx.save();
+        if (command.glyphTransform) {
+          const m = command.glyphTransform;
+          context.ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+        }
         const centerXPt = command.rect.xPt + command.rect.widthPt / 2;
         const centerYPt = command.rect.yPt + command.rect.heightPt / 2;
         context.ctx.translate(centerXPt, centerYPt);
-        if (rotationDeg !== 0) {
-          context.ctx.rotate((rotationDeg * Math.PI) / 180);
-        }
         if (command.pathSlices) {
           context.ctx.translate(-command.rect.widthPt / 2, -command.rect.heightPt / 2);
           context.ctx.globalAlpha *= command.opacity;
-          context.ctx.fillStyle = fill;
+          if (fill !== null) context.ctx.fillStyle = fill;
           context.ctx.textAlign = 'left';
           context.ctx.textBaseline = 'alphabetic';
           for (const slice of command.pathSlices) {
@@ -234,7 +236,7 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
           );
         }
         context.ctx.globalAlpha *= command.opacity;
-        context.ctx.fillStyle = fill;
+        if (fill !== null) context.ctx.fillStyle = fill;
         context.ctx.textAlign = 'left';
         context.ctx.textBaseline = 'alphabetic';
         let xPt = 0;
@@ -250,26 +252,31 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
         }
         context.ctx.restore();
       };
-      if (command.imageResourceKey) {
-        context.ctx.save();
-        try {
-          const x = command.rect.xPt + command.rect.widthPt / 2,
-            y = command.rect.yPt + command.rect.heightPt / 2;
-          context.ctx.translate(x, y);
-          context.ctx.rotate((command.rotationDeg * Math.PI) / 180);
-          context.ctx.translate(-x, -y);
+      // §19.1.2.19: rotation after reflection, around the host centre.
+      // Both solid glyphs and raster brush masks share this one outer frame;
+      // mask callbacks never reapply it. Shadow commands retain the same flags.
+      context.ctx.save();
+      try {
+        const x = command.rect.xPt + command.rect.widthPt / 2,
+          y = command.rect.yPt + command.rect.heightPt / 2;
+        context.ctx.translate(x, y);
+        context.ctx.rotate((command.rotationDeg * Math.PI) / 180);
+        context.ctx.scale(command.flipH ? -1 : 1, command.flipV ? -1 : 1);
+        context.ctx.translate(-x, -y);
+        if (command.imageResourceKey) {
           paintVmlImageMask(
             command.imageResourceKey,
             command.maskBounds ?? command.rect,
             context,
-            (ctx) => paintText({ ...context, ctx }, 0),
+            (ctx) => paintText({ ...context, ctx }),
             command.rect,
-            { rotationDeg: (command.imageRotationDeg ?? 0) - command.rotationDeg },
+            { rotationDeg: (command.imageRotationDeg ?? 0) - command.rotationDeg,
+              flipH: command.imageFlipH, flipV: command.imageFlipV },
           );
-        } finally {
-          context.ctx.restore();
-        }
-      } else paintText(context);
+        } else paintText(context);
+      } finally {
+        context.ctx.restore();
+      }
       continue;
     }
     context.ctx.fillStyle = command.fill;

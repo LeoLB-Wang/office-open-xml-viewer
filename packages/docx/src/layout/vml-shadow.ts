@@ -114,7 +114,7 @@ export function planVmlShadows(
  * to 1/1024pt in output space (numerical precision, independent of samples).
  * Lines project exactly. Curves subdivide adaptively; work is charged against
  * the caller's geometry allowance, with bounded recursion for singular input. */
-function projectPath(path: GeometryPath, project: (p: Point) => Point, charge: () => void): PathCmd[] {
+export function projectPath(path: GeometryPath, project: (p: Point) => Point, charge: () => void): PathCmd[] {
   const out: PathCmd[] = [];
   let pen: Point = [0, 0], start: Point = pen;
   const move = (p: Point) => { const [x, y] = project(p); out.push({ cmd: 'moveTo', x, y }); pen = p; start = p; };
