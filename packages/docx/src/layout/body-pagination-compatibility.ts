@@ -107,6 +107,26 @@ export const WORD_TRAILING_SPACE_AFTER_FIT_ADMISSION = defineCompatibilityRule({
   description: 'Admit the final visible paragraph content at a flow-region edge when only its authored trailing space crosses the edge, while retaining that space for placement and paint.',
 });
 
+export const WORD_GRID_LINE_CONTENT_FIT_ADMISSION = defineCompatibilityRule({
+  id: 'word-grid-line-content-fit-admission',
+  evidence: {
+    kind: 'regression-test',
+    reference: 'packages/docx/src/line-spacing-baseline.test.ts#paginates a centered natural box with body bottom %s',
+  },
+  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. Off-grid and exact lines retain full-box admission.',
+});
+
+/** Omit only the terminal grid leading, preserving paragraph trailing extents
+ * and all retained placement/paint geometry. Applies to complete and continuing
+ * fragments; earlier lines still consume their full grid cells. */
+export function wordGridLineAdmissionExtentPt(
+  paragraph: ParagraphLayout,
+  logicalLineBoxExtentPt: number,
+): number {
+  void WORD_GRID_LINE_CONTENT_FIT_ADMISSION;
+  return Math.max(0, logicalLineBoxExtentPt - (paragraph.lines.at(-1)?.gridAfterLeadingPt ?? 0));
+}
+
 export const WORD_VERTICAL_RL_FINAL_LINE_BASELINE_ADMISSION = defineCompatibilityRule({
   id: 'word-vertical-rl-final-line-baseline-admission',
   evidence: {

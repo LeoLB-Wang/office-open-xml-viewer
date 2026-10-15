@@ -112,6 +112,25 @@ describe('paragraph page-local reserve selection', () => {
     expect(selected.nextCursor).toBeNull();
   });
 
+  it('admits a continuing grid line by its natural box while charging preceding cells', () => {
+    const retained = paragraph();
+    const selected = selectParagraphFragment(
+      { ...retained, lines: retained.lines.map(line => ({ ...line, gridAfterLeadingPt: 2 })) },
+      { boundary: null },
+      splittable([
+        { segIndex: 0, charOffset: 1 },
+        { segIndex: 0, charOffset: 2 },
+        { segIndex: 0, charOffset: 3 },
+      ]),
+      18, 40, true,
+      { keepLines: false, widowControl: false },
+    );
+    expect(selected.fragment?.lines).toHaveLength(2);
+    expect(selected.fragment?.advancePt).toBe(20);
+    expect(selected.admissionExtentPt).toBe(18);
+    expect(selected.nextCursor?.boundary).toEqual({ segIndex: 0, charOffset: 2 });
+  });
+
   it('fails closed when a splittable retained paragraph lacks a continuation boundary', () => {
     expect(() => selectParagraphFragment(
       paragraph(),

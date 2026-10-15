@@ -597,6 +597,9 @@ export interface LineLayout {
   readonly bounds: LayoutRect;
   readonly baselinePt: number;
   readonly advancePt: number;
+  /** Active line-grid leading below the natural content box. Page admission
+   * may omit this tail; placement and paint retain the full advance. */
+  readonly gridAfterLeadingPt?: number;
   readonly placements: readonly ParagraphPlacement[];
   /** §17.18.84 bar-tab vertical rules acquired independently of tab advances. */
   readonly barTabRules?: readonly BorderSegment[];

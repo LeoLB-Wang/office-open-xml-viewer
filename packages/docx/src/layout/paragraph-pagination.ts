@@ -3,6 +3,7 @@ import { adjustForWidowOrphan, selectLargestFittingEnd } from '../line-fit-polic
 import type { LineBoundary } from '../line-layout.js';
 import {
   wordFinalParagraphAdmissionExtentPt,
+  wordGridLineAdmissionExtentPt,
   wordVerticalRlFinalLineAdmissionExtentPt,
 } from './body-pagination-compatibility.js';
 import { sliceParagraphLayout } from './paragraph.js';
@@ -22,7 +23,7 @@ export interface ParagraphFragmentSelection {
   /** Flow charge admitted to this region; retained line/ink geometry can be taller. */
   readonly admittedBlockExtentPt: number;
   /** The fit extent this selection compared for `fragment`, excluding its
-   * reserve: retained advance for a continuing fragment, else
+   * reserve: grid content extent for a continuing fragment, else
    * {@link completingParagraphAdmissionExtentPt}. Fit checks made after
    * admission (the fresh-page footnote guard) use this same extent, never the
    * retained advance, so they cannot reject a fragment this selection
@@ -41,7 +42,8 @@ export type ParagraphFragmentation =
 /**
  * The selector's fit extent of a fragment that completes its paragraph.
  * Retained advance stays authoritative for placement and paint; only the
- * page/column-edge fit comparison ignores authored trailing whitespace
+ * page/column-edge fit comparison ignores terminal grid leading
+ * (WORD_GRID_LINE_CONTENT_FIT_ADMISSION) and authored trailing whitespace
  * (WORD_TRAILING_SPACE_AFTER_FIT_ADMISSION), and any retained trailing
  * extent beyond it (for example a bottom border) remains. Vertical final-line
  * admission follows WORD_VERTICAL_RL_FINAL_LINE_BASELINE_ADMISSION. That edge
@@ -54,11 +56,12 @@ function completingParagraphAdmissionExtentPt(
   writingMode: WritingMode,
   availableBlockExtentPt: number,
 ): number {
-  const logicalLineBoxExtentPt = wordFinalParagraphAdmissionExtentPt({
+  const withoutSpaceAfterPt = wordFinalParagraphAdmissionExtentPt({
     advancePt: fragment.advancePt,
     retainedSpaceAfterPt: fragment.spacing.afterPt,
     authoredSpaceAfterPt,
   });
+  const logicalLineBoxExtentPt = wordGridLineAdmissionExtentPt(fragment, withoutSpaceAfterPt);
   return wordVerticalRlFinalLineAdmissionExtentPt({
     paragraph: fragment,
     writingMode,
@@ -137,7 +140,7 @@ export function selectParagraphFragment(
       ? completingParagraphAdmissionExtentPt(
         fragment, authoredSpaceAfterPt, policy.writingMode ?? 'horizontal-tb', availableBlockExtentPt,
       )
-      : fragment.advancePt
+      : wordGridLineAdmissionExtentPt(fragment, fragment.advancePt)
   );
   if (fragmentation.kind === 'indivisible') {
     const completeReserve = reserveFor(acquired);

@@ -178,6 +178,34 @@ describe('inline objects on a line grid', () => {
   });
 });
 
+describe('line-grid page-bottom admission', () => {
+  it.each([
+    [38, 1], // Natural box ends exactly at the body bottom; grid cell ends at 40.
+    [37, 2], // The same natural box crosses the body bottom.
+  ])('paginates a centered natural box with body bottom %s', (bodyBottom, pageCount) => {
+    const caption = paragraph('Caption', auto(1)) as Extract<BodyElement, { type: 'paragraph' }>;
+    caption.defaultFontSize = 16;
+    caption.runs = [{ type: 'text', ...textRun('Caption'), fontSize: 16 }];
+    const model = docWith(paragraph('Preceding', exact(20)), caption);
+    model.section.pageHeight = bodyBottom;
+    model.section.docGridType = 'lines';
+    model.section.docGridLinePitch = 20;
+    const { canvas } = makeRecordingCanvas();
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: canvas.getContext('2d'),
+    }));
+    expect(layout.pages).toHaveLength(pageCount);
+    const retained = layout.pages[pageCount - 1].layers.body.at(-1);
+    if (retained?.kind !== 'paragraph') throw new Error('expected caption paragraph');
+    // Admission must preserve the full grid advance and centered paint geometry.
+    expect(retained.lines[0].advancePt).toBe(20);
+    expect(retained.lines[0].baselinePt).toBeCloseTo(
+      (pageCount === 1 ? 20 : 0) + 2 + 16 * 0.8, 6,
+    );
+  });
+});
+
 describe('Word for Mac uniform positioned text in an automatic line', () => {
   const arial = (text: string, position: number, size = 10, family = 'Arial'): BodyElement => {
     const p = paragraph(text, auto(276 / 240)) as Any;

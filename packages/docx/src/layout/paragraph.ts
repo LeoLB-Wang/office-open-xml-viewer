@@ -1137,6 +1137,10 @@ function retainPhysicalLines(fragments: readonly LineLayout[], physicalIds: read
       const { wrapBounds: _wrapBounds, ...physical } = first;
       lines.push({
         ...physical,
+        ...(first.gridAfterLeadingPt === undefined ? {} : {
+          gridAfterLeadingPt: group.reduce((leading, fragment) =>
+            Math.min(leading, fragment.gridAfterLeadingPt ?? 0), first.gridAfterLeadingPt),
+        }),
         range: { start: first.range.start, end: group.at(-1)!.range.end },
         bounds: unionLayoutRects(group.map(fragment => fragment.bounds))!,
         placements: group.flatMap(fragment => fragment.placements),
@@ -2697,14 +2701,21 @@ function planMeasuredLines(
         segments,
       },
     });
+    // Retain the same natural box used by plannedBaselinePt; pagination must
+    // not remeasure text or infer grid participation from the painted glyphs.
+    const retained = context.lineGrid.active ? {
+      ...planned,
+      gridAfterLeadingPt: Math.max(0, measuredLine.topYPt + measuredLine.advancePt
+        - baselinePt - (raw.visibleDescent ?? raw.descent)),
+    } : planned;
     return raw.availWidth !== undefined && (raw.availWidth < availableWidthPt || (raw.xOffset ?? 0) !== 0)
-      ? { ...planned, wrapBounds: {
+      ? { ...retained, wrapBounds: {
           xPt: paragraphXPt + (raw.xOffset ?? 0) + (lineIndex === 0 ? Math.min(0, context.firstIndentPt) : 0),
           yPt: measuredLine.topYPt,
           widthPt: raw.availWidth - (lineIndex === 0 ? Math.min(0, context.firstIndentPt) : 0),
           heightPt: measuredLine.advancePt,
         } }
-      : planned;
+      : retained;
   }), measured.lines.map((line, index) => line.layout.physicalLineIndex ?? index));
 }
 
