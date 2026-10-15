@@ -56,7 +56,7 @@ it.each([
   await expect(load(buildDocFixture({ text: 'Body\u0002\r',
     [kind]: [{ cp: 4, text: '\u0002Note\r' }], noteSeparators: separators,
     characterProperties: new Uint8Array([0x55, 0x08, 1]),
-  }))).rejects.toThrow('UNSUPPORTED:custom Word note separators are not supported');
+  }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 const separatorSymbol = concat(little16(0x6a09), little16(0), little16(0x41));
@@ -82,14 +82,14 @@ it.each([
       { end: start + 1, properties },
       { end: headerStart + 9, properties: new Uint8Array() },
     ],
-  }))).rejects.toThrow('UNSUPPORTED:custom Word note separators are not supported');
+  }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('direct rejects custom note reference marks', async () => {
   // The converter kept "*" as literal text with customMarkFollows; the shared
   // renderer has no literal-mark notes that do not consume a number.
   await expect(load(buildDocFixture({ text: 'A* B\u0013DDE hidden\u0014cached\u0015\r',
-    footnotes: [{ cp: 1, text: '* Note\u0013DDE hidden\u0014safe cache\u0015\r', automatic: false }] }))).rejects.toThrow(new Error('UNSUPPORTED:Word custom note reference marks are not supported'));
+    footnotes: [{ cp: 1, text: '* Note\u0013DDE hidden\u0014safe cache\u0015\r', automatic: false }] }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it.each([
@@ -97,14 +97,14 @@ it.each([
   { text: 'A\u0002\r', characterProperties: new Uint8Array(), reason: 'Word note reference lacks special-character property' },
   { text: '😀\r', characterProperties: new Uint8Array([0x55, 0x08, 1]), reason: 'Word note reference splits Unicode character' },
 ])('rejects an invalid automatic note anchor: $reason', async ({ reason, ...properties }) => {
-  await expect(load(buildDocFixture({ ...properties, footnotes: [{ cp: 1, text: '\u0002Note\r' }] }))).rejects.toThrow(new Error(`UNSUPPORTED:${reason}`));
+  await expect(load(buildDocFixture({ ...properties, footnotes: [{ cp: 1, text: '\u0002Note\r' }] }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('direct rejects an automatic reference hidden inside field instructions', async () => {
   // The converter dropped the hidden reference and its note; the direct
   // reader requires every note reference to be displayed.
   await expect(load(buildDocFixture({ text: 'A\u0013\u0002HIDDEN\u0014cached\u0015\r',
-    footnotes: [{ cp: 2, text: '\u0002Note\r' }], characterProperties: concat(little16(0x0855), new Uint8Array([1])) }))).rejects.toThrow(new Error('UNSUPPORTED:Word note reference is not displayed'));
+    footnotes: [{ cp: 2, text: '\u0002Note\r' }], characterProperties: concat(little16(0x0855), new Uint8Array([1])) }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it('shares one picture resource across body, header, footnote and endnote stories', async () => {

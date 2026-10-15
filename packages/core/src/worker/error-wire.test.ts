@@ -13,6 +13,7 @@ import { isTiffDecodeError, TiffDecodeError } from '../image/tiff-contract.js';
 import {
   deserializeWorkerError,
   parseResourceLimitError,
+  parseTypedParserError,
   serializeWorkerError,
   type WorkerErrorPayload,
 } from './error-wire.js';
@@ -698,4 +699,48 @@ describe('worker error wire', () => {
     expect((restored as OoxmlResourceLimitError).details.violation.part)
       .toBe('untrusted-archive-entry');
   });
+});
+
+it('preserves content-free model-source rejections across the worker boundary', () => {
+  const error = parseTypedParserError('MODEL_SOURCE_UNSUPPORTED:{"format":"custom","reason":"source-subset","text":"private"}');
+  expect(error).toBeInstanceOf(OoxmlError);
+  expect(error).toMatchObject({ code: 'unsupported-content', details: { format: 'custom', reason: 'source-subset' } });
+  expect(JSON.stringify(error)).not.toContain('private');
+  const restored = deserializeWorkerError(structuredClone(serializeWorkerError(error)));
+  expect(restored).toBeInstanceOf(OoxmlError);
+  expect(restored).toMatchObject({ code: 'unsupported-content', details: { format: 'custom', reason: 'source-subset' } });
+});
+
+it('does not promote malformed or unbounded source signals to typed content rejections', () => {
+  expect(parseTypedParserError('MODEL_SOURCE_UNSUPPORTED:{"format":"/private/path","reason":"source-subset"}')).toBeUndefined();
+  expect(parseTypedParserError(`MODEL_SOURCE_UNSUPPORTED:${'x'.repeat(1024)}`)).toBeUndefined();
+  const restored = deserializeWorkerError({ code: 'unsupported-content', message: 'private diagnostic' });
+  expect(restored).not.toBeInstanceOf(OoxmlError);
+  expect(restored.message).not.toContain('private diagnostic');
+  expect(restored).not.toHaveProperty('code');
+});
+
+it('preserves source rejection metadata from separately bundled error classes without forwarding their diagnostics', () => {
+  class SourceBundleError extends Error {
+    readonly code = 'unsupported-content';
+    readonly details = { format: 'custom', reason: 'source-subset', text: 'PRIVATE' };
+  }
+  const payload = serializeWorkerError(new SourceBundleError('PRIVATE'));
+  expect(JSON.stringify(payload)).not.toContain('PRIVATE');
+  expect(deserializeWorkerError(structuredClone(payload))).toMatchObject({ name: 'OoxmlError',
+    code: 'unsupported-content', details: { format: 'custom', reason: 'source-subset' } });
+});
+
+it('keeps measured resource errors distinct when a source owner bundles another error class', () => {
+  const original = new OoxmlResourceLimitError('quota', { stage: 'container', violation: {
+    format: 'docx', operation: 'open', resource: 'archive', metric: 'entry-count',
+    limit: 0, observed: 1, configurable: true, usage: USAGE,
+  } });
+  class SourceBundleQuota extends Error {
+    readonly code = 'ooxml-resource-limit';
+    readonly details = original.details;
+  }
+  const restored = deserializeWorkerError(structuredClone(serializeWorkerError(new SourceBundleQuota('quota'))));
+  expect(restored).toBeInstanceOf(OoxmlResourceLimitError);
+  expect((restored as OoxmlResourceLimitError).details).toEqual(original.details);
 });

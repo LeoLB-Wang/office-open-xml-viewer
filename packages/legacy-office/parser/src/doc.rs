@@ -43,7 +43,11 @@ const FIB_FLAGS_OFFSET: usize = 0x0a;
 const CCP_TEXT_OFFSET: usize = 0x4c;
 const FC_CLX_OFFSET: usize = 0x01a2;
 const LCB_CLX_OFFSET: usize = 0x01a6;
+// Reader work/retention policies, not MS-DOC 2.8.35/2.9.38 count limits.
 const MAX_PIECES: usize = 1_000_000;
+// Prm1's 15-bit index (MS-DOC 2.9.216) can address this many Prc entries;
+// bounding even unreferenced entries is this reader's retention policy.
+const MAX_CLX_PROPERTY_RECORDS: usize = 32_768;
 /// Implementation resource policy for each retained source stream, not an
 /// MS-DOC format limit.
 const MAX_DOC_STREAM_BYTES: usize = 256 * 1024 * 1024;
@@ -215,7 +219,7 @@ fn with_acquired_doc_with_policies<T>(
     }
     let flags = u16_at(&word, FIB_FLAGS_OFFSET)?;
     if (flags & 0x0100) != 0 || (flags & 0x8000) != 0 {
-        return Err(unsupported(
+        return Err(crate::rejection::encryption(
             "encrypted Word binary documents are not supported",
         ));
     }
@@ -330,7 +334,9 @@ fn read_story_range<'a>(
     // Logical pieces may repeatedly reference the same physical bytes. Bound
     // decoded main-story work before copying, independently of input ZIP/CFB size.
     if length > MAX_MAIN_STORY_UNITS {
-        return Err(unsupported("Word main story character budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word main story character budget exceeded",
+        ));
     }
     let ccp_text = start
         .checked_add(length)
@@ -340,9 +346,12 @@ fn read_story_range<'a>(
     let mut prcs = Vec::new();
     while clx.get(offset) == Some(&0x01) {
         let size = u16_at(clx, offset + 1)? as usize;
-        if size > i16::MAX as usize || prcs.len() >= 32768 {
-            return Err(unsupported(
-                "invalid or excessive Word CLX property records",
+        if size > i16::MAX as usize {
+            return Err(unsupported("invalid Word CLX property record size"));
+        }
+        if prcs.len() >= MAX_CLX_PROPERTY_RECORDS {
+            return Err(crate::rejection::resource(
+                "Word CLX property record count budget exceeded",
             ));
         }
         prcs.push(
@@ -372,8 +381,13 @@ fn read_story_range<'a>(
         return Err(unsupported("invalid Word piece table size"));
     }
     let piece_count = (plc_size - 4) / 12;
-    if piece_count == 0 || piece_count > MAX_PIECES {
+    if piece_count == 0 {
         return Err(unsupported("invalid Word piece count"));
+    }
+    if piece_count > MAX_PIECES {
+        return Err(crate::rejection::resource(
+            "Word piece count budget exceeded",
+        ));
     }
     let cp_bytes = (piece_count + 1) * 4;
     let pcd_start = cp_bytes;
@@ -626,7 +640,7 @@ fn decode_windows_1252(byte: u8) -> char {
 }
 
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, String> {
@@ -1094,6 +1108,49 @@ mod tests {
         assert_eq!(body[0]["runs"], serde_json::json!([]));
         assert_eq!(body[0]["paragraphMarkFontFacts"]["fontSize"], 18.0);
         assert_eq!(body[0]["defaultFontSize"], 18.0);
+    }
+
+    #[test]
+    fn piece_counts_distinguish_syntax_from_resource_limits() {
+        for count in [0, 1_000_000, 1_000_001] {
+            let size = 4 + count * 12;
+            let mut clx = vec![0; 5 + size];
+            clx[0] = 2;
+            clx[1..5].copy_from_slice(&(size as u32).to_le_bytes());
+            for cp in 0..=count {
+                clx[5 + cp * 4..9 + cp * 4].copy_from_slice(&(cp as u32).to_le_bytes());
+            }
+            // A zero-length selected story checks admission without decoding
+            // or retaining the million unused pieces.
+            let result = super::read_story(&[], &clx, 0);
+            match count {
+                1_000_000 => assert!(result.is_ok()),
+                1_000_001 => assert!(result.err().unwrap().starts_with("LEGACY_RESOURCE_LIMIT:")),
+                0 => assert!(result.err().unwrap().starts_with("UNSUPPORTED:")),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn clx_counts_distinguish_syntax_from_resource_limits() {
+        let (_, one_piece) = minimal_streams();
+        for count in [32_768, 32_769] {
+            let mut clx = [1, 0, 0].repeat(count);
+            clx.extend_from_slice(&one_piece);
+            let result = super::read_story(&[], &clx, 0);
+            if count == 32_768 {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.err().unwrap().starts_with("LEGACY_RESOURCE_LIMIT:"));
+            }
+        }
+        let mut clx = vec![1, 0, 0x80]; // Negative signed cbGrpprl.
+        clx.extend_from_slice(&one_piece);
+        assert!(super::read_story(&[], &clx, 0)
+            .err()
+            .unwrap()
+            .starts_with("UNSUPPORTED:"));
     }
 
     #[test]

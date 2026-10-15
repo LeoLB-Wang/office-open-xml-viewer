@@ -71,7 +71,7 @@ vi.mock('./delimited-text.js', () => ({}));
 const bootstrap = { workbook: { sheets: [] }, styles: {}, sharedStrings: [] };
 const CALIBRI_11 = { family: 'Calibri', sizePt: 11, bold: false, italic: false };
 const descriptor: ModelSourceModuleDescriptor = {
-  protocol: 'ooxml-model-source-module/v1',
+  protocol: 'ooxml-model-source-module/v2',
   target: 'xlsx',
   moduleUrl: 'https://example.test/source.mjs',
   config: {},

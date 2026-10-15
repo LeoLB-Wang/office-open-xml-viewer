@@ -36,7 +36,10 @@ describe('public error documentation', () => {
   it('distinguishes an absent legacy source from an unsupported claimed file', () => {
     expect(errorPage).toContain('no matching legacy source');
     expect(errorPage).toContain('@silurus/ooxml-legacy-office');
-    expect(errorPage).toContain('no dedicated typed');
+    expect(errorPage).toContain('id="unsupported-content"');
+    expect(errorPage).toContain("case 'unsupported-content':");
+    expect(errorPage).toContain("reason: 'source-subset'");
+    expect(errorPage).toContain('no document text');
     expect(errorPage).toContain('href="/legacy-office"');
   });
 

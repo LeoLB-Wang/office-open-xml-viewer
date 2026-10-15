@@ -101,7 +101,9 @@ fn decode_payload(
     let expanded = number(header, 0) as usize;
     let stored = number(header, 28) as usize;
     if expanded > MAX_METAFILE_BYTES || expanded > remaining || stored > MAX_METAFILE_BYTES {
-        return Err(unsupported("OfficeArt metafile byte budget exceeded"));
+        return Err(crate::rejection::resource(
+            "OfficeArt metafile byte budget exceeded",
+        ));
     }
     let source_range = start + 34..record.payload.len();
     let bytes = &record.payload[source_range.clone()];
@@ -162,7 +164,7 @@ fn validate_emf(bytes: &[u8], budget: &mut usize, gdiplus_end: bool) -> Result<(
     while position < bytes.len() {
         *budget = budget
             .checked_sub(1)
-            .ok_or_else(|| unsupported("EMF record work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("EMF record work budget exceeded"))?;
         let tail = &bytes[position..];
         if tail.len() < 8 || eof {
             return Err(unsupported("invalid EMF record tail"));
@@ -248,10 +250,17 @@ fn validate_wmf(bytes: &[u8], budget: &mut usize, exact_extent: bool) -> Result<
     if !matches!(word(0), 1 | 2)
         || word(2) != 9
         || !matches!(word(4), 0x100 | 0x300)
-        || !(9..=MAX_METAFILE_BYTES / 2).contains(&declared_words)
+        || declared_words < 9
         || dword(12) < 3
     {
         return Err(unsupported("invalid WMF header"));
+    }
+    // The declaration is syntax; its upper byte ceiling is reader resource
+    // policy, even when this host does not require an exact physical extent.
+    if declared_words > MAX_METAFILE_BYTES / 2 {
+        return Err(crate::rejection::resource(
+            "WMF declared size budget exceeded",
+        ));
     }
     if start != 0 && word(0) == 2 && bytes[4..6] != [0, 0] {
         return Err(unsupported("invalid disk WMF handle"));
@@ -260,7 +269,7 @@ fn validate_wmf(bytes: &[u8], budget: &mut usize, exact_extent: bool) -> Result<
     while position < bytes.len() {
         *budget = budget
             .checked_sub(1)
-            .ok_or_else(|| unsupported("WMF record work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("WMF record work budget exceeded"))?;
         let tail = &bytes[position..];
         if tail.len() < 6 {
             return Err(unsupported("invalid WMF record tail"));
@@ -567,6 +576,25 @@ pub(super) mod tests {
         disk[22..24].copy_from_slice(&2u16.to_le_bytes());
         assert!(parse_wmf(&payload(&disk, false), false, &mut 10, usize::MAX).is_ok());
     }
+    #[test]
+    fn wmf_declared_size_ceiling_is_distinct_from_invalid_headers() {
+        let mut source = wmf();
+        for words in [8, MAX_METAFILE_BYTES / 2, MAX_METAFILE_BYTES / 2 + 1] {
+            source[6..10].copy_from_slice(&(words as u32).to_le_bytes());
+            let result = validate_wmf(&source, &mut 10, false);
+            if words == MAX_METAFILE_BYTES / 2 {
+                assert!(result.unwrap());
+            } else {
+                let prefix = if words == 8 {
+                    "UNSUPPORTED:"
+                } else {
+                    "LEGACY_RESOURCE_LIMIT:"
+                };
+                assert!(result.unwrap_err().starts_with(prefix));
+            }
+        }
+    }
+
     #[test]
     fn wmf_stops_at_eof_and_keeps_the_bounded_original_payload() {
         for mut source in [wmf(), placeable_wmf()] {

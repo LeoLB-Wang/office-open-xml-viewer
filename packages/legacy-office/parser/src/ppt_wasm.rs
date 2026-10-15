@@ -25,17 +25,17 @@ impl LegacyPptPresentation {
         let source_len = data.length() as usize;
         if source_len > MAX_DIRECT_PPT_SOURCE_BYTES {
             return Err(js_error(
-                "UNSUPPORTED:PPT direct source byte budget exceeded",
+                "LEGACY_RESOURCE_LIMIT:PPT direct source byte budget exceeded",
             ));
         }
         let mut source = Vec::new();
         source
             .try_reserve_exact(source_len)
-            .map_err(|_| js_error("UNSUPPORTED:PPT direct source allocation failed"))?;
+            .map_err(|_| js_error("LEGACY_RESOURCE_LIMIT:PPT direct source allocation failed"))?;
         source.resize(source_len, 0);
         data.copy_to(&mut source);
         let cfb = CompoundFile::open(&source)
-            .map_err(|error| js_error(&format!("UNSUPPORTED:{error}")))?;
+            .map_err(|error| js_error(&crate::rejection::unsupported(error)))?;
         let session = DirectSession::new(&cfb).map_err(|error| js_error(&error))?;
         Ok(Self {
             cursor: DirectCursor::new(session),

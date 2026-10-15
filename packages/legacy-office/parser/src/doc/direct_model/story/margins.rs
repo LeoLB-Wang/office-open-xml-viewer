@@ -58,7 +58,9 @@ pub(super) fn resolve(
                 formatting.has_conditional_first_row_margins(row_context.table_style)?;
             let mut defaults = None;
             if row_context.source_cell_count > 63 {
-                return Err(unsupported("Word table margin cell budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word table margin cell budget exceeded",
+                ));
             }
             let mut style_cells = [table::MarginPatch::default(); 63];
             for ordinal in 0..row_context.source_cell_count {

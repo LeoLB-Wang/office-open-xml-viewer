@@ -25,8 +25,13 @@ impl Table {
         if size == 0 {
             return Ok(Self(entries));
         }
-        if size < 4 || !(size - 4).is_multiple_of(6) || (size - 4) / 6 > MAX_STORY_CONTROLS {
+        if size < 4 || !(size - 4).is_multiple_of(6) {
             return Err(unsupported("invalid Word header field table length"));
+        }
+        if (size - 4) / 6 > MAX_STORY_CONTROLS {
+            return Err(crate::rejection::resource(
+                "Word header field count budget exceeded",
+            ));
         }
         let offset = u32_at(word, fib_offset)? as usize;
         let plc = table
@@ -78,6 +83,17 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_count_ceiling_is_resource_policy() {
+        let mut word = vec![0; 0x12a];
+        let bytes = ((MAX_STORY_CONTROLS + 1) * 6 + 4) as u32;
+        word[0x126..0x12a].copy_from_slice(&bytes.to_le_bytes());
+        assert!(Table::read(&word, &[], usize::MAX)
+            .err()
+            .unwrap()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+    }
 
     #[test]
     fn validates_field_table_boundaries_and_ignores_reserved_marker_bits() {

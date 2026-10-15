@@ -32,7 +32,7 @@ impl DirectSession {
             .has_stream(&["EncryptedSummary"])
             .map_err(unsupported)?
         {
-            return Err(unsupported(
+            return Err(crate::rejection::encryption(
                 "encrypted PowerPoint binary documents are not supported",
             ));
         }
@@ -99,16 +99,19 @@ impl DirectSession {
         }
     }
 
+    // Session state, requested indexes and resource keys belong to the caller,
+    // not the input subset. Keep these errors untyped, especially after a quota
+    // or encryption failure has poisoned the session.
     pub fn slide(&mut self, index: usize) -> Result<pptx_model::Slide, String> {
         if self.poisoned {
-            return Err(unsupported("PowerPoint direct session is poisoned"));
+            return Err("PowerPoint direct session is poisoned".to_string());
         }
         let result = (|| {
             let (record, _) = self
                 .presentation
                 .slides
                 .get(index)
-                .ok_or_else(|| unsupported("PowerPoint slide index out of range"))?;
+                .ok_or_else(|| "PowerPoint slide index out of range".to_string())?;
             let record = record.view(&self.document)?;
             if contains_record(
                 record.payload,
@@ -116,7 +119,7 @@ impl DirectSession {
                 0,
                 &mut self.work_budget,
             )? {
-                return Err(unsupported("encrypted PowerPoint slide"));
+                return Err(crate::rejection::encryption("encrypted PowerPoint slide"));
             }
             drawing::direct_model::slide(
                 index,
@@ -163,7 +166,7 @@ impl DirectSession {
 
     pub fn resource(&self, key: &str) -> Result<Resource<'_>, String> {
         if self.poisoned {
-            return Err(unsupported("PowerPoint direct session is poisoned"));
+            return Err("PowerPoint direct session is poisoned".to_string());
         }
         let index = resource_index(key)?;
         let (extension, bytes) = self
@@ -183,17 +186,17 @@ fn resource_index(key: &str) -> Result<u32, String> {
     let digits = key
         .strip_prefix("legacy-ppt/image/")
         .filter(|digits| !digits.is_empty())
-        .ok_or_else(|| unsupported("invalid PowerPoint resource key"))?;
+        .ok_or_else(|| "invalid PowerPoint resource key".to_string())?;
     if (digits.len() > 1 && digits.starts_with('0'))
         || !digits.bytes().all(|byte| byte.is_ascii_digit())
     {
-        return Err(unsupported("invalid PowerPoint resource key"));
+        return Err("invalid PowerPoint resource key".to_string());
     }
     digits
         .parse::<u32>()
         .ok()
         .filter(|index| *index != 0)
-        .ok_or_else(|| unsupported("invalid PowerPoint resource key"))
+        .ok_or_else(|| "invalid PowerPoint resource key".to_string())
 }
 
 /// The direct cursor's tests use this session fixture.

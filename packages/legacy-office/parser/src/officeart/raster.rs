@@ -263,7 +263,7 @@ struct DecodedImage {
     extension: &'static str,
 }
 fn unsupported(message: impl Into<String>) -> String {
-    format!("UNSUPPORTED:{}", message.into())
+    crate::rejection::unsupported(message)
 }
 
 #[cfg(test)]
@@ -392,18 +392,18 @@ fn decode(
         "gif" => gif_size(bytes)?,
         _ => tiff_size(bytes, budget)?,
     };
-    if width == 0
-        || height == 0
-        || width > 32768
-        || height > 32768
-        || u64::from(width) * u64::from(height) > MAX_PIXELS
-    {
-        return Err(unsupported(
+    if width == 0 || height == 0 {
+        return Err(unsupported("OfficeArt image dimensions must be positive"));
+    }
+    if width > 32768 || height > 32768 || u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(crate::rejection::resource(
             "OfficeArt image dimensions exceed resource limit",
         ));
     }
     if bytes.len() > remaining_bytes {
-        return Err(unsupported("OfficeArt retained media budget exceeded"));
+        return Err(crate::rejection::resource(
+            "OfficeArt retained media budget exceeded",
+        ));
     }
     Ok(Some(DecodedImage {
         bytes: DecodedBytes::Source(range),
@@ -460,7 +460,7 @@ pub(crate) fn tiff_size(b: &[u8], budget: &mut usize) -> Result<(u32, u32), Stri
     let count = u16_at(ifd)? as usize;
     *budget = budget
         .checked_sub(count)
-        .ok_or_else(|| unsupported("OfficeArt TIFF work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("OfficeArt TIFF work budget exceeded"))?;
     let mut size = [None, None];
     for index in 0..count {
         // `index * 12` is at most 0xffff * 12; only the input offset can overflow.
@@ -512,17 +512,17 @@ pub(crate) fn jpeg_size(b: &[u8], budget: &mut usize) -> Result<(u32, u32), Stri
     }
     let mut position = 2;
     while position < b.len() {
-        *budget = budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("OfficeArt JPEG marker work budget exceeded"))?;
+        *budget = budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("OfficeArt JPEG marker work budget exceeded")
+        })?;
         if b[position] != 0xff {
             return Err(unsupported("invalid OfficeArt JPEG marker"));
         }
         position += 1;
         while b.get(position) == Some(&0xff) {
-            *budget = budget
-                .checked_sub(1)
-                .ok_or_else(|| unsupported("OfficeArt JPEG marker work budget exceeded"))?;
+            *budget = budget.checked_sub(1).ok_or_else(|| {
+                crate::rejection::resource("OfficeArt JPEG marker work budget exceeded")
+            })?;
             position += 1;
         }
         let marker = *b

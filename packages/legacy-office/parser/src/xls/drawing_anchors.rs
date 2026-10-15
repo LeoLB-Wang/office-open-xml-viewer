@@ -141,7 +141,9 @@ fn workbook_with_policy(
         return Err(unsupported("anchor inspection requires BIFF8 globals"));
     }
     if records.iter().any(|r| r.kind == FILEPASS) {
-        return Err(unsupported("encrypted BIFF drawing anchors"));
+        return Err(crate::rejection::encryption(
+            "encrypted BIFF drawing anchors",
+        ));
     }
     let globals_end = records
         .iter()
@@ -154,7 +156,12 @@ fn workbook_with_policy(
             let index = records
                 .binary_search_by_key(&sheet.offset, |r| r.offset)
                 .map_err(|_| unsupported("BIFF sheet offset is not a record boundary"))?;
-            if index <= globals_end || starts.len() >= MAX_OBJECTS {
+            if starts.len() >= MAX_OBJECTS {
+                return Err(crate::rejection::resource(
+                    "BIFF drawing sheet count budget exceeded",
+                ));
+            }
+            if index <= globals_end {
                 return Err(unsupported("invalid BIFF drawing sheet range"));
             }
             let tab = starts.len();
@@ -193,7 +200,7 @@ struct Drawing<'a> {
 fn spend(work: &mut usize) -> Result<(), String> {
     *work = work
         .checked_sub(1)
-        .ok_or_else(|| unsupported("BIFF drawing work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("BIFF drawing work budget exceeded"))?;
     Ok(())
 }
 
@@ -222,7 +229,7 @@ fn assemble<'a>(
         if record.kind == BOF {
             depth += 1;
             if depth > MAX_DEPTH {
-                return Err(unsupported("BIFF substream depth exceeded"));
+                return Err(crate::rejection::resource("BIFF substream depth exceeded"));
             }
             if depth == 1 && u16_at(record.data, 2)? == 0x0020 {
                 chart_start = last_object.map(|client| (client, base + offset));
@@ -283,7 +290,9 @@ fn assemble<'a>(
             length = length
                 .checked_add(record.data.len())
                 .filter(|n| *n <= *remaining)
-                .ok_or_else(|| unsupported("BIFF sheet drawing byte budget exceeded"))?;
+                .ok_or_else(|| {
+                    crate::rejection::resource("BIFF sheet drawing byte budget exceeded")
+                })?;
             fragments.push(record.data);
             owner = Owner::Drawing;
             continue;
@@ -293,11 +302,15 @@ fn assemble<'a>(
             // one) is never drawing data.
             continue;
         }
-        if owner == Owner::Drawing
-            && matches!(record.kind, 0x005d | 0x01b6)
-            && (clients.len() >= MAX_OBJECTS || clients.insert(length, record).is_some())
-        {
-            return Err(unsupported("ambiguous or excessive BIFF drawing clients"));
+        if owner == Owner::Drawing && matches!(record.kind, 0x005d | 0x01b6) {
+            if clients.len() >= MAX_OBJECTS {
+                return Err(crate::rejection::resource(
+                    "BIFF drawing client count budget exceeded",
+                ));
+            }
+            if clients.insert(length, record).is_some() {
+                return Err(unsupported("ambiguous or excessive BIFF drawing clients"));
+            }
         }
         last_object = (record.kind == 0x005d).then_some(length);
         // Excel continues the sheet's OfficeArt stream in Continue records
@@ -509,14 +522,18 @@ fn read_shape<'a>(
                 }
                 let retain = |p: crate::officeart::properties::Property<'_>| {
                     if facts.properties.len() >= 4096 {
-                        return Err(unsupported("excessive BIFF shape properties"));
+                        return Err(crate::rejection::resource(
+                            "excessive BIFF shape properties",
+                        ));
                     }
                     facts.properties.push((p.opid, p.value));
                     if let Some(data) = p.complex {
                         if GEOMETRY_ARRAYS.contains(&(p.opid & 0x3fff)) {
                             complex_bytes += data.len();
                             if complex_bytes > MAX_SHAPE_COMPLEX_BYTES {
-                                return Err(unsupported("oversized BIFF shape geometry"));
+                                return Err(crate::rejection::resource(
+                                    "oversized BIFF shape geometry",
+                                ));
                             }
                             facts.complex.push((p.opid & 0x3fff, data.to_vec()));
                         }
@@ -534,7 +551,12 @@ fn read_shape<'a>(
                     return Err(unsupported("invalid BIFF shape identity"));
                 }
                 let id = u32_at(child.payload, 0)?;
-                if ids.len() >= MAX_OBJECTS || !ids.insert(id) {
+                if ids.len() >= MAX_OBJECTS {
+                    return Err(crate::rejection::resource(
+                        "BIFF shape count budget exceeded",
+                    ));
+                }
+                if !ids.insert(id) {
                     return Err(unsupported("duplicate or excessive BIFF shapes"));
                 }
                 shape = Some((id, u32_at(child.payload, 4)?, child.instance));
@@ -615,7 +637,9 @@ fn read_group_members<'a>(
     members: &mut Vec<GroupMember>,
 ) -> Result<(), String> {
     if groups.len() > MAX_DEPTH {
-        return Err(unsupported("BIFF drawing group depth exceeded"));
+        return Err(crate::rejection::resource(
+            "BIFF drawing group depth exceeded",
+        ));
     }
     let checked = |rect: [i32; 4]| -> Result<[i32; 4], String> {
         let [left, top, right, bottom] = rect;
@@ -664,7 +688,9 @@ fn read_group_members<'a>(
                 .object
                 .ok_or_else(|| unsupported("BIFF group member has no owned object"))?;
             if members.len() >= MAX_OBJECTS {
-                return Err(unsupported("BIFF retained anchor budget exceeded"));
+                return Err(crate::rejection::resource(
+                    "BIFF retained anchor budget exceeded",
+                ));
             }
             *order += 1;
             members.push(GroupMember {
@@ -772,7 +798,9 @@ fn walk_with_policy(
     let mut order = 0u64;
     while let Some((mut at, end, depth, group, mut first, mut excluded)) = stack.pop() {
         if depth > MAX_DEPTH {
-            return Err(unsupported("BIFF drawing group depth exceeded"));
+            return Err(crate::rejection::resource(
+                "BIFF drawing group depth exceeded",
+            ));
         }
         while at < end {
             let (record, next) = record_with_end(&drawing.bytes[..end], at, work, "XLS drawing")?;
@@ -798,7 +826,9 @@ fn walk_with_policy(
                         ));
                     }
                     if output.len() >= MAX_OBJECTS {
-                        return Err(unsupported("BIFF retained anchor budget exceeded"));
+                        return Err(crate::rejection::resource(
+                            "BIFF retained anchor budget exceeded",
+                        ));
                     }
                     let anchor = read_sheet_group(
                         drawing,
@@ -848,7 +878,9 @@ fn walk_with_policy(
                         return Err(unsupported("invalid BIFF anchor movement flags"));
                     }
                     if output.len() >= MAX_OBJECTS {
-                        return Err(unsupported("BIFF retained anchor budget exceeded"));
+                        return Err(crate::rejection::resource(
+                            "BIFF retained anchor budget exceeded",
+                        ));
                     }
                     if matches!(policy, Policy::Projectable | Policy::Strict)
                         && (excluded || depth > 1 || facts.child_anchor.is_some())

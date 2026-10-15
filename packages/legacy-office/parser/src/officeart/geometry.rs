@@ -439,7 +439,7 @@ impl PathReader<'_, '_> {
 fn charge(budget: &mut usize, count: usize) -> Result<(), String> {
     *budget = budget
         .checked_sub(count)
-        .ok_or_else(|| unsupported("OfficeArt geometry work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("OfficeArt geometry work budget exceeded"))?;
     Ok(())
 }
 fn array(bytes: &[u8]) -> Result<(usize, usize, &[u8]), String> {

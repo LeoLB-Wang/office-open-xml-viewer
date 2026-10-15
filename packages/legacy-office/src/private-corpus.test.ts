@@ -15,8 +15,7 @@ import { testDocSource, testPptSource, testXlsSource } from './test-sources.js';
 
 // Opt-in walk of the local, uncommitted Office-produced corpus through the Node
 // facade with the direct legacy readers. A sample passes when it either
-// materializes or is rejected fail-closed by the direct reader (an Error whose
-// message carries `UNSUPPORTED:`). Anything else fails: a sample the legacy
+// materializes or reports the typed unsupported-content source rejection. Anything else fails: a sample the legacy
 // source does not claim (it would silently take the OOXML path), a WASM trap,
 // a poisoned runtime, a non-Error rejection or a size-limit error.
 // Output is aggregate counts only; a failure is identified by its index in the
@@ -91,7 +90,7 @@ async function corpusFiles(format: (typeof formats)[number]): Promise<{ director
 }
 
 function isFailClosedRejection(error: unknown): boolean {
-  return error instanceof Error && /\bUNSUPPORTED:/.test(error.message);
+  return error instanceof Error && (error as { code?: string }).code === 'unsupported-content';
 }
 
 /** A content-free label for an unexpected rejection: its class and code only. */
@@ -125,7 +124,7 @@ describe.skipIf(!runPrivateCorpus)('local Office-produced legacy corpus through 
       else failures.push(`#${index} sha256:${digest} ${outcome}`);
     }
     console.info(`legacy ${format.from} corpus: ${names.length} samples, ${materialized} materialized, `
-      + `${unsupported} fail-closed UNSUPPORTED, ${failures.length} failed`);
+      + `${unsupported} fail-closed unsupported-content, ${failures.length} failed`);
     expect(failures).toEqual([]);
   }, 1_800_000);
 });

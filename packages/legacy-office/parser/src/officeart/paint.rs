@@ -487,10 +487,10 @@ impl Paint {
         let projection_bytes = projection_scratch
             .checked_add(projection_output)
             .and_then(|bytes| bytes.checked_add(requirements.output_bytes))
-            .ok_or_else(|| unsupported("OfficeArt gradient byte budget overflow"))?;
+            .ok_or_else(|| crate::rejection::resource("OfficeArt gradient byte budget overflow"))?;
         *byte_budget = byte_budget
             .checked_sub(projection_bytes)
-            .ok_or_else(|| unsupported("OfficeArt gradient byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("OfficeArt gradient byte budget exceeded"))?;
         let (front, back) = if two_colour {
             (FRONT_MARKER, BACK_MARKER)
         } else {
@@ -514,7 +514,7 @@ impl Paint {
         let mut alphas = Vec::new();
         alphas
             .try_reserve_exact(projection.stops.len())
-            .map_err(|_| unsupported("OfficeArt gradient allocation failed"))?;
+            .map_err(|_| crate::rejection::resource("OfficeArt gradient allocation failed"))?;
         for stop in &mut projection.stops {
             let (color, alpha) = match (two_colour, stop.color) {
                 (true, FRONT_MARKER) => (self.fill.unwrap_or(0x00ff_ffff), front_alpha),

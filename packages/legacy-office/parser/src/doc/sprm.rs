@@ -118,7 +118,12 @@ fn prc_data<'a>(
     visited: &mut BTreeSet<usize>,
 ) -> Result<&'a [u8], String> {
     let offset = u32_at(operand, 0)? as usize;
-    if visited.len() >= 64 || !visited.insert(offset) {
+    if visited.len() >= 64 {
+        return Err(crate::rejection::resource(
+            "Word paragraph data chain depth limit exceeded",
+        ));
+    }
+    if !visited.insert(offset) {
         return Err(unsupported("cyclic or excessive Word paragraph data chain"));
     }
     let record = data
@@ -151,10 +156,9 @@ impl Budget {
         self.0
     }
     fn take_many(&mut self, amount: usize) -> Result<(), String> {
-        self.0 = self
-            .0
-            .checked_sub(amount)
-            .ok_or_else(|| unsupported("Word formatting operation budget exceeded"))?;
+        self.0 = self.0.checked_sub(amount).ok_or_else(|| {
+            crate::rejection::resource("Word formatting operation budget exceeded")
+        })?;
         Ok(())
     }
 }
