@@ -597,7 +597,9 @@ impl<'a> Store<'a> {
                 self.remaining_bytes = self
                     .remaining_bytes
                     .checked_sub(image.bytes.len())
-                    .ok_or_else(|| unsupported("Word floating media budget exceeded"))?;
+                    .ok_or_else(|| {
+                        crate::rejection::resource("Word floating media budget exceeded")
+                    })?;
             }
             self.images.insert(image_index, image);
         }
@@ -622,7 +624,9 @@ impl<'a> Store<'a> {
             .and_then(|_| i32::try_from(top * 635))
             .map_err(|_| unsupported("Word floating position exceeds DrawingML range"))?;
         if self.occurrences >= 100_000 {
-            return Err(unsupported("Word floating occurrence budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word floating occurrence budget exceeded",
+            ));
         }
         self.occurrences += 1;
         Ok(ResolvedDrawing {
@@ -757,7 +761,9 @@ fn container_shapes<'a>(
             }
             if let (Some(id), Some(anchor_index)) = (id, anchor_index) {
                 if shapes.len() >= 100_000 {
-                    return Err(unsupported("Word floating shape budget exceeded"));
+                    return Err(crate::rejection::resource(
+                        "Word floating shape budget exceeded",
+                    ));
                 }
                 let order = shapes.len() as u32 + 1;
                 if shapes.insert(id, (anchor_index, order, shape)).is_some() {
@@ -813,7 +819,7 @@ impl Placement {
         let count = usize::from(property.instance);
         *budget = budget
             .checked_sub(count)
-            .ok_or_else(|| unsupported("Word placement property budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("Word placement property budget exceeded"))?;
         let entries = property
             .payload
             .get(..count * 6)
@@ -963,7 +969,9 @@ fn anchors_in(
     }
     let count = (size - 4) / 30;
     if count > 100_000 {
-        return Err(unsupported("Word floating-anchor budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word floating-anchor budget exceeded",
+        ));
     }
     let offset = u32_at(word, fib)? as usize;
     let bytes = table

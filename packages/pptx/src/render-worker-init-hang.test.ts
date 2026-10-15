@@ -103,7 +103,7 @@ vi.mock('./google-fonts', async (importOriginal) => ({
 vi.mock('./renderer', () => ({ renderSlideWithEmbeddedFonts: fontMocks.render }));
 
 const modelSource = {
-  protocol: 'ooxml-model-source-module/v1',
+  protocol: 'ooxml-model-source-module/v2',
   target: 'pptx',
   moduleUrl: 'https://example.test/source.mjs',
   config: {},

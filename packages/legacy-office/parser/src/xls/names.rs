@@ -124,16 +124,16 @@ impl Names {
                     .checked_add(name.len())?
                     .checked_add(formula.len())
             })
-            .ok_or_else(|| unsupported("XLS defined name retention overflow"))?;
+            .ok_or_else(|| crate::rejection::resource("XLS defined name retention overflow"))?;
         // Global names are visible on every worksheet. Admit the aggregate
         // workbook expansion before copying, not only the individual Lbl input.
-        *budget = budget
-            .checked_sub(bytes)
-            .ok_or_else(|| unsupported("XLS defined name retention budget exceeded"))?;
+        *budget = budget.checked_sub(bytes).ok_or_else(|| {
+            crate::rejection::resource("XLS defined name retention budget exceeded")
+        })?;
         let mut output = Vec::new();
         output
             .try_reserve_exact(visible().count())
-            .map_err(|_| unsupported("XLS defined name allocation failed"))?;
+            .map_err(|_| crate::rejection::resource("XLS defined name allocation failed"))?;
         output.extend(visible().map(|(_, name, formula)| xlsx_model::DefinedName {
             name: name.clone(),
             formula: formula.clone(),

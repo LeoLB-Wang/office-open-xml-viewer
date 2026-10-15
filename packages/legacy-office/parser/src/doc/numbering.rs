@@ -84,12 +84,13 @@ impl Level<'_> {
     ) -> Result<ooxml_common::numbering::NumberingTemplate, String> {
         use ooxml_common::numbering::{NumberingTemplate, TemplatePart};
         let placeholders: Vec<(u8, u8)> = self.placeholders.iter().flatten().copied().collect();
-        if current_level > 8
-            || placeholders.len() > 9
-            || !self.text.len().is_multiple_of(2)
-            || self.text.len() / 2 > ooxml_common::numbering::MAX_MARKER_BYTES
-        {
+        if current_level > 8 || placeholders.len() > 9 || !self.text.len().is_multiple_of(2) {
             return Err(unsupported("invalid Word numbering template"));
+        }
+        if self.text.len() / 2 > ooxml_common::numbering::MAX_MARKER_BYTES {
+            return Err(crate::rejection::resource(
+                "Word numbering template byte budget exceeded",
+            ));
         }
         let units = self.text.len() / 2;
         let mut previous = 0;
@@ -141,8 +142,12 @@ impl Level<'_> {
                     .map_err(|_| unsupported("invalid Word numbering text Unicode"))?,
             ));
         }
-        NumberingTemplate::new(parts)
-            .map_err(|error| format!("UNSUPPORTED: invalid Word numbering template: {error:?}"))
+        NumberingTemplate::new(parts).map_err(|error| match error {
+            ooxml_common::numbering::CounterError::OutputTooLarge => {
+                crate::rejection::resource("Word numbering template byte budget exceeded")
+            }
+            _ => unsupported("invalid Word numbering template"),
+        })
     }
 }
 
@@ -241,8 +246,13 @@ impl<'a> Tables<'a> {
             let count = u32_at(data.take(4)?, 0)? as usize;
             // Every LFO has a 16-byte header and at least a 4-byte LFOData CP.
             // Test physical extent before reserving or iterating by its count.
-            if count > MAX_OVERRIDES || count > data.bytes.len() / 20 {
+            if count > data.bytes.len() / 20 {
                 return Err(unsupported("invalid or excessive Word list override count"));
+            }
+            if count > MAX_OVERRIDES {
+                return Err(crate::rejection::resource(
+                    "Word list override count budget exceeded",
+                ));
             }
             budget.bytes(4 + count * 20)?;
             let headers = data.take(count * 16)?;
@@ -358,7 +368,7 @@ impl Budget {
         self.bytes = self
             .bytes
             .checked_sub(count)
-            .ok_or_else(|| unsupported("Word list metadata byte budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("Word list metadata byte budget exceeded"))?;
         Ok(())
     }
 }
@@ -378,7 +388,7 @@ fn read_level<'a>(
     budget.levels = budget
         .levels
         .checked_sub(1)
-        .ok_or_else(|| unsupported("Word list level budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("Word list level budget exceeded"))?;
     budget.bytes(30)?; // LVLF + Xst.cch, before touching any variable payload.
     let header = data.take(28)?;
     let format = header[4];

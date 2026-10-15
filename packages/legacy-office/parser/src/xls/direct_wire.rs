@@ -116,9 +116,9 @@ impl DirectWire {
             return Err(error);
         }
         let mut owned_name = String::new();
-        let allocation = owned_name
-            .try_reserve_exact(name.len())
-            .map_err(|_| "UNSUPPORTED:XLS direct cursor name allocation failed".to_string());
+        let allocation = owned_name.try_reserve_exact(name.len()).map_err(|_| {
+            "LEGACY_RESOURCE_LIMIT:XLS direct cursor name allocation failed".to_string()
+        });
         self.terminal(allocation)?;
         owned_name.push_str(name);
         self.cursor = Some(ActiveSheet {
@@ -244,13 +244,14 @@ impl DirectWire {
         let result = {
             let bytes = self.session()?.resource(key)?;
             if bytes.len() as u64 > STANDARD_MAX_ARCHIVE_ENTRY_BYTES {
-                Err("UNSUPPORTED:XLS direct image response byte budget exceeded".into())
+                Err("LEGACY_RESOURCE_LIMIT:XLS direct image response byte budget exceeded".into())
             } else {
                 let mut owned = Vec::new();
                 owned
                     .try_reserve_exact(bytes.len())
                     .map_err(|_| {
-                        "UNSUPPORTED:XLS direct image response allocation failed".to_string()
+                        "LEGACY_RESOURCE_LIMIT:XLS direct image response allocation failed"
+                            .to_string()
                     })
                     .map(|_| {
                         owned.extend_from_slice(bytes);
@@ -315,16 +316,17 @@ fn serialize_bounded<T: Serialize>(
     ceiling: u64,
     label: &str,
 ) -> Result<Vec<u8>, String> {
-    let ceiling = usize::try_from(ceiling)
-        .map_err(|_| format!("UNSUPPORTED:XLS direct {label} JSON size exceeds this platform"))?;
+    let ceiling = usize::try_from(ceiling).map_err(|_| {
+        format!("LEGACY_RESOURCE_LIMIT:XLS direct {label} JSON size exceeds this platform")
+    })?;
     let mut output = BoundedJson::new(ceiling);
     if let Err(error) = serde_json::to_writer(&mut output, value) {
         return match output.failure {
             Some(WriteFailure::Ceiling) => Err(format!(
-                "UNSUPPORTED:XLS direct {label} JSON byte budget exceeded"
+                "LEGACY_RESOURCE_LIMIT:XLS direct {label} JSON byte budget exceeded"
             )),
             Some(WriteFailure::Allocation) => Err(format!(
-                "UNSUPPORTED:XLS direct {label} JSON allocation failed"
+                "LEGACY_RESOURCE_LIMIT:XLS direct {label} JSON allocation failed"
             )),
             None => Err(format!("serialize error: {error}")),
         };
@@ -339,14 +341,15 @@ fn serialize_rows(
     target_bytes: usize,
 ) -> Result<(Vec<u8>, usize), String> {
     let ceiling = usize::try_from(ceiling).map_err(|_| {
-        "UNSUPPORTED:XLS direct worksheet rows JSON size exceeds this platform".to_string()
+        "LEGACY_RESOURCE_LIMIT:XLS direct worksheet rows JSON size exceeds this platform"
+            .to_string()
     })?;
     let mut output = BoundedJson::new(ceiling);
     output
         .write_all(br#"{"kind":"rows","rows":["#)
-        .map_err(|_| "UNSUPPORTED:XLS direct worksheet rows JSON byte budget exceeded")?;
+        .map_err(|_| "LEGACY_RESOURCE_LIMIT:XLS direct worksheet rows JSON byte budget exceeded")?;
     output.ceiling = ceiling.checked_sub(2).ok_or_else(|| {
-        "UNSUPPORTED:XLS direct worksheet rows JSON byte budget exceeded".to_string()
+        "LEGACY_RESOURCE_LIMIT:XLS direct worksheet rows JSON byte budget exceeded".to_string()
     })?;
     let mut count = 0usize;
     for row in rows.iter().take(row_credit) {
@@ -364,12 +367,13 @@ fn serialize_rows(
                 break;
             }
             return match output.failure {
-                Some(WriteFailure::Ceiling) => {
-                    Err("UNSUPPORTED:XLS direct worksheet row JSON byte budget exceeded".into())
-                }
-                Some(WriteFailure::Allocation) => {
-                    Err("UNSUPPORTED:XLS direct worksheet rows JSON allocation failed".into())
-                }
+                Some(WriteFailure::Ceiling) => Err(
+                    "LEGACY_RESOURCE_LIMIT:XLS direct worksheet row JSON byte budget exceeded"
+                        .into(),
+                ),
+                Some(WriteFailure::Allocation) => Err(
+                    "LEGACY_RESOURCE_LIMIT:XLS direct worksheet rows JSON allocation failed".into(),
+                ),
                 None => Err(format!("serialize error: {error}")),
             };
         }
@@ -382,7 +386,7 @@ fn serialize_rows(
     output.ceiling = ceiling;
     output
         .write_all(b"]}")
-        .map_err(|_| "UNSUPPORTED:XLS direct worksheet rows JSON byte budget exceeded")?;
+        .map_err(|_| "LEGACY_RESOURCE_LIMIT:XLS direct worksheet rows JSON byte budget exceeded")?;
     Ok((output.bytes, count))
 }
 

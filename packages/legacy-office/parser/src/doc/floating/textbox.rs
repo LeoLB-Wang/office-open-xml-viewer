@@ -15,6 +15,7 @@ use crate::doc::direct_model::fields::StoryFields;
 use crate::doc::{header_fields, read_story_range, u16_at, u32_at, unsupported, Story};
 use std::ops::Range;
 
+// Retained table-entry resource policy, independent of MS-DOC PLC syntax.
 const MAX_TEXTBOXES: usize = 100_000;
 
 pub(in crate::doc) struct Textboxes<'a> {
@@ -215,8 +216,13 @@ fn plc_count(plc: &[u8], element: usize) -> Result<usize, String> {
         return Err(unsupported("invalid Word textbox table size"));
     }
     let count = (plc.len() - 4) / (4 + element);
-    if count == 0 || count > MAX_TEXTBOXES {
+    if count == 0 {
         return Err(unsupported("invalid Word textbox count"));
+    }
+    if count > MAX_TEXTBOXES {
+        return Err(crate::rejection::resource(
+            "Word textbox count budget exceeded",
+        ));
     }
     for index in 0..count {
         if u32_at(plc, index * 4)? >= u32_at(plc, (index + 1) * 4)? {
@@ -280,6 +286,51 @@ mod tests {
         let mut bytes = vec![0; 6];
         bytes[..2].copy_from_slice(&index.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn main_and_header_tables_distinguish_empty_counts_from_resource_limits() {
+        for part in [Part::Main, Part::Header] {
+            for limit_breaks in [false, true] {
+                for count in [0, 100_000, 100_001] {
+                    let spare_table = |count: usize, element: Vec<u8>| {
+                        let cps: Vec<_> = (0..=count as u32).collect();
+                        plc(&cps, &vec![element; count])
+                    };
+                    let boxes = spare_table(if limit_breaks { 1 } else { count }, ftxbxs(true, 0));
+                    let breaks = spare_table(if limit_breaks { count } else { 1 }, tbkd(-1));
+                    let mut word = vec![0; 0x402];
+                    word[0x400..].copy_from_slice(&13u16.to_le_bytes());
+                    let (length, table_fib, breaks_fib) = match part {
+                        Part::Main => (0x64, 0x25a, 0x2f2),
+                        Part::Header => (0x68, 0x26a, 0x2fa),
+                    };
+                    word[length..length + 4].copy_from_slice(&1u32.to_le_bytes());
+                    word[table_fib + 4..table_fib + 8]
+                        .copy_from_slice(&(boxes.len() as u32).to_le_bytes());
+                    word[breaks_fib..breaks_fib + 4]
+                        .copy_from_slice(&(boxes.len() as u32).to_le_bytes());
+                    word[breaks_fib + 4..breaks_fib + 8]
+                        .copy_from_slice(&(breaks.len() as u32).to_le_bytes());
+                    let table = [boxes, breaks].concat();
+                    let clx = [
+                        vec![2],
+                        16u32.to_le_bytes().to_vec(),
+                        plc(&[0, 1], &[vec![0, 0, 0, 4, 0, 0, 0, 0]]),
+                    ]
+                    .concat();
+                    let result = Textboxes::read(&word, &table, &clx, part);
+                    match count {
+                        100_000 => assert_eq!(result.ok().flatten().unwrap().story.text, "\r"),
+                        100_001 => {
+                            assert!(result.err().unwrap().starts_with("LEGACY_RESOURCE_LIMIT:"))
+                        }
+                        0 => assert!(result.err().unwrap().starts_with("UNSUPPORTED:")),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
     }
 
     #[test]

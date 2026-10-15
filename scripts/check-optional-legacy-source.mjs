@@ -96,7 +96,7 @@ const load = source.beginLoad();
 if (
   !Object.isFrozen(source) || source.target !== format.target
   || source.claim(new Uint8Array([0x50, 0x4b, 0x03, 0x04])) !== false
-  || load.module.protocol !== 'ooxml-model-source-module/v1'
+  || load.module.protocol !== 'ooxml-model-source-module/v2'
   || load.module.target !== format.target
   || load.module.moduleUrl !== 'https://example.test/source-module.mjs'
   || load.module.config.wasmUrl !== 'https://example.test/reader.wasm'

@@ -52,11 +52,14 @@ export type {
 } from '@silurus/ooxml-core';
 export {
   OoxmlDecodedImageLimitError,
+  OoxmlError,
+  type OoxmlErrorCode,
   OoxmlResourceLimitError,
   isOoxmlDecodedImageLimitError,
   type OoxmlDecodedImageLimitMetric,
   type OoxmlResourceLimit,
   type OoxmlResourceLimitErrorDetails,
+  type OoxmlUnsupportedContentDetails,
   type OoxmlResourceLimits,
   type OoxmlResourceUsageSnapshot,
   type XlsxWorksheetLimits,

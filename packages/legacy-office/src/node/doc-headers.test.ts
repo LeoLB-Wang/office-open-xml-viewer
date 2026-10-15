@@ -49,7 +49,7 @@ it('evaluates passive page fields and shows only the stored result of other fiel
 it('direct rejects locked page fields instead of showing their stored result', async () => {
   // The converter kept a locked field's stored "99"; the direct reader has no
   // Office control for fLocked evaluated fields yet.
-  await expect(load(buildDocFixture({ text: 'Body\r', headers: ['', '', '', footerFields, '', ''], lockedHeaderFields: true }))).rejects.toThrow(new Error('UNSUPPORTED:Word evaluated field with edited, locked or private result is not supported'));
+  await expect(load(buildDocFixture({ text: 'Body\r', headers: ['', '', '', footerFields, '', ''], lockedHeaderFields: true }))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'doc', reason: 'source-subset' } });
 });
 
 it.skipIf(!skia).each([false, true])('renders page stories after terminal page breaks (split mark: %s)', async (splitPgBreakAndParaMark) => {
