@@ -12,12 +12,13 @@
  *   the backstops fused into the unconditional clone/freeze walks in
  *   `plain-data.ts` and `invariants.ts` (non-cloneable values, foreign
  *   prototypes, non-finite numbers).
- * - PATH-PRECISE diagnostics, which this policy gates: the separate
- *   `assertPlainData` pre-pass that walks the graph a second time purely to
- *   report the exact property path of a violation. It is redundant with the
- *   fused backstops — the same violation is still detected and thrown without
- *   it, just with a terser message — so it is a development-time nicety, not a
- *   safety layer.
+ * - STRICT INPUT diagnostics, which this policy gates: the separate
+ *   `assertPlainData` pre-pass reports exact property paths and rejects cycles,
+ *   accessors, hidden properties, and other non-plain input. Snapshot validation
+ *   also uses native structuredClone to reject proxies. These extra input checks
+ *   are intended for diagnosing engine bugs; the internal clone/freeze helpers
+ *   receive engine-owned data, not arbitrary untrusted objects. Without the
+ *   pre-pass, those helpers do not promise to reject every non-plain input.
  *
  * `snapshotPlainData` runs on every block accepted during pagination, re-paid
  * on every convergence pass, so the duplicate pre-pass walk is a real cost on
@@ -33,7 +34,7 @@
  * the assumption that a cached layout cannot be mutated by a consumer).
  */
 
-/** Production omits only the redundant path-precise pre-pass. */
+/** Production omits the extra strict-input diagnostic pre-pass. */
 export function documentLayoutValidationEnabled(): boolean {
   return false;
 }

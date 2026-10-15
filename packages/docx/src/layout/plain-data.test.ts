@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deepFreezePlainData,
   deepFreezePlainDataWithFrozenAliases,
   sealPlainData,
   snapshotPlainData,
 } from './plain-data.js';
+
+// These cases exercise the strict diagnostic boundary on deliberately invalid
+// inputs. Production snapshots receive engine-owned data and omit this pre-pass.
+vi.mock('./validation-policy.js', () => ({ documentLayoutValidationEnabled: vi.fn(() => true) }));
 
 describe('plain layout data snapshots', () => {
   it('freezes mutable descendants of an already frozen wrapper', () => {
