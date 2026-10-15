@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { describe, expect, it, vi } from 'vitest';
 import type { BodyElement, DocParagraph, DocxDocumentModel, SectionProps } from './types.js';
 import {

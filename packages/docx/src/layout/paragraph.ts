@@ -1,3 +1,4 @@
+import { readingHooks } from '../internal/reading-hooks.js';
 import { revisionIsOmitted } from './revision-visibility.js';
 import { wordKerningApplies } from './line-compatibility.js';
 import type { LineGapPlan } from '../line-breaker/line-gaps.js';
@@ -23,8 +24,7 @@ import { createFloatWrapOracle } from './float-wrap-oracle.js';
 import { firstFreeGapLeftPt, polygonMeetsRect, type FloatRect } from './float-wrap.js';
 import type { AnchorAcquisitionInput } from './anchor-input.js';
 import { retainedAnchorChildFrame } from './retained-anchor-child-frame.js';
-import { planRetainedAnchorShape, NativeReadingSceneError } from './native-reading-block-scene.js';
-import { appendNativeReadingScenes, acquireRequestedNativeReadingScenes, nativeReadingOccurrenceIds } from './native-reading-paragraph.js';
+import { planRetainedAnchorShape } from './retained-anchor-shape.js';
 import type {
   LayoutImageSeg,
   LayoutLine,
@@ -4900,7 +4900,7 @@ export function acquireParagraphAnchorRunStage(
   paragraph: ParagraphAcquisitionInput, options: ParagraphAcquisitionOptions,
 ) {
   const acquired = acquireParagraphCandidate(paragraph, options, undefined, 'anchor-run');
-  const scenes = acquireRequestedNativeReadingScenes(paragraph, options.source,
+  const scenes = readingHooks.scenes(paragraph, options.source,
     options.id, options.flowDomainId,
     options.environment.layoutServices ? paintResourceRegistryOf(options.environment.layoutServices) : undefined);
   return Object.freeze({ kind: 'native-reading-anchor-stage' as const, acquired, scenes });
@@ -4912,9 +4912,9 @@ function acquireParagraphCandidate(
   continuation: Parameters<typeof measureParagraph>[5] | undefined,
   stage: 'complete' | 'anchor-run',
 ): AcquiredParagraphResult {
-  const readingOccurrences = nativeReadingOccurrenceIds(paragraph);
+  const readingOccurrences = readingHooks.occurrences(paragraph);
   if (readingOccurrences.length && (continuation || options.continuesFromPrevious || options.anchorCellBounds || options.environment.verticalPageFrame))
-    throw new NativeReadingSceneError('placement', 'reading blocks require complete horizontal body paragraphs');
+    throw readingHooks.error('placement', 'reading blocks require complete horizontal body paragraphs');
   const cache = options.environment.layoutServices
     ? paragraphAcquisitionCacheOf(options.environment.layoutServices)
     : undefined;
@@ -5706,12 +5706,12 @@ function projectAcquiredParagraph(
       bounds: { xPt: paragraphXPt, yPt: measured.contentStartYPt, widthPt: 0, heightPt: contentHeightPt },
     } : undefined,
   };
-  if (stage === 'anchor-run' || nativeReadingOccurrenceIds(paragraph).length === 0) return layoutParagraph(retainedInput);
+  if (stage === 'anchor-run' || readingHooks.occurrences(paragraph).length === 0) return layoutParagraph(retainedInput);
   const frame = options.anchorFrames?.column;
-  if (!frame) throw new NativeReadingSceneError('placement', 'reading paragraph has no resolved column');
+  if (!frame) throw readingHooks.error('placement', 'reading paragraph has no resolved column');
   const readingImage = paragraph.runs.some(run => run.type === 'image' && run.anchorAcquisitionInput?.nativeReadingRelocation === 'completeScene');
   const registry = readingImage && options.environment.layoutServices ? paintResourceRegistryOf(options.environment.layoutServices) : undefined;
-  return layoutParagraph(appendNativeReadingScenes(paragraph, retainedInput, frame, registry));
+  return layoutParagraph(readingHooks.appendScenes(paragraph, retainedInput, frame, registry));
 }
 
 const translatePointY = (point: PointPt, yPt: number): PointPt =>

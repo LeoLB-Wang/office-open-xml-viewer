@@ -1,6 +1,5 @@
-import { composeNativeReadingAnchorRun, nativeReadingAnchorRuns, type AnchorRunMember } from './native-reading-anchor-run.js';
-import { NativeReadingSceneError } from './native-reading-block-scene.js';
-import { acquireRequestedNativeReadingScenes } from './native-reading-paragraph.js';
+import { readingHooks } from '../internal/reading-hooks.js';
+import type { AnchorRunMember } from './native-reading-anchor-run.js';
 import { MAX_BODY_LAYOUT_PAGES } from './resource-budgets.js';
 import { deepFreezePlainData, deepFreezePlainDataWithFrozenAliases } from './plain-data.js';
 import { quarterTurnMathMetadataService } from './resources.js';
@@ -1408,7 +1407,7 @@ function acquireBodyAnchorRun(
     // owner; do not introduce a second implementation of those algorithms.
     if (formatting.spaceBeforePt !== 0 || formatting.spaceAfterPt !== 0
       || paragraph.contextualSpacing || paragraph.borders || paragraph.shading || input.keepNext || input.keepLines)
-      throw new NativeReadingSceneError('placement','anchor run paragraph formatting requires ordinary spacing/keep acquisition');
+      throw readingHooks.error('placement','anchor run paragraph formatting requires ordinary spacing/keep acquisition');
     const location = {...request.location,cursorPt:{...request.location.cursorPt,yPt:y},
       availableBounds:{...request.location.availableBounds,yPt:y}};
     applyBodyAcquisitionLocationTo(services,candidate,location);
@@ -1421,7 +1420,7 @@ function acquireBodyAnchorRun(
   }
   const column = bodyAnchorReferenceFrames(candidate).column;
   if (!column) throw new Error('Anchor run column is unresolved');
-  const composed = composeNativeReadingAnchorRun(stages,column,
+  const composed = readingHooks.composeAnchorRun(stages,column,
     paragraphWrapExclusions(state.floats,request.location.flowDomainId).map(e=>e.bounds),paintResourceRegistryOf(services));
   const layouts = composed.members.map(m=>m.layout);
   const floats = layouts.flatMap(layout=>retainedBodyParagraphFloatEntries(sessionState,layout));
@@ -2258,7 +2257,7 @@ function prescanBodyPageAnchors(
     if (payloads[0]!.run.anchorAcquisitionInput.nativeReadingRelocation === 'completeScene') {
       // No page-owned exclusion is claimed for changed placement. Defer only
       // after the same complete scene/resource owner validates all members.
-      const scenes = acquireRequestedNativeReadingScenes(acquired, anchor.paragraphSource,
+      const scenes = readingHooks.scenes(acquired, anchor.paragraphSource,
         `prescan:${anchor.occurrenceId}`, pageRegistryFlowDomainId(request.location.pageIndex), paintResourceRegistryOf(services));
       if (!scenes.some(scene => scene.occurrenceId === anchor.occurrenceId)) throw new Error('Reading prescan omitted its complete scene');
       return [];
@@ -2899,7 +2898,7 @@ function openConcreteBodyLayoutSession(
   state.acquireCompleteTextBoxStory = (owner, request) =>
     acquireCompleteBodyTextBoxStory(owner, storyAcquisitionContext, request);
   const sessionDependencies = {
-    nativeAnchorRuns: nativeReadingAnchorRuns(source.bodyLayoutInput, ref => {
+    nativeAnchorRuns: readingHooks.anchorRuns(source.bodyLayoutInput, ref => {
       const p = sourceElement(source,ref);
       if (p.type !== 'paragraph') throw new Error('Anchor run index source mismatch');
       return p;

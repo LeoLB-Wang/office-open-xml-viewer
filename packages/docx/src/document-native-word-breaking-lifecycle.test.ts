@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { deserializeWorkerError, serializeWorkerError } from '@silurus/ooxml-core/worker';
 import { requireLayoutPage } from './layout/variant-store.js';
 import { layoutDocument } from './document-layout.js';

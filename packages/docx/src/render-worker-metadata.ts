@@ -1,4 +1,5 @@
-import { nativeReadingNotices, nativeReadingRequests, noReadingNotices } from './native-reading-notice.js';
+import { readingHooks } from './internal/reading-hooks.js';
+import { noReadingNotices } from './internal/reading-hooks.js';
 import { buildBookmarkPageMap } from './bookmark-nav.js';
 import { collectLayoutSourceCommentRangesIfPresent } from './comments.js';
 import { normalizeLayoutOptions } from './layout/options.js';
@@ -31,10 +32,10 @@ export function projectRenderWorkerLayoutMeta(
   const reviewProjection = options.provisional && reviewIndex
     ? { completedSourceKeys: reviewIndex.completedSourceKeys }
     : undefined;
-  const requests = nativeReadingRequests(source);
+  const requests = readingHooks.requests(source);
   const readingRequested = requests.contour || requests.wordBreaking || requests.pictureBullets;
   // Disclosure inspects page layers only for an acquired reading request.
-  const notices = readingRequested ? nativeReadingNotices(layout, requests) : noReadingNotices;
+  const notices = readingRequested ? readingHooks.notices(layout, requests) : noReadingNotices;
   return {
     ...(readingRequested ? { nativeReadingRequested: true as const } : {}),
     ...(notices.length ? { readingNotices: notices } : {}),

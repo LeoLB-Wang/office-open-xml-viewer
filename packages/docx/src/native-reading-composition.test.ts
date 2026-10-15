@@ -1,3 +1,5 @@
+import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
+installNativeReadingRuntime();
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as sourceKeys from './layout/source-key.js';
 import { isLayoutSourceStore } from './layout/layout-source-store.js';
