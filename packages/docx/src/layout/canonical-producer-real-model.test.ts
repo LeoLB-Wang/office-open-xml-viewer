@@ -49,6 +49,25 @@ function ordinaryParagraph(text: string): DocParagraph {
   return result;
 }
 
+function columnStoryDocument(body: DocParagraph[], footnotes: { id: string; content: DocParagraph[] }[], nextLines = 8): DocxDocumentModel {
+  return {
+    section: {
+      pageWidth: 200, pageHeight: 100,
+      marginTop: 10, marginRight: 10, marginBottom: 10, marginLeft: 10,
+      headerDistance: 5, footerDistance: 5,
+      titlePage: true, evenAndOddHeaders: false, sectionStart: 'nextPage',
+      columns: { count: 2, spacePt: 20, equalWidth: true, sep: false, cols: [] },
+    },
+    body,
+    headers: {
+      first: { body: [ordinaryParagraph('first')] },
+      default: { body: Array.from({ length: nextLines }, () => ordinaryParagraph('next')) }, even: null,
+    },
+    footers: { default: null, first: null, even: null },
+    footnotes, endnotes: [], fontFamilyClasses: {},
+  } as unknown as DocxDocumentModel;
+}
+
 function ordinaryBodyParagraph(text: string): BodyElement {
   return ordinaryParagraph(text) as unknown as BodyElement;
 }
@@ -199,6 +218,470 @@ function fragmentLineAdvancesPt(fragment: Extract<ReturnType<typeof layoutDocume
 }
 
 describe('canonical producer with a real document model', () => {
+  it.each([
+    { name: 'shared restart selects odd', start: 2, shared: true, titlePage: false, defaultLines: 1, evenLines: 6 },
+    { name: 'shared restart selects even', start: 3, shared: true, titlePage: false, defaultLines: 6, evenLines: 1 },
+    { name: 'empty shared region preserves restart', start: 3, shared: false, titlePage: false, defaultLines: 1, evenLines: 6 },
+    { name: 'shared restart selects first story', start: 2, shared: true, titlePage: true, defaultLines: 6, evenLines: 6 },
+    { name: 'empty shared region selects first story', start: 2, shared: false, titlePage: true, defaultLines: 6, evenLines: 6 },
+  ].flatMap(test => [false, true].map(continuation => ({ ...test, continuation }))))(
+    'opens continuous sections with final page context: $name (continuation $continuation)',
+    ({ start, shared, titlePage, defaultLines, evenLines, continuation }) => {
+      const model = columnStoryDocument([], [{ id: '7', content: [ordinaryParagraph('note')] }], defaultLines);
+      model.section.columns = null;
+      model.section.sectionStart = 'continuous';
+      model.section.pageNumType = { start, fmt: 'decimal' };
+      model.section.titlePage = titlePage;
+      model.section.evenAndOddHeaders = true;
+      model.headers.even = { body: Array.from({ length: evenLines }, () => ordinaryBodyParagraph('even')) };
+      const endingSection = {
+        type: 'sectionBreak', kind: 'nextPage', columns: null,
+        geom: { ...model.section, sectionStart: 'nextPage', pageNumType: null },
+        pageNumType: null, titlePage: false,
+        headers: { default: { body: Array.from({ length: 4 }, () => ordinaryParagraph('outhead')) },
+          first: null, even: null },
+        footers: model.footers,
+      } as unknown as BodyElement;
+      const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+      table.rows[0]!.cantSplit = true;
+      table.rows[0]!.cells[0]!.content = [{ ...paragraph(), type: 'paragraph' }];
+      model.body = [...Array.from({ length: shared ? 1 : 4 }, () => ordinaryBodyParagraph('out')),
+        endingSection, ...(shared ? [ordinaryBodyParagraph('in')] : []), table];
+      const layout = layoutDocument(model, createLayoutServices(model, {
+        measureContext: measureContext(), allowFootnoteContinuation: continuation,
+      }), { currentDateMs: 0 });
+      expect(layout.pages.map(page => page.pageNumber.displayNumber)).toEqual([1, start + (shared ? 1 : 0)]);
+      expect(layout.pages[1]!.layers.body[0]).toMatchObject({
+        kind: 'table', flowBounds: { xPt: 10, yPt: 15, heightPt: 10 },
+      });
+      expect(layout.pages.map(page => page.layers.notes.map(note => note.advancePt))).toEqual([[], [16]]);
+      expect(layout.pages[1]!.layers.header).toHaveLength(1);
+    },
+  );
+
+  // Different first/default and odd/even stories reserve different body bands
+  // (§17.6.11, §17.10.1/.6). An unused destination must not reject this page.
+  it.each([
+    { band: 'header', slot: 'default', nextLines: 6, bodyKind: 'paragraph', continuation: false },
+    { band: 'header', slot: 'default', nextLines: 6, bodyKind: 'paragraph', continuation: true },
+    { band: 'header', slot: 'default', nextLines: 10, bodyKind: 'paragraph', continuation: false },
+    { band: 'header', slot: 'default', nextLines: 10, bodyKind: 'paragraph', continuation: true },
+    { band: 'footer', slot: 'even', nextLines: 6, bodyKind: 'paragraph', continuation: false },
+    { band: 'footer', slot: 'even', nextLines: 6, bodyKind: 'paragraph', continuation: true },
+    { band: 'header', slot: 'default', nextLines: 6, bodyKind: 'frame', continuation: false },
+    { band: 'header', slot: 'default', nextLines: 6, bodyKind: 'frame', continuation: true },
+    { band: 'footer', slot: 'even', nextLines: 6, bodyKind: 'table', continuation: false },
+    { band: 'footer', slot: 'even', nextLines: 6, bodyKind: 'table', continuation: true },
+  ] as const)('keeps a fitting $bodyKind note with a taller unused $slot $band ($nextLines lines, continuation $continuation)', ({
+    band, slot, nextLines, bodyKind, continuation,
+  }) => {
+    const reference = paragraph();
+    if (bodyKind === 'frame') reference.framePr = {
+      dropCap: 'none', lines: 1, wrap: 'around', hAnchor: 'text', vAnchor: 'text',
+      hRule: 'auto', hSpace: 0, vSpace: 0, w: 40, h: 10, x: 0, y: 0,
+    };
+    const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+    table.rows[0]!.cells[0]!.content = [{ ...reference, type: 'paragraph' }];
+    const stories = {
+      first: { body: [ordinaryParagraph('first')] },
+      default: null,
+      even: null,
+      [slot]: { body: Array.from({ length: nextLines }, () => ordinaryParagraph('next')) },
+    };
+    const emptyStories = { default: null, first: null, even: null };
+    const model = {
+      section: {
+        pageWidth: 200, pageHeight: 100,
+        marginTop: 10, marginRight: 10, marginBottom: 10, marginLeft: 10,
+        headerDistance: 5, footerDistance: 5,
+        titlePage: true, evenAndOddHeaders: slot === 'even',
+        sectionStart: 'nextPage', columns: null,
+      },
+      body: [bodyKind === 'table' ? table : reference],
+      headers: band === 'header' ? stories : emptyStories,
+      footers: band === 'footer' ? stories : emptyStories,
+      footnotes: [{ id: '7', content: [ordinaryParagraph('note')] }],
+      endnotes: [], fontFamilyClasses: {},
+    } as unknown as DocxDocumentModel;
+    const services = createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    });
+    const layout = layoutDocument(model, services, { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(1);
+    const page = layout.pages[0]!;
+    expect(page.layers.body).toHaveLength(1);
+    expect(page.layers.body[0]?.ordinaryFlow).toBe(bodyKind !== 'frame');
+    expect(page.layers.body[0]?.flowBounds.yPt).toBe(band === 'header' ? 15 : 10);
+    expect(page.layers.notes).toHaveLength(1);
+    expect(page.layers.notes[0]).toMatchObject({
+      kind: 'note', advancePt: 16, source: { storyInstance: '7' },
+      flowDomainId: 'notes:page:0',
+    });
+  });
+
+  it.each([false, true])('validates successive current-page notes with a narrower unused header (continuation %s)', continuation => {
+    const second = paragraph();
+    const run = second.runs[0];
+    if (run?.type === 'text') run.noteRef = { kind: 'footnote', id: '8' };
+    const model = {
+      section: {
+        pageWidth: 200, pageHeight: 100,
+        marginTop: 10, marginRight: 10, marginBottom: 10, marginLeft: 10,
+        headerDistance: 5, footerDistance: 5,
+        titlePage: true, evenAndOddHeaders: false, sectionStart: 'nextPage', columns: null,
+      },
+      body: [paragraph(), second],
+      headers: {
+        first: { body: [ordinaryParagraph('first')] },
+        default: { body: Array.from({ length: 6 }, () => ordinaryParagraph('next')) }, even: null,
+      },
+      footers: { default: null, first: null, even: null },
+      footnotes: ['7', '8'].map(id => ({ id, content: [ordinaryParagraph('note')] })),
+      endnotes: [], fontFamilyClasses: {},
+    } as unknown as DocxDocumentModel;
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(1);
+    expect(layout.pages[0]?.layers.notes.map(note => note.advancePt)).toEqual([16, 10]);
+    expect(layout.pages[0]?.layers.notes.map(note => note.source.storyInstance)).toEqual(['7', '8']);
+  });
+
+  it.each([
+    { nextLines: 5, continuation: false }, { nextLines: 5, continuation: true },
+    { nextLines: 6, continuation: false }, { nextLines: 6, continuation: true },
+  ])('uses the destination header when a note actually relocates ($nextLines lines, continuation $continuation)', ({
+    nextLines, continuation,
+  }) => {
+    const model = {
+      section: {
+        pageWidth: 200, pageHeight: 100,
+        marginTop: 10, marginRight: 10, marginBottom: 10, marginLeft: 10,
+        headerDistance: 5, footerDistance: 5,
+        titlePage: true, evenAndOddHeaders: false, sectionStart: 'nextPage', columns: null,
+      },
+      body: [...Array.from({ length: 6 }, () => ordinaryParagraph('before')), paragraph()],
+      headers: {
+        first: { body: [ordinaryParagraph('first')] },
+        default: { body: Array.from({ length: nextLines }, () => ordinaryParagraph('next')) }, even: null,
+      },
+      footers: { default: null, first: null, even: null },
+      footnotes: [{ id: '7', content: [ordinaryParagraph('note')] }],
+      endnotes: [], fontFamilyClasses: {},
+    } as unknown as DocxDocumentModel;
+    const render = () => layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 });
+    // Only 15pt remains on page one. The 26pt reference + note fits a 35pt
+    // destination band, but cannot be admitted into a 25pt destination.
+    if (nextLines === 6) {
+      // Preserve the existing final invariant failure for an impossible page,
+      // rather than adding a stricter hypothetical-page admission policy.
+      expect(render).toThrow(expect.objectContaining({ code: 'FLOW_OVERLAP' }));
+      return;
+    }
+    const layout = render();
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual([6, 1]);
+    expect(layout.pages[0]?.layers.notes).toEqual([]);
+    expect(layout.pages[1]?.layers.body[0]?.flowBounds.yPt).toBe(55);
+    expect(layout.pages[1]?.layers.notes[0]).toMatchObject({
+      advancePt: 16, flowDomainId: 'notes:page:1', source: { storyInstance: '7' },
+    });
+  });
+
+  it.each([
+    { bodyKind: 'table', continuation: false, prefixLines: 5, nextLines: 8 },
+    { bodyKind: 'table', continuation: true, prefixLines: 5, nextLines: 8 },
+    { bodyKind: 'frame', continuation: false, prefixLines: 5, nextLines: 8 },
+    { bodyKind: 'frame', continuation: true, prefixLines: 5, nextLines: 8 },
+    { bodyKind: 'table', continuation: false, prefixLines: 6, nextLines: 5 },
+    { bodyKind: 'frame', continuation: true, prefixLines: 6, nextLines: 5 },
+  ] as const)('relocates a note-bearing $bodyKind past $prefixLines lines to its actual region (continuation $continuation)', ({ bodyKind, continuation, prefixLines, nextLines }) => {
+    const reference = paragraph();
+    if (bodyKind === 'frame') reference.framePr = {
+      dropCap: 'none', lines: 1, wrap: 'around', hAnchor: 'text', vAnchor: 'text',
+      hRule: 'auto', hSpace: 0, vSpace: 0, w: 40, h: 10, x: 0, y: 0,
+    };
+    const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+    table.rows[0]!.cells[0]!.content = [{ ...reference, type: 'paragraph' }];
+    const model = {
+      section: {
+        pageWidth: 200, pageHeight: 100,
+        marginTop: 10, marginRight: 10, marginBottom: 10, marginLeft: 10,
+        headerDistance: 5, footerDistance: 5,
+        titlePage: true, evenAndOddHeaders: false, sectionStart: 'nextPage',
+        columns: { count: 2, spacePt: 20, equalWidth: true, sep: false, cols: [] },
+      },
+      body: [...Array.from({ length: prefixLines }, () => ordinaryParagraph('before')), bodyKind === 'table' ? table : reference],
+      headers: {
+        first: { body: [ordinaryParagraph('first')] },
+        default: { body: Array.from({ length: nextLines }, () => ordinaryParagraph('next')) }, even: null,
+      },
+      footers: { default: null, first: null, even: null },
+      footnotes: [{ id: '7', content: [ordinaryParagraph('note')] }],
+      endnotes: [], fontFamilyClasses: {},
+    } as unknown as DocxDocumentModel;
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 });
+    // After 50pt, the 16pt note clears the first column and the body unit
+    // moves to column two. After 60pt, that band would clip committed text:
+    // another column cannot help, so the unit and note need a physical page.
+    const nextPage = prefixLines === 6;
+    expect(layout.pages).toHaveLength(nextPage ? 2 : 1);
+    const page = layout.pages.at(-1)!;
+    expect(page.layers.body).toHaveLength(nextPage ? 1 : 6);
+    expect(page.layers.body.at(-1)).toMatchObject({
+      kind: bodyKind === 'table' ? 'table' : 'paragraph',
+      flowBounds: { xPt: nextPage ? 10 : 110, yPt: nextPage ? 55 : 15 },
+    });
+    expect(page.layers.notes[0]).toMatchObject({ advancePt: 16, flowDomainId: `notes:page:${nextPage ? 1 : 0}` });
+  });
+
+  it.each([6, 7])('keeps a whole ordinary note after a column move with a %s-line unused header', (nextLines) => {
+    const model = columnStoryDocument(
+      [...Array.from({ length: 4 }, () => ordinaryParagraph('before')), paragraph()],
+      [{ id: '7', content: [ordinaryParagraph('note'), ordinaryParagraph('note')] }], nextLines,
+    );
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: true,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(1);
+    expect(layout.pages[0]!.layers.body.at(-1)).toMatchObject({
+      flowBounds: { xPt: 110, yPt: 15 },
+    });
+    expect(layout.pages[0]!.layers.notes).toHaveLength(1);
+    expect(layout.pages[0]!.layers.notes[0]).toMatchObject({ advancePt: 26, flowDomainId: 'notes:page:0' });
+  });
+
+  it('replans a continuing ordinary note in the next column before choosing a physical page', () => {
+    const model = columnStoryDocument(
+      [...Array.from({ length: 5 }, () => ordinaryParagraph('before')), paragraph()],
+      [{ id: '7', content: [ordinaryParagraph('note'), ordinaryParagraph('note')] }], 5,
+    );
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: true,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages[0]!.layers.body.at(-1)).toMatchObject({ flowBounds: { xPt: 110, yPt: 15 } });
+    expect(layout.pages.map(page => page.layers.notes.map(note => note.advancePt))).toEqual([[16], [16]]);
+  });
+
+  it('replans keepNext notes in another column before a whole-note physical-page preflight', () => {
+    const reference = paragraph();
+    reference.keepNext = true;
+    reference.runs.push(...ordinaryParagraph(' after').runs);
+    const model = columnStoryDocument(
+      [...Array.from({ length: 5 }, () => ordinaryParagraph('before')), reference, ordinaryParagraph('last')],
+      [{ id: '7', content: [ordinaryParagraph('note'), ordinaryParagraph('note')] }], 3,
+    );
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: true,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages[0]!.layers.body).toHaveLength(7);
+    expect(layout.pages[0]!.layers.body[5]).toMatchObject({ flowBounds: { xPt: 110, yPt: 15 } });
+    expect(layout.pages[1]!.layers.body).toHaveLength(0);
+    expect(layout.pages.map(page => page.layers.notes.map(note => note.advancePt))).toEqual([[16], [16]]);
+  });
+
+  it('keeps mandatory later reference notes whole when their paragraph moves to another column', () => {
+    const reference = paragraph();
+    const later = paragraph();
+    if (later.runs[0]?.type === 'text') later.runs[0].noteRef = { kind: 'footnote', id: '8' };
+    reference.keepLines = true;
+    reference.runs.push({ type: 'break', breakType: 'line' }, ...later.runs);
+    const model = columnStoryDocument(
+      [...Array.from({ length: 3 }, () => ordinaryParagraph('before')), reference],
+      [{ id: '7', content: [ordinaryParagraph('first note')] },
+        { id: '8', content: [ordinaryParagraph('second note'), ordinaryParagraph('second note')] }],
+    );
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: true,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(1);
+    expect(layout.pages[0]!.layers.body.at(-1)).toMatchObject({
+      flowBounds: { xPt: 110, yPt: 15 }, lines: [{}, {}],
+    });
+    expect(layout.pages[0]!.layers.notes.map(note => note.advancePt)).toEqual([16, 20]);
+  });
+
+  it.each([3, 4])('retains committed notes and earlier-column clearance after %s lines', (prefixLines) => {
+    const earlier = paragraph();
+    if (earlier.runs[0]?.type === 'text') earlier.runs[0].noteRef = { kind: 'footnote', id: '8' };
+    const needsPhysicalPage = prefixLines === 4;
+    const model = columnStoryDocument(
+      [earlier, ...Array.from({ length: prefixLines - 1 }, () => ordinaryParagraph('before')), paragraph()],
+      [{ id: '8', content: [ordinaryParagraph('earlier note')] },
+        { id: '7', content: [ordinaryParagraph('later note'), ordinaryParagraph('later note')] }],
+      needsPhysicalPage ? 3 : 8,
+    );
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: false,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(needsPhysicalPage ? 2 : 1);
+    expect(layout.pages.at(-1)!.layers.body.at(-1)).toMatchObject({
+      flowBounds: { xPt: needsPhysicalPage ? 10 : 110, yPt: needsPhysicalPage ? 35 : 15 },
+    });
+    expect(layout.pages.flatMap(page => page.layers.notes.map(note => note.advancePt)))
+      .toEqual(needsPhysicalPage ? [16, 26] : [16, 20]);
+  });
+
+  it.each(['keepLines', 'keepNext'] as const)('keeps a %s group in the next column despite a smaller unused physical page', (policy) => {
+    const first = ordinaryParagraph('first');
+    first[policy] = true;
+    const last = ordinaryParagraph('last');
+    if (policy === 'keepLines') first.runs.push({ type: 'break', breakType: 'line' }, ...last.runs);
+    const group = policy === 'keepNext' ? [first, last] : [first];
+    const model = columnStoryDocument(
+      [...Array.from({ length: 6 }, () => ordinaryParagraph('before')), ...group], [],
+    );
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(),
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(1);
+    expect(layout.pages[0]!.layers.body[6]).toMatchObject({ flowBounds: { xPt: 110, yPt: 15 } });
+    expect(layout.pages[0]!.layers.body).toHaveLength(6 + group.length);
+  });
+
+  it.each([
+    { bodyKind: 'frame', columns: 2, continuation: false },
+    { bodyKind: 'frame', columns: 2, continuation: true },
+    { bodyKind: 'table', columns: 3, continuation: false },
+    { bodyKind: 'table', columns: 3, continuation: true },
+    { bodyKind: 'table', columns: 2, continuation: false },
+    { bodyKind: 'table', columns: 2, continuation: true },
+  ] as const)('moves a whole $bodyKind and its distinct note past $columns note-shrunken columns (continuation $continuation)', ({
+    bodyKind, columns, continuation,
+  }) => {
+    const reference = paragraph();
+    if (reference.runs[0]?.type === 'text') reference.runs[0].noteRef = { kind: 'footnote', id: '8' };
+    if (bodyKind === 'frame') reference.framePr = {
+      dropCap: 'none', lines: 1, wrap: 'around', hAnchor: 'text', vAnchor: 'text',
+      hRule: 'exact', hSpace: 0, vSpace: 0, w: 40, h: 50, x: 0, y: 0,
+    };
+    else {
+      reference.keepLines = true;
+      reference.lineSpacing = { value: 10, rule: 'exact', explicit: true };
+      for (let line = 1; line < 5; line++) reference.runs.push(
+        { type: 'break', breakType: 'line' }, ...ordinaryParagraph('row').runs,
+      );
+    }
+    const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+    table.rows[0]!.cantSplit = true;
+    table.rows[0]!.cells[0]!.content = [{ ...reference, type: 'paragraph' }];
+    const model = columnStoryDocument([paragraph(), reference],
+      ['7', '8'].map(id => ({ id, content: [ordinaryParagraph('note')] })), 1);
+    model.section.columns = { count: columns, spacePt: columns === 3 ? 10 : 20,
+      equalWidth: true, sep: false, cols: [] };
+    if (bodyKind === 'table') model.body[1] = table;
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual([1, 1]);
+    expect(layout.pages.map(page => page.layers.notes.map(note => ({
+      id: note.source.storyInstance, advance: note.advancePt,
+    })))).toEqual([[{ id: '7', advance: 16 }], [{ id: '8', advance: 16 }]]);
+    expect(layout.pages[1]!.layers.body[0]).toMatchObject({
+      kind: bodyKind === 'frame' ? 'paragraph' : 'table',
+      flowBounds: { xPt: 10, yPt: 15 },
+    });
+  });
+
+  it.each([
+    { policy: 'keepLines', prefixLines: 1, continuation: false },
+    { policy: 'keepLines', prefixLines: 1, continuation: true },
+    { policy: 'keepLines', prefixLines: 4, continuation: false },
+    { policy: 'keepLines', prefixLines: 4, continuation: true },
+    { policy: 'keepNext', prefixLines: 1, continuation: false },
+    { policy: 'keepNext', prefixLines: 1, continuation: true },
+  ] as const)('preserves $policy after $prefixLines lines with committed notes in earlier columns (continuation $continuation)', ({
+    policy, prefixLines, continuation,
+  }) => {
+    const group = Array.from({ length: 6 }, (_, index) => ordinaryParagraph(`line${index}`));
+    group.forEach((item, index) => {
+      item.lineSpacing = { value: 10, rule: 'exact', explicit: true };
+      if (policy === 'keepNext') item.keepNext = index < 5;
+    });
+    if (policy === 'keepLines') {
+      group[0]!.keepLines = true;
+      group[0]!.runs = group.flatMap((item, index) => [
+        ...(index > 0 ? [{ type: 'break' as const, breakType: 'line' as const }] : []), ...item.runs,
+      ]);
+      group.splice(1);
+    }
+    const model = columnStoryDocument([
+      paragraph(), ...Array.from({ length: prefixLines - 1 }, () => ordinaryParagraph('before')), ...group,
+    ], [{ id: '7', content: [ordinaryParagraph('note')] }], 1);
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 });
+    expect(layout.pages).toHaveLength(2);
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual([prefixLines, group.length]);
+    expect(layout.pages[1]!.layers.body[0]).toMatchObject({ flowBounds: { xPt: 10, yPt: 15 } });
+    expect(layout.pages[1]!.layers.body.flatMap(block => block.kind === 'paragraph' ? block.lines : []))
+      .toHaveLength(6);
+    expect(layout.pages.map(page => page.layers.notes.map(note => note.advancePt))).toEqual([[16], []]);
+  });
+
+  it.each([false, true])('observes an empty opened page before retrying a cantSplit row (continuation %s)', continuation => {
+    const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+    table.rows[0]!.cantSplit = true;
+    table.rows[0]!.cells[0]!.content = [{ ...paragraph(), type: 'paragraph' }];
+    const model = columnStoryDocument(Array.from({ length: 5 }, () => ordinaryParagraph('before')),
+      [{ id: '7', content: [ordinaryParagraph('note')] }], 8);
+    model.section.columns = null;
+    model.body.push(table);
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 });
+    // Main's fragmenter clips this indivisible row to its 9pt remaining frame
+    // and retains the empty physical continuation. Opening measurement must
+    // reach that same settled result, rather than defer it for 10,000 pages.
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual([6, 0]);
+    expect(layout.pages[0]!.layers.body.at(-1)).toMatchObject({
+      kind: 'table', flowBounds: { xPt: 10, yPt: 65, heightPt: 9 },
+    });
+    expect(layout.pages.map(page => page.layers.notes.map(note => note.advancePt))).toEqual([[16], []]);
+  });
+
+  it.each([false, true])('rejects an impossible row against observed openings before the page limit (continuation %s)', continuation => {
+    const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+    table.rows[0]!.cantSplit = true;
+    table.rows[0]!.cells[0]!.content = [{ ...paragraph(), type: 'paragraph' }];
+    table.rows.push(structuredClone(table.rows[0]!));
+    const model = columnStoryDocument(Array.from({ length: 4 }, () => ordinaryParagraph('before')),
+      [{ id: '7', content: [ordinaryParagraph('note')] }], 6);
+    model.section.columns = null;
+    model.body.push(table);
+    expect(() => layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(), allowFootnoteContinuation: continuation,
+    }), { currentDateMs: 0 })).toThrow(expect.objectContaining({ code: 'FOOTNOTE_RESERVE_EXCEEDS_FRESH_PAGE' }));
+  });
+
+  it('observes independent empty openings across more than sixteen section boundaries', () => {
+    const model = columnStoryDocument([], [{ id: '7', content: [ordinaryParagraph('note')] }], 8);
+    model.section.columns = null;
+    for (let section = 0; section < 17; section++) {
+      if (section > 0) model.body.push({
+        type: 'sectionBreak', kind: 'nextPage', columns: null,
+        headers: model.headers, footers: model.footers, titlePage: true,
+      } as BodyElement);
+      const table = ordinaryTable('left', 0, false) as Extract<BodyElement, { type: 'table' }>;
+      table.rows[0]!.cantSplit = true;
+      table.rows[0]!.cells[0]!.content = [{ ...paragraph(), type: 'paragraph' }];
+      model.body.push(...Array.from({ length: 5 }, () => ordinaryBodyParagraph('before')), table);
+    }
+    const layout = layoutDocument(model, createLayoutServices(model, {
+      measureContext: measureContext(),
+    }), { currentDateMs: 0 });
+    expect(layout.pages.map(page => page.layers.body.length)).toEqual(Array.from({ length: 17 }, () => [6, 0]).flat());
+    expect(layout.pages.filter(page => page.layers.body.length > 0).every(page =>
+      page.layers.body.at(-1)?.flowBounds.heightPt === 9 && page.layers.notes[0]?.advancePt === 16)).toBe(true);
+  });
+
   it('keeps valid surrounding body blocks when an optional drawing feature is unsupported', () => {
     const section = {
       pageWidth: 200, pageHeight: 100,
