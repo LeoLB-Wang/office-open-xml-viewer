@@ -4,6 +4,9 @@ function requireText(value: string, field: string): void {
   if (value.trim() === '') throw new Error(`CompatibilityRule.${field} must not be empty`);
 }
 
+/** Source-only evidence validation; production builds validate declarations and
+ * emit frozen IDs via scripts/docx-compatibility-build.mjs. Rendering logic must
+ * consume the ID, and must not depend on metadata or factory side effects. */
 export function defineCompatibilityRule<const Rule extends CompatibilityRule>(
   rule: Rule,
 ): DeepReadonly<Rule> {

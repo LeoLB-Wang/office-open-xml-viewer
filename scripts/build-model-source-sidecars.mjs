@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
+import { docxCompatibilityMetadata } from './docx-compatibility-build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const owners = {
@@ -24,6 +25,7 @@ for (const format of selected ? [selected] : Object.keys(owners)) {
   const packageBuild = selected !== undefined;
   await build({
     configFile: false,
+    plugins: [docxCompatibilityMetadata()],
     base: './',
     build: {
       outDir: packageBuild ? resolve(root, 'packages', format, 'dist') : resolve(root, 'dist'),
