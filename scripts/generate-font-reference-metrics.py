@@ -3,8 +3,10 @@
 
 The generated profiles are reference facts, not proof of the font face selected by
 Canvas, the operating system, or Office. No outlines, glyph maps, or per-glyph
-advances are written to the output. OS/2 xAvgCharWidth is a scalar font
-metric, not a shaped text advance.
+advances are written to the output. GSUB vert coverage over the fixed 45-character
+stacked-sideways domain is metadata: only covered Unicode characters are emitted,
+not glyph identities or advances. OS/2 xAvgCharWidth is a scalar font metric,
+not a shaped text advance.
 """
 
 from __future__ import annotations
@@ -28,6 +30,9 @@ MACOS_ROOT = Path("/System/Library/Fonts/Supplemental")
 MACOS_PRIMARY_ROOT = Path("/System/Library/Fonts")
 DATA_OUTPUT = Path("packages/core/src/fonts/reference-font-metrics-data.json")
 PROVENANCE_OUTPUT = Path("scripts/reference-font-metrics-provenance.json")
+
+# Kept in sync with core STACKED_SIDEWAYS by stacked.test.ts via the data header.
+STACKED_SIDEWAYS = "()<>[]{}…‥‐←→↑↓―∥、。ー～＝＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗"
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,34 @@ def font_files(source: Source) -> list[tuple[str, Path]]:
     return sorted(files, key=lambda item: (item[0].casefold(), item[0]))
 
 
+def stacked_vertical_glyphs(font: TTFont) -> str:
+    """Union vert single-substitution inputs across all script/language features."""
+    if "GSUB" not in font:
+        return ""
+    gsub = font["GSUB"].table
+    if gsub.FeatureList is None or gsub.LookupList is None:
+        return ""
+    cmap = font.getBestCmap() or {}
+    glyphs: set[str] = set()
+    # OpenType GSUB lookup types 1 (Single) and 7 (Extension). This is
+    # coverage metadata, not shaping: inspect every vert FeatureRecord rather
+    # than selecting a Script/LangSys, and deliberately exclude vrt2 (#1827).
+    # https://learn.microsoft.com/en-us/typography/opentype/spec/gsub
+    for record in gsub.FeatureList.FeatureRecord:
+        if record.FeatureTag != "vert":
+            continue
+        for index in record.Feature.LookupListIndex:
+            lookup = gsub.LookupList.Lookup[index]
+            for subtable in lookup.SubTable:
+                lookup_type = lookup.LookupType
+                if lookup_type == 7:
+                    lookup_type = subtable.ExtensionLookupType
+                    subtable = subtable.ExtSubTable
+                if lookup_type == 1:
+                    glyphs.update(subtable.mapping)
+    return "".join(ch for ch in STACKED_SIDEWAYS if cmap.get(ord(ch)) in glyphs)
+
+
 def face_profile(font: TTFont, source_id: str) -> dict[str, Any] | None:
     if "head" not in font or "hhea" not in font:
         return None
@@ -164,11 +197,15 @@ def face_profile(font: TTFont, source_id: str) -> dict[str, Any] | None:
     if os2 is not None and (os2_version or 0) >= 4 and (fs_selection or 0) & 0x80:
         profile["typoMetrics"] = [integer(os2, "sTypoAscender"), integer(os2, "sTypoDescender"),
                                   integer(os2, "sTypoLineGap")]
-    # Keep provenance identifiers stable when a source fact stops shipping in
-    # the runtime profile. The identity still covers that raw OS/2 value.
+    coverage = stacked_vertical_glyphs(font)
+    if coverage:
+        profile["stackedVerticalGlyphs"] = coverage
+    # Preserve legacy metric fingerprints as runtime metadata evolves. New
+    # vert coverage is recorded beside each source face, not in its legacy ID;
+    # the identity still covers the raw OS/2 code-page value.
     identity_profile = {
         **{key: value for key, value in profile.items()
-           if key not in {"farEastCodePage", "win", "typoMetrics", "panose"}},
+           if key not in {"farEastCodePage", "win", "typoMetrics", "panose", "stackedVerticalGlyphs"}},
         "os2": None if os2 is None else {
             "codePageRange1": provenance_code_page_range1,
         },
@@ -224,7 +261,10 @@ def main() -> None:
                     provenance_code_page_range1 = profile.pop("_provenanceCodePageRange1")
                     canonical = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                     profiles_by_canonical.setdefault(canonical, profile)
+                    coverage_metadata = ({"stackedVerticalGlyphs": profile["stackedVerticalGlyphs"]}
+                                         if "stackedVerticalGlyphs" in profile else {})
                     provenance.append({
+                        **coverage_metadata,
                         "profileId": profile_id,
                         "source": source.id,
                         "file": relative_path,
@@ -254,6 +294,7 @@ def main() -> None:
     data = {
         "schemaVersion": 2,
         "notice": "Reference metrics are not proof of the face selected by Canvas, macOS, or Office.",
+        "stackedSideways": STACKED_SIDEWAYS,
         "profiles": profiles,
     }
     manifest = {

@@ -59,7 +59,7 @@ export function drawShapeStackedText(
       if (!ch) continue;
       const cp = ch.codePointAt(0) ?? 0;
       const kind = !stackedSidewaysCharacter(cp) ? 'upright'
-        : stackedVerticalGlyph(style.face ?? '', cp) ? 'verticalGlyph' : 'rotated';
+        : stackedVerticalGlyph(style.face ?? '', cp, style.bold, style.italic) ? 'verticalGlyph' : 'rotated';
       const advance = kind === 'upright' ? cell : kind === 'verticalGlyph' ? style.px : ctx.measureText(ch).width;
       glyphs.push({ text: ch, style, kind, advance: advance + style.spacing,
         thickness: cell, space: ch === ' ', cell, ascent, descent });
