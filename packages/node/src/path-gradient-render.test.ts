@@ -708,7 +708,7 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
       stroke: { color: 'FFFFFF', width: 20, fill: { ...fill, path: 'shape' }, tailEnd: { type: 'triangle', w: 'lg', len: 'lg' } },
       transform: { rotationDeg: 0, flipH: false, flipV: false },
     }, 1);
-    expect(pixel(decorated, 150, 190)).toEqual([255, 255, 255, 255]);
+    expect(pixel(decorated, 170, 190)).toEqual([255, 255, 255, 255]);
   });
 
   it('covers out-of-box paths, acute miters and curved stroke hulls', () => {
@@ -795,7 +795,7 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
       slides: [{ index: 0, slideNumber: 1, background: { fillType: 'solid', color: '00FF00' }, elements: [shape] }],
       defaultTextColor: null, majorFont: null, minorFont: null } as Presentation;
     await renderSlideNode(c, presentation, 0, { width: 400, dpr: 1 });
-    expect(pixel(ctx, 150, 190)).toEqual([255, 255, 255, 255]);
+    expect(pixel(ctx, 170, 190)).toEqual([255, 255, 255, 255]);
     shape.stroke = { color: 'FFFFFF', width: px(20), fill: { ...fill, path: 'shape', tileRect: {} }, cmpd: 'dbl' };
     await renderSlideNode(c, presentation, 0, { width: 400, dpr: 1 });
     for (const y of [193, 207]) expect(pixel(ctx, 225, y)).toEqual([255, 255, 255, 255]);

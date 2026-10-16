@@ -782,7 +782,7 @@ it('transforms acquired arrow contours with their shafts without retracting twic
   expect(counter(skewed.pixels)(0, 0, 255)).toBeGreaterThan(200);
   // The transformed triangle contains this point; an ordinary regenerated
   // head on the diagonal shaft does not, nor does the shaft itself.
-  expect([...skewed.pixels.slice((53*200+104)*4,(53*200+104)*4+3)]).toEqual([0,0,255]);
+  expect([...skewed.pixels.slice((58*200+111)*4,(58*200+111)*4+3)]).toEqual([0,0,255]);
 });
 
 it('keeps page-aligned image-text brushes independent of reflected glyph masks', async () => {
@@ -861,7 +861,7 @@ it('applies group skew after root rotation while picture data keeps its host fra
 
 
 it('preserves skewed textured arrow contours and their independent single shadow', async () => {
-  const {pixels, diagnostics} = await renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block" filltype="tile" r:id="pic" color2="blue"/><o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0"/><v:shadow on="t" color="lime" offset="0,70pt" obscured="t"/></v:line></v:group>`);
+  const {pixels, diagnostics} = await renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block" endarrowwidth="wide" endarrowlength="long" filltype="tile" r:id="pic" color2="blue"/><o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0"/><v:shadow on="t" color="lime" offset="0,70pt" obscured="t"/></v:line></v:group>`);
   expect(diagnostics).toEqual([]);
   let brushInk = 0;
   for (let i=0; i<pixels.length; i+=4) brushInk += (255-pixels[i+1]!)/255;

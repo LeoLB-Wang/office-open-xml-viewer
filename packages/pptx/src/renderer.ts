@@ -67,7 +67,9 @@ import {
   drawArrowHead,
   lineEndPaintExtent,
   lineEndRetract,
-  retractLineEndpoint,
+  traceTrimmedPath,
+  tracePresetLeader,
+  trimGeometryPathEnds,
   computeScene3dQuad,
   isScene3dNonIdentity,
   drawProjected,
@@ -4088,13 +4090,26 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     'accentbordercallout1', 'accentbordercallout2', 'accentbordercallout3',
   ]);
 
-  // A leader line we re-stroke retracted from its filled decorations: every
-  // callout plus the straight / bent (polyline) connectors. Curved connectors
-  // are excluded — their leader is a Bézier and getConnectorAnchors.vertices only
-  // captures segment endpoints, so retracting from a vertex would straighten the
-  // curve. Those keep their preset-engine leader (decoration overlap unchanged).
+  // A leader line we re-stroke from its vertices, trimmed at its decorated
+  // ends: every callout plus the straight / bent (polyline) connectors.
+  // Curved connectors are excluded here, because their leader is a Bézier and
+  // getConnectorAnchors.vertices only captures segment endpoints, so
+  // re-stroking from vertices would straighten the curve. When an end
+  // retracts, their preset leader is trimmed along the curve instead
+  // (`trimsCurvedLeader` below).
   const isRetractableLeader = (g: string): boolean =>
     CALLOUT_GEOMS.has(g) || g === 'line' || g === 'straightconnector1' || g.startsWith('bentconnector');
+  // How far each decorated end pulls its line back (observed Office rule in
+  // core arrow-geometry.ts). Paths that cannot be re-stroked from straight
+  // vertices — curved connectors, custom geometry, compound lines — are
+  // trimmed along the path instead, so every line kind stops at the same place.
+  const headTrim = el.stroke?.headEnd ? lineEndRetract(el.stroke.headEnd, el.stroke, scale, PT_TO_EMU) : 0;
+  const tailTrim = el.stroke?.tailEnd ? lineEndRetract(el.stroke.tailEnd, el.stroke, scale, PT_TO_EMU) : 0;
+  const trimsCurvedLeader = geom.startsWith('curvedconnector') && (headTrim > 0 || tailTrim > 0);
+  const custEnds = el.custGeom && el.custGeom.length > 0 && (headTrim > 0 || tailTrim > 0)
+    ? getCustGeomEndpoints(el.custGeom) : null;
+  const custHeadTrim = custEnds?.start ? headTrim : 0;
+  const custTailTrim = custEnds?.end ? tailTrim : 0;
 
   // ── Dispatch to preset engine when possible ────────────────────────────
   // Preference order: custGeom → generic preset engine → legacy switch.
@@ -4153,7 +4168,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
       : undefined;
 
     if (usePresetEngine && !silhouette) {
-      const skipTrailingStroke = isRetractableLeader(geom);
+      const skipTrailingStroke = isRetractableLeader(geom) || trimsCurvedLeader;
       renderPresetShape(
         target, geom, bx, by, bw, bh,
         [el.adj, el.adj2, el.adj3, el.adj4, el.adj5, el.adj6, el.adj7, el.adj8],
@@ -4206,7 +4221,15 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
             shadowCleared = true;
           }
         }
-        if (paint.stroke && tStroke) tStroke();
+        if (paint.stroke && tStroke) {
+          const head = index === 0 ? custHeadTrim : 0;
+          const tail = index === el.custGeom!.length - 1 ? custTailTrim : 0;
+          if (head > 0 || tail > 0) {
+            target.beginPath();
+            traceTrimmedPath(target, (sink) => buildCustomPath(sink, [cmds], bx, by, bw, bh), head, tail);
+          }
+          tStroke();
+        }
       });
       return;
     }
@@ -4238,6 +4261,10 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
       if (!silhouette) tClearShadow();
     }
     if (tStroke) {
+      if (el.custGeom && el.custGeom.length > 0 && (custHeadTrim > 0 || custTailTrim > 0)) {
+        target.beginPath();
+        traceTrimmedPath(target, (sink) => buildCustomPath(sink, el.custGeom!, bx, by, bw, bh), custHeadTrim, custTailTrim);
+      }
       tStroke();
     }
   };
@@ -4277,8 +4304,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   const strokeHalf = el.stroke ? el.stroke.width * scale / 2 : 0;
   const lineEndExtent = el.stroke
     ? Math.max(
-        el.stroke.headEnd ? lineEndPaintExtent(el.stroke.headEnd, el.stroke, scale) : 0,
-        el.stroke.tailEnd ? lineEndPaintExtent(el.stroke.tailEnd, el.stroke, scale) : 0,
+        el.stroke.headEnd ? lineEndPaintExtent(el.stroke.headEnd, el.stroke, scale, PT_TO_EMU) : 0,
+        el.stroke.tailEnd ? lineEndPaintExtent(el.stroke.tailEnd, el.stroke, scale, PT_TO_EMU) : 0,
       )
     : 0;
   const contourExtent = el.sp3d?.contourW ? el.sp3d.contourW * scale : 0;
@@ -4331,35 +4358,43 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
       const cmpd = el.stroke.cmpd;
       const isStraight = geom === 'line' || geom === 'straightconnector1';
       if (isRetractableLeader(geom) && anchors.vertices.length >= 2 && !(cmpd && isStraight)) {
-        const pts = anchors.vertices.map((v) => ({ x: v.x, y: v.y }));
-        if (el.stroke.tailEnd) {
-          const retract = lineEndRetract(el.stroke.tailEnd, el.stroke, scale);
-          pts[pts.length - 1] = retractLineEndpoint(
-            pts[pts.length - 1],
-            pts[pts.length - 2],
-            retract,
-          );
-        }
-        if (el.stroke.headEnd) {
-          const retract = lineEndRetract(el.stroke.headEnd, el.stroke, scale);
-          pts[0] = retractLineEndpoint(pts[0], pts[1], retract);
-        }
+        // Trim across the whole leader, so a short terminal leg cannot stop
+        // the retraction early; a leader consumed by both ends paints nothing.
+        const pts = anchors.vertices;
         target.beginPath();
-        target.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length; i++) target.lineTo(pts[i].x, pts[i].y);
+        traceTrimmedPath(target, (sink) => {
+          sink.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) sink.lineTo(pts[i].x, pts[i].y);
+        }, headTrim, tailTrim);
         applyStroke(target, el.stroke, scale, { x, y, w, h }, el.rotation);
         target.stroke();
       }
+      if (trimsCurvedLeader) {
+        target.beginPath();
+        if (tracePresetLeader(target, geom, x, y, w, h,
+          [el.adj, el.adj2, el.adj3, el.adj4, el.adj5, el.adj6, el.adj7, el.adj8], headTrim, tailTrim)) {
+          applyStroke(target, el.stroke, scale, { x, y, w, h }, el.rotation);
+          target.stroke();
+        }
+      }
       if (cmpd && isStraight) {
-        drawCompoundLine(
-          target,
-          anchors.start,
-          anchors.end,
-          el.stroke,
-          cmpd,
-          scale,
-          el.rotation,
-        );
+        // Both ends trim the same straight run; when they consume it, no
+        // parallel line remains (independent retraction would cross over).
+        const run = trimGeometryPathEnds([
+          { op: 'moveTo', args: [anchors.start.x, anchors.start.y] },
+          { op: 'lineTo', args: [anchors.end.x, anchors.end.y] },
+        ], headTrim, tailTrim);
+        if (run.length === 2) {
+          drawCompoundLine(
+            target,
+            { x: run[0].args[0], y: run[0].args[1] },
+            { x: run[1].args[0], y: run[1].args[1] },
+            el.stroke,
+            cmpd,
+            scale,
+            el.rotation,
+          );
+        }
       }
       if (el.stroke.tailEnd) {
         drawArrowHead(
@@ -4370,7 +4405,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
           el.stroke.tailEnd,
           el.stroke,
           scale,
-          resolveArrowPaint(target, el.stroke, scale, anchors.end.x, anchors.end.y, anchors.end.angle,
+          PT_TO_EMU,
+          resolveArrowPaint(target, el.stroke, scale, PT_TO_EMU, anchors.end.x, anchors.end.y, anchors.end.angle,
             el.stroke.tailEnd, { x, y, w, h }, el.rotation, scale * PT_TO_EMU),
         );
       }
@@ -4383,7 +4419,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
           el.stroke.headEnd,
           el.stroke,
           scale,
-          resolveArrowPaint(target, el.stroke, scale, anchors.start.x, anchors.start.y, anchors.start.angle,
+          PT_TO_EMU,
+          resolveArrowPaint(target, el.stroke, scale, PT_TO_EMU, anchors.start.x, anchors.start.y, anchors.start.angle,
             el.stroke.headEnd, { x, y, w, h }, el.rotation, scale * PT_TO_EMU),
         );
       }
@@ -4408,7 +4445,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         el.stroke.headEnd,
         el.stroke,
         scale,
-        resolveArrowPaint(target, el.stroke, scale, x + start.x * w, y + start.y * h,
+        PT_TO_EMU,
+        resolveArrowPaint(target, el.stroke, scale, PT_TO_EMU, x + start.x * w, y + start.y * h,
           Math.atan2(start.dy * h, start.dx * w), el.stroke.headEnd, { x, y, w, h }, el.rotation, scale * PT_TO_EMU),
       );
     }
@@ -4421,7 +4459,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         el.stroke.tailEnd,
         el.stroke,
         scale,
-        resolveArrowPaint(target, el.stroke, scale, x + end.x * w, y + end.y * h,
+        PT_TO_EMU,
+        resolveArrowPaint(target, el.stroke, scale, PT_TO_EMU, x + end.x * w, y + end.y * h,
           Math.atan2(end.dy * h, end.dx * w), el.stroke.tailEnd, { x, y, w, h }, el.rotation, scale * PT_TO_EMU),
       );
     }
