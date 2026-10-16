@@ -406,6 +406,7 @@ export {
 // carry duotone too).
 export {
   applyDuotone,
+  applyImageDataTransform,
   duotoneImageData,
   hex6ToRgb,
   luminance601,
@@ -422,13 +423,17 @@ export {
 // CT_Blip pixel effects (grayscl, biLevel, clrChange) applied in document
 // order with the duotone, through the same decode cache.
 export {
-  applyBlipPixelEffects,
+  applyBlipPixelEffects, blipEffectImageFills,
   assertBlipPixelEffectsBudget,
   blipLuminance,
   blipPixelEffectsKey,
   type BlipEffect,
+  type BlipEffectContainer,
+  type BlipEffectFill,
+  type BlipEffectImageFill,
   type BlipPixelEffects,
 } from './image/blip-effects';
+export type { BlendMode } from './image/blip-fill';
 export {
   getCachedDuotoneBitmapByPath,
   duotoneCacheKey,
@@ -812,3 +817,5 @@ export type { FindHighlightColors } from './search/find-highlight';
 
 export { resolveDrawingMLGeometry, requireResolvedDrawingMLGeometry, drawingMLGeometryBounds, type ResolvedDrawingMLGeometry } from './shape/drawingml-geometry';
 export { GeometryWorkBudgetError, type GeometryPath, type GeometryPathCommand } from './shape/path-data';
+
+export { hasImageEffectOutset } from './image/image-effect-frame.js';

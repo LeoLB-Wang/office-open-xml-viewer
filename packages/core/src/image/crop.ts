@@ -1,3 +1,4 @@
+import { imageEffectFrame } from './image-effect-frame.js';
 // Shared `<a:srcRect>` source-rectangle crop (ECMA-376 §20.1.8.55) for the docx,
 // pptx and xlsx renderers. The crop is a fraction of the image's NATIVE pixel
 // grid. Browser rasters may use a display-sized grid because the same fractional
@@ -222,6 +223,24 @@ export function drawImageCropped(
   options?: Readonly<ImagePaintProjectionOptions>,
 ): void {
   const paint = (x: number, y: number, width: number, height: number, projection?: Readonly<ImageCropProjection> | null) => {
+    const frame = imageEffectFrame(img);
+    if (frame) {
+      // §20.1.8.15 grow changes effect coverage, never the authored picture
+      // frame. A source crop still selects that frame; only an uncropped
+      // picture paints the Gaussian's transparent outset beyond its bounds.
+      const { w, h } = imageNaturalSize(img);
+      const crop = projection === undefined ? imageCropProjection(srcRect) : projection;
+      if (!crop) {
+        ctx.drawImage(img, x - frame.x / frame.width * width, y - frame.y / frame.height * height,
+          w / frame.width * width, h / frame.height * height);
+      } else if (crop.sourceWidth > 0 && crop.sourceHeight > 0) {
+        ctx.drawImage(img, frame.x + crop.sourceX * frame.width, frame.y + crop.sourceY * frame.height,
+          crop.sourceWidth * frame.width, crop.sourceHeight * frame.height,
+          x + crop.dxFraction * width, y + crop.dyFraction * height,
+          crop.dwFraction * width, crop.dhFraction * height);
+      }
+      return;
+    }
     const c = cropSourceMapping(img, srcRect, projection);
     if (!c) ctx.drawImage(img, x, y, width, height);
     else if (c.sw > 0 && c.sh > 0 && c.dwFraction > 0 && c.dhFraction > 0) {

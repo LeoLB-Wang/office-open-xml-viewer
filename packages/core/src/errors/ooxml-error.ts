@@ -21,7 +21,7 @@
  *     reconstructed across the worker boundary.
  *   - `'unsupported-content'`  — a configured model source cannot represent
  *     the input; details identify its format and stable rejection category.
- *   - `'unsupported-image-effect'` — an unsupported or malformed CT_Blip
+ *   - `'unsupported-image-effect'` — a malformed CT_Blip
  *     chain, or an unavailable ordered pixel-effect surface at render time.
  *   - `'invalid-numbering'`     — a DOCX numbering level that Word cannot open
  *     normally (invalid paragraph ilvl or an out-of-range level definition).

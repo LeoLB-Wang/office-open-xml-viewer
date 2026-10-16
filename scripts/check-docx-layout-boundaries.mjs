@@ -100,8 +100,6 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['acquireBitmapCacheLease', 'value'],
     ['applyDuotone', 'value'],
     // Pixel corrections, effect budgets and cache keys consume decoded resources without acquiring layout.
-    ['applyBlipPixelEffects', 'value'],
-    ['assertBlipPixelEffectsBudget', 'value'],
     ['blipPixelEffectsKey', 'value'],
     ['autoContrastColor', 'value'],
     // A retained run-shading preset is rasterized as an 8x8 paint tile;
@@ -134,6 +132,9 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['decodedBitmapTargetResizeOptions', 'value'],
     ['duotoneImageData', 'value'],
     ['getCachedBitmapByPath', 'value'],
+    // Shared CT_Blip decoding/effects own bounded image resources only; the
+    // interpreter never acquires text, layout, or parser-model geometry.
+    ['getCachedDuotoneBitmapByPath', 'value'],
     ['getCachedDerivedBitmap', 'value'],
     ['getCachedSvgImageByPath', 'value'],
     // Bounded SVG rasterization is a resource primitive, with no layout access.

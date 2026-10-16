@@ -25,9 +25,7 @@ use crate::{
     table_style_presets, PptxZip, ResolvedTableCellStyle, TableCellBorderStyle, TableLineStyle,
     TablePartStyle, TableStyleDef, TableStyleFlags, TableStyleFont, TableTextStyle,
 };
-use ooxml_common::blip::{
-    mime_from_ext, parse_blip_duotone, parse_blip_effects, parse_src_rect, svg_blip_rid,
-};
+use ooxml_common::blip::{mime_from_ext, parse_blip_duotone, parse_src_rect, svg_blip_rid};
 use ooxml_common::depth::DepthGuard;
 use ooxml_common::line::{
     parse_line_properties, LineDash, LineEnd, LineJoin, LinePaint, LineProperties,
@@ -1481,6 +1479,20 @@ pub(crate) struct BlipSource {
 ///
 /// Shared by `parse_picture` and `parse_ole_preview_picture` so the ordinary and
 /// OLE-preview picture paths resolve blips identically.
+fn parse_picture_blip_effects<R: ooxml_common::color::ThemeResolver + ?Sized>(
+    blip_fill: roxmltree::Node<'_, '_>,
+    resolver: &R,
+    tint_mode: ooxml_common::color::TintMode,
+    part: &str,
+    rels: &HashMap<String, String>,
+) -> Vec<ooxml_common::blip::BlipEffect> {
+    let mut effects = ooxml_common::blip::parse_blip_effects(blip_fill, resolver, tint_mode);
+    ooxml_common::blip::resolve_blip_effect_images(&mut effects, &mut |rid| {
+        rels.get(rid).map(|target| resolve_path(part, target))
+    });
+    effects
+}
+
 pub(crate) fn resolve_blip_source(
     blip_fill: roxmltree::Node<'_, '_>,
     slide_part: &str,
@@ -1601,10 +1613,12 @@ pub(crate) fn parse_picture(
             &PptxSchemeResolver { theme },
             ooxml_common::color::TintMode::PowerPointLinear,
         ),
-        blip_effects: parse_blip_effects(
+        blip_effects: parse_picture_blip_effects(
             blip_fill,
             &PptxSchemeResolver { theme },
             ooxml_common::color::TintMode::PowerPointLinear,
+            slide_part,
+            rels,
         ),
         cust_geom,
         shadow,
@@ -1670,10 +1684,12 @@ pub(crate) fn parse_ole_preview_picture(
             &PptxSchemeResolver { theme },
             ooxml_common::color::TintMode::PowerPointLinear,
         ),
-        blip_effects: parse_blip_effects(
+        blip_effects: parse_picture_blip_effects(
             blip_fill,
             &PptxSchemeResolver { theme },
             ooxml_common::color::TintMode::PowerPointLinear,
+            slide_part,
+            rels,
         ),
         cust_geom: None,
         shadow: None,
@@ -3055,10 +3071,12 @@ fn parse_sp_node(
                     }),
                     blip_effects: blip_fill_node
                         .map(|bf| {
-                            parse_blip_effects(
+                            parse_picture_blip_effects(
                                 bf,
                                 &PptxSchemeResolver { theme },
                                 ooxml_common::color::TintMode::PowerPointLinear,
+                                slide_part,
+                                rels,
                             )
                         })
                         .unwrap_or_default(),
@@ -3253,10 +3271,12 @@ fn parse_pic_node(
                                 }),
                                 blip_effects: blip_fill
                                     .map(|bf| {
-                                        parse_blip_effects(
+                                        parse_picture_blip_effects(
                                             bf,
                                             &PptxSchemeResolver { theme },
                                             ooxml_common::color::TintMode::PowerPointLinear,
+                                            slide_part,
+                                            rels,
                                         )
                                     })
                                     .unwrap_or_default(),

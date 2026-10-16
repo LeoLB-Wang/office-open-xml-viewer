@@ -231,10 +231,19 @@ describe.skipIf(!skia || !docxMod || !rendererMod)('docx duotone + alphaModFix p
     }
   });
 
-  it('rejects an unsupported chain instead of painting a partial correction', async () => {
+  it('renders recursive alpha, blur, HSL, tint and fill overlay in body and header pictures', async () => {
     const black = await flatPngBytes(16, 16, '#000000');
-    const data = buildDocx(black, { effects: '<a:lum bright="90000"/><a:blur rad="12700"/>' });
-    await expect(render(data, black)).rejects.toMatchObject({ code: 'unsupported-image-effect' });
+    const effects = '<a:clrRepl><a:srgbClr val="FF0000"/></a:clrRepl>'
+      + '<a:hsl hue="7200000"/><a:tint hue="14400000" amt="50000"/>'
+      + '<a:fillOverlay blend="over"><a:solidFill><a:srgbClr val="FF0000"><a:alpha val="50000"/></a:srgbClr></a:solidFill></a:fillOverlay>'
+      + '<a:alphaMod><a:cont type="tree"><a:alphaRepl a="50%"/></a:cont></a:alphaMod>'
+      + '<a:blur rad="12700" grow="false"/>';
+    // Green hue rotation -> cyan tint -> half-red overlay -> half alpha over
+    // white: independently computed byte result (191,159,159).
+    for (const inHeader of [false, true]) {
+      const actual = sampleInside(await render(buildDocx(black, { effects, inHeader }), black));
+      actual.forEach((value, index) => expect(Math.abs(value - [191, 159, 159][index])).toBeLessThanOrEqual(1));
+    }
   });
 
   it('duotone remaps a mid-grey picture along the clr1→clr2 ramp (§20.1.8.23)', async () => {

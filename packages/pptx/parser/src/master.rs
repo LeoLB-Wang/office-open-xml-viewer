@@ -2243,11 +2243,19 @@ pub(crate) fn parse_layout_placeholders(
                     ooxml_common::color::TintMode::PowerPointLinear,
                 ),
                 // CT_Blip pixel effects travel with the inherited blipFill.
-                blip_effects: parse_blip_effects(
-                    bf,
-                    &PptxSchemeResolver { theme },
-                    ooxml_common::color::TintMode::PowerPointLinear,
-                ),
+                blip_effects: {
+                    let mut effects = parse_blip_effects(
+                        bf,
+                        &PptxSchemeResolver { theme },
+                        ooxml_common::color::TintMode::PowerPointLinear,
+                    );
+                    ooxml_common::blip::resolve_blip_effect_images(&mut effects, &mut |rid| {
+                        layout_rels
+                            .get(rid)
+                            .map(|target| resolve_path(layout_part, target))
+                    });
+                    effects
+                },
             })
         });
 

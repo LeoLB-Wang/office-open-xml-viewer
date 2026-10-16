@@ -116,6 +116,7 @@ import {
   dropDecodedBitmapCache,
   preferVectorBlip,
   drawImageCropped,
+  hasImageEffectOutset,
   metafileRasterSize,
   sourceRasterTargetSize,
   isOoxmlDecodedImageLimitError,
@@ -6644,7 +6645,10 @@ function paintResolvedPicture(
       cw: number,
       ch: number,
     ): void => {
-      if (el.prstGeom || (el.custGeom && el.custGeom.length > 0)) {
+      // §20.1.8.15 grow=true extends the image's coverage; an explicit
+      // rectangular preset must not re-clip that authored blur outset.
+      const grownRectangle = el.prstGeom === 'rect' && !el.custGeom?.length && hasImageEffectOutset(bitmap);
+      if (!grownRectangle && (el.prstGeom || (el.custGeom && el.custGeom.length > 0))) {
         tracePictureSilhouette(target, cx, cy, cw, ch);
         target.clip();
       }

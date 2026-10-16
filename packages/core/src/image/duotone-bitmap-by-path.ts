@@ -1,210 +1,71 @@
-// DrawingML `<a:duotone>` (§20.1.8.23) adapter shared by all three formats.
-// Base and recoloured surfaces live in one per-document weighted decoded owner,
-// so the expensive transform is memoized without a parallel lifecycle or byte-
-// accounting system.
-
-import {
-  captureDecodedBitmapCacheEpoch,
-  dropCachedDerivedBitmapNamespace,
-  getCachedBitmapByPath,
-  getCachedDerivedBitmap,
-  resolvedCachedBitmapVariantKey,
-  type CachedBitmapOptions,
-} from './bitmap-image-by-path';
-import {
-  applyDuotone,
-  applyImageDataTransform,
-  type Duotone,
-  type OffscreenFactory,
-} from './duotone';
-import {
-  applyBlipPixelEffects,
-  assertBlipPixelEffectsBudget,
-  blipPixelEffectsKey,
-  isBlipPixelEffects,
-  type BlipPixelEffects,
-} from './blip-effects';
+import { preferVectorBlip } from './blip-gate.js';
+import { acquireCurrentBitmapCacheLease } from './bitmap-image-by-path.js';
+import { MAX_IMAGE_EFFECT_PIXEL_WORK, OoxmlDecodedImageLimitError } from './pixel-budget.js';
+// Ordered DrawingML blip effects for hosts that retain complete CT_Blip
+// chains. XLSX's duotone-only adapter imports the algorithm-free owner directly.
+import { getCachedPixelTransformBitmapByPath } from './pixel-transform-bitmap-by-path.js';
+import { getCachedDuotoneOnlyBitmapByPath, duotoneOnlyCacheKey } from './duotone-only-bitmap-by-path.js';
+import { applyImageDataTransform, type Duotone } from './duotone.js';
+import { applyBlipPixelEffects, assertBlipPixelEffectsBudget, blipPixelEffectsKey,
+  isBlipPixelEffects, blipEffectImageFills, blipPixelEffectWork, type BlipPixelEffects } from './blip-effects.js';
 import { OoxmlError } from '../errors/ooxml-error.js';
-import { imageNaturalSize } from './crop';
-import { MAX_IMAGE_EFFECT_BASE_PIXELS, MAX_RASTER_PIXELS } from './pixel-budget.js';
-import { decodedBitmapTargetResizeOptions } from './raster-target.js';
-import { carryIncompleteMetafileReport } from './raster-or-metafile.js';
+export { dropDuotoneBitmapCache } from './pixel-transform-bitmap-by-path.js';
 
-type FetchImage = (path: string, mime: string) => Promise<Blob>;
-
-/** Cache key for a decoded bitmap that may carry a `<a:duotone>` recolour. A
- *  plain picture is keyed by its zip `imagePath`; a duotone picture is keyed by
- *  the path PLUS both resolved endpoint colours, so the recoloured bitmap is
- *  cached and looked up separately from the raw blip. Callers compute this both
- *  when warming the cache and when drawing, so the two agree without sharing a
- *  cache reference. Mirrors xlsx's `imageCacheKey` and docx's former
- *  `imageKey(path, colorReplaceFrom)`. */
-export function duotoneCacheKey(
-  imagePath: string,
-  duotone?: Duotone | BlipPixelEffects | null,
-): string {
-  if (isBlipPixelEffects(duotone)) return `${imagePath}|fx:${blipPixelEffectsKey(duotone)}`;
-  return duotone ? `${imagePath}|duo:${duotone.clr1}:${duotone.clr2}` : imagePath;
+export function duotoneCacheKey(path: string, value?: Duotone | BlipPixelEffects | null): string {
+  return isBlipPixelEffects(value) ? `${path}|fx:${blipPixelEffectsKey(value)}` : duotoneOnlyCacheKey(path, value);
 }
-
-const DUOTONE_CACHE_NAMESPACE = 'duotone';
-
-/**
- * Decode a raster, metafile or SVG blip at `imagePath` and, when `duotone` is set,
- * recolour it along the `clr1`→`clr2` luminance ramp (§20.1.8.23), returning a
- * drawable source cached per document then by `duotoneCacheKey`.
- *
- * With NO duotone this is a thin pass-through to {@link getCachedBitmapByPath}
- * (the shared base cache) — no second-layer entry is created, so a non-duotone
- * picture behaves byte-for-byte as before. With a duotone the base bitmap is
- * decoded (and cached) once, then the recolour runs once per colour pair and is
- * memoized here.
- *
- * The recolour needs a readable pixel grid, so it only applies to a decoded
- * bitmap (SVG requires `opts.svgDecoder`); a `null` base (an unsupported
- * metafile — true EMF / geometry-less WMF) propagates as `null` and the draw
- * site skips it. When the
- * offscreen pixel pipeline is unavailable, {@link applyDuotone} returns the base
- * unchanged, so the picture still draws (just without the recolour).
- *
- * @param opts.offscreenFactory optional surface factory for environments without
- *   a global `OffscreenCanvas` (node); forwarded to {@link applyDuotone}.
- */
 export async function getCachedDuotoneBitmapByPath(
-  imagePath: string,
-  mimeType: string,
-  duotone: Duotone | BlipPixelEffects | null | undefined,
-  fetchImage: FetchImage,
-  opts: CachedBitmapOptions & {
-    offscreenFactory?: OffscreenFactory;
-    /** When true, an authored duotone that cannot be applied returns null
-     * instead of silently drawing the original pixels. Chart picture markers
-     * use this fail-closed mode; established shape consumers retain their
-     * legacy fallback unless they opt in. */
-    failClosedOnDuotoneFailure?: boolean;
-  } = {},
+  imagePath: string, mimeType: string, value: Duotone | BlipPixelEffects | null | undefined,
+  fetchImage: Parameters<typeof getCachedPixelTransformBitmapByPath>[3],
+  opts: Parameters<typeof getCachedPixelTransformBitmapByPath>[4] = {},
 ): Promise<ImageBitmap | null> {
-  const { offscreenFactory, failClosedOnDuotoneFailure = false, ...requestedBitmapOpts } = opts;
-  const bitmapOpts = duotone
-    ? {
-        ...requestedBitmapOpts,
-        // Peak pipeline: source ImageBitmap + offscreen backing + ImageData +
-        // result ImageBitmap. Bound the base to one quarter of the document
-        // byte ceiling so transient pixel work cannot silently double it.
-        maxRetainedPixels: Math.min(
-          requestedBitmapOpts.maxRetainedPixels ?? MAX_RASTER_PIXELS,
-          MAX_IMAGE_EFFECT_BASE_PIXELS,
-        ),
-      }
-    : requestedBitmapOpts;
-  // For DrawingML pixel effects (§20.1.8.23), keep authored raster pixels
-  // until display resampling. SVG has no authored pixel grid: retain the
-  // full-source display/crop coverage target so its decoder can preserve the
-  // intrinsic aspect ratio. The resolved base grid keys each effect separately.
-  // This sampling choice and the effect-base ceiling are library policy;
-  // §20.1.8.23 defines the pixel transform, not vector sampling resolution.
-  // Both paths reject an over-budget effect base rather than approximating it.
-  const sourceBitmapOpts = duotone && mimeType !== 'image/svg+xml'
-    ? { ...bitmapOpts, targetWidthPx: undefined, targetHeightPx: undefined }
-    : bitmapOpts;
-  // An over-long effect list is rejected before anything is fetched or
-  // decoded; the cumulative pixel work is checked once the grid is known.
-  if (isBlipPixelEffects(duotone)) assertBlipPixelEffectsBudget(duotone, 0);
-  const epoch = duotone
-    ? captureDecodedBitmapCacheEpoch(fetchImage, DUOTONE_CACHE_NAMESPACE)
-    : undefined;
-  // Base, colour-free bitmap from the shared path-keyed cache.
-  const base = await getCachedBitmapByPath(imagePath, mimeType, fetchImage, sourceBitmapOpts);
-  // No duotone → return the base directly (no second-layer entry). A `null`
-  // (unsupported metafile) propagates unchanged.
-  if (!duotone || !base) return base;
-  // Strict and compatibility callers must not share a derived cache entry: a
-  // compatibility pass-through must never make a later strict lookup succeed.
-  const resolvedBaseKey = await resolvedCachedBitmapVariantKey(
-    imagePath,
-    mimeType,
-    fetchImage,
-    sourceBitmapOpts,
-    epoch,
-    base,
-  );
-  const resizeOptions = decodedBitmapTargetResizeOptions(
-    Number(base.width),
-    Number(base.height),
-    requestedBitmapOpts.targetWidthPx,
-    requestedBitmapOpts.targetHeightPx,
-  );
-  const resizeKey = resizeOptions
-    ? `|resize:${resizeOptions.resizeWidth}x${resizeOptions.resizeHeight}`
-    : '';
-  const key = `${duotoneCacheKey(
-    resolvedBaseKey,
-    duotone,
-  )}${resizeKey}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
-  return getCachedDerivedBitmap(
-    DUOTONE_CACHE_NAMESPACE,
-    key,
-    fetchImage,
-    async () => {
-      const { w, h } = imageNaturalSize(base);
-      if (w <= 0 || h <= 0) {
-        return { bitmap: failClosedOnDuotoneFailure ? null : base, owned: false };
-      }
-      // Before the transform allocates its surfaces: passes × pixels must fit
-      // the shared effect-work ceiling (a quota error, never a partial list).
-      if (isBlipPixelEffects(duotone)) assertBlipPixelEffectsBudget(duotone, w * h);
-      const transformOptions = {
-        width: w,
-        height: h,
-        offscreenFactory,
-        targetWidthPx: requestedBitmapOpts.targetWidthPx,
-        targetHeightPx: requestedBitmapOpts.targetHeightPx,
-      };
-      // CT_Blip pixel effects (grayscl/biLevel/clrChange, with the duotone at
-      // its document position) share the duotone's decode, cache and budget.
-      const recoloured = isBlipPixelEffects(duotone)
-        ? await applyImageDataTransform(
-          base,
-          (data) => {
-            applyBlipPixelEffects(data, duotone);
-          },
-          transformOptions,
-        )
-        : await applyDuotone(base, duotone, transformOptions);
-      // `applyDuotone` returns a CanvasImageSource; when the pixel pipeline ran
-      // it is a fresh ImageBitmap, otherwise it is the unchanged current
-      // source. Strict callers fail closed. Compatibility callers still bake a
-      // display-sized copy so an unavailable effect surface cannot silently
-      // defeat the caller's bounded-resolution request.
-      if (recoloured === base) {
-        // A complete ordered chain must never degrade to uncorrected pixels
-        // when Canvas/readback is unavailable. Keep only the legacy duotone
-        // caller's explicit compatibility fallback.
-        if (isBlipPixelEffects(duotone)) {
-          throw new OoxmlError('unsupported-image-effect', 'Image effects unavailable');
-        }
-        if (failClosedOnDuotoneFailure) return { bitmap: null, owned: false };
-        if (!resizeOptions) return { bitmap: base, owned: false };
-        if (typeof createImageBitmap === 'undefined') {
-          throw new Error('createImageBitmap is unavailable for duotone fallback resampling');
-        }
-        const resized = await createImageBitmap(base, resizeOptions);
-        carryIncompleteMetafileReport(base, resized);
-        return { bitmap: resized, owned: resized !== base };
-      }
-      const bitmap = recoloured as ImageBitmap;
-      // A partially drawn metafile stays partial after an effect or a
-      // resample; the derived entry (and every later cache hit on it) keeps
-      // the base picture's report.
-      carryIncompleteMetafileReport(base, bitmap);
-      return { bitmap, owned: bitmap !== base };
-    },
-    epoch,
-  );
+  if (!isBlipPixelEffects(value)) return getCachedDuotoneOnlyBitmapByPath(imagePath, mimeType, value, fetchImage, opts);
+  assertBlipPixelEffectsBudget(value, 0);
+  const release = blipEffectImageFills(value.effects).length ? acquireCurrentBitmapCacheLease(fetchImage) : undefined;
+  return loadEffects(imagePath, mimeType, value, fetchImage, opts, { work: 0 }).finally(() => release?.());
 }
-
-/** Drop only the duotone namespace. Full document teardown calls the shared
- * decoded-owner drop once. */
-export function dropDuotoneBitmapCache(fetchImage: FetchImage): void {
-  dropCachedDerivedBitmapNamespace(fetchImage, DUOTONE_CACHE_NAMESPACE);
+function loadEffects(
+  imagePath: string, mimeType: string, value: BlipPixelEffects,
+  fetchImage: Parameters<typeof getCachedPixelTransformBitmapByPath>[3],
+  opts: NonNullable<Parameters<typeof getCachedPixelTransformBitmapByPath>[4]>,
+  ledger: { work: number },
+): Promise<ImageBitmap | null> {
+  const physical = (width?: number, height?: number): BlipPixelEffects => ({ ...value,
+    emuPerPixelX: opts.widthPt && width ? opts.widthPt * 12700 / width : value.emuPerPixelX,
+    emuPerPixelY: opts.heightPt && height ? opts.heightPt * 12700 / height : value.emuPerPixelY,
+  });
+  const images = new Map<object, CanvasImageSource>();
+  return getCachedPixelTransformBitmapByPath(imagePath, mimeType, {
+    key: `fx:${blipPixelEffectsKey(value)}|physical:${opts.widthPt ?? 0}.${opts.heightPt ?? 0}`,
+    strict: true,
+    preflight: (pixels, width, height) => {
+      assertBlipPixelEffectsBudget(physical(width, height), pixels, width && height ? { width, height } : undefined);
+      if (width && height) {
+        ledger.work += blipPixelEffectWork(physical(width, height), width, height);
+        if (ledger.work > MAX_IMAGE_EFFECT_PIXEL_WORK) throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK, ledger.work);
+      }
+    },
+    prepare: async base => {
+      const effects = physical(base.width, base.height);
+      for (const fill of blipEffectImageFills(effects.effects)) {
+        const vector = !fill.blipEffects?.length && preferVectorBlip(fill);
+        const path = vector ? fill.svgImagePath as string : fill.imagePath;
+        const mime = vector ? 'image/svg+xml' : fill.mimeType;
+        const image = fill.blipEffects?.length
+          ? await loadEffects(path, mime, { effects: fill.blipEffects, duotone: fill.duotone }, fetchImage, opts, ledger)
+          : await getCachedDuotoneOnlyBitmapByPath(path, mime, fill.duotone, fetchImage, opts);
+        if (!image) throw new OoxmlError('unsupported-image-effect', 'Image fill decode unavailable');
+        images.set(fill, image);
+      }
+      let additionalPixels = 0;
+      for (const image of new Set(images.values())) {
+        if (image === base) continue;
+        const size = image as { width: number; height: number };
+        additionalPixels += size.width * size.height;
+      }
+      assertBlipPixelEffectsBudget(effects, base.width * base.height, base, additionalPixels);
+    },
+    apply: (base, options) => applyImageDataTransform(base,
+      data => applyBlipPixelEffects(data, physical(base.width, base.height), { offscreenFactory: opts.offscreenFactory, images, baseImage: base }), options),
+  }, fetchImage, opts);
 }

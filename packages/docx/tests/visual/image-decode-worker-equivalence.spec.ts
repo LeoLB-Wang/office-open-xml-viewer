@@ -256,6 +256,17 @@ function syntheticImageCases(): readonly SyntheticImageCase[] {
       expected: [230, 230, 230, 255],
     },
     {
+      id: 'svg-with-recursive-color-and-blur-effects',
+      filename: 'recursive-effects.svg',
+      bytes: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>'),
+      effects: '<a:hsl hue="7200000"/><a:tint hue="0" amt="50000"/>'
+        + '<a:fillOverlay blend="mult"><a:solidFill><a:srgbClr val="808080"/></a:solidFill></a:fillOverlay>'
+        + '<a:alphaMod><a:cont type="tree"><a:alphaModFix amt="50000"/></a:cont></a:alphaMod>'
+        + '<a:blur rad="9525" grow="0"/>',
+      // Red -> green -> olive -> (64,64,0), half alpha over white.
+      expected: [159, 159, 127, 255],
+    },
+    {
       id: 'large-indexed-png-1',
       filename: 'large-1.png',
       bytes: indexedPng(LARGE_RASTER_WIDTH, LARGE_RASTER_HEIGHT, [17, 34, 51]),

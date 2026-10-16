@@ -188,7 +188,8 @@ pub fn parse_blip_alpha(blip_fill: Node<'_, '_>) -> Option<f64> {
 /// endpoint, luminance 0), `clr2` the second (the light endpoint, luminance 1) —
 /// the spec says the effect "combines clr1 and clr2 through a linear
 /// interpolation" per pixel, so pixel luminance is the interpolation factor.
-/// Both are 6-char uppercase hex WITHOUT a `#`; any per-colour transforms
+/// Both are 6- or 8-char uppercase hex WITHOUT a `#` (RRGGBB or RRGGBBAA);
+/// any per-colour transforms
 /// (lumMod/lumOff/tint/satMod/shade/…) are already baked in by
 /// [`crate::color::parse_color_node`]. Shared across the docx/pptx/xlsx parsers.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -251,7 +252,7 @@ pub fn parse_blip_duotone<R: crate::color::ThemeResolver + ?Sized>(
 }
 
 /// Ordered CT_Blip effects (ECMA-376 §20.1.8.13). Each entry owns all of
-/// its parameters; unsupported or malformed effects remain explicit diagnostics.
+/// its parameters; malformed effects remain explicit diagnostics.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum BlipEffect {
@@ -291,7 +292,91 @@ pub enum BlipEffect {
     },
     AlphaCeiling,
     AlphaFloor,
-    AlphaInv,
+    AlphaInv {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
+    /// §20.1.8.5 + §20.1.10.22: recursively evaluated alpha mask.
+    AlphaMod {
+        container: EffectContainer,
+    },
+    /// §20.1.8.15: physical radius in EMUs; grow defaults true.
+    Blur {
+        radius: f64,
+        grow: bool,
+    },
+    /// §20.1.8.39: hue degrees and relative S/L fractions.
+    Hsl {
+        hue: f64,
+        sat: f64,
+        lum: f64,
+    },
+    /// §20.1.8.60: hue degrees and signed color shift.
+    Tint {
+        hue: f64,
+        amt: f64,
+    },
+    /// §20.1.8.29 + §20.1.10.11: one shared DrawingML fill recipe.
+    FillOverlay {
+        fill: EffectFill,
+        blend: String,
+    },
+    /// §20.1.8.20 / 24, valid within a recursive effect container.
+    Container {
+        container: EffectContainer,
+    },
+    Reference {
+        reference: String,
+    },
+    /// Part-local DAG recipes reached by name. Metadata only; `work` records
+    /// bounded XML lookup visits and is charged to the existing effect budget.
+    Definitions {
+        containers: Vec<EffectContainer>,
+        work: u64,
+    },
+    /// Parser-side recursion crossed the same evaluated-step resource policy.
+    EffectCountLimit {
+        observed: usize,
+    },
+    // EG_Effect members legal inside alphaMod's container (§A.4.1).
+    AlphaOutset {
+        radius: f64,
+    },
+    Blend {
+        container: EffectContainer,
+        blend: String,
+    },
+    Fill {
+        fill: EffectFill,
+    },
+    Glow {
+        glow: crate::effect::Glow,
+    },
+    Shadow {
+        shadow: crate::effect::Shadow,
+        inner: bool,
+    },
+    SoftEdge {
+        radius: f64,
+    },
+    Reflection {
+        reflection: BlipReflection,
+    },
+    Transform {
+        sx: f64,
+        sy: f64,
+        kx: f64,
+        ky: f64,
+        tx: f64,
+        ty: f64,
+    },
+    RelativeOffset {
+        tx: f64,
+        ty: f64,
+    },
+    PresetShadow {
+        shadows: Vec<crate::effect::Shadow>,
+    },
     AlphaModFix {
         amt: f64,
     },
@@ -309,6 +394,90 @@ pub enum BlipEffect {
     },
 }
 
+/// CT_ReflectionEffect's complete geometry, extending the shared shape
+/// descriptor with the attributes a recursive mask must not discard.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlipReflection {
+    #[serde(flatten)]
+    pub base: crate::effect::Reflection,
+    pub kx: f64,
+    pub ky: f64,
+    pub algn: String,
+    pub fade_dir: f64,
+    pub rot_with_shape: bool,
+}
+
+/// §20.1.8.20, §20.1.10.22. Siblings each consume the parent;
+/// trees consume the previous result. Names remain owned graph facts.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectContainer {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub effects: Vec<BlipEffect>,
+}
+
+/// Fill recipes match core's shared Fill model. Geometry and palette parsing
+/// use fill.rs; there is no second gradient/pattern implementation here.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "fillType", rename_all = "camelCase")]
+pub enum EffectFill {
+    None,
+    Solid {
+        color: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Gradient {
+        stops: Vec<crate::fill::GradStop>,
+        angle: f64,
+        grad_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scaled: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fill_to_rect: Option<crate::fill::FillRect>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tile_rect: Option<crate::fill::FillRect>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        flip: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rot_with_shape: Option<bool>,
+    },
+    Pattern {
+        fg: String,
+        bg: String,
+        preset: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Image {
+        image_path: String,
+        mime_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        svg_image_path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        src_rect: Option<SrcRect>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fill_rect: Option<crate::fill::FillRect>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tile: Option<crate::fill::TileInfo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dpi: Option<f64>,
+        stretch: bool,
+        blip_effects: Vec<BlipEffect>,
+    },
+}
+
+// Resource policy shared with core/image/pixel-budget.ts, not schema limits.
+const MAX_IMAGE_EFFECT_STEPS: usize = 16;
+const MAX_IMAGE_EFFECT_LOOKUP_WORK: u64 = 1 << 27;
+#[derive(Default)]
+struct EffectParseContext {
+    active_definitions: std::collections::HashSet<roxmltree::NodeId>,
+}
+
 /// Parse CT_Blip effects without losing order or silently dropping effects.
 /// A single duotone retains the legacy fast path; every other chain is complete.
 pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
@@ -322,6 +491,26 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
     else {
         return Vec::new();
     };
+    let context = &mut EffectParseContext::default();
+    let mut effects = parse_effect_children(blip, resolver, tint_mode, context);
+    complete_named_effects(&mut effects, blip, resolver, tint_mode, context);
+    // Only outer hosts also parse a legacy standalone duotone palette.
+    // Recursive fills/containers have no separate palette and keep the entry.
+    if effects.len() == 1
+        && matches!(effects[0], BlipEffect::Duotone { ref clr1, ref clr2 } if clr1.len() == 6 && clr2.len() == 6)
+    {
+        Vec::new()
+    } else {
+        effects
+    }
+}
+
+fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
+    blip: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+    context: &mut EffectParseContext,
+) -> Vec<BlipEffect> {
     let color = |container: Option<Node<'_, '_>>| -> Option<(String, f64)> {
         let element = container?.children().find(|n| n.is_element())?;
         let source = crate::color::color_source_from_element(element)?;
@@ -391,14 +580,10 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
                         crate::color::resolve_color_source(source, resolver, tint_mode)
                     });
                 match (colors.next(), colors.next()) {
-                    (Some(clr1), Some(clr2)) if clr1.len() == 6 && clr2.len() == 6 => {
-                        Some(BlipEffect::Duotone {
-                            clr1: clr1.to_uppercase(),
-                            clr2: clr2.to_uppercase(),
-                        })
-                    }
-                    // The current duotone kernel has RGB endpoints only. Do
-                    // not silently strip authored endpoint alpha transforms.
+                    (Some(clr1), Some(clr2)) => Some(BlipEffect::Duotone {
+                        clr1: clr1.to_uppercase(),
+                        clr2: clr2.to_uppercase(),
+                    }),
                     _ => None,
                 }
             }
@@ -410,7 +595,170 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
                 }),
             "alphaCeiling" => Some(BlipEffect::AlphaCeiling),
             "alphaFloor" => Some(BlipEffect::AlphaFloor),
-            "alphaInv" if !node.children().any(|n| n.is_element()) => Some(BlipEffect::AlphaInv),
+            "alphaInv" => {
+                if node.children().any(|n| n.is_element()) {
+                    color(Some(node)).map(|(color, _)| BlipEffect::AlphaInv { color: Some(color) })
+                } else {
+                    Some(BlipEffect::AlphaInv { color: None })
+                }
+            }
+            "alphaMod" => node
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "cont")
+                .map(|cont| BlipEffect::AlphaMod {
+                    container: parse_container(cont, resolver, tint_mode, context),
+                }),
+            "cont" => Some(BlipEffect::Container {
+                container: parse_container(node, resolver, tint_mode, context),
+            }),
+            "effect" => node.attribute("ref").map(|r| BlipEffect::Reference {
+                reference: r.into(),
+            }),
+            "blur" => {
+                let radius = node
+                    .attribute("rad")
+                    .map(|v| crate::units::coordinate_to_emu(v).map(|n| n as f64))
+                    .unwrap_or(Some(0.0));
+                radius.map(|radius| BlipEffect::Blur {
+                    radius: radius.max(0.0),
+                    grow: !matches!(node.attribute("grow"), Some("0" | "false")),
+                })
+            }
+            "hsl" => {
+                let read = |name| {
+                    node.attribute(name)
+                        .map(crate::units::drawingml_percentage_to_fraction)
+                        .unwrap_or(Some(0.0))
+                };
+                let hue = node
+                    .attribute("hue")
+                    .map(|v| v.parse::<f64>().ok().map(|n| n / 60000.0))
+                    .unwrap_or(Some(0.0));
+                match (hue, read("sat"), read("lum")) {
+                    (Some(hue), Some(sat), Some(lum)) => Some(BlipEffect::Hsl { hue, sat, lum }),
+                    _ => None,
+                }
+            }
+            "tint" => {
+                let hue = node
+                    .attribute("hue")
+                    .map(|v| v.parse::<f64>().ok().map(|n| n / 60000.0))
+                    .unwrap_or(Some(0.0));
+                let amt = node
+                    .attribute("amt")
+                    .map(crate::units::drawingml_percentage_to_fraction)
+                    .unwrap_or(Some(0.0));
+                match (hue, amt) {
+                    (Some(hue), Some(amt)) => Some(BlipEffect::Tint { hue, amt }),
+                    _ => None,
+                }
+            }
+            "fillOverlay" => node.attribute("blend").and_then(|blend| {
+                parse_effect_fill(node, resolver, tint_mode, context).map(|fill| {
+                    BlipEffect::FillOverlay {
+                        fill,
+                        blend: blend.into(),
+                    }
+                })
+            }),
+            "alphaOutset" => Some(BlipEffect::AlphaOutset {
+                radius: node
+                    .attribute("rad")
+                    .and_then(crate::units::coordinate_to_emu)
+                    .unwrap_or(0) as f64,
+            }),
+            "blend" => node
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "cont")
+                .zip(node.attribute("blend"))
+                .map(|(cont, blend)| BlipEffect::Blend {
+                    container: parse_container(cont, resolver, tint_mode, context),
+                    blend: blend.into(),
+                }),
+            "fill" => parse_effect_fill(node, resolver, tint_mode, context)
+                .map(|fill| BlipEffect::Fill { fill }),
+            "glow" => Some(BlipEffect::Glow {
+                glow: crate::effect::parse_glow_effect(node, resolver, tint_mode),
+            }),
+            "innerShdw" | "outerShdw" => Some(BlipEffect::Shadow {
+                shadow: crate::effect::parse_shadow_effect(node, resolver, tint_mode),
+                inner: node.tag_name().name() == "innerShdw",
+            }),
+            "softEdge" => Some(BlipEffect::SoftEdge {
+                radius: crate::effect::parse_soft_edge_effect(node).radius as f64,
+            }),
+            "reflection" => Some(BlipEffect::Reflection {
+                reflection: BlipReflection {
+                    base: {
+                        let mut reflection = crate::effect::parse_reflection_effect(node);
+                        // CT_ReflectionEffect@sy defaults to +100% (§A.4.1).
+                        // Keep the established shape painter's omitted-mirror
+                        // policy outside the recursive CT_Blip evaluator.
+                        reflection.sy = node
+                            .attribute("sy")
+                            .and_then(crate::units::drawingml_percentage_to_fraction)
+                            .unwrap_or(1.0);
+                        reflection
+                    },
+                    kx: node
+                        .attribute("kx")
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(0.0)
+                        / 60000.0,
+                    ky: node
+                        .attribute("ky")
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(0.0)
+                        / 60000.0,
+                    algn: node.attribute("algn").unwrap_or("b").into(),
+                    fade_dir: node
+                        .attribute("fadeDir")
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(5400000.0)
+                        / 60000.0,
+                    rot_with_shape: !matches!(node.attribute("rotWithShape"), Some("false" | "0")),
+                },
+            }),
+            "prstShdw" => parse_preset_shadow(node, resolver, tint_mode)
+                .map(|shadows| BlipEffect::PresetShadow { shadows }),
+            "relOff" => Some(BlipEffect::RelativeOffset {
+                tx: node
+                    .attribute("tx")
+                    .and_then(crate::units::drawingml_percentage_to_fraction)
+                    .unwrap_or(0.0),
+                ty: node
+                    .attribute("ty")
+                    .and_then(crate::units::drawingml_percentage_to_fraction)
+                    .unwrap_or(0.0),
+            }),
+            "xfrm" => Some(BlipEffect::Transform {
+                sx: node
+                    .attribute("sx")
+                    .and_then(crate::units::drawingml_percentage_to_fraction)
+                    .unwrap_or(1.0),
+                sy: node
+                    .attribute("sy")
+                    .and_then(crate::units::drawingml_percentage_to_fraction)
+                    .unwrap_or(1.0),
+                kx: node
+                    .attribute("kx")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+                    / 60000.0,
+                ky: node
+                    .attribute("ky")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+                    / 60000.0,
+                tx: node
+                    .attribute("tx")
+                    .and_then(crate::units::coordinate_to_emu)
+                    .unwrap_or(0) as f64,
+                ty: node
+                    .attribute("ty")
+                    .and_then(crate::units::coordinate_to_emu)
+                    .unwrap_or(0) as f64,
+            }),
             "alphaModFix" => {
                 match node
                     .attribute("amt")
@@ -431,11 +779,7 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
                     alpha: alpha.clamp(0.0, 1.0),
                 }),
             "clrRepl" => color(Some(node)).map(|(color, _)| BlipEffect::ColorReplace { color }),
-            // §20.1.8: alphaMod needs an effect-container evaluator; blur
-            // needs a spatial kernel/grow policy; fillOverlay needs fill/blend
-            // evaluation. hsl/tint specify adjustments but no exact transfer
-            // formula. Until supported, retain a diagnostic rather than guess
-            // or render a partially corrected picture. extLst is metadata.
+            // extLst is metadata, not an authored raster effect.
             "extLst" => continue,
             _ => None,
         };
@@ -443,12 +787,357 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
             effect: node.tag_name().name().to_owned(),
         }));
     }
-    // Preserve the established single-duotone fast path. Multiple duotones
-    // must retain their independent endpoints and authored order.
-    if effects.len() == 1 && matches!(effects[0], BlipEffect::Duotone { .. }) {
-        Vec::new()
-    } else {
-        effects
+    effects
+}
+
+/// §20.1.8.24 permits references to named effect containers. CT_Blip's
+/// immediate chain does not necessarily contain the definition, so preserve
+/// reached part-local recipes while XML and the theme resolver still exist.
+/// No lookup occurs for ordinary or self-contained chains. Each missing name
+/// needs a part search; unlike a whole-part retained index, this holds only
+/// reached recipes (at most the existing 16-effect envelope). Element visits
+/// and projected recipe nodes count against the same 2^27 image-effect-work
+/// policy used in core, also accumulated by the package resource governor. These are
+/// resource limits, not OOXML limits or compatibility guesses.
+fn complete_named_effects<R: crate::color::ThemeResolver + ?Sized>(
+    effects: &mut Vec<BlipEffect>,
+    blip: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+    context: &mut EffectParseContext,
+) {
+    use std::collections::{BTreeSet, HashSet};
+    fn collect(effects: &[BlipEffect], names: &mut HashSet<String>, refs: &mut BTreeSet<String>) {
+        for effect in effects {
+            match effect {
+                BlipEffect::AlphaMod { container }
+                | BlipEffect::Container { container }
+                | BlipEffect::Blend { container, .. } => {
+                    if let Some(name) = &container.name {
+                        names.insert(name.clone());
+                    }
+                    collect(&container.effects, names, refs);
+                }
+                BlipEffect::Reference { reference }
+                    if !["fill", "line", "fillLine", "children"].contains(&reference.as_str()) =>
+                {
+                    refs.insert(reference.clone());
+                }
+                BlipEffect::Definitions { containers, .. } => {
+                    for container in containers {
+                        if let Some(name) = &container.name {
+                            names.insert(name.clone());
+                        }
+                        collect(&container.effects, names, refs);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut names = HashSet::new();
+    let mut refs = BTreeSet::new();
+    collect(effects, &mut names, &mut refs);
+    let mut containers = Vec::new();
+    let mut work = 0;
+    if crate::resource::assert_healthy().is_err() {
+        return;
+    }
+    while let Some(reference) = refs.pop_first() {
+        if names.contains(&reference) {
+            continue;
+        }
+        let before = work;
+        let mut target = None;
+        for candidate in blip.document().descendants() {
+            work += 1;
+            // Shared with core/image/pixel-budget.ts; stop the search itself,
+            // not merely the later rendering, at the existing work ceiling.
+            if work > MAX_IMAGE_EFFECT_LOOKUP_WORK {
+                break;
+            }
+            if candidate.is_element()
+                && matches!(candidate.tag_name().name(), "cont" | "effectDag")
+                && candidate.attribute("name") == Some(reference.as_str())
+            {
+                target = Some(candidate);
+                break;
+            }
+        }
+        // Count the target projection before allocating strings, gradient
+        // stops or nested fills. Both lookup and repeated retained projections
+        // are package-accounted, preventing many pictures from expanding one
+        // shared XML recipe quadratically. No work is done after poisoning.
+        if let Some(target) = target {
+            for _ in target.descendants() {
+                work += 1;
+                if work > MAX_IMAGE_EFFECT_LOOKUP_WORK {
+                    break;
+                }
+            }
+        }
+        if crate::resource::charge_image_effect_work(work - before, MAX_IMAGE_EFFECT_LOOKUP_WORK)
+            .is_err()
+            || work > MAX_IMAGE_EFFECT_LOOKUP_WORK
+        {
+            work = MAX_IMAGE_EFFECT_LOOKUP_WORK + 1;
+            break;
+        }
+        if let Some(target) = target {
+            if context.active_definitions.contains(&target.id()) {
+                effects.push(BlipEffect::Unsupported {
+                    effect: "cyclic effect reference".into(),
+                });
+                break;
+            }
+            if context.active_definitions.len() >= MAX_IMAGE_EFFECT_STEPS {
+                effects.push(BlipEffect::EffectCountLimit {
+                    observed: context.active_definitions.len() + 1,
+                });
+                break;
+            }
+            context.active_definitions.insert(target.id());
+            let container = parse_container(target, resolver, tint_mode, context);
+            context.active_definitions.remove(&target.id());
+            names.insert(reference);
+            collect(&container.effects, &mut names, &mut refs);
+            containers.push(container);
+            // One extra recipe is enough for the renderer's typed count quota;
+            // do not expand an unbounded reference graph during parsing.
+            if containers.len() > MAX_IMAGE_EFFECT_STEPS {
+                break;
+            }
+        }
+    }
+    if work > 0 {
+        effects.push(BlipEffect::Definitions { containers, work });
+    }
+}
+
+/// §20.1.8.49 / §20.1.10.52 gives each preset as one or two outer
+/// shadows. Values below are normative preset parameters, not measured tuning.
+fn parse_preset_shadow<R: crate::color::ThemeResolver + ?Sized>(
+    node: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+) -> Option<Vec<crate::effect::Shadow>> {
+    let preset: u8 = node.attribute("prst")?.strip_prefix("shdw")?.parse().ok()?;
+    if !(1..=20).contains(&preset) {
+        return None;
+    }
+    let mut shadow = crate::effect::parse_shadow_effect(node, resolver, tint_mode);
+    shadow.rot_with_shape = Some(false);
+    match preset {
+        3 => {
+            shadow.algn = Some("b".into());
+            shadow.ky = Some(40.89);
+            shadow.sy = Some(0.5);
+        }
+        4 | 8 | 12 | 16 => {
+            shadow.algn = Some("b".into());
+            shadow.kx = Some(-40.89);
+            shadow.sy = Some(if preset == 8 || preset == 16 {
+                -0.5
+            } else {
+                0.5
+            });
+        }
+        7 | 11 | 15 => {
+            shadow.algn = Some("b".into());
+            shadow.kx = Some(40.89);
+            shadow.sy = Some(if preset == 7 || preset == 15 {
+                -0.5
+            } else {
+                0.5
+            });
+        }
+        9 => {
+            shadow.algn = Some("tl".into());
+            shadow.sx = Some(0.75);
+            shadow.sy = Some(0.75);
+        }
+        10 => {
+            shadow.algn = Some("br".into());
+            shadow.sx = Some(1.25);
+            shadow.sy = Some(1.25);
+        }
+        19 | 20 => {
+            shadow.algn = Some("b".into());
+            shadow.sy = Some(if preset == 19 { 0.5 } else { -1.0 });
+        }
+        _ => {}
+    }
+    let mut result = vec![shadow.clone()];
+    if matches!(preset, 13 | 17 | 18) {
+        let lighten = |i| {
+            u8::from_str_radix(&shadow.color[i..i + 2], 16)
+                .unwrap_or(0)
+                .saturating_add(102)
+        };
+        shadow.color = format!("{:02X}{:02X}{:02X}", lighten(0), lighten(2), lighten(4));
+        if preset == 13 {
+            shadow.dist *= 2;
+        } else {
+            shadow.dir = (shadow.dir + 180.0) % 360.0;
+        }
+        result.push(shadow);
+    }
+    Some(result)
+}
+
+fn parse_container<R: crate::color::ThemeResolver + ?Sized>(
+    node: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+    context: &mut EffectParseContext,
+) -> EffectContainer {
+    EffectContainer {
+        kind: node.attribute("type").unwrap_or("sib").into(),
+        name: node.attribute("name").map(str::to_owned),
+        effects: parse_effect_children(node, resolver, tint_mode, context),
+    }
+}
+
+fn parse_effect_fill<R: crate::color::ThemeResolver + ?Sized>(
+    parent: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+    context: &mut EffectParseContext,
+) -> Option<EffectFill> {
+    let node = parent.children().find(|n| {
+        n.is_element()
+            && matches!(
+                n.tag_name().name(),
+                "noFill" | "solidFill" | "gradFill" | "pattFill" | "blipFill" | "grpFill"
+            )
+    })?;
+    match node.tag_name().name() {
+        "noFill" => Some(EffectFill::None),
+        "grpFill" => {
+            // §20.1.8.35 inherits the containing group's fill. Resolve it while
+            // ancestor XML and the owning theme are available, rather than
+            // asking a raster effect to guess parent paint after parsing.
+            for ancestor in parent.ancestors().skip(1) {
+                if let Some(properties) = ancestor
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "grpSpPr")
+                {
+                    if properties == parent {
+                        continue;
+                    }
+                    if let Some(fill) = parse_effect_fill(properties, resolver, tint_mode, context)
+                    {
+                        return Some(fill);
+                    }
+                }
+            }
+            Some(EffectFill::None)
+        }
+        "solidFill" => crate::color::parse_color_node(node, resolver, tint_mode)
+            .map(|color| EffectFill::Solid { color }),
+        "gradFill" => {
+            crate::fill::parse_grad_fill(node, resolver, tint_mode).map(|g| EffectFill::Gradient {
+                stops: g.stops,
+                angle: g.angle,
+                grad_type: g.grad_type,
+                scaled: g.scaled,
+                path: g.path,
+                fill_to_rect: g.fill_to_rect,
+                tile_rect: g.tile_rect,
+                flip: g.flip,
+                rot_with_shape: g.rot_with_shape,
+            })
+        }
+        "pattFill" => {
+            let p = crate::fill::parse_patt_fill(node, resolver, tint_mode);
+            Some(EffectFill::Pattern {
+                fg: p.fg,
+                bg: p.bg,
+                preset: p.preset,
+            })
+        }
+        "blipFill" => {
+            let blip = node
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "blip")?;
+            let svg_image_path = svg_blip_rid(blip);
+            let image_path = blip_embed_rid(&blip).or_else(|| svg_image_path.clone())?;
+            let stretch = node
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "stretch");
+            let tile = node
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "tile");
+            let mut blip_effects = parse_effect_children(blip, resolver, tint_mode, context);
+            complete_named_effects(&mut blip_effects, blip, resolver, tint_mode, context);
+            Some(EffectFill::Image {
+                mime_type: mime_from_ext(&image_path).into(),
+                image_path,
+                svg_image_path,
+                src_rect: parse_src_rect(node),
+                fill_rect: stretch.and_then(crate::fill::parse_fill_rect),
+                tile: tile.map(crate::fill::parse_tile),
+                dpi: node.attribute("dpi").and_then(|v| v.parse().ok()),
+                stretch: stretch.is_some(),
+                blip_effects,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Resolve image relationships in nested fills with the owning part's map;
+/// a relationship id is never sent to the renderer as an archive path.
+pub fn resolve_blip_effect_images(
+    effects: &mut [BlipEffect],
+    resolve: &mut impl FnMut(&str) -> Option<String>,
+) {
+    for effect in effects {
+        match effect {
+            BlipEffect::Definitions { containers, .. } => {
+                for container in containers {
+                    resolve_blip_effect_images(&mut container.effects, resolve);
+                }
+            }
+            BlipEffect::AlphaMod { container }
+            | BlipEffect::Container { container }
+            | BlipEffect::Blend { container, .. } => {
+                resolve_blip_effect_images(&mut container.effects, resolve)
+            }
+            BlipEffect::FillOverlay {
+                fill:
+                    EffectFill::Image {
+                        image_path,
+                        mime_type,
+                        svg_image_path,
+                        blip_effects,
+                        ..
+                    },
+                ..
+            }
+            | BlipEffect::Fill {
+                fill:
+                    EffectFill::Image {
+                        image_path,
+                        mime_type,
+                        svg_image_path,
+                        blip_effects,
+                        ..
+                    },
+            } => {
+                if let Some(path) = resolve(image_path) {
+                    *mime_type = mime_from_ext(&path).into();
+                    *image_path = path;
+                }
+                if let Some(svg) = svg_image_path.as_mut() {
+                    if let Some(path) = resolve(svg) {
+                        *svg = path;
+                    }
+                }
+                resolve_blip_effect_images(blip_effects, resolve);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -742,6 +1431,156 @@ mod tests {
     }
 
     #[test]
+    fn named_image_fill_cycles_and_deep_expansion_are_bounded_during_parsing() {
+        let parse = |count: usize, cycle: bool| {
+            let mut definitions = String::new();
+            for index in 0..count {
+                let next = if cycle { 0 } else { index + 1 };
+                definitions.push_str(&format!(r#"<a:cont name="m{index}" type="tree"><a:fillOverlay blend="over"><a:blipFill>
+                  <a:blip r:embed="rId1"><a:alphaMod><a:cont type="tree"><a:effect ref="m{next}"/></a:cont></a:alphaMod></a:blip>
+                  <a:stretch/></a:blipFill></a:fillOverlay></a:cont>"#));
+            }
+            let xml = format!(
+                r#"<a:root xmlns:a="{A_NS}" xmlns:r="{R_NS}">{definitions}
+              <a:blipFill><a:blip><a:alphaMod><a:cont type="tree"><a:effect ref="m0"/></a:cont></a:alphaMod></a:blip></a:blipFill>
+            </a:root>"#
+            );
+            let doc = Document::parse(&xml).unwrap();
+            let node = doc
+                .root_element()
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "blipFill")
+                .unwrap();
+            serde_json::to_string(&parse_blip_effects(
+                node,
+                &DuoResolver,
+                crate::color::TintMode::PowerPointLinear,
+            ))
+            .unwrap()
+        };
+        assert!(parse(1, true).contains("cyclic effect reference"));
+        assert!(parse(MAX_IMAGE_EFFECT_STEPS + 1, false).contains("effectCountLimit"));
+    }
+
+    #[test]
+    fn references_retain_named_recipes_outside_the_immediate_blip_chain() {
+        let xml = format!(
+            r#"<a:root xmlns:a="{A_NS}">
+          <a:effectDag name="external" type="tree"><a:alphaRepl a="50%"/></a:effectDag>
+          <a:blipFill><a:blip><a:alphaMod><a:cont type="tree"><a:effect ref="external"/></a:cont></a:alphaMod></a:blip></a:blipFill>
+        </a:root>"#
+        );
+        let doc = Document::parse(&xml).unwrap();
+        let node = doc
+            .descendants()
+            .find(|n| n.tag_name().name() == "blipFill")
+            .unwrap();
+        let effects =
+            parse_blip_effects(node, &DuoResolver, crate::color::TintMode::PowerPointLinear);
+        let BlipEffect::Definitions { containers, work } = &effects[1] else {
+            panic!("missing reference definition");
+        };
+        assert!(*work > 0);
+        assert_eq!(containers[0].name.as_deref(), Some("external"));
+        assert_eq!(
+            containers[0].effects,
+            vec![BlipEffect::AlphaRepl { alpha: 0.5 }]
+        );
+    }
+
+    #[test]
+    fn recursive_fills_preserve_duotone_and_inherit_ancestor_group_fill() {
+        let xml = format!(
+            r#"<a:grpSp xmlns:a="{A_NS}" xmlns:r="{R_NS}">
+          <a:grpSpPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:grpSpPr>
+          <a:grpSp><a:grpSpPr><a:xfrm/><a:grpFill/></a:grpSpPr><a:pic><a:blipFill><a:blip>
+            <a:fillOverlay blend="over"><a:grpFill/></a:fillOverlay>
+            <a:fillOverlay blend="mult"><a:blipFill><a:blip r:embed="rId2">
+              <a:duotone><a:srgbClr val="000000"/><a:srgbClr val="00FF00"/></a:duotone>
+            </a:blip><a:stretch/></a:blipFill></a:fillOverlay>
+          </a:blip></a:blipFill></a:pic></a:grpSp></a:grpSp>"#
+        );
+        let doc = Document::parse(&xml).unwrap();
+        let blip_fill = doc
+            .descendants()
+            .find(|n| n.tag_name().name() == "blipFill")
+            .unwrap();
+        let effects = parse_blip_effects(
+            blip_fill,
+            &DuoResolver,
+            crate::color::TintMode::PowerPointLinear,
+        );
+        let json = serde_json::to_value(effects).unwrap();
+        assert_eq!(
+            json[0]["fill"],
+            serde_json::json!({"fillType":"solid", "color":"FF0000"})
+        );
+        assert_eq!(
+            json[1]["fill"]["blipEffects"][0],
+            serde_json::json!({"type":"duotone", "clr1":"000000", "clr2":"00FF00"})
+        );
+    }
+
+    #[test]
+    fn authored_effects_retain_parameters_recursive_masks_and_fill_colors() {
+        let xml = format!(
+            r#"<a:blipFill xmlns:a="{A_NS}" xmlns:r="{R_NS}"><a:blip>
+          <a:alphaMod><a:cont type="tree"><a:alphaRepl a="50%"/>
+            <a:alphaMod><a:cont><a:alphaInv/></a:cont></a:alphaMod></a:cont></a:alphaMod>
+          <a:blur rad="12700" grow="false"/><a:blur/>
+          <a:fillOverlay blend="screen"><a:gradFill><a:gsLst>
+            <a:gs pos="0"><a:schemeClr val="accent1"/></a:gs>
+            <a:gs pos="100000"><a:srgbClr val="FFFFFF"><a:alpha val="50%"/></a:srgbClr></a:gs>
+          </a:gsLst><a:lin ang="5400000" scaled="1"/></a:gradFill></a:fillOverlay>
+          <a:hsl hue="7200000" sat="-50%" lum="25%"/><a:tint hue="10800000" amt="-25%"/>
+          <a:alphaInv><a:srgbClr val="FF0000"/></a:alphaInv>
+          <a:duotone><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr><a:srgbClr val="FFFFFF"/></a:duotone>
+          <a:fillOverlay blend="mult"><a:blipFill><a:blip r:embed="rId2"/><a:stretch/></a:blipFill></a:fillOverlay>
+        </a:blip></a:blipFill>"#
+        );
+        let doc = Document::parse(&xml).unwrap();
+        let mut effects = parse_blip_effects(
+            doc.root_element(),
+            &DuoResolver,
+            crate::color::TintMode::PowerPointLinear,
+        );
+        resolve_blip_effect_images(&mut effects, &mut |rid| {
+            (rid == "rId2").then(|| "media/overlay.png".into())
+        });
+        let json = serde_json::to_value(effects).unwrap();
+        assert_eq!(json[0]["container"]["kind"], "tree");
+        assert_eq!(
+            json[0]["container"]["effects"][1]["container"]["effects"][0]["type"],
+            "alphaInv"
+        );
+        assert_eq!(
+            json[1],
+            serde_json::json!({"type":"blur", "radius":12700.0, "grow":false})
+        );
+        assert_eq!(
+            json[2],
+            serde_json::json!({"type":"blur", "radius":0.0, "grow":true})
+        );
+        assert_eq!(json[3]["fill"]["stops"][1]["color"], "FFFFFF80");
+        assert_eq!(json[3]["fill"]["angle"], 90.0);
+        assert_eq!(
+            json[4],
+            serde_json::json!({"type":"hsl", "hue":120.0, "sat":-0.5, "lum":0.25})
+        );
+        assert_eq!(
+            json[5],
+            serde_json::json!({"type":"tint", "hue":180.0, "amt":-0.25})
+        );
+        assert_eq!(
+            json[6],
+            serde_json::json!({"type":"alphaInv", "color":"FF0000"})
+        );
+        assert_eq!(json[7]["clr1"], "00000000");
+        assert_eq!(json[8]["fill"]["imagePath"], "media/overlay.png");
+        assert_eq!(json[8]["fill"]["mimeType"], "image/png");
+    }
+
+    #[test]
     fn ordered_effects_own_alpha_palettes_and_replacement() {
         let xml = format!(
             r#"<a:blipFill xmlns:a="{A_NS}"><a:blip>
@@ -796,7 +1635,7 @@ mod tests {
                 BlipEffect::AlphaBiLevel { thresh: 0.5 },
                 BlipEffect::AlphaCeiling,
                 BlipEffect::AlphaFloor,
-                BlipEffect::AlphaInv,
+                BlipEffect::AlphaInv { color: None },
                 BlipEffect::AlphaModFix { amt: 2.0 },
                 BlipEffect::AlphaRepl { alpha: 0.25 },
             ]
@@ -804,13 +1643,10 @@ mod tests {
     }
 
     #[test]
-    fn every_unimplemented_or_malformed_effect_remains_an_explicit_diagnostic() {
+    fn malformed_effects_remain_explicit_diagnostics() {
         for effect in [
             "alphaMod",
-            "blur",
             "fillOverlay",
-            "hsl",
-            "tint",
             "biLevel",
             "clrChange",
             "clrRepl",

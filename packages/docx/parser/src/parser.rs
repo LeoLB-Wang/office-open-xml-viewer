@@ -8586,7 +8586,7 @@ fn resolve_inline_blip(
     // §20.1.8.23 duotone recolour, resolved through the document theme.
     let duotone = blip_fill.and_then(|bf| parse_blip_duotone_docx(bf, theme));
     let blip_effects = blip_fill
-        .map(|bf| parse_blip_effects_docx(bf, theme))
+        .map(|bf| parse_blip_effects_docx(bf, theme, media_map))
         .unwrap_or_default();
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
     let alpha = None; // Ordered blip effects bake alpha exactly once.
@@ -10478,7 +10478,7 @@ fn parse_group_pic(
         .and_then(|bf| parse_blip_duotone_docx(bf, theme));
     let blip_effects = blip
         .parent()
-        .map(|bf| parse_blip_effects_docx(bf, theme))
+        .map(|bf| parse_blip_effects_docx(bf, theme, media_map))
         .unwrap_or_default();
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
     let alpha = None; // Ordered blip effects bake alpha exactly once.
@@ -13901,15 +13901,23 @@ fn parse_blip_duotone_docx(blip_fill: roxmltree::Node, theme: &ThemeColors) -> O
     )
 }
 
-fn parse_blip_effects_docx(blip_fill: roxmltree::Node, theme: &ThemeColors) -> Vec<BlipEffect> {
-    parse_blip_effects(
+fn parse_blip_effects_docx(
+    blip_fill: roxmltree::Node,
+    theme: &ThemeColors,
+    media_map: &HashMap<String, String>,
+) -> Vec<BlipEffect> {
+    let mut effects = parse_blip_effects(
         blip_fill,
         &DocxSchemeResolver {
             theme,
             placeholder_color: None,
         },
         ooxml_common::color::TintMode::WordLiteral,
-    )
+    );
+    ooxml_common::blip::resolve_blip_effect_images(&mut effects, &mut |rid| {
+        media_map.get(rid).cloned()
+    });
+    effects
 }
 
 /// `ooxml_common::chart::ColorResolver` implementation backed by the document

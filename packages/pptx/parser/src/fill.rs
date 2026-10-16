@@ -275,11 +275,12 @@ fn parse_blip_fill_with_color_resolver<
         ooxml_common::color::TintMode::PowerPointLinear,
     );
     // CT_Blip grayscl/biLevel/clrChange pixel effects in document order.
-    let blip_effects = parse_blip_effects(
+    let mut blip_effects = parse_blip_effects(
         blip_fill,
         color_resolver,
         ooxml_common::color::TintMode::PowerPointLinear,
     );
+    ooxml_common::blip::resolve_blip_effect_images(&mut blip_effects, resolve_blip);
     // EG_FillModeProperties (§20.1.8.14) is an optional choice of `tile`
     // (§20.1.8.58) or `stretch` (§20.1.8.56) with no schema default. Record
     // both authored facts as-is: `stretch` is the presence of `<a:stretch>`

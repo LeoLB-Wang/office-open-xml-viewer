@@ -3,8 +3,7 @@ import {
   decodeSvgBlobOnMainThread,
   decodedBitmapTargetResizeOptions,
   duotoneImageData,
-  applyBlipPixelEffects,
-  assertBlipPixelEffectsBudget,
+  getCachedDuotoneBitmapByPath,
   blipPixelEffectsKey,
   MAX_RASTER_PIXELS,
   dropCachedDerivedBitmapNamespace,
@@ -107,14 +106,10 @@ async function applyColorEffects(
   duotone: Duotone | undefined,
   failClosedOnDuotoneFailure: boolean,
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
-  blipEffects?: readonly BlipEffect[],
 ): Promise<ImageBitmap | null> {
-  if (blipEffects?.length) {
-    assertBlipPixelEffectsBudget({ effects: blipEffects, duotone }, bitmap.width * bitmap.height);
-  }
   const unavailable = async (error?: unknown): Promise<ImageBitmap | null> => {
     // Ordered blip effects must not fall back to an uncorrected picture. Legacy duotone-only callers retain their compatibility behavior.
-    if (colorReplaceFrom || blipEffects?.length) {
+    if (colorReplaceFrom) {
       throw error instanceof Error
         ? error
         : new Error('2D canvas is unavailable for image color effects');
@@ -149,12 +144,10 @@ async function applyColorEffects(
   } catch (error) {
     return unavailable(error);
   }
-  if (colorReplaceFrom && !blipEffects?.some(effect => effect.type === 'colorChange')) {
+  if (colorReplaceFrom) {
     applyExactColorReplacement(imageData, colorReplaceFrom);
   }
-  if (blipEffects?.length) {
-    applyBlipPixelEffects(imageData, { effects: blipEffects, duotone });
-  } else if (duotone) {
+  if (duotone) {
     try {
       duotoneImageData(imageData, duotone.clr1, duotone.clr2);
     } catch {
@@ -191,9 +184,23 @@ export async function decodeRaster(
   blipEffects?: readonly BlipEffect[],
   svgDecoder?: SvgBlobDecoder,
 ): Promise<ImageBitmap | null> {
+  if (blipEffects?.length) {
+    // One shared CT_Blip interpreter/cache/resource policy for DOCX and PPTX.
+    // The legacy exact-color shorthand is synthesized only for model callers
+    // that did not supply the complete parsed clrChange entry themselves.
+    const effects: readonly BlipEffect[] = colorReplaceFrom && !blipEffects.some(e => e.type === 'colorChange')
+      ? [{ type: 'colorChange', from: colorReplaceFrom, fromAlpha: 1,
+          to: colorReplaceFrom, toAlpha: 0, useAlpha: false }, ...blipEffects]
+      : blipEffects;
+    return getCachedDuotoneBitmapByPath(imagePath, mimeType, { effects, duotone }, fetchImage, {
+      widthPt, heightPt, tiff, ...target,
+      ...(plannedPixelLimit ? { maxRetainedPixels: plannedPixelLimit } : {}),
+      svgDecoder: svgDecoder ?? (typeof Image !== 'undefined' ? decodeSvgBlobOnMainThread : undefined),
+      failClosedOnDuotoneFailure: true,
+    });
+  }
   // Source + offscreen backing + ImageData + result = four surfaces; all effects share the same ImageData before the final bitmap bake.
   const hasEffects = colorReplaceFrom || duotone || blipEffects?.length;
-  if (blipEffects?.length) assertBlipPixelEffectsBudget({ effects: blipEffects, duotone }, 0);
   const effectSurfaceCount = hasEffects ? 4 : 1;
   const effectPixelLimit = Math.floor(MAX_RASTER_PIXELS / effectSurfaceCount);
   const maxRetainedPixels = Number.isSafeInteger(plannedPixelLimit) && (plannedPixelLimit ?? 0) > 0
@@ -241,7 +248,7 @@ export async function decodeRaster(
   const resizeKey = resizeOptions
     ? `|resize:${resizeOptions.resizeWidth}x${resizeOptions.resizeHeight}`
     : '';
-  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone, blipEffects)}${resizeKey}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
+  const key = `${imageKey(resolvedBaseKey, colorReplaceFrom, duotone, blipEffects)}${resizeKey}${blipEffects?.length ? `|physical:${widthPt}.${heightPt}` : ''}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
   return getCachedDerivedBitmap(
     DOCX_COLOR_EFFECT_CACHE_NAMESPACE,
     key,
@@ -253,7 +260,6 @@ export async function decodeRaster(
         duotone,
         failClosedOnDuotoneFailure,
         target,
-        blipEffects,
       );
       return { bitmap, owned: bitmap !== null && bitmap !== base };
     },

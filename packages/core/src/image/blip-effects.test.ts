@@ -10,6 +10,7 @@ import {
 } from './blip-effects';
 import {
   MAX_IMAGE_EFFECT_BASE_PIXELS,
+  MAX_RASTER_PIXELS,
   MAX_IMAGE_EFFECT_PASSES,
   MAX_IMAGE_EFFECT_PIXEL_WORK,
   isOoxmlDecodedImageLimitError,
@@ -29,6 +30,191 @@ const buffer = (...pixels: number[][]) => ({
 });
 
 describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
+  // §20.1.8.39 adjusts H by degrees and S/L by relative percentages.
+  it('adjusts HSL in the shared DrawingML color space, preserving alpha and order', () => {
+    const buf = buffer([255, 0, 0, 128]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'hsl', hue: 120, sat: 0, lum: -.5 }] });
+    expect([...buf.data]).toEqual([0, 128, 0, 128]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'hsl', hue: 0, sat: -1, lum: 0 }] });
+    expect([...buf.data]).toEqual([64, 64, 64, 128]);
+  });
+
+  it('tints towards and away from the authored hue with bounded RGB interpolation', () => {
+    const buf = buffer([0, 0, 255, 29]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'tint', hue: 0, amt: .5 }] });
+    expect([...buf.data]).toEqual([128, 0, 128, 29]);
+    const away = buffer([128, 64, 64, 255]);
+    applyBlipPixelEffects(away, { effects: [{ type: 'tint', hue: 0, amt: -.5 }] });
+    expect([...away.data]).toEqual([65, 96, 96, 255]);
+  });
+
+  it('colored alphaInv replaces RGB and inverts source alpha before a following effect', () => {
+    const buf = buffer([0, 0, 0, 64]);
+    applyBlipPixelEffects(buf, { effects: [
+      { type: 'alphaInv', color: 'FF0000' }, { type: 'alphaModFix', amt: .5 },
+    ] });
+    expect([...buf.data]).toEqual([255, 0, 0, 96]);
+  });
+
+  it('interpolates duotone endpoint opacity and multiplies it by the source alpha', () => {
+    const buf = buffer([0, 0, 0, 128], [255, 255, 255, 128], [128, 128, 128, 255]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'duotone', clr1: 'FF000000', clr2: '00FF0080' }] });
+    expect([...buf.data]).toEqual([255, 0, 0, 0, 0, 255, 0, 64, 127, 128, 0, 64]);
+  });
+
+  it('alphaMod recursively evaluates ordered containers on the current alpha', () => {
+    const buf = buffer([12, 34, 56, 128]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'alphaMod', container: {
+      kind: 'tree', effects: [ { type: 'alphaRepl', alpha: .5 },
+        { type: 'alphaMod', container: { kind: 'tree', effects: [{ type: 'alphaInv' }] } } ],
+    } }] });
+    expect([...buf.data]).toEqual([12, 34, 56, 32]);
+  });
+
+  it('applies sibling masks independently instead of chaining them', () => {
+    const buf = buffer([1, 2, 3, 255]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'alphaMod', container: {
+      kind: 'sib', effects: [{ type: 'alphaModFix', amt: .5 }, { type: 'alphaModFix', amt: .5 }],
+    } }] });
+    expect(buf.data[3]).toBe(192); // 50% over 50%, not 25%
+  });
+
+  it.each([
+    ['darken', [64, 64, 64, 255]], ['lighten', [128, 128, 128, 255]],
+    ['mult', [32, 32, 32, 255]], ['over', [128, 64, 128, 255]],
+    ['screen', [160, 160, 160, 255]],
+  ] as const)('blends fillOverlay using %s before the next alpha operation', (blend, expected) => {
+    const buf = buffer([64, 128, 64, 255]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'fillOverlay', fill: { fillType: 'solid', color: '804080' }, blend }] });
+    expect([...buf.data]).toEqual(expected);
+  });
+
+  it('blur is a separable premultiplied convolution with clipped or grown bounds', () => {
+    const source = () => buffer([255, 0, 0, 255]);
+    const grown = applyBlipPixelEffects(source(), { effects: [{ type: 'blur', radius: 9525, grow: true }] });
+    expect([grown.width, grown.height, grown.frame]).toEqual([3, 3, { x: 1, y: 1, width: 1, height: 1 }]);
+    expect([...grown.data.slice(16, 20)]).toEqual([255, 0, 0, 244]);
+    const clipped = applyBlipPixelEffects(source(), { effects: [{ type: 'blur', radius: 9525, grow: false }] });
+    expect([clipped.width, clipped.height, ...clipped.data]).toEqual([1, 1, 255, 0, 0, 244]);
+  });
+
+  it('preflights blur and nested effect work before touching source pixels', () => {
+    const buf = buffer([10, 20, 30, 40]);
+    expect(() => applyBlipPixelEffects(buf, { effects: [
+      { type: 'alphaRepl', alpha: 1 }, { type: 'blur', radius: 1e15, grow: true },
+    ] })).toThrowError(expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric: 'image-effect-work' }));
+    expect([...buf.data]).toEqual([10, 20, 30, 40]);
+  });
+
+  it('orders HSL and tint relative to grayscale', () => {
+    const a = buffer([255, 0, 0, 255]), b = buffer([255, 0, 0, 255]);
+    const hsl: BlipEffect = { type: 'hsl', hue: 120, sat: 0, lum: 0 };
+    applyBlipPixelEffects(a, { effects: [hsl, { type: 'grayscale' }] });
+    applyBlipPixelEffects(b, { effects: [{ type: 'grayscale' }, hsl] });
+    expect([...a.data]).toEqual([182, 182, 182, 255]);
+    expect([...b.data]).toEqual([54, 54, 54, 255]);
+    const c = buffer([0, 0, 255, 255]), d = buffer([0, 0, 255, 255]);
+    const tint: BlipEffect = { type: 'tint', hue: 0, amt: .5 };
+    applyBlipPixelEffects(c, { effects: [tint, { type: 'grayscale' }] });
+    applyBlipPixelEffects(d, { effects: [{ type: 'grayscale' }, tint] });
+    expect([...c.data]).toEqual([36, 36, 36, 255]);
+    expect([...d.data]).toEqual([137, 9, 9, 255]);
+  });
+  it('orders blur, duotone and recursive masks before alpha replacement', () => {
+    for (const effect of [
+      { type: 'blur', radius: 9525, grow: true },
+      { type: 'duotone', clr1: 'FF000080', clr2: '00FF0080' },
+      { type: 'alphaMod', container: { kind: 'tree', effects: [{ type: 'alphaRepl', alpha: .5 }] } },
+    ] satisfies BlipEffect[]) {
+      const a = applyBlipPixelEffects(buffer([255, 0, 0, 64]), { effects: [effect, { type: 'alphaRepl', alpha: 1 }] });
+      const b = applyBlipPixelEffects(buffer([255, 0, 0, 64]), { effects: [{ type: 'alphaRepl', alpha: 1 }, effect] });
+      expect(a.data[3]).toBe(255);
+      expect(b.data[3]).toBeLessThan(255);
+    }
+    const buf = buffer([0, 0, 0, 255]);
+    applyBlipPixelEffects(buf, { effects: [
+      { type: 'fillOverlay', blend: 'over', fill: { fillType: 'solid', color: 'FF0000' } },
+      { type: 'colorChange', from: 'FF0000', fromAlpha: 1, to: '00FF00', toAlpha: 1, useAlpha: true },
+    ] });
+    expect([...buf.data]).toEqual([0, 255, 0, 255]);
+  });
+  it('resolves named masks and the original fill reference at their authored positions', () => {
+    const buf = buffer([10, 20, 30, 255]);
+    applyBlipPixelEffects(buf, { effects: [
+      { type: 'alphaModFix', amt: .5 },
+      { type: 'alphaMod', container: { kind: 'tree', effects: [
+        { type: 'container', container: { name: 'mask', kind: 'tree', effects: [{ type: 'reference', reference: 'fill' }] } },
+        { type: 'reference', reference: 'mask' },
+      ] } },
+    ] });
+    expect([...buf.data]).toEqual([10, 20, 30, 128]);
+  });
+  it('charges recursive scratch and Gaussian kernels to the four-surface memory ceiling', () => {
+    const nested: BlipEffect = { type: 'alphaMod', container: { kind: 'tree', effects: [
+      { type: 'alphaMod', container: { kind: 'tree', effects: [
+        { type: 'alphaMod', container: { kind: 'tree', effects: [{ type: 'alphaRepl', alpha: .5 }] } },
+      ] } },
+    ] } };
+    expect(() => assertBlipPixelEffectsBudget({ effects: [nested] }, MAX_IMAGE_EFFECT_BASE_PIXELS,
+      { width: 4096, height: 2048 })).toThrowError(expect.objectContaining({ metric: 'active-decoded-bytes' }));
+    const radiusPixels = Math.floor(MAX_RASTER_PIXELS / Float64Array.BYTES_PER_ELEMENT) + 1;
+    expect(() => applyBlipPixelEffects(buffer([1, 2, 3, 255]), { effects: [
+      { type: 'blur', radius: radiusPixels * 9525, grow: false },
+    ] })).toThrowError(expect.objectContaining({ metric: 'active-decoded-bytes' }));
+  });
+
+  it('evaluates spatial and shape-effect children as alpha masks, without recoloring the parent', () => {
+    const shifted = buffer([10, 20, 30, 255], [40, 50, 60, 128]);
+    applyBlipPixelEffects(shifted, { effects: [{ type: 'alphaMod', container: { kind: 'tree', effects: [
+      { type: 'relativeOffset', tx: .5, ty: 0 },
+    ] } }] });
+    expect([...shifted.data]).toEqual([10, 20, 30, 0, 40, 50, 60, 128]);
+    const shadow = { color: 'FF0000', alpha: .5, blur: 0, dist: 9525, dir: 0 };
+    for (const [effect, alpha] of [
+      [{ type: 'alphaOutset', radius: 9525 }, 255],
+      [{ type: 'alphaOutset', radius: -9525 }, 0],
+      [{ type: 'glow', glow: { color: 'FF0000', alpha: .5, radius: 0 } }, 128],
+      [{ type: 'softEdge', radius: 9525 }, 244],
+      [{ type: 'shadow', inner: false, shadow }, 0],
+      [{ type: 'shadow', inner: true, shadow }, 128],
+      [{ type: 'presetShadow', shadows: [shadow] }, 0],
+    ] satisfies [BlipEffect, number][]) {
+      const buf = buffer([10, 20, 30, 255]);
+      applyBlipPixelEffects(buf, { effects: [{ type: 'alphaMod', container: { kind: 'tree', effects: [effect] } }] });
+      expect([...buf.data], effect.type).toEqual([10, 20, 30, alpha]);
+    }
+  });
+
+  it('keeps overlay fill geometry in the authored frame after a grown blur', () => {
+    const result = applyBlipPixelEffects(buffer([255, 0, 0, 255]), { effects: [
+      { type: 'blur', radius: 9525, grow: true },
+      { type: 'fillOverlay', blend: 'over', fill: { fillType: 'solid', color: '00FF00' } },
+    ] });
+    expect([...result.data.slice(16, 20)]).toEqual([0, 255, 0, 255]);
+    expect(result.data[3]).toBe(0);
+    expect(result.data[7]).toBeLessThan(255);
+  });
+
+  it('evaluates part-local named definitions and charges their lookup work', () => {
+    const effects: BlipEffect[] = [
+      { type: 'alphaMod', container: { kind: 'tree', effects: [{ type: 'reference', reference: 'external' }] } },
+      { type: 'definitions', work: 10, containers: [
+        { name: 'external', kind: 'tree', effects: [{ type: 'alphaRepl', alpha: .5 }] },
+      ] },
+    ];
+    const buf = buffer([1, 2, 3, 128]);
+    applyBlipPixelEffects(buf, { effects });
+    expect([...buf.data]).toEqual([1, 2, 3, 64]);
+    expect(() => assertBlipPixelEffectsBudget({ effects: [effects[0], {
+      type: 'definitions', work: MAX_IMAGE_EFFECT_PIXEL_WORK + 1, containers: [],
+    }] }, 0)).toThrowError(expect.objectContaining({ metric: 'image-effect-work' }));
+  });
+
+  it('admits identity blur at the existing maximum base without fictitious kernel allocation', () => {
+    expect(() => assertBlipPixelEffectsBudget({ effects: [{ type: 'blur', radius: 0, grow: true }] },
+      MAX_IMAGE_EFFECT_BASE_PIXELS, { width: 4096, height: 2048 })).not.toThrow();
+  });
+
   it('grayscl + biLevel(50%) thresholds the Rec. 709 luma PowerPoint uses', () => {
     // PowerPoint PDF evidence: (2,167,223) → white; (0,147,190), (0,126,229)
     // and (9,74,178) → black under its "Black and White" picture setting.
@@ -140,11 +326,11 @@ describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
     expect([...buf.data]).toEqual([255, 0, 0, 64]);
   });
 
-  it.each(['alphaMod', 'blur', 'fillOverlay', 'hsl', 'tint'])('rejects %s before mutating pixels', (effect) => {
+  it('rejects a malformed parser diagnostic before mutating pixels', () => {
     const buf = buffer([0, 0, 0, 255]);
     expect(() => applyBlipPixelEffects(buf, { effects: [
       { type: 'luminance', bright: .9, contrast: 0 },
-      { type: 'unsupported', effect },
+      { type: 'unsupported', effect: 'malformed effect' },
     ] })).toThrow(expect.objectContaining({ code: 'unsupported-image-effect' }));
     expect([...buf.data]).toEqual([0, 0, 0, 255]);
   });
