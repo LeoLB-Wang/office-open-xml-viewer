@@ -466,6 +466,8 @@ pub enum EffectFill {
         #[serde(skip_serializing_if = "Option::is_none")]
         dpi: Option<f64>,
         stretch: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rot_with_shape: Option<bool>,
         blip_effects: Vec<BlipEffect>,
     },
 }
@@ -475,7 +477,54 @@ const MAX_IMAGE_EFFECT_STEPS: usize = 16;
 const MAX_IMAGE_EFFECT_LOOKUP_WORK: u64 = 1 << 27;
 #[derive(Default)]
 struct EffectParseContext {
-    active_definitions: std::collections::HashSet<roxmltree::NodeId>,
+    active: std::collections::HashSet<roxmltree::NodeId>,
+    steps: usize,
+    work: u64,
+    lookup_work: u64,
+    failure: Option<BlipEffect>,
+}
+
+impl EffectParseContext {
+    // One ledger covers all XML-to-recipe edges: inherited grpFill, nested
+    // blipFill, inline alphaMod/blend/cont and named effectDag. Checking only
+    // named definitions leaves inheritance cycles and deep inline XML unsafe.
+    // These are library resource ceilings, not ECMA-376 schema restrictions.
+    fn enter(&mut self, node: Node<'_, '_>) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        if self.active.contains(&node.id()) {
+            self.failure = Some(BlipEffect::Unsupported {
+                effect: "cyclic effect reference or inherited fill".into(),
+            });
+            return false;
+        }
+        if self.active.len() >= MAX_IMAGE_EFFECT_STEPS {
+            self.failure = Some(BlipEffect::EffectCountLimit {
+                observed: MAX_IMAGE_EFFECT_STEPS + 1,
+            });
+            return false;
+        }
+        self.active.insert(node.id());
+        true
+    }
+    fn charge(&mut self, units: u64) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        self.work = self.work.saturating_add(units);
+        if self.work.saturating_add(self.lookup_work) > MAX_IMAGE_EFFECT_LOOKUP_WORK
+            || crate::resource::charge_image_effect_work(units, MAX_IMAGE_EFFECT_LOOKUP_WORK)
+                .is_err()
+        {
+            self.failure = Some(BlipEffect::Definitions {
+                containers: Vec::new(),
+                work: MAX_IMAGE_EFFECT_LOOKUP_WORK + 1,
+            });
+            return false;
+        }
+        true
+    }
 }
 
 /// Parse CT_Blip effects without losing order or silently dropping effects.
@@ -504,6 +553,18 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
             if *bright == 0.0 && *contrast == 0.0)
     });
     complete_named_effects(&mut effects, blip, resolver, tint_mode, context);
+    if let Some(failure) = context.failure.take() {
+        // Preserve a transportable failure even through hosts whose parser API
+        // stores effects instead of returning Result. Core preflight turns this
+        // into unsupported-image-effect or the typed image-effect quota error.
+        return vec![failure];
+    }
+    if context.work > 0 {
+        effects.push(BlipEffect::Definitions {
+            containers: Vec::new(),
+            work: context.work,
+        });
+    }
     // Only outer hosts also parse a legacy standalone duotone palette.
     // Recursive fills/containers have no separate palette and keep the entry.
     if effects.len() == 1
@@ -521,6 +582,80 @@ fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
     tint_mode: crate::color::TintMode,
     context: &mut EffectParseContext,
 ) -> Vec<BlipEffect> {
+    if !context.enter(blip) {
+        return Vec::new();
+    }
+    let mut effects = Vec::new();
+
+    for node in blip.children().filter(|n| n.is_element()) {
+        if context.failure.is_some() {
+            break;
+        }
+        if node.tag_name().name() == "extLst" {
+            continue;
+        }
+        context.steps += 1;
+        if context.steps > MAX_IMAGE_EFFECT_STEPS {
+            context.failure = Some(BlipEffect::EffectCountLimit {
+                observed: context.steps,
+            });
+            break;
+        }
+        let effect = parse_effect_node(node, resolver, tint_mode, context);
+        effects.push(effect.unwrap_or_else(|| BlipEffect::Unsupported {
+            effect: node.tag_name().name().to_owned(),
+        }));
+    }
+    context.active.remove(&blip.id());
+    effects
+}
+
+// Recursive dispatch has a small stack frame. Keeping nonrecursive leaf
+// parsing separate avoids multiplying its large enum-construction workspace
+// by the allowed nesting depth (including native debug and WASM builds).
+fn parse_effect_node<R: crate::color::ThemeResolver + ?Sized>(
+    node: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+    context: &mut EffectParseContext,
+) -> Option<BlipEffect> {
+    match node.tag_name().name() {
+        "alphaMod" => node
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "cont")
+            .map(|cont| BlipEffect::AlphaMod {
+                container: parse_container(cont, resolver, tint_mode, context),
+            }),
+        "cont" | "effectDag" => Some(BlipEffect::Container {
+            container: parse_container(node, resolver, tint_mode, context),
+        }),
+        "fillOverlay" => node.attribute("blend").and_then(|blend| {
+            parse_effect_fill(node, resolver, tint_mode, context).map(|fill| {
+                BlipEffect::FillOverlay {
+                    fill,
+                    blend: blend.into(),
+                }
+            })
+        }),
+        "blend" => node
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "cont")
+            .zip(node.attribute("blend"))
+            .map(|(cont, blend)| BlipEffect::Blend {
+                container: parse_container(cont, resolver, tint_mode, context),
+                blend: blend.into(),
+            }),
+        "fill" => parse_effect_fill(node, resolver, tint_mode, context)
+            .map(|fill| BlipEffect::Fill { fill }),
+        _ => parse_leaf_effect(node, resolver, tint_mode),
+    }
+}
+
+fn parse_leaf_effect<R: crate::color::ThemeResolver + ?Sized>(
+    node: Node<'_, '_>,
+    resolver: &R,
+    tint_mode: crate::color::TintMode,
+) -> Option<BlipEffect> {
     let color = |container: Option<Node<'_, '_>>| -> Option<(String, f64)> {
         let element = container?.children().find(|n| n.is_element())?;
         let source = crate::color::color_source_from_element(element)?;
@@ -534,221 +669,185 @@ fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
         };
         Some((hex[..6].to_owned(), alpha))
     };
-    let mut effects = Vec::new();
-
-    for node in blip.children().filter(|n| n.is_element()) {
-        let effect = match node.tag_name().name() {
-            "grayscl" => Some(BlipEffect::Grayscale),
-            "biLevel" => node
-                .attribute("thresh")
-                .and_then(crate::units::drawingml_percentage_to_fraction)
-                .map(|thresh| BlipEffect::BiLevel {
-                    thresh: thresh.clamp(0.0, 1.0),
+    // Defaults apply only to absent attributes (§A.4.1), never malformed
+    // authored values. The shared shape-effect helpers are intentionally
+    // tolerant; recursive CT_Blip must preserve a typed failure instead.
+    for attribute in node.attributes() {
+        let key = attribute.name();
+        let valid = match key {
+            "rad" | "blurRad" | "dist" | "tx" | "ty"
+                if !matches!(node.tag_name().name(), "relOff") =>
+            {
+                crate::units::coordinate_to_emu(attribute.value()).is_some()
+            }
+            "amt" | "thresh" | "a" | "sat" | "lum" | "bright" | "contrast" | "sx" | "sy"
+            | "stA" | "stPos" | "endA" | "endPos" | "tx" | "ty" => {
+                crate::units::drawingml_percentage_to_fraction(attribute.value())
+                    .is_some_and(f64::is_finite)
+            }
+            "hue" | "dir" | "fadeDir" | "kx" | "ky" => {
+                attribute.value().parse::<f64>().is_ok_and(f64::is_finite)
+            }
+            "grow" | "useA" | "rotWithShape" => {
+                matches!(attribute.value(), "0" | "1" | "true" | "false")
+            }
+            _ => true,
+        };
+        if !valid {
+            return None;
+        }
+    }
+    if matches!(
+        node.tag_name().name(),
+        "glow" | "innerShdw" | "outerShdw" | "prstShdw"
+    ) && color(Some(node)).is_none()
+    {
+        return None;
+    }
+    if node.tag_name().name() == "softEdge" && node.attribute("rad").is_none() {
+        return None;
+    }
+    match node.tag_name().name() {
+        "grayscl" => Some(BlipEffect::Grayscale),
+        "biLevel" => node
+            .attribute("thresh")
+            .and_then(crate::units::drawingml_percentage_to_fraction)
+            .map(|thresh| BlipEffect::BiLevel {
+                thresh: thresh.clamp(0.0, 1.0),
+            }),
+        "clrChange" => {
+            let child = |name: &str| {
+                node.children()
+                    .find(|n| n.is_element() && n.tag_name().name() == name)
+            };
+            match (color(child("clrFrom")), color(child("clrTo"))) {
+                (Some((from, from_alpha)), Some((to, to_alpha))) => Some(BlipEffect::ColorChange {
+                    from,
+                    from_alpha,
+                    to,
+                    to_alpha,
+                    use_alpha: node
+                        .attribute("useA")
+                        .is_some_and(|v| v == "1" || v == "true"),
                 }),
-            "clrChange" => {
-                let child = |name: &str| {
-                    node.children()
-                        .find(|n| n.is_element() && n.tag_name().name() == name)
-                };
-                match (color(child("clrFrom")), color(child("clrTo"))) {
-                    (Some((from, from_alpha)), Some((to, to_alpha))) => {
-                        Some(BlipEffect::ColorChange {
-                            from,
-                            from_alpha,
-                            to,
-                            to_alpha,
-                            use_alpha: node
-                                .attribute("useA")
-                                .is_some_and(|v| v == "1" || v == "true"),
-                        })
-                    }
-                    _ => None,
-                }
+                _ => None,
             }
-            // §20.1.8.42 CT_LuminanceEffect: ST_FixedPercentage bright and
-            // contrast, both defaulting to 0. Retain identity sibling branches.
-            "lum" => {
-                let fraction = |name: &str| match node.attribute(name) {
-                    None => Some(0.0),
-                    Some(value) => crate::units::drawingml_percentage_to_fraction(value)
-                        .map(|value| value.clamp(-1.0, 1.0)),
-                };
-                match (fraction("bright"), fraction("contrast")) {
-                    (Some(bright), Some(contrast)) => {
-                        Some(BlipEffect::Luminance { bright, contrast })
-                    }
-                    _ => None,
-                }
+        }
+        // §20.1.8.42 CT_LuminanceEffect: ST_FixedPercentage bright and
+        // contrast, both defaulting to 0. Retain identity sibling branches.
+        "lum" => {
+            let fraction = |name: &str| match node.attribute(name) {
+                None => Some(0.0),
+                Some(value) => crate::units::drawingml_percentage_to_fraction(value)
+                    .map(|value| value.clamp(-1.0, 1.0)),
+            };
+            match (fraction("bright"), fraction("contrast")) {
+                (Some(bright), Some(contrast)) => Some(BlipEffect::Luminance { bright, contrast }),
+                _ => None,
             }
-            "duotone" => {
-                let mut colors = node
-                    .children()
-                    .filter(|n| n.is_element())
-                    .filter_map(crate::color::color_source_from_element)
-                    .filter_map(|source| {
-                        crate::color::resolve_color_source(source, resolver, tint_mode)
-                    });
-                match (colors.next(), colors.next()) {
-                    (Some(clr1), Some(clr2)) => Some(BlipEffect::Duotone {
-                        clr1: clr1.to_uppercase(),
-                        clr2: clr2.to_uppercase(),
-                    }),
-                    _ => None,
-                }
-            }
-            "alphaBiLevel" => node
-                .attribute("thresh")
-                .and_then(crate::units::drawingml_percentage_to_fraction)
-                .map(|thresh| BlipEffect::AlphaBiLevel {
-                    thresh: thresh.clamp(0.0, 1.0),
-                }),
-            "alphaCeiling" => Some(BlipEffect::AlphaCeiling),
-            "alphaFloor" => Some(BlipEffect::AlphaFloor),
-            "alphaInv" => {
-                if node.children().any(|n| n.is_element()) {
-                    color(Some(node)).map(|(color, _)| BlipEffect::AlphaInv { color: Some(color) })
-                } else {
-                    Some(BlipEffect::AlphaInv { color: None })
-                }
-            }
-            "alphaMod" => node
+        }
+        "duotone" => {
+            let mut colors = node
                 .children()
-                .find(|n| n.is_element() && n.tag_name().name() == "cont")
-                .map(|cont| BlipEffect::AlphaMod {
-                    container: parse_container(cont, resolver, tint_mode, context),
+                .filter(|n| n.is_element())
+                .filter_map(crate::color::color_source_from_element)
+                .filter_map(|source| {
+                    crate::color::resolve_color_source(source, resolver, tint_mode)
+                });
+            match (colors.next(), colors.next()) {
+                (Some(clr1), Some(clr2)) => Some(BlipEffect::Duotone {
+                    clr1: clr1.to_uppercase(),
+                    clr2: clr2.to_uppercase(),
                 }),
-            "cont" => Some(BlipEffect::Container {
-                container: parse_container(node, resolver, tint_mode, context),
-            }),
-            "effect" => node.attribute("ref").map(|r| BlipEffect::Reference {
-                reference: r.into(),
-            }),
-            "blur" => {
-                let radius = node
-                    .attribute("rad")
-                    .map(|v| crate::units::coordinate_to_emu(v).map(|n| n as f64))
-                    .unwrap_or(Some(0.0));
-                radius.map(|radius| BlipEffect::Blur {
-                    radius: radius.max(0.0),
-                    grow: !matches!(node.attribute("grow"), Some("0" | "false")),
-                })
+                _ => None,
             }
-            "hsl" => {
-                let read = |name| {
-                    node.attribute(name)
-                        .map(crate::units::drawingml_percentage_to_fraction)
-                        .unwrap_or(Some(0.0))
-                };
-                let hue = node
-                    .attribute("hue")
-                    .map(|v| v.parse::<f64>().ok().map(|n| n / 60000.0))
-                    .unwrap_or(Some(0.0));
-                match (hue, read("sat"), read("lum")) {
-                    (Some(hue), Some(sat), Some(lum)) => Some(BlipEffect::Hsl { hue, sat, lum }),
-                    _ => None,
-                }
+        }
+        "alphaBiLevel" => node
+            .attribute("thresh")
+            .and_then(crate::units::drawingml_percentage_to_fraction)
+            .map(|thresh| BlipEffect::AlphaBiLevel {
+                thresh: thresh.clamp(0.0, 1.0),
+            }),
+        "alphaCeiling" => Some(BlipEffect::AlphaCeiling),
+        "alphaFloor" => Some(BlipEffect::AlphaFloor),
+        "alphaInv" => {
+            if node.children().any(|n| n.is_element()) {
+                color(Some(node)).map(|(color, _)| BlipEffect::AlphaInv { color: Some(color) })
+            } else {
+                Some(BlipEffect::AlphaInv { color: None })
             }
-            "tint" => {
-                let hue = node
-                    .attribute("hue")
-                    .map(|v| v.parse::<f64>().ok().map(|n| n / 60000.0))
-                    .unwrap_or(Some(0.0));
-                let amt = node
-                    .attribute("amt")
+        }
+        "effect" => node.attribute("ref").map(|r| BlipEffect::Reference {
+            reference: r.into(),
+        }),
+        "blur" => {
+            let radius = node
+                .attribute("rad")
+                .map(|v| crate::units::coordinate_to_emu(v).map(|n| n as f64))
+                .unwrap_or(Some(0.0));
+            radius.map(|radius| BlipEffect::Blur {
+                radius: radius.max(0.0),
+                grow: !matches!(node.attribute("grow"), Some("0" | "false")),
+            })
+        }
+        "hsl" => {
+            let read = |name| {
+                node.attribute(name)
                     .map(crate::units::drawingml_percentage_to_fraction)
-                    .unwrap_or(Some(0.0));
-                match (hue, amt) {
-                    (Some(hue), Some(amt)) => Some(BlipEffect::Tint { hue, amt }),
-                    _ => None,
-                }
+                    .unwrap_or(Some(0.0))
+            };
+            let hue = node
+                .attribute("hue")
+                .map(|v| v.parse::<f64>().ok().map(|n| n / 60000.0))
+                .unwrap_or(Some(0.0));
+            match (hue, read("sat"), read("lum")) {
+                (Some(hue), Some(sat), Some(lum)) => Some(BlipEffect::Hsl { hue, sat, lum }),
+                _ => None,
             }
-            "fillOverlay" => node.attribute("blend").and_then(|blend| {
-                parse_effect_fill(node, resolver, tint_mode, context).map(|fill| {
-                    BlipEffect::FillOverlay {
-                        fill,
-                        blend: blend.into(),
-                    }
-                })
-            }),
-            "alphaOutset" => Some(BlipEffect::AlphaOutset {
-                radius: node
-                    .attribute("rad")
-                    .and_then(crate::units::coordinate_to_emu)
-                    .unwrap_or(0) as f64,
-            }),
-            "blend" => node
-                .children()
-                .find(|n| n.is_element() && n.tag_name().name() == "cont")
-                .zip(node.attribute("blend"))
-                .map(|(cont, blend)| BlipEffect::Blend {
-                    container: parse_container(cont, resolver, tint_mode, context),
-                    blend: blend.into(),
-                }),
-            "fill" => parse_effect_fill(node, resolver, tint_mode, context)
-                .map(|fill| BlipEffect::Fill { fill }),
-            "glow" => Some(BlipEffect::Glow {
-                glow: crate::effect::parse_glow_effect(node, resolver, tint_mode),
-            }),
-            "innerShdw" | "outerShdw" => Some(BlipEffect::Shadow {
-                shadow: crate::effect::parse_shadow_effect(node, resolver, tint_mode),
-                inner: node.tag_name().name() == "innerShdw",
-            }),
-            "softEdge" => Some(BlipEffect::SoftEdge {
-                radius: crate::effect::parse_soft_edge_effect(node).radius as f64,
-            }),
-            "reflection" => Some(BlipEffect::Reflection {
-                reflection: BlipReflection {
-                    base: {
-                        let mut reflection = crate::effect::parse_reflection_effect(node);
-                        // CT_ReflectionEffect@sy defaults to +100% (§A.4.1).
-                        // Keep the established shape painter's omitted-mirror
-                        // policy outside the recursive CT_Blip evaluator.
-                        reflection.sy = node
-                            .attribute("sy")
-                            .and_then(crate::units::drawingml_percentage_to_fraction)
-                            .unwrap_or(1.0);
-                        reflection
-                    },
-                    kx: node
-                        .attribute("kx")
-                        .and_then(|v| v.parse::<f64>().ok())
-                        .unwrap_or(0.0)
-                        / 60000.0,
-                    ky: node
-                        .attribute("ky")
-                        .and_then(|v| v.parse::<f64>().ok())
-                        .unwrap_or(0.0)
-                        / 60000.0,
-                    algn: node.attribute("algn").unwrap_or("b").into(),
-                    fade_dir: node
-                        .attribute("fadeDir")
-                        .and_then(|v| v.parse::<f64>().ok())
-                        .unwrap_or(5400000.0)
-                        / 60000.0,
-                    rot_with_shape: !matches!(node.attribute("rotWithShape"), Some("false" | "0")),
+        }
+        "tint" => {
+            let hue = node
+                .attribute("hue")
+                .map(|v| v.parse::<f64>().ok().map(|n| n / 60000.0))
+                .unwrap_or(Some(0.0));
+            let amt = node
+                .attribute("amt")
+                .map(crate::units::drawingml_percentage_to_fraction)
+                .unwrap_or(Some(0.0));
+            match (hue, amt) {
+                (Some(hue), Some(amt)) => Some(BlipEffect::Tint { hue, amt }),
+                _ => None,
+            }
+        }
+        "alphaOutset" => Some(BlipEffect::AlphaOutset {
+            radius: node
+                .attribute("rad")
+                .and_then(crate::units::coordinate_to_emu)
+                .unwrap_or(0) as f64,
+        }),
+        "glow" => Some(BlipEffect::Glow {
+            glow: crate::effect::parse_glow_effect(node, resolver, tint_mode),
+        }),
+        "innerShdw" | "outerShdw" => Some(BlipEffect::Shadow {
+            shadow: crate::effect::parse_shadow_effect(node, resolver, tint_mode),
+            inner: node.tag_name().name() == "innerShdw",
+        }),
+        "softEdge" => Some(BlipEffect::SoftEdge {
+            radius: crate::effect::parse_soft_edge_effect(node).radius as f64,
+        }),
+        "reflection" => Some(BlipEffect::Reflection {
+            reflection: BlipReflection {
+                base: {
+                    let mut reflection = crate::effect::parse_reflection_effect(node);
+                    // CT_ReflectionEffect@sy defaults to +100% (§A.4.1).
+                    // Keep the established shape painter's omitted-mirror
+                    // policy outside the recursive CT_Blip evaluator.
+                    reflection.sy = node
+                        .attribute("sy")
+                        .and_then(crate::units::drawingml_percentage_to_fraction)
+                        .unwrap_or(1.0);
+                    reflection
                 },
-            }),
-            "prstShdw" => parse_preset_shadow(node, resolver, tint_mode)
-                .map(|shadows| BlipEffect::PresetShadow { shadows }),
-            "relOff" => Some(BlipEffect::RelativeOffset {
-                tx: node
-                    .attribute("tx")
-                    .and_then(crate::units::drawingml_percentage_to_fraction)
-                    .unwrap_or(0.0),
-                ty: node
-                    .attribute("ty")
-                    .and_then(crate::units::drawingml_percentage_to_fraction)
-                    .unwrap_or(0.0),
-            }),
-            "xfrm" => Some(BlipEffect::Transform {
-                sx: node
-                    .attribute("sx")
-                    .and_then(crate::units::drawingml_percentage_to_fraction)
-                    .unwrap_or(1.0),
-                sy: node
-                    .attribute("sy")
-                    .and_then(crate::units::drawingml_percentage_to_fraction)
-                    .unwrap_or(1.0),
                 kx: node
                     .attribute("kx")
                     .and_then(|v| v.parse::<f64>().ok())
@@ -759,41 +858,76 @@ fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
                     .and_then(|v| v.parse::<f64>().ok())
                     .unwrap_or(0.0)
                     / 60000.0,
-                tx: node
-                    .attribute("tx")
-                    .and_then(crate::units::coordinate_to_emu)
-                    .unwrap_or(0) as f64,
-                ty: node
-                    .attribute("ty")
-                    .and_then(crate::units::coordinate_to_emu)
-                    .unwrap_or(0) as f64,
-            }),
-            "alphaModFix" => {
-                match node
-                    .attribute("amt")
-                    .map(crate::units::drawingml_percentage_to_fraction)
-                    .unwrap_or(Some(1.0))
-                {
-                    Some(amt) => Some(BlipEffect::AlphaModFix { amt: amt.max(0.0) }),
-                    None => None,
-                }
-            }
-            "alphaRepl" => node
-                .attribute("a")
+                algn: node.attribute("algn").unwrap_or("b").into(),
+                fade_dir: node
+                    .attribute("fadeDir")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(5400000.0)
+                    / 60000.0,
+                rot_with_shape: !matches!(node.attribute("rotWithShape"), Some("false" | "0")),
+            },
+        }),
+        "prstShdw" => parse_preset_shadow(node, resolver, tint_mode)
+            .map(|shadows| BlipEffect::PresetShadow { shadows }),
+        "relOff" => Some(BlipEffect::RelativeOffset {
+            tx: node
+                .attribute("tx")
                 .and_then(crate::units::drawingml_percentage_to_fraction)
-                .map(|alpha| BlipEffect::AlphaRepl {
-                    alpha: alpha.clamp(0.0, 1.0),
-                }),
-            "clrRepl" => color(Some(node)).map(|(color, _)| BlipEffect::ColorReplace { color }),
-            // extLst is metadata, not an authored raster effect.
-            "extLst" => continue,
-            _ => None,
-        };
-        effects.push(effect.unwrap_or_else(|| BlipEffect::Unsupported {
-            effect: node.tag_name().name().to_owned(),
-        }));
+                .unwrap_or(0.0),
+            ty: node
+                .attribute("ty")
+                .and_then(crate::units::drawingml_percentage_to_fraction)
+                .unwrap_or(0.0),
+        }),
+        "xfrm" => Some(BlipEffect::Transform {
+            sx: node
+                .attribute("sx")
+                .and_then(crate::units::drawingml_percentage_to_fraction)
+                .unwrap_or(1.0),
+            sy: node
+                .attribute("sy")
+                .and_then(crate::units::drawingml_percentage_to_fraction)
+                .unwrap_or(1.0),
+            kx: node
+                .attribute("kx")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+                / 60000.0,
+            ky: node
+                .attribute("ky")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+                / 60000.0,
+            tx: node
+                .attribute("tx")
+                .and_then(crate::units::coordinate_to_emu)
+                .unwrap_or(0) as f64,
+            ty: node
+                .attribute("ty")
+                .and_then(crate::units::coordinate_to_emu)
+                .unwrap_or(0) as f64,
+        }),
+        "alphaModFix" => {
+            match node
+                .attribute("amt")
+                .map(crate::units::drawingml_percentage_to_fraction)
+                .unwrap_or(Some(1.0))
+            {
+                Some(amt) => Some(BlipEffect::AlphaModFix { amt: amt.max(0.0) }),
+                None => None,
+            }
+        }
+        "alphaRepl" => node
+            .attribute("a")
+            .and_then(crate::units::drawingml_percentage_to_fraction)
+            .map(|alpha| BlipEffect::AlphaRepl {
+                alpha: alpha.clamp(0.0, 1.0),
+            }),
+        "clrRepl" => color(Some(node)).map(|(color, _)| BlipEffect::ColorReplace { color }),
+        // extLst is metadata, not an authored raster effect.
+        "extLst" => None,
+        _ => None,
     }
-    effects
 }
 
 /// §20.1.8.24 permits references to named effect containers. CT_Blip's
@@ -845,11 +979,14 @@ fn complete_named_effects<R: crate::color::ThemeResolver + ?Sized>(
     let mut refs = BTreeSet::new();
     collect(effects, &mut names, &mut refs);
     let mut containers = Vec::new();
-    let mut work = 0;
+    let mut work: u64 = 0;
     if crate::resource::assert_healthy().is_err() {
         return;
     }
     while let Some(reference) = refs.pop_first() {
+        if context.failure.is_some() {
+            break;
+        }
         if names.contains(&reference) {
             continue;
         }
@@ -859,7 +996,11 @@ fn complete_named_effects<R: crate::color::ThemeResolver + ?Sized>(
             work += 1;
             // Shared with core/image/pixel-budget.ts; stop the search itself,
             // not merely the later rendering, at the existing work ceiling.
-            if work > MAX_IMAGE_EFFECT_LOOKUP_WORK {
+            if work
+                .saturating_add(context.work)
+                .saturating_add(context.lookup_work)
+                > MAX_IMAGE_EFFECT_LOOKUP_WORK
+            {
                 break;
             }
             if candidate.is_element()
@@ -877,34 +1018,30 @@ fn complete_named_effects<R: crate::color::ThemeResolver + ?Sized>(
         if let Some(target) = target {
             for _ in target.descendants() {
                 work += 1;
-                if work > MAX_IMAGE_EFFECT_LOOKUP_WORK {
+                if work
+                    .saturating_add(context.work)
+                    .saturating_add(context.lookup_work)
+                    > MAX_IMAGE_EFFECT_LOOKUP_WORK
+                {
                     break;
                 }
             }
         }
         if crate::resource::charge_image_effect_work(work - before, MAX_IMAGE_EFFECT_LOOKUP_WORK)
             .is_err()
-            || work > MAX_IMAGE_EFFECT_LOOKUP_WORK
+            || work
+                .saturating_add(context.work)
+                .saturating_add(context.lookup_work)
+                > MAX_IMAGE_EFFECT_LOOKUP_WORK
         {
             work = MAX_IMAGE_EFFECT_LOOKUP_WORK + 1;
             break;
         }
         if let Some(target) = target {
-            if context.active_definitions.contains(&target.id()) {
-                effects.push(BlipEffect::Unsupported {
-                    effect: "cyclic effect reference".into(),
-                });
-                break;
-            }
-            if context.active_definitions.len() >= MAX_IMAGE_EFFECT_STEPS {
-                effects.push(BlipEffect::EffectCountLimit {
-                    observed: context.active_definitions.len() + 1,
-                });
-                break;
-            }
-            context.active_definitions.insert(target.id());
             let container = parse_container(target, resolver, tint_mode, context);
-            context.active_definitions.remove(&target.id());
+            if context.failure.is_some() {
+                break;
+            }
             names.insert(reference);
             collect(&container.effects, &mut names, &mut refs);
             containers.push(container);
@@ -916,6 +1053,7 @@ fn complete_named_effects<R: crate::color::ThemeResolver + ?Sized>(
         }
     }
     if work > 0 {
+        context.lookup_work = context.lookup_work.saturating_add(work);
         effects.push(BlipEffect::Definitions { containers, work });
     }
 }
@@ -1017,79 +1155,158 @@ fn parse_effect_fill<R: crate::color::ThemeResolver + ?Sized>(
                 "noFill" | "solidFill" | "gradFill" | "pattFill" | "blipFill" | "grpFill"
             )
     })?;
-    match node.tag_name().name() {
-        "noFill" => Some(EffectFill::None),
-        "grpFill" => {
-            // §20.1.8.35 inherits the containing group's fill. Resolve it while
-            // ancestor XML and the owning theme are available, rather than
-            // asking a raster effect to guess parent paint after parsing.
-            for ancestor in parent.ancestors().skip(1) {
-                if let Some(properties) = ancestor
-                    .children()
-                    .find(|n| n.is_element() && n.tag_name().name() == "grpSpPr")
-                {
-                    if properties == parent {
-                        continue;
+    if !context.enter(node) {
+        return None;
+    }
+    // Bound projection before allocating gradient stops, color transforms or
+    // nested recipes. Descendants are iterative in roxmltree. Repeated inherited
+    // expansion spends the same package-wide work budget as named lookup.
+    for descendant in node.descendants() {
+        if !context.charge(1) {
+            context.active.remove(&node.id());
+            return None;
+        }
+        // Do not let the tolerant shared brush parser substitute defaults for
+        // malformed authored geometry. Defaults apply to absence only (§A.4.1).
+        for attr in descendant.attributes() {
+            let valid = match attr.name() {
+                "l" | "t" | "r" | "b" | "pos" | "sx" | "sy" => {
+                    crate::units::drawingml_percentage_to_fraction(attr.value())
+                        .is_some_and(f64::is_finite)
+                }
+                "tx" | "ty" if descendant.tag_name().name() == "tile" => {
+                    crate::units::coordinate_to_emu(attr.value()).is_some()
+                }
+                "ang" => attr.value().parse::<f64>().is_ok_and(f64::is_finite),
+                "rotWithShape" | "scaled" => matches!(attr.value(), "true" | "false" | "0" | "1"),
+                "dpi" => attr.value().parse::<u32>().is_ok(),
+                _ => true,
+            };
+            if !valid {
+                context.active.remove(&node.id());
+                return None;
+            }
+        }
+    }
+    let fill = (|| {
+        match node.tag_name().name() {
+            "noFill" => Some(EffectFill::None),
+            "grpFill" => {
+                // §20.1.8.35 inherits the containing group's fill. Resolve it while
+                // ancestor XML and the owning theme are available, rather than
+                // asking a raster effect to guess parent paint after parsing.
+                for ancestor in parent.ancestors().skip(1) {
+                    if !context.charge(1) {
+                        return None;
                     }
-                    if let Some(fill) = parse_effect_fill(properties, resolver, tint_mode, context)
+                    if let Some(properties) = ancestor
+                        .children()
+                        .find(|n| n.is_element() && n.tag_name().name() == "grpSpPr")
                     {
-                        return Some(fill);
+                        if properties == parent {
+                            continue;
+                        }
+                        return parse_effect_fill(properties, resolver, tint_mode, context);
                     }
                 }
+                // No containing group supplied a fill: preserve an explicit
+                // malformed-effect diagnostic instead of silently painting none.
+                None
             }
-            Some(EffectFill::None)
+            "solidFill" => crate::color::parse_color_node(node, resolver, tint_mode)
+                .map(|color| EffectFill::Solid { color }),
+            "gradFill" => {
+                // CT_GradientStop@pos is a required fixed percentage (§20.1.8.36),
+                // including Strict percentage lexemes. Shape parsing tolerates
+                // bad stops; an effect recipe must reject the entire fill rather
+                // than silently removing an authored color or defaulting its pos.
+                let mut stops = 0u64;
+                for stop in node
+                    .descendants()
+                    .filter(|n| n.is_element() && n.tag_name().name() == "gs")
+                {
+                    stops += 1;
+                    if !stop
+                        .attribute("pos")
+                        .and_then(crate::units::drawingml_percentage_to_fraction)
+                        .is_some_and(|p| p.is_finite() && (0.0..=1.0).contains(&p))
+                        || crate::color::parse_color_node(stop, resolver, tint_mode).is_none()
+                    {
+                        return None;
+                    }
+                }
+                // Sorting and validating stops precede allocation in the brush.
+                // Charge this projection work as well as the XML visits above.
+                if !context.charge(stops.saturating_mul(2 + u64::from((stops + 1).ilog2()))) {
+                    return None;
+                }
+                crate::fill::parse_grad_fill(node, resolver, tint_mode).map(|g| {
+                    EffectFill::Gradient {
+                        stops: g.stops,
+                        angle: g.angle,
+                        grad_type: g.grad_type,
+                        scaled: g.scaled,
+                        path: g.path,
+                        fill_to_rect: g.fill_to_rect,
+                        tile_rect: g.tile_rect,
+                        flip: g.flip,
+                        rot_with_shape: g.rot_with_shape,
+                    }
+                })
+            }
+            "pattFill" => {
+                // The shared painter's absent-field black/white/pct50 defaults
+                // are library policy. An authored but unresolvable color is a
+                // malformed recipe, never permission to substitute those defaults.
+                for color in node
+                    .children()
+                    .filter(|n| n.is_element() && matches!(n.tag_name().name(), "fgClr" | "bgClr"))
+                {
+                    if crate::color::parse_color_node(color, resolver, tint_mode).is_none() {
+                        return None;
+                    }
+                }
+                let p = crate::fill::parse_patt_fill(node, resolver, tint_mode);
+                Some(EffectFill::Pattern {
+                    fg: p.fg,
+                    bg: p.bg,
+                    preset: p.preset,
+                })
+            }
+            "blipFill" => {
+                let blip = node
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "blip")?;
+                let svg_image_path = svg_blip_rid(blip);
+                let image_path = blip_embed_rid(&blip).or_else(|| svg_image_path.clone())?;
+                let stretch = node
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "stretch");
+                let tile = node
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "tile");
+                let mut blip_effects = parse_effect_children(blip, resolver, tint_mode, context);
+                complete_named_effects(&mut blip_effects, blip, resolver, tint_mode, context);
+                Some(EffectFill::Image {
+                    mime_type: mime_from_ext(&image_path).into(),
+                    image_path,
+                    svg_image_path,
+                    src_rect: parse_src_rect(node),
+                    fill_rect: stretch.and_then(crate::fill::parse_fill_rect),
+                    tile: tile.map(crate::fill::parse_tile),
+                    dpi: node.attribute("dpi").and_then(|v| v.parse().ok()),
+                    stretch: stretch.is_some(),
+                    rot_with_shape: node
+                        .attribute("rotWithShape")
+                        .map(|v| matches!(v, "true" | "1")),
+                    blip_effects,
+                })
+            }
+            _ => None,
         }
-        "solidFill" => crate::color::parse_color_node(node, resolver, tint_mode)
-            .map(|color| EffectFill::Solid { color }),
-        "gradFill" => {
-            crate::fill::parse_grad_fill(node, resolver, tint_mode).map(|g| EffectFill::Gradient {
-                stops: g.stops,
-                angle: g.angle,
-                grad_type: g.grad_type,
-                scaled: g.scaled,
-                path: g.path,
-                fill_to_rect: g.fill_to_rect,
-                tile_rect: g.tile_rect,
-                flip: g.flip,
-                rot_with_shape: g.rot_with_shape,
-            })
-        }
-        "pattFill" => {
-            let p = crate::fill::parse_patt_fill(node, resolver, tint_mode);
-            Some(EffectFill::Pattern {
-                fg: p.fg,
-                bg: p.bg,
-                preset: p.preset,
-            })
-        }
-        "blipFill" => {
-            let blip = node
-                .children()
-                .find(|n| n.is_element() && n.tag_name().name() == "blip")?;
-            let svg_image_path = svg_blip_rid(blip);
-            let image_path = blip_embed_rid(&blip).or_else(|| svg_image_path.clone())?;
-            let stretch = node
-                .children()
-                .find(|n| n.is_element() && n.tag_name().name() == "stretch");
-            let tile = node
-                .children()
-                .find(|n| n.is_element() && n.tag_name().name() == "tile");
-            let mut blip_effects = parse_effect_children(blip, resolver, tint_mode, context);
-            complete_named_effects(&mut blip_effects, blip, resolver, tint_mode, context);
-            Some(EffectFill::Image {
-                mime_type: mime_from_ext(&image_path).into(),
-                image_path,
-                svg_image_path,
-                src_rect: parse_src_rect(node),
-                fill_rect: stretch.and_then(crate::fill::parse_fill_rect),
-                tile: tile.map(crate::fill::parse_tile),
-                dpi: node.attribute("dpi").and_then(|v| v.parse().ok()),
-                stretch: stretch.is_some(),
-                blip_effects,
-            })
-        }
-        _ => None,
-    }
+    })();
+    context.active.remove(&node.id());
+    fill
 }
 
 /// Resolve image relationships in nested fills with the owning part's map;
@@ -1469,6 +1686,76 @@ mod tests {
     }
 
     #[test]
+    fn inherited_picture_fill_cycle_is_a_diagnostic_not_a_stack_overflow() {
+        let xml = format!(
+            r#"<a:grpSp xmlns:a="{A_NS}" xmlns:r="{R_NS}">
+          <a:grpSpPr><a:blipFill><a:blip r:embed="rId1">
+            <a:fillOverlay blend="over"><a:grpFill/></a:fillOverlay>
+          </a:blip><a:stretch/></a:blipFill></a:grpSpPr>
+          <a:pic><a:blipFill><a:blip r:embed="rId2">
+            <a:fillOverlay blend="over"><a:grpFill/></a:fillOverlay>
+          </a:blip></a:blipFill></a:pic></a:grpSp>"#
+        );
+        let doc = Document::parse(&xml).unwrap();
+        let child = doc
+            .descendants()
+            .find(|n| n.tag_name().name() == "pic")
+            .unwrap()
+            .children()
+            .find(|n| n.is_element())
+            .unwrap();
+        let effects = parse_blip_effects(
+            child,
+            &DuoResolver,
+            crate::color::TintMode::PowerPointLinear,
+        );
+        assert!(
+            matches!(&effects[..], [BlipEffect::Unsupported { effect }] if effect.contains("cyclic"))
+        );
+    }
+
+    #[test]
+    fn every_inline_expansion_shares_depth_and_projection_limits() {
+        for (open, close) in [
+            ("<a:cont>", "</a:cont>"),
+            ("<a:alphaMod><a:cont>", "</a:cont></a:alphaMod>"),
+            ("<a:blend blend=\"over\"><a:cont>", "</a:cont></a:blend>"),
+            (
+                "<a:fillOverlay blend=\"over\"><a:blipFill><a:blip r:embed=\"rId1\">",
+                "</a:blip><a:stretch/></a:blipFill></a:fillOverlay>",
+            ),
+        ] {
+            let xml = format!(
+                r#"<a:blipFill xmlns:a="{A_NS}" xmlns:r="{R_NS}"><a:blip>{}<a:grayscl/>{}</a:blip></a:blipFill>"#,
+                open.repeat(40),
+                close.repeat(40)
+            );
+            let doc = Document::parse(&xml).unwrap();
+            let effects = parse_blip_effects(
+                doc.root_element(),
+                &DuoResolver,
+                crate::color::TintMode::PowerPointLinear,
+            );
+            assert!(
+                matches!(&effects[..], [BlipEffect::EffectCountLimit { observed }] if *observed > MAX_IMAGE_EFFECT_STEPS)
+            );
+        }
+        let xml = format!(
+            r#"<a:blipFill xmlns:a="{A_NS}"><a:blip>{}</a:blip></a:blipFill>"#,
+            "<a:grayscl/>".repeat(10000)
+        );
+        let doc = Document::parse(&xml).unwrap();
+        assert!(matches!(
+            &parse_blip_effects(
+                doc.root_element(),
+                &DuoResolver,
+                crate::color::TintMode::PowerPointLinear
+            )[..],
+            [BlipEffect::EffectCountLimit { .. }]
+        ));
+    }
+
+    #[test]
     fn references_retain_named_recipes_outside_the_immediate_blip_chain() {
         let xml = format!(
             r#"<a:root xmlns:a="{A_NS}">
@@ -1492,6 +1779,37 @@ mod tests {
             containers[0].effects,
             vec![BlipEffect::AlphaRepl { alpha: 0.5 }]
         );
+    }
+
+    #[test]
+    fn recursive_fills_do_not_drop_bad_colors_or_default_bad_stop_positions() {
+        let parse = |fill: &str| {
+            let xml = format!(
+                r#"<a:blipFill xmlns:a="{A_NS}"><a:blip><a:fillOverlay blend="over">{fill}</a:fillOverlay></a:blip></a:blipFill>"#
+            );
+            let doc = Document::parse(&xml).unwrap();
+            serde_json::to_value(parse_blip_effects(
+                doc.root_element(),
+                &DuoResolver,
+                crate::color::TintMode::PowerPointLinear,
+            ))
+            .unwrap()
+        };
+        let valid_stop = r#"<a:gs pos="25%"><a:srgbClr val="FF0000"/></a:gs>"#;
+        let valid = parse(&format!(
+            r#"<a:gradFill><a:gsLst>{valid_stop}<a:gs pos="75%"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin/></a:gradFill>"#
+        ));
+        assert_eq!(valid[0]["fill"]["stops"][0]["position"], 0.25);
+        assert_eq!(valid[0]["fill"]["stops"][1]["position"], 0.75);
+        for fill in [
+            format!(r#"<a:gradFill><a:gsLst>{valid_stop}<a:gs pos="100000"><a:schemeClr val="unknown"/></a:gs></a:gsLst></a:gradFill>"#),
+            format!(r#"<a:gradFill><a:gsLst>{valid_stop}<a:gs pos="bad"><a:srgbClr val="0000FF"/></a:gs></a:gsLst></a:gradFill>"#),
+            r#"<a:pattFill prst="horz"><a:fgClr><a:schemeClr val="unknown"/></a:fgClr></a:pattFill>"#.into(),
+            format!(r#"<a:gradFill><a:gsLst>{valid_stop}</a:gsLst><a:lin ang="bad"/></a:gradFill>"#),
+            "<a:grpFill/>".into(),
+        ] {
+            assert_eq!(parse(&fill)[0]["type"], "unsupported");
+        }
     }
 
     #[test]
