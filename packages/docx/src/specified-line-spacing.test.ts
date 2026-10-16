@@ -4,7 +4,8 @@ import { layoutDocument } from './document-layout.js';
 import type { DocParagraph, DocxDocumentModel, DocRun, LineSpacing } from './types.js';
 import type { ParagraphLayout } from './layout/types.js';
 
-// Word for Mac printing PDFs, modes 14/15: coordinates are quantized to
+// Word printing PDFs (Mac modes 14/15; Windows mode 15 adjudication for FE
+// usWin boxes): coordinates are quantized to
 // 0.24pt. Expectations below are the measured nominal geometry, not Canvas
 // font boxes (the deliberately different stub cannot supply the Word rule).
 function render(font: string, size: number, spacing: LineSpacing, grid = false, hostSize?: number, mode = 15, underline = false, markSize = size, wrap = false, localAlias: boolean | 'provided' = false, decoratedLast = false, markCsFace?: string) {
@@ -114,6 +115,15 @@ describe('Word specified spacing for ordinary Latin text', () => {
     expect(hosted.flowBounds.heightPt).toBe(72);
   });
 
+  it.each([
+    [10, 24, 19.20],
+    [30, 50.16, 35.64],
+  ])('uses the Windows usWin descent for %spt Far East atLeast text', (size, advance, baseline) => {
+    const paragraph = render('Yu Mincho', size, { rule: 'atLeast', value: 24, explicit: true });
+    expect(Math.abs(paragraph.lines[0].advancePt - advance)).toBeLessThan(.24);
+    expect(Math.abs(paragraph.lines[0].baselinePt - 72 - baseline)).toBeLessThan(.24);
+  });
+
   it('preserves unmeasured decorated text and a differently-sized paragraph mark', () => {
     const spacing = { rule: 'exact', value: 30, explicit: true } as const;
     const underlined = render('Arial', 10, spacing, false, undefined, 15, true);
@@ -137,7 +147,7 @@ describe('Word specified spacing for ordinary Latin text', () => {
   it('allocates whole grid cells for the explicit single-line diagnostic', () => {
     const paragraph = render('Yu Mincho', 30, { rule: 'auto', value: 1, explicit: true }, true);
     expect(paragraph.lines[0].advancePt).toBe(60);
-    expect(Math.abs(paragraph.lines[0].baselinePt - 72 - 40)).toBeLessThan(.24);
+    expect(Math.abs(paragraph.lines[0].baselinePt - 72 - 40.56)).toBeLessThan(.24);
   });
 
   it('keeps grid-atLeast floating hosts out of visible-text allocation', () => {
@@ -151,7 +161,7 @@ describe('Word specified spacing for ordinary Latin text', () => {
     ['Arial', 10, 24, 24, 17.52],
     ['Arial', 10, 40, 40, 33.60],
     ['Arial', 30, 24, 40, 30.96],
-    ['Yu Mincho', 30, 24, 60, 40.08],
+    ['Yu Mincho', 30, 24, 60, 40.56],
   ] as const)('places %s grid-atLeast leading before the normal cell box', (font, size, minimum, advance, baseline) => {
     const paragraph = render(font, size, { rule: 'atLeast', value: minimum, explicit: true }, true);
     expect(paragraph.lines.map(line => line.advancePt)).toEqual([advance, advance, advance]);

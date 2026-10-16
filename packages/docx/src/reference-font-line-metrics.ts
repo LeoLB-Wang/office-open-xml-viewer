@@ -62,6 +62,8 @@ function project(profile: ReferenceFontMetricProfile): ReferenceFontLineMetrics 
     hheaAscent: profile.hhea[0],
     hheaDescent: profile.hhea[1],
     hheaLineGap: profile.hhea[2],
+    winAscent: profile.win?.[0],
+    winDescent: profile.win?.[1],
     farEastCodePage: profile.farEastCodePage,
   });
   const result = projected?.lineHeightRatio != null
@@ -95,11 +97,14 @@ function identicalProjection(
  * Resolve metadata-only reference vertical geometry for an authored face.
  * ECMA-376 Part 1 §17.3.1.33 defines automatic spacing as a multiple of the
  * normal single line but does not select an OpenType metric table. DOCX applies
- * a bounded Word-for-Mac hhea projection: ordinary faces use signed hhea
- * leading; OS/2 code-page bits 17–20 select a centered 1.3× hhea box. This
- * was observed on static synthetic TrueType faces with Latin text, 8–48pt,
- * isolated bits 16–21, changed hhea sides/gap, and equal-ratio UPM controls.
- * It is not established for other Office versions or fallback faces. A
+ * a Windows-adjudicated projection: ordinary faces use signed hhea leading;
+ * OS/2 code-page bits 17–20 select a centered 1.3× usWin box. Mac synthetic
+ * TrueType controls with Latin text, 8–48pt, isolated bits 16–21 and varied
+ * hhea/UPM established the class but used hhea. Windows 16.0.20430 grid and
+ * atLeast controls distinguish the boxes for Yu Gothic/Mincho, with equal-box
+ * MS Mincho/MS Gothic/Meiryo counterexamples. Both platforms' tested faces
+ * have identical vertical tables; policy chooses Windows without an OS branch.
+ * Missing usWin declines FE projection rather than substituting hhea. A
  * controlled Word-for-Mac PDF confirmed the normal-line minimum for Calibri:
  * at 11pt, atLeast 0–269 twips stays at 13.44pt while 360/480 twips yields
  * 18/24pt; at 24pt, 0/480 twips both retain 29.28pt. Those observations do

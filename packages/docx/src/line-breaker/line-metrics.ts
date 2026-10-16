@@ -40,13 +40,13 @@ export function docGridLineCells(naturalPx: number, pitchPx: number): number {
 /** Deterministic single-line height used to count docGrid cells for one East
  * Asian text run. Resolved font resources contribute their parsed design height.
  *
- * The `word-east-asian-grid-line-allocation` rule supplies the 1.3 × hhea-box
+ * The `word-east-asian-grid-line-allocation` rule supplies the 1.3 × usWin-box
  * fallback measured for the Far East grid path; §17.6.5 does not define this
  * factor.
  *
- * When the font resource is unavailable, its hhea box is unknown, so the
+ * When the font resource is unavailable, its usWin box is unknown, so the
  * compatibility fallback uses 1.3em (WORD_FAR_EAST_SINGLE_LINE_FACTOR).
- * This assumes an unknown hhea box of 1em and can choose the wrong cell near
+ * This assumes an unknown usWin box of 1em and can choose the wrong cell near
  * a grid boundary. It is an explicit unavailable-resource fallback, not a
  * normative font-metrics claim or an error bound. Issue #1525 tracks its
  * replacement when the actual face geometry or a justified substitute exists.
