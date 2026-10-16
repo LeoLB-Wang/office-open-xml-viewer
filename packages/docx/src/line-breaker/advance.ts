@@ -1,3 +1,4 @@
+import { textSpacingAdvance } from '../character-spacing.js';
 import { sliceTextBreakWindow } from './text-break-window.js';
 import { graphemeClusterOffsets } from '@silurus/ooxml-core';
 import { EAST_ASIAN_RE, sliceTextShapeRequest, semanticSlotStartIndex } from '../layout/text.js';
@@ -400,42 +401,24 @@ export function textAdvanceWidth(
   charScale: number,
   charSpacingPx: number,
 ): number {
-  const codePoints = [...text];
   return naturalWidthPx * charScale
-    + codePoints.length * characterGridDeltaPx
-    + pitchBearingCharacterCount(codePoints) * charSpacingPx;
+    + textSpacingAdvance(text, characterGridDeltaPx, charSpacingPx);
 }
 
-/** §17.3.2.35 adds the pitch "after each character … before the following
- *  character is rendered". Two kinds of code point are not such a character:
- *  - A combining mark (`\p{M}`) belongs to its base's user-perceived character
- *    (UAX #29). Canvas `letterSpacing`, which paints this pitch, likewise
- *    spaces once per grapheme cluster: Chrome and Firefox measure `a` + U+030A
- *    exactly as `a` under any `letterSpacing`. A mark split from its base by a
- *    §17.3.2.26 font-slot boundary (U+0300–U+036F is highAnsi, its Basic Latin
- *    base is ascii) has zero natural advance, so counting it would make that
- *    segment's advance negative under condensed spacing.
- *  - An unselected optional hyphen (§17.3.3.29; `<w:softHyphen/>` or a literal
- *    U+00AD) is not rendered. A selected break paints its own hyphen glyph
- *    segment, which is spaced as an ordinary character. */
-function pitchBearingCharacterCount(codePoints: readonly string[]): number {
-  return codePoints.filter((c) => c !== OPTIONAL_HYPHEN && !COMBINING_MARK.test(c)).length;
-}
-
-const OPTIONAL_HYPHEN = '\u00AD';
-const COMBINING_MARK = /^\p{M}$/u;
 
 
-/** Total per-code-point letter-spacing (px) a segment draws with: the docGrid
+/** Uniform native Canvas letter-spacing (px) a segment draws with: the docGrid
  *  cell delta (already scoped by {@link segmentCharacterGridDeltaPx}) PLUS the
- *  §17.3.2.35 character-spacing pitch (all code points). Because Canvas
+ *  §17.3.2.35 character-spacing pitch. Because Canvas
  *  `ctx.letterSpacing` inserts the SAME advance after every glyph, the two are
  *  additive only when the grid delta applies to every glyph — i.e. a pure-EA
  *  segment (or none, when grid is inactive). For a mixed / Latin segment the
  *  grid delta is 0 (Latin is never snapped, §17.6.5) so only char-spacing
- *  contributes, and the value is still uniform across the segment. This single
- *  value is used for BOTH the measured advance and the painted `ctx.letterSpacing`
- *  so measure==paint holds. */
+ *  contributes, and the value is still uniform across the segment. Measurement
+ *  counts their contributions separately via textSpacingAdvance.
+ *  Native engines may space standalone or spacing marks differently. Earlier
+ *  measurement counted every scalar; retain the established contextual paint
+ *  behavior instead of splitting shaped text to force measurement parity. */
 export function segLetterSpacingPx(
   seg: LayoutTextSeg,
   grid: DocGridCtx | undefined,
@@ -448,7 +431,7 @@ export function segLetterSpacingPx(
 
 /** A text segment's laid-out advance including the §17.3.2.43 horizontal scale
  *  and §17.3.2.35 character spacing on top of the docGrid delta. Scale natural
- *  glyph width first, then add the fixed character-spacing pitch per code point;
+ *  glyph width first, then add run pitch per rendered character;
  *  these are independent OOXML properties. */
 export function segAdvanceWidth(
   seg: LayoutTextSeg,

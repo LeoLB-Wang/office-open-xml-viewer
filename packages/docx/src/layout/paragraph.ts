@@ -1,3 +1,5 @@
+import { textSpacingAdvance } from '../character-spacing.js';
+import { charSpacingDeltaPx, segmentCharacterGridDeltaPx } from '../line-breaker/advance.js';
 import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
 import { addExactRational, exactRationalFromNumber, exactRationalToNumberUp } from './exact-geometry.js';
 import { readingHooks } from '../internal/reading-hooks.js';
@@ -201,6 +203,8 @@ function finiteNonNegative(value: number, name: string): number {
 export type MeasuredTextPlanSegment = Readonly<
   Omit<TextPlacement, 'origin' | 'bounds' | 'advancePt' | 'paintOps'> & {
     measuredWidthPt: number;
+    /** Acquisition-only grid contribution, independent of run tracking. */
+    characterGridDeltaPt?: number;
     basePaintOps: readonly import('./types.js').TextPaintOp[];
     /** Physical advance from the segment origin through the final glyph. Word
      * retains later grid slack for layout but excludes it from a terminal underline. */
@@ -409,7 +413,8 @@ function contextualAdvance(segment: MeasuredTextPlanSegment, text: string): numb
   });
   const scaleX = segment.basePaintOps[0]?.scaleX ?? 1;
   const pitchPt = segment.basePaintOps[0]?.letterSpacingPt ?? 0;
-  return shaped.advancePt * scaleX + [...text].length * pitchPt;
+  const gridPt = segment.characterGridDeltaPt ?? 0;
+  return shaped.advancePt * scaleX + textSpacingAdvance(text, gridPt, pitchPt - gridPt);
 }
 
 function keepGraphemeSafeCuts(
@@ -946,6 +951,7 @@ export function planLine(input: PlanLineInput): LineLayout {
     } else {
       const {
         measuredWidthPt: _measuredWidthPt,
+        characterGridDeltaPt: _characterGridDeltaPt,
         breakBefore: _breakBefore,
         rtl: _rtl,
         digitsAsAN: _digitsAsAN,
@@ -2012,6 +2018,9 @@ function textPlanSegment(
     ...(sourceRuns ? { sourceRuns } : {}) };
   if (projected.kind !== 'text') throw new Error('Visible text segment projected as anchor host');
   const pitchPt = segLetterSpacingPx(segment, characterGrid, 1);
+  // fitText replaces run tracking with its existing per-scalar allocation.
+  const gridPt = segment.fitTextPerGapPx ?? segmentCharacterGridDeltaPx(segment, characterGrid, 1);
+  const trackingPt = segment.fitTextPerGapPx !== undefined ? 0 : charSpacingDeltaPx(segment, 1);
   const scaleX = segment.charScale ?? 1;
   const baselineOffsetPt = retainedBaselineOffsetPt(segment);
   const retainedGeometry = retainedGeometryPlan(segment, sourceOffset, projected.color);
@@ -2032,11 +2041,13 @@ function textPlanSegment(
       'Visible text acquisition requires complete authoritative grapheme clusters from TextLayoutService',
     );
   }
+  let precedingSpacingPt = 0;
   let clusters = (shapedClusters ?? []).map((cluster, index) => {
     const prefix = segment.text.slice(0, cluster.range.start);
     const text = segment.text.slice(cluster.range.start, cluster.range.end);
-    const precedingScalars = [...prefix].length;
-    const scalarCount = [...text].length;
+    const clusterSpacingPt = textSpacingAdvance(text, gridPt, trackingPt);
+    const prefixSpacingPt = precedingSpacingPt;
+    precedingSpacingPt += clusterSpacingPt;
     const trailingFitPad = index === (shapedClusters?.length ?? 0) - 1
       ? segment.fitTextTrailingPadPx ?? 0
       : 0;
@@ -2065,14 +2076,14 @@ function textPlanSegment(
         xPt:
           cluster.offsetPt * scaleX
           + (segment.leadingWordBoundaryPx ?? 0)
-          + precedingScalars * pitchPt
+          + prefixSpacingPt
           + precedingWidthBalanceAdjustment
           + precedingPunctuationCompression,
         yPt: baselineOffsetPt,
       },
       advancePt:
         cluster.advancePt * scaleX
-        + scalarCount * pitchPt
+        + clusterSpacingPt
         + clusterWidthBalanceAdjustment
         + trailingFitPad
         + clusterPunctuationCompression,
@@ -2198,6 +2209,7 @@ function textPlanSegment(
           fontKerning: template.kerning,
           fontSizePt: projected.fontSizePt,
           letterSpacingPt: pitchPt,
+          characterGridDeltaPt: gridPt,
           charScale: scaleX,
           growTrRotateInk: true,
           writingMode: template.writingMode,
@@ -2314,6 +2326,7 @@ function textPlanSegment(
   return {
     ...style,
     kind: 'text', measuredWidthPt: segment.measuredWidth,
+    characterGridDeltaPt: gridPt,
     ...(segment.latinSpaceCompressionPx ? {
       trailingSpaceCompressionPt: segment.latinSpaceCompressionPx,
     } : {}),

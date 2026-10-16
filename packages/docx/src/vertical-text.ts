@@ -1,3 +1,4 @@
+import { textSpacingAdvance } from './character-spacing.js';
 // ECMA-376 §17.6.20 vertical writing (`<w:textDirection w:val="tbRl">`) — the
 // glyph-level primitives for rendering a page that has been laid out in the
 // SWAPPED logical coordinate space and rotated +90° into physical space by the
@@ -423,6 +424,7 @@ export function planVerticalRunWithCapability(
   growTrRotateInk = false,
   vertCapability: VertCapability = NO_VERT_CAPABILITY,
   writingMode: WritingMode = 'vertical-rl',
+  characterGridDeltaPt = 0,
 ): readonly PlannedVerticalGlyphCell[] {
   const cells: PlannedVerticalGlyphCell[] = [];
   const emBoxCenterPt = emBoxCenterAboveBaselinePx(ctx, text, fontPt);
@@ -430,9 +432,8 @@ export function planVerticalRunWithCapability(
   let sourceOffset = 0;
   for (const piece of splitVerticalOrientationRuns(text)) {
     if (piece.mode === 'sideways') {
-      const glyphCount = [...piece.text].length;
       const advancePt = ctx.measureText(piece.text).width * charScale
-        + letterSpacingPt * glyphCount;
+        + textSpacingAdvance(piece.text, characterGridDeltaPt, letterSpacingPt - characterGridDeltaPt);
       const drawOffsetPt = { xPt: 0, yPt: emBoxCenterPt };
       const blockAxisInkBounds = plannedVerticalBlockAxisInkBounds(
         ctx, piece.text, 'sideways', drawOffsetPt, charScale, writingMode, false,
@@ -459,7 +460,8 @@ export function planVerticalRunWithCapability(
         && bracketCp === null
         && verticalTrUprightFallback(cp);
       const routed = routedVerticalGlyphCell(ctx, ch, cp, vertCapability, growTrRotateInk);
-      const advancePt = routed.naturalPx * charScale + letterSpacingPt;
+      const advancePt = routed.naturalPx * charScale
+        + textSpacingAdvance(ch, characterGridDeltaPt, letterSpacingPt - characterGridDeltaPt);
       const range = { start: sourceOffset, end: sourceOffset + ch.length };
       if (routed.vert !== null) {
         const drawOffsetPt = { xPt: 0, yPt: 0 };
@@ -652,8 +654,7 @@ export function drawVerticalRunWithCapability(
       // frame). Letter spacing is applied inside the shaped piece, while the
       // trailing pitch remains part of the explicit cell advance as before.
       const naturalPx = ctx.measureText(piece.text).width;
-      const glyphCount = [...piece.text].length;
-      const pieceAdvance = naturalPx * charScale + letterSpacingPx * glyphCount;
+      const pieceAdvance = naturalPx * charScale + textSpacingAdvance(piece.text, 0, letterSpacingPx);
       const prevLetterSpacing = ctx.letterSpacing;
       ctx.textAlign = prevAlign;
       ctx.textBaseline = 'alphabetic';
@@ -705,7 +706,7 @@ export function drawVerticalRunWithCapability(
     const vertCell = routedCell.vert;
     const cellNaturalPx = routedCell.naturalPx;
     const rotateInkShiftPx = routedCell.rotateInkShiftPx;
-    const adv = cellNaturalPx * charScale + letterSpacingPx;
+    const adv = cellNaturalPx * charScale + textSpacingAdvance(ch, 0, letterSpacingPx);
     if (vertCell !== null) {
       // Preserve the feature glyph's asymmetric A/D placement by keeping its
       // origin at the nominal half-advance measured under the same composed

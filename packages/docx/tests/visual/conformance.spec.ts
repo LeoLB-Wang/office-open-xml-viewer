@@ -107,3 +107,37 @@ for (let index = 0; index < CONFORMANCE_CASES.length; index += 1) {
     }
   });
 }
+
+
+test('unselected literal soft hyphens preserve contextual cs paint in every browser', async ({ page }) => {
+  await page.goto('/tests/visual/conformance-fixture.html');
+  await page.waitForFunction(() => document.body.dataset.status === 'ready');
+  const results = await page.evaluate(async () => {
+    const modulePath = '/src/renderer.ts';
+    const { renderDocumentToCanvas } = await import(/* @vite-ignore */ modulePath);
+    const render = async (text: string) => {
+      const model = {
+        section: { pageWidth: 300, pageHeight: 100, marginTop: 10, marginRight: 10,
+          marginBottom: 10, marginLeft: 10, headerDistance: 0, footerDistance: 0 },
+        body: [{ type: 'paragraph', alignment: 'left', indentLeft: 0, indentRight: 0,
+          indentFirst: 0, spaceBefore: 0, spaceAfter: 0, lineSpacing: null,
+          numbering: null, tabStops: [], runs: [{ type: 'text', text, cs: true,
+            fontFamily: 'Arial', fontFamilyCs: 'Arial', fontSize: 20, charSpacing: 2,
+            bold: false, italic: false, underline: false, strikethrough: false,
+            color: null, isLink: false, background: null, vertAlign: null, hyperlink: null }],
+        }], headers: { default: null, first: null, even: null },
+        footers: { default: null, first: null, even: null },
+      };
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const fills: string[] = [];
+      const fillText = ctx.fillText.bind(ctx);
+      ctx.fillText = (value, x, y) => { fills.push(value); fillText(value, x, y); };
+      await renderDocumentToCanvas(model, canvas, 0, { width: 300, dpr: 1 });
+      return { bitmap: canvas.toDataURL(), fills };
+    };
+    return { optional: await render('a\u00ADb'), plain: await render('ab') };
+  });
+  expect(results.optional.fills).toEqual(['ab']);
+  expect(results.optional).toEqual(results.plain);
+});
