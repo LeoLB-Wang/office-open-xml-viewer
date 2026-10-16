@@ -284,6 +284,7 @@ impl Store<'_> {
             anchor_y_from_para: facts.vertical == "paragraph",
             color_replace_from: None,
             duotone: None,
+            blip_effects: Vec::new(),
             alpha: None,
             wrap_mode: Some(wrap_mode(facts.wrapping).into()),
             dist_top: facts.distances[1] as f64 / 12_700.0,

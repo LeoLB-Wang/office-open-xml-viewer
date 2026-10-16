@@ -77,26 +77,30 @@ interface PictureOptions {
   bright?: string;
   contrast?: string;
   inHeader?: boolean;
+  effects?: string;
+  grouped?: boolean;
 }
 
 function inlinePicXml(opts: PictureOptions): string {
   const cx = 200 * 12700; // 200pt square
-  const effects =
+  const effects = opts.effects ?? (
     (opts.duotone
       ? '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="DAB6BA"/></a:duotone>'
       : '') + (opts.alpha ? `<a:alphaModFix amt="${opts.alpha}"/>` : '')
       + (opts.bright || opts.contrast
-        ? `<a:lum bright="${opts.bright ?? '0'}" contrast="${opts.contrast ?? '0'}"/>` : '');
+        ? `<a:lum bright="${opts.bright ?? '0'}" contrast="${opts.contrast ?? '0'}"/>` : ''));
   return (
     '<w:p><w:r><w:drawing>' +
     `<wp:inline><wp:extent cx="${cx}" cy="${cx}"/>` +
-    '<a:graphic><a:graphicData>' +
+    `<a:graphic><a:graphicData${opts.grouped ? ' uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"' : ''}>` +
+    (opts.grouped ? `<wpg:wgp xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cx}"/><a:chOff x="0" y="0"/><a:chExt cx="${cx}" cy="${cx}"/></a:xfrm></wpg:grpSpPr>` : '') +
     '<pic:pic><pic:blipFill>' +
     `<a:blip r:embed="rIdImg">${effects}</a:blip>` +
     '<a:stretch><a:fillRect/></a:stretch>' +
     '</pic:blipFill>' +
     '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cx + '"/></a:xfrm>' +
     '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>' +
+    (opts.grouped ? '</wpg:wgp>' : '') +
     '</a:graphicData></a:graphic></wp:inline>' +
     '</w:drawing></w:r></w:p>'
   );
@@ -209,6 +213,35 @@ describe.skipIf(!skia || !docxMod || !rendererMod)('docx duotone + alphaModFix p
     }
     const contrast = sampleInside(await render(buildDocx(black, { contrast: '-50000' }), black));
     for (const channel of contrast) expect(Math.abs(channel - 64)).toBeLessThanOrEqual(1);
+  });
+
+  it('preserves the existing grouped-picture transparent colour with alphaModFix', async () => {
+    const png = await flatPngBytes(16, 16, '#000000');
+    expect(sampleInside(await render(buildDocx(png, { grouped: true }), png))).toEqual([0, 0, 0]);
+    const effects = '<a:alphaModFix amt="50000"/>' +
+      '<a:clrChange useA="1"><a:clrFrom><a:srgbClr val="000000"><a:alpha val="50000"/></a:srgbClr></a:clrFrom>' +
+      '<a:clrTo><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr></a:clrTo></a:clrChange>';
+    expect(sampleInside(await render(buildDocx(png, { effects, grouped: true }), png)))
+      .toEqual([255, 255, 255]);
+  });
+
+  it('keeps an inline alpha-sensitive colour nonmatch unchanged', async () => {
+    const png = await flatPngBytes(16, 16, '#000000');
+    const effects = '<a:alphaModFix amt="50000"/>' +
+      '<a:clrChange useA="1"><a:clrFrom><a:srgbClr val="000000"/></a:clrFrom>' +
+      '<a:clrTo><a:srgbClr val="FF0000"/></a:clrTo></a:clrChange>';
+    const pixel = sampleInside(await render(buildDocx(png, { effects }), png));
+    for (const channel of pixel) expect(Math.abs(channel - 128)).toBeLessThanOrEqual(1);
+  });
+
+  it('does not reapply the first duotone for every palette marker', async () => {
+    const png = await flatPngBytes(16, 16, '#FFFFFF');
+    // Both the established first-palette-only path and the authored two
+    // palettes produce red. Reusing the first palette twice darkens it.
+    const effects = '<a:grayscl/>' +
+      '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FF0000"/></a:duotone>' +
+      '<a:duotone><a:srgbClr val="FF0000"/><a:srgbClr val="FF0000"/></a:duotone>';
+    expect(sampleInside(await render(buildDocx(png, { effects }), png))).toEqual([255, 0, 0]);
   });
 
   it('duotone remaps a mid-grey picture along the clr1→clr2 ramp (§20.1.8.23)', async () => {

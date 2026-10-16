@@ -14317,14 +14317,37 @@ fn parse_blip_duotone_docx(blip_fill: roxmltree::Node, theme: &ThemeColors) -> O
 }
 
 fn parse_blip_effects_docx(blip_fill: roxmltree::Node, theme: &ThemeColors) -> Vec<BlipEffect> {
-    parse_blip_effects(
+    let mut effects = parse_blip_effects(
         blip_fill,
         &DocxSchemeResolver {
             theme,
             placeholder_color: None,
         },
         ooxml_common::color::TintMode::WordLiteral,
-    )
+    );
+    // DOCX compatibility boundary, not full CT_Blip conformance (§20.1.8.13):
+    // alphaModFix (§20.1.8.6) still belongs to paint/globalAlpha. Feeding a
+    // clrChange (§20.1.8.16) to the shared RGB/alpha matcher would therefore
+    // compare the unmodulated source alpha. Keep the pre-existing DOCX path
+    // for this combination (grouped-picture chromakey; inline clrChange was
+    // unsupported), until ordered alpha is represented by the shared model.
+    let has_alpha = blip_fill.children().any(|blip| {
+        blip.tag_name().name() == "blip"
+            && blip
+                .children()
+                .any(|effect| effect.tag_name().name() == "alphaModFix")
+    });
+    let mut saw_duotone = false;
+    effects.retain(|effect| match effect {
+        BlipEffect::ColorChange { .. } => !has_alpha,
+        // The shared model has only one resolved palette (§20.1.8.23).
+        // Preserve DOCX's first-palette-once behavior: replaying it for later
+        // markers newly darkens/recolours pictures without resolving theirs.
+        // Distinct per-effect palettes remain unsupported.
+        BlipEffect::Duotone => !std::mem::replace(&mut saw_duotone, true),
+        _ => true,
+    });
+    effects
 }
 
 /// `ooxml_common::chart::ColorResolver` implementation backed by the document
