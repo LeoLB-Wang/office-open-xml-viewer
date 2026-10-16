@@ -49,11 +49,12 @@ export function createCanvasPaintResourcePainter(
       bounds: LayoutRect,
       ctx: PaintCanvas2D,
       nativeImagePlan?: NativeReadingImagePlan,
+      coverageBounds?: LayoutRect,
     ): void {
       if (nativeImagePlan && kind !== 'image') throw new Error('Reading image plan/resource kind mismatch');
       switch (kind) {
         case 'image':
-          handlers.image(session.resolve(resourceKey, kind), bounds, ctx, nativeImagePlan);
+          handlers.image(session.resolve(resourceKey, kind), bounds, ctx, nativeImagePlan, coverageBounds);
           return;
         case 'chart':
           handlers.chart(session.resolve(resourceKey, kind), bounds, ctx);

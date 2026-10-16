@@ -1,3 +1,5 @@
+import { recordResourceDiagnostics, resourceDiagnosticsOf } from './resource-diagnostics.js';
+import type { DocxDiagnostic } from './types.js';
 import { readingHooks } from './internal/reading-hooks.js';
 import { noReadingNotices, noNativeReadingRequests } from './internal/reading-hooks.js';
 import { isDocxCallerInputError } from './layout/caller-input-error.js';
@@ -341,6 +343,16 @@ function snapshotReviewData(
 }
 
 export class DocxDocument {
+  /** Parser/layout limitations and resource acquisition failures. Updated after
+   * load/layout and page rendering; fallback content may still be displayed. */
+  get diagnostics(): readonly DocxDiagnostic[] {
+    return snapshotPlainData([
+      ...(this._mode === 'worker' ? this._meta?.diagnostics ?? [] : this._getLayout()?.diagnostics ?? []),
+      ...(this._meta?.resourceDiagnostics ?? []),
+      ...resourceDiagnosticsOf(this),
+    ], 'DOCX diagnostics') as readonly DocxDiagnostic[];
+  }
+
   private _metrics: OoxmlResourceMetricsSession | null = null;
   private _cjkFallback: CjkLang = 'jp';
   private _allowFootnoteContinuation = false;
@@ -628,6 +640,7 @@ export class DocxDocument {
           unregisterEmbeddedFonts(loadedEmbedded.faces);
           throw new PaginationAbortError();
         }
+        recordResourceDiagnostics(doc, loadedEmbedded.diagnostics);
         doc._embeddedFontFaces = loadedEmbedded.faces;
         embeddedMetrics = loadedEmbedded.metrics;
         embeddedRoutes = loadedEmbedded.routes;
@@ -1065,6 +1078,8 @@ export class DocxDocument {
       comments: review?.comments ?? [],
       footnotes: review?.footnotes ?? [],
       endnotes: review?.endnotes ?? [],
+      diagnostics: partial.diagnostics,
+      resourceDiagnostics: partial.review?.resourceDiagnostics ?? this._meta?.resourceDiagnostics,
       commentAnchorRanges: partial.commentAnchorRanges,
       revisionAnchorRanges: partial.revisionAnchorRanges,
     };
@@ -1092,6 +1107,7 @@ export class DocxDocument {
       const selected = this._meta;
       this._meta = {
         ...meta,
+        diagnostics: selected.diagnostics,
         pageCount: selected.pageCount,
         pageSizes: selected.pageSizes,
         bookmarkPages: selected.bookmarkPages,
@@ -1935,6 +1951,7 @@ export class DocxDocument {
     return renderLayoutSourceToCanvas(this._source, target, pageIndex, {
       ...this._withActiveView(opts),
       onTextRun,
+      onDiagnostic: diagnostic => recordResourceDiagnostics(this, [diagnostic]),
       assertPublicationCurrent: () => this._assertReadingPublication(generation),
       callerOwnedCanvasTarget,
       // Lazy image bytes: the renderer fetches each embedded blip on demand by
@@ -2000,6 +2017,7 @@ export class DocxDocument {
           // A successful response can race another request's revocation. Check
           // before replaying any text, and again between reentrant callbacks.
           assertCurrent();
+          recordResourceDiagnostics(this, rendered.diagnostics);
           if (replay) for (const r of rendered.runs) { assertCurrent(); replay(r); }
         } catch (error) {
           releaseOwnedBitmap(rendered.bitmap);

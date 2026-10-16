@@ -1,3 +1,4 @@
+import { shadowInkBounds } from './vml-shadow.js';
 import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
 import { addExactRational, exactRationalFromNumber, exactRationalToNumberUp } from './exact-geometry.js';
 import { readingHooks } from '../internal/reading-hooks.js';
@@ -63,7 +64,7 @@ import {
   type SegStretch,
 } from '../text-distribute.js';
 import { computeKashidaDistribution, type KashidaLevel } from '../kashida-justify.js';
-import { imageResourceKey } from './source-key.js';
+import { imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey, vmlEdgeResourceKey } from './source-key.js';
 import { stableFingerprint } from './fingerprint.js';
 import { chartResourceKey as canonicalChartResourceKey } from './source-key.js';
 import {
@@ -1355,12 +1356,13 @@ function shapePlanDiagnostics(
   plan: ShapeDrawingPlanResult,
   source: SourceRef,
 ): readonly LayoutDiagnostic[] {
-  if (plan.status === 'planned') return Object.freeze([]);
+  const diagnostics = plan.diagnostics ?? [];
+  if (diagnostics.length === 0) return Object.freeze([]);
   const retainedSource = Object.freeze({
     ...source,
     path: Object.freeze([...source.path]),
   });
-  return Object.freeze(plan.diagnostics.map((diagnostic) => Object.freeze({
+  return Object.freeze(diagnostics.map((diagnostic) => Object.freeze({
     ...diagnostic,
     source: retainedSource,
   })));
@@ -2979,12 +2981,16 @@ function drawingForShape(
     shape.fill?.fillType === 'image'
       ? imageResourceKey(source, shape.fill.imagePath)
       : undefined,
+    undefined,
+    shape.vmlPicture ? vmlPictureResourceKey(source, shape.vmlPicture.imagePath) : undefined,
+    shape.vmlStrokeFill ? vmlStrokeResourceKey(source, shape.vmlStrokeFill.imagePath) : undefined,
+    vmlEdgeResourceKey(source),
   );
-  const commands = [plan.command];
+  const commands = [...(plan.status === 'planned' ? plan.before ?? [] : []), plan.command];
   const diagnostics = shapePlanDiagnostics(plan, source);
   return {
     kind: 'drawing', id: `${options.id}:drawing:${runIndex}`, source,
-    flowDomainId: options.flowDomainId, flowBounds: rect, inkBounds: rect, advancePt: 0,
+    flowDomainId: options.flowDomainId, flowBounds: rect, inkBounds: shadowInkBounds(plan.status === 'planned' ? plan.before ?? [] : [], rect), advancePt: 0,
     ordinaryFlow: false,
     commands,
     ...(diagnostics.length === 0 ? {} : { diagnostics }),
@@ -3426,6 +3432,7 @@ function acquireAnchorOccurrence(
     verticalPageFrame: false,
   } : options.environment;
   const commands: DrawingPaintCommand[] = [];
+  const shadowCommands: DrawingPaintCommand[] = [];
   const diagnostics: LayoutDiagnostic[] = [];
   const textBoxes: TextBoxLayout[] = [];
   const textBoxIds: string[] = [];
@@ -3666,8 +3673,13 @@ function acquireAnchorOccurrence(
         run.fill?.fillType === 'image'
           ? imageResourceKey(source, run.fill.imagePath)
           : undefined,
+        undefined,
+        run.vmlPicture ? vmlPictureResourceKey(source, run.vmlPicture.imagePath) : undefined,
+        run.vmlStrokeFill ? vmlStrokeResourceKey(source, run.vmlStrokeFill.imagePath) : undefined,
+        vmlEdgeResourceKey(source),
       );
-      commands.push(plan.command);
+      commands.push(...(plan.status === 'planned' ? plan.before ?? [] : []), plan.command);
+      if (plan.status === 'planned') shadowCommands.push(...(plan.before ?? []));
       diagnostics.push(...shapePlanDiagnostics(plan, source));
       const textBoxId = `${options.id}:anchor-textbox:${occurrenceId}:${runIndex}`;
       const textBox = acquiredShapeTextBoxes.get(runIndex) ?? acquireShapeTextBoxLayout(run, paintRect, {
@@ -3693,7 +3705,7 @@ function acquireAnchorOccurrence(
     source: runSource(options.source, outer.runIndex),
     flowDomainId: options.flowDomainId,
     flowBounds: rect,
-    inkBounds: effectiveResult.geometry.inkBounds,
+    inkBounds: shadowInkBounds(shadowCommands, effectiveResult.geometry.inkBounds, uprightTransform),
     advancePt: 0,
     ordinaryFlow: false,
     ...(uprightTransform ? {
@@ -4066,7 +4078,7 @@ export function alignedAutofitTranslation(
 /** Acquires a DrawingML/WPS text body through the same paragraph measurement
  * and retained layout seam used by ordinary WordprocessingML paragraphs. */
 export function acquireShapeTextBoxLayout(
-  shape: import('./types.js').DeepReadonly<ShapeRun>,
+  shape: import('./types.js').DeepReadonly<ShapeRun & import('./types.js').VmlShapeAcquisitionFacts>,
   rect: LayoutRect,
   options: ShapeTextBoxAcquisitionOptions,
 ): TextBoxLayout | undefined {
@@ -4089,6 +4101,16 @@ export function acquireShapeTextBoxLayout(
     ? acquisition.blockCount
     : acquisition.paragraphs.length;
   if (blockCount === 0) return undefined;
+  // Part 4 §19.1.2.14: text layout uses the envelope of the retained
+  // rectangles; their union clips ink. Keep the host frame/pivot unchanged.
+  const regions = shape.vmlTextRects;
+  let textRect: [number, number, number, number] | undefined;
+  for (const region of regions ?? []) {
+    textRect = textRect ? [
+      Math.min(textRect[0], region[0]), Math.min(textRect[1], region[1]),
+      Math.max(textRect[2], region[2]), Math.max(textRect[3], region[3]),
+    ] : [region[0], region[1], region[2], region[3]];
+  }
   const stackedWordArt = shape.textVert === 'wordArtVert' || shape.textVert === 'wordArtVertRtl';
   const verticalMode = retainedTextBoxVerticalMode(shape.textVert);
   const contentBounds: LayoutRect = verticalMode ? {
@@ -4110,6 +4132,12 @@ export function acquireShapeTextBoxLayout(
     topPt: shape.textInsetT ?? 0, rightPt: shape.textInsetR ?? 0,
     bottomPt: shape.textInsetB ?? 0, leftPt: shape.textInsetL ?? 0,
   };
+  if (textRect) {
+    insets.leftPt += textRect[0]*contentBounds.widthPt;
+    insets.topPt += textRect[1]*contentBounds.heightPt;
+    insets.rightPt += (1-textRect[2])*contentBounds.widthPt;
+    insets.bottomPt += (1-textRect[3])*contentBounds.heightPt;
+  }
   const innerBounds = {
     xPt: contentBounds.xPt + insets.leftPt,
     yPt: contentBounds.yPt + insets.topPt,
@@ -4336,7 +4364,13 @@ export function acquireShapeTextBoxLayout(
       } : {}),
       // Word issue #1668 controls retain overflow in fixed stacked WordArt
       // boxes (wrap square/none and multi-paragraph cases); do not add a body clip.
-      ...(shape.textAutofit === 'none' && !stackedWordArt ? { clipBounds: effectiveInnerBounds } : {}),
+      ...((shape.vmlTextRects?.length || shape.textAutofit === 'none') && !stackedWordArt ? { clipBounds: effectiveInnerBounds } : {}),
+      ...(regions?.length ? { clipRects: regions.map(r => ({
+        xPt: effectiveContentBounds.xPt+r[0]*effectiveContentBounds.widthPt,
+        yPt: effectiveContentBounds.yPt+r[1]*effectiveContentBounds.heightPt,
+        widthPt: (r[2]-r[0])*effectiveContentBounds.widthPt,
+        heightPt: (r[3]-r[1])*effectiveContentBounds.heightPt,
+      })) } : {}),
       advancePt: 0, ordinaryFlow: false, story,
       transform,
       writingMode: shape.textVert === 'vert270' ? 'vertical-lr' : shape.textVert ? 'vertical-rl' : 'horizontal-tb',

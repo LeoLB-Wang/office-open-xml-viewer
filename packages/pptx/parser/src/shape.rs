@@ -56,6 +56,7 @@ pub(crate) fn pptx_understands_ns(ns: &str) -> bool {
 /// has no chartStyle relationship or the part cannot be read (the chartEx
 /// title then falls back to its inline size, or the renderer's default).
 struct ChartRelatedParts {
+    theme_override_xml: Option<String>,
     style_xml: Option<String>,
     color_style_xml: Option<String>,
     image_relationships: ooxml_common::chart::ChartImageRelationships,
@@ -63,6 +64,7 @@ struct ChartRelatedParts {
 
 fn load_chart_related_parts(zip: &mut PptxZip, chart_path: &str) -> ChartRelatedParts {
     let mut result = ChartRelatedParts {
+        theme_override_xml: None,
         style_xml: None,
         color_style_xml: None,
         image_relationships: Default::default(),
@@ -86,6 +88,11 @@ fn load_chart_related_parts(zip: &mut PptxZip, chart_path: &str) -> ChartRelated
                     .is_some_and(|kind| kind.ends_with(suffix))
         })
     };
+    if let Some(relationship) = internal_target("/themeOverride") {
+        if let Some(path) = relationship.resolve_part(chart_path) {
+            result.theme_override_xml = read_zip_str(zip, &path).ok();
+        }
+    }
     let style_relationship = relationships.values().find(|relationship| {
         relationship.mode == ooxml_common::rels::TargetMode::Internal
             && relationship
@@ -133,9 +140,9 @@ mod chartex_sidecar_package_tests {
         let slide_xml = r#"<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="2" name="Chart 1"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="0" y="0"/><a:ext cx="4000000" cy="3000000"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chart r:id="rIdChart"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>"#;
         let slide_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="../charts/chartEx1.xml"/></Relationships>"#;
         let chart_xml = r#"<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chartData><cx:data id="0"><cx:numDim type="val"><cx:lvl ptCount="1"><cx:pt idx="0">1</cx:pt></cx:lvl></cx:numDim></cx:data></cx:chartData><cx:chart><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="boxWhisker"/></cx:plotAreaRegion></cx:plotArea></cx:chart></cx:chartSpace>"#;
-        let rels_xml = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdExternalStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="https://example.invalid/style.xml" TargetMode="External"/><Relationship Id="rIdStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/><Relationship Id="rIdColors" Type="http://schemas.microsoft.com/office/2011/relationships/chartColorStyle" Target="colors1.xml"/></Relationships>"#;
+        let rels_xml = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdExternalStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="https://example.invalid/style.xml" TargetMode="External"/><Relationship Id="rIdStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/><Relationship Id="rIdColors" Type="http://schemas.microsoft.com/office/2011/relationships/chartColorStyle" Target="colors1.xml"/><Relationship Id="override" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride" Target="../theme/chartOverride.xml"/></Relationships>"#;
         let style_xml = r#"<cs:chartStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><cs:dataPoint><cs:fillRef idx="1"><cs:styleClr val="auto"/></cs:fillRef><cs:spPr><a:pattFill prst="diagCross"><a:fgClr><a:schemeClr val="phClr"/></a:fgClr><a:bgClr><a:srgbClr val="FFFFFF"/></a:bgClr></a:pattFill></cs:spPr></cs:dataPoint><cs:dataPointMarker><cs:fillRef idx="1"><cs:styleClr val="auto"/></cs:fillRef></cs:dataPointMarker><cs:dataLabelCallout><cs:defRPr><a:noFill/></cs:defRPr><cs:bodyPr/></cs:dataLabelCallout><cs:trendlineLabel><cs:defRPr><a:solidFill><a:srgbClr val="112233"/></a:solidFill></cs:defRPr></cs:trendlineLabel></cs:chartStyle>"#;
-        let colors_xml = r#"<cs:colorStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" meth="cycle"><a:srgbClr val="336699"/></cs:colorStyle>"#;
+        let colors_xml = r#"<cs:colorStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" meth="cycle"><a:schemeClr val="accent1"/></cs:colorStyle>"#;
         let theme_xml = r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="Theme"><a:themeElements><a:fmtScheme name="Theme"><a:fillStyleLst><a:blipFill><a:blip r:embed="rIdThemeMarker"/><a:stretch/></a:blipFill></a:fillStyleLst><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#;
 
         let mut bytes = Vec::new();
@@ -158,6 +165,10 @@ mod chartex_sidecar_package_tests {
                 ),
                 ("ppt/charts/colors1.xml", colors_xml),
                 ("ppt/theme/theme1.xml", theme_xml),
+                (
+                    "ppt/theme/chartOverride.xml",
+                    r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:clrScheme name="Chart"><a:accent1><a:srgbClr val="336699"/></a:accent1></a:clrScheme></a:themeOverride>"#,
+                ),
                 (
                     "ppt/theme/_rels/theme1.xml.rels",
                     r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdThemeMarker" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/theme-marker.png"/></Relationships>"#,
@@ -1341,6 +1352,7 @@ pub(crate) fn parse_shape(
     };
 
     Some(ShapeElement {
+        math_fallback: None,
         x: t.x,
         y: t.y,
         width: t.cx,
@@ -2451,6 +2463,7 @@ pub(crate) fn parse_table(
     }
 
     Some(TableElement {
+        math_fallback: None,
         // §21.1.3.15 CT_TableProperties admits direct EG_FillProperties.
         // Direct table formatting overrides the style's tblBg, including noFill.
         background: tbl_pr
@@ -2839,6 +2852,61 @@ pub(crate) fn parse_sp_tree_node(
                         group_fill,
                         depth,
                     );
+                }
+            }
+            // Part 3 §9.3 defines whole-branch alternatives. As library recovery
+            // policy, retain the alternative when the selected equation branch
+            // may fail at runtime; it can contain text, tables or pictures. This
+            // does not change normative Requires-based selection above.
+            if !selected_is_fallback {
+                // Shapes and table cells both carry DrawingML paragraphs. The
+                // anchor stores the range; it does not limit recovery to its own text.
+                let has_math = |body: &TextBody| {
+                    body.paragraphs.iter().any(|para| {
+                        para.runs
+                            .iter()
+                            .any(|run| matches!(run, TextRun::Math { .. }))
+                    })
+                };
+                let owner = out[before..].iter().position(|element| match element {
+                    SlideElement::Shape(shape) => shape.text_body.as_ref().is_some_and(has_math),
+                    SlideElement::Table(table) => table.rows.iter().any(|row| {
+                        row.cells
+                            .iter()
+                            .any(|cell| cell.text_body.as_ref().is_some_and(has_math))
+                    }),
+                    _ => false,
+                });
+                if let (Some(owner), Some(fallback)) = (owner, child(node, "Fallback")) {
+                    let mut elements = Vec::new();
+                    for child_node in fallback.children().filter(|n| n.is_element()) {
+                        parse_sp_tree_node(
+                            child_node,
+                            lph,
+                            slide_part,
+                            rels,
+                            smartart_drawings,
+                            zip,
+                            theme_source,
+                            &mut elements,
+                            skip_placeholders,
+                            group_fill,
+                            depth,
+                        );
+                    }
+                    let after = out.len() - before - owner - 1;
+                    if !elements.is_empty() {
+                        let recovery = EquationBranchFallback {
+                            elements,
+                            before: owner,
+                            after,
+                        };
+                        match &mut out[before + owner] {
+                            SlideElement::Shape(shape) => shape.math_fallback = Some(recovery),
+                            SlideElement::Table(table) => table.math_fallback = Some(recovery),
+                            _ => unreachable!("equation anchor must carry text"),
+                        }
+                    }
                 }
             }
             if is_ink && selected_is_fallback {
@@ -3381,11 +3449,28 @@ fn parse_graphic_frame(
                         .unwrap_or(0);
                     let retention_site = format!("graphicFrame:{graphic_frame_ordinal}");
                     let related_parts = load_chart_related_parts(zip, &chart_path);
+                    let chart_theme = related_parts.theme_override_xml.as_deref().map(|xml| {
+                        let mut theme = crate::theme::PptxTheme::from_source(theme_source);
+                        crate::theme::apply_theme_override(&mut theme, xml);
+                        theme
+                    });
+                    let theme = chart_theme
+                        .as_ref()
+                        .map(|theme| theme.colors())
+                        .unwrap_or(theme);
+                    let format_scheme = chart_theme
+                        .as_ref()
+                        .and_then(|theme| theme.format_scheme())
+                        .or_else(|| theme_source.format_scheme());
                     let empty_theme_images =
                         ooxml_common::chart::ChartImageRelationships::default();
                     let image_resolver = ooxml_common::chart::ChartImageResolverChain::new(
                         &related_parts.image_relationships,
-                        theme_source.chart_images().unwrap_or(&empty_theme_images),
+                        chart_theme
+                            .as_ref()
+                            .and_then(|theme| theme.chart_images())
+                            .or_else(|| theme_source.chart_images())
+                            .unwrap_or(&empty_theme_images),
                     );
                     let chart_opt = if uri.contains("chartex") || uri.contains("chartEx") {
                         // chartEx title font size lives in the chart
@@ -3401,7 +3486,7 @@ fn parse_graphic_frame(
                                     related_parts.style_xml.as_deref(),
                                     related_parts.color_style_xml.as_deref(),
                                     theme,
-                                    theme_source.format_scheme(),
+                                    format_scheme,
                                     &image_resolver,
                                     Some(&reporter),
                                     Some(ooxml_common::chart::ChartRetentionKey {
@@ -3419,7 +3504,7 @@ fn parse_graphic_frame(
                             related_parts.color_style_xml.as_deref(),
                             user_shapes_xml.as_deref(),
                             theme,
-                            theme_source.format_scheme(),
+                            format_scheme,
                             &image_resolver,
                         )
                     };
@@ -3758,6 +3843,7 @@ pub(crate) fn parse_connector(
         .and_then(|n| parse_gd_val(*n));
 
     Some(ShapeElement {
+        math_fallback: None,
         x: t.x,
         y: t.y,
         width: t.cx,
@@ -4916,6 +5002,89 @@ mod ole_tests {
             fallback = mce_pic("rIdFallback"),
         );
         run(&xml, &mut zip, &rels)
+    }
+
+    #[test]
+    fn equation_mce_retains_picture_preview_and_complete_choice_range() {
+        let shape = r#"<p:sp xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <p:nvSpPr><p:cNvPr id="8" name="Equation"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+          <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr>
+          <p:txBody><a:bodyPr/><a:lstStyle/><a:p><a14:m><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></a14:m></a:p></p:txBody>
+        </p:sp>"#;
+        let selected = format!("{}{}{}", mce_pic("rIdChoice"), shape, shape);
+        let out = mce_selected_pic_path("a14", &selected);
+        assert_eq!(out.len(), 3);
+        let SlideElement::Shape(shape) = &out[1] else {
+            panic!("equation")
+        };
+        let fallback = shape.math_fallback.as_ref().expect("retained preview");
+        assert_eq!((fallback.before, fallback.after), (1, 1));
+        assert_eq!(only_pic_path(&fallback.elements), "ppt/media/fallback.png");
+    }
+
+    #[test]
+    fn equation_table_mce_retains_complete_preview_for_table_only_and_mixed_branches() {
+        let table = r#"<p:graphicFrame xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <p:nvGraphicFramePr><p:cNvPr id="9" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>
+          <p:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></p:xfrm>
+          <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl>
+          <a:tblPr/><a:tblGrid><a:gridCol w="914400"/></a:tblGrid><a:tr h="914400"><a:tc>
+          <a:txBody><a:bodyPr/><a:lstStyle/><a:p><a14:m><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></a14:m></a:p></a:txBody>
+          <a:tcPr/></a:tc></a:tr></a:tbl></a:graphicData></a:graphic>
+        </p:graphicFrame>"#;
+        let text_shape = r#"<p:sp><p:nvSpPr><p:cNvPr id="10" name="Text"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+          <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm></p:spPr>
+          <p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Text</a:t></a:r></a:p></p:txBody></p:sp>"#;
+        for mixed in [false, true] {
+            let choice = if mixed {
+                format!("{}{}{}", text_shape, table, mce_pic("rIdChoice"))
+            } else {
+                table.to_string()
+            };
+            let mut out = mce_selected_pic_path("a14", &choice);
+            let owner = usize::from(mixed);
+            let SlideElement::Table(table) = &out[owner] else {
+                panic!("equation table")
+            };
+            assert!(table.rows[0].cells[0]
+                .text_body
+                .as_ref()
+                .unwrap()
+                .paragraphs[0]
+                .runs
+                .iter()
+                .any(|run| matches!(run, TextRun::Math { .. })));
+            let value = serde_json::to_value(&out[owner]).unwrap();
+            let preview = &value["mathFallback"];
+            assert_eq!(preview["before"], owner);
+            assert_eq!(preview["after"], owner);
+            assert_eq!(
+                preview["elements"][0]["imagePath"],
+                "ppt/media/fallback.png"
+            );
+            // Recovery content follows its owning group just like the live table.
+            apply_group_transform_to_element(
+                &mut out[owner],
+                &GroupTransform {
+                    x: 100,
+                    y: 200,
+                    cx: 1828800,
+                    cy: 1828800,
+                    ch_x: 0,
+                    ch_y: 0,
+                    ch_cx: 914400,
+                    ch_cy: 914400,
+                    rot: 0.0,
+                    flip_h: false,
+                    flip_v: false,
+                },
+            );
+            let transformed = serde_json::to_value(&out[owner]).unwrap();
+            let picture = &transformed["mathFallback"]["elements"][0];
+            assert_eq!(picture["x"], 100);
+            assert_eq!(picture["y"], 200);
+            assert_eq!(picture["width"], 1828800);
+        }
     }
 
     fn only_pic_path(out: &[SlideElement]) -> String {

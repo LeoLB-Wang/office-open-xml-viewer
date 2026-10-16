@@ -34,6 +34,8 @@ export type DrawingMLShapeGeometry =
     }>;
 
 export type DrawingMLPathPaint = Readonly<{
+  /** Resolved path winding rule; VML uses parity within an end-delimited set. */
+  fillRule?: 'nonzero' | 'evenodd';
   /** ST_PathFillMode (§20.1.10.37) other than `norm`. */
   fill?: 'none' | 'lighten' | 'lightenLess' | 'darken' | 'darkenLess';
   /** Present only when the path is not stroked. */

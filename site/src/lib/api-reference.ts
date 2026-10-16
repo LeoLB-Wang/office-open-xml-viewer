@@ -467,6 +467,7 @@ export const apiReference: Record<'docx' | 'xlsx' | 'pptx', ApiClass[]> = {
         { sig: 'revisionAnchorRanges(): readonly RevisionAnchorRange[]', desc: 'Logical tracked-change ranges for the currently available page prefix. Await waitUntilLayoutComplete() before treating this as a full-document projection.' },
         { sig: 'getBookmarkPage(name: string): number | undefined', desc: 'Resolve a bookmark in the currently available page prefix. Await waitUntilLayoutComplete() before concluding that an unresolved name is absent from the document.' },
         { sig: 'collectPageRuns(index, options?): Promise<DocxTextRunInfo[]>', desc: 'Collect the same immutable text-run geometry emitted while rendering one page.' },
+        { sig: 'get diagnostics(): readonly DocxDiagnostic[]', desc: 'Parser and layout limitations plus font and image acquisition failures. Available in main and worker modes; read after load/layout and page rendering to inspect fallback or incomplete content.' },
         { sig: 'get pageCount(): number', desc: 'Pages available so far; authoritative only when layoutComplete is true.' },
         { sig: 'get layoutComplete(): boolean', desc: 'True only after the authoritative document layout succeeds. It is false while progressive layout is publishing pages and remains false if background pagination fails; waitUntilLayoutComplete() reports that failure.' },
         { sig: 'waitUntilLayoutComplete(): Promise<void>', desc: 'Wait for the authoritative full layout. Rejects if background pagination fails after load() resolved.' },
