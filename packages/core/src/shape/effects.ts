@@ -335,9 +335,8 @@ export function applyOuterShadow(
  * covered by an offset copy of the shape — i.e. it hugs the inside of the edge
  * opposite the offset direction.
  *
- * Construction (all on an auxiliary canvas the size of the live canvas so the
- * shadow can bleed up to `blur` px past the silhouette before being clipped):
- *   1. Paint the silhouette filled with the shadow colour.
+ * Construction (on cropped device-space surfaces with effect padding):
+ *   1. Capture the silhouette, then recolour it with the shadow colour.
  *   2. `destination-out` an offset + blurred copy of the silhouette. What
  *      remains is a blurred crescent inside the original edge — the inner shadow.
  *   3. `destination-in` the (un-offset, un-blurred) silhouette so the shadow is
@@ -380,8 +379,9 @@ export function applyInnerShadow(
   const maskAux = createAuxCanvas(crop.w, crop.h);
   const mc = maskAux ? get2d(maskAux) : null;
   if (!maskAux || !mc) return;
-  // Paint geometry once. Subsequent offset/blur operations act on this raster,
-  // so a callback restoring its absolute transform cannot erase the offset.
+  // Paint geometry once. Callbacks own their fillStyle and absolute transform;
+  // setting shadow color or translating before replaying them would be undone.
+  // Apply color and offset/blur to the captured raster at identity instead.
   paintShape(offsetPaintCtx(mc, crop));
 
   // CT_InnerShadowEffect owns its color (ECMA-376 §20.1.8.40), regardless
