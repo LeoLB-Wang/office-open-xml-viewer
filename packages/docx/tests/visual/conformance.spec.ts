@@ -43,8 +43,7 @@ interface BrowserConformanceReport {
 test('fractional unchanged-text paint and advances equal main bit for bit', async ({ page }) => {
   await page.goto('/tests/visual/conformance-fixture.html');
   const streams = await page.evaluate(async () => {
-    const path = '/src/test-support/spacing-arithmetic.test-support.ts';
-    const { spacingFixtures, recordSpacingFixture } = await import(/* @vite-ignore */ path);
+    const { spacingFixtures, recordSpacingFixture } = await import('/src/test-support/spacing-arithmetic.test-support.ts');
     return Object.fromEntries(await Promise.all(spacingFixtures.map(async (fixture: { id: string }) =>
       [fixture.id, await recordSpacingFixture(fixture)])));
   });
@@ -128,8 +127,7 @@ test('unselected literal soft hyphens preserve contextual cs paint in every brow
   await page.goto('/tests/visual/conformance-fixture.html');
   await page.waitForFunction(() => document.body.dataset.status === 'ready');
   const results = await page.evaluate(async () => {
-    const modulePath = '/src/renderer.ts';
-    const { renderDocumentToCanvas } = await import(/* @vite-ignore */ modulePath);
+    const { renderDocumentToCanvas } = await import('/src/renderer.ts');
     const render = async (text: string) => {
       const model = {
         section: { pageWidth: 300, pageHeight: 100, marginTop: 10, marginRight: 10,
@@ -166,8 +164,7 @@ test('kerning and Arabic joining preserve whole-run paint with character spacing
   await page.goto('/tests/visual/conformance-fixture.html');
   await page.waitForFunction(() => document.body.dataset.status === 'ready');
   const results = await page.evaluate(async () => {
-    const modulePath = '/src/renderer.ts';
-    const { renderDocumentToCanvas } = await import(/* @vite-ignore */ modulePath);
+    const { renderDocumentToCanvas } = await import('/src/renderer.ts');
     const cases = [
       ...['AV', 'To'].flatMap(text => [undefined, 21, 20].flatMap(kerning =>
         [0, 2].map(charSpacing => ({ text, kerning, charSpacing, cs: false })))),
