@@ -175,7 +175,17 @@ function collectDrawingRasterPaintOccurrences(
       );
       continue;
     }
+    if (command.kind === 'watermark-text' && command.imageResourceKey) {
+      appendRasterPaintOccurrence(context, command.imageResourceKey, 'image', command.maskBounds ?? command.rect, projection.pointToPage);
+    }
     if (command.kind !== 'drawingml-image-fill') continue;
+    // Part 4 §§19.1.2.12/.21: a physical textured pen has ink even on
+    // a zero-height/width line. Decode against its acquired mask extent;
+    // allocation-only demand would silently classify this visible pen as empty.
+    if (command.strokeMask && command.maskBounds) {
+      appendRasterPaintOccurrence(context, command.resourceKey, 'image', command.maskBounds, projection.pointToPage);
+      continue;
+    }
     const { x, y, w, h } = command.plan.rect;
     const fillRect = command.fillRect ?? { l: 0, t: 0, r: 0, b: 0 };
     appendRasterPaintOccurrence(context, command.resourceKey, 'image', {

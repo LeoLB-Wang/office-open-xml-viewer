@@ -203,6 +203,7 @@ impl Store<'_> {
                 .extension;
             self.selected_images.insert(index);
             return Ok(Some(ShapeFill::Image {
+                vml: None,
                 image_path: format!("legacy-doc/float/{index}"),
                 mime_type: mime(extension)?.to_string(),
                 svg_image_path: None,

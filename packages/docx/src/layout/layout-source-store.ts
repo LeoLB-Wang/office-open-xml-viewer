@@ -13,7 +13,7 @@ import type { ImageMetadataRecord, MathOccurrence } from './resources.js';
 import type { PaintResourceDescriptor, PaintResourceRegistry, SourceRef } from './types.js';
 import type { ParagraphAcquisitionInput } from './text.js';
 import type { DeepReadonly, ParsedUnsupportedTextBoxBlock } from './types.js';
-import { imageResourceKey, sourceKey } from './source-key.js';
+import { imageResourceKey, sourceKey, vmlPictureResourceKey, vmlStrokeResourceKey, vmlEdgeResourceKey } from './source-key.js';
 import { indexSealedPaintResourceDescriptors } from './paint-resources.js';
 import { sealPlainData } from './plain-data.js';
 import {
@@ -336,6 +336,15 @@ function validateResourceManifests(
             }, textBoxParagraph.image.imagePath));
           }
         }
+      }
+      if (run.type === 'shape') for (const edge of run.vmlEdgeStrokes ?? []) {
+        if (edge.image) addImage(vmlEdgeResourceKey(runSource, edge.edge));
+      }
+      if (run.type === 'shape' && run.vmlStrokeFill) {
+        addImage(vmlStrokeResourceKey(runSource, run.vmlStrokeFill.imagePath));
+      }
+      if (run.type === 'shape' && run.vmlPicture) {
+        addImage(vmlPictureResourceKey(runSource, run.vmlPicture.imagePath));
       }
       if (run.type === 'shape' && run.fill?.fillType === 'image') {
         addImage(imageResourceKey(runSource, run.fill.imagePath));
