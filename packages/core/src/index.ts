@@ -245,6 +245,7 @@ export {
 } from './shape/custgeom-endpoints';
 export { hexToRgba, relativeLuma, autoContrastColor, resolveFill, usesPathShade, applyStroke, withPatternCoordinateSpace, withInheritedPatternScope } from './shape/paint';
 export { trackPaintPath, currentStrokeBounds } from './shape/paint-bounds';
+export { measurePaintBounds } from './shape/measure-paint-bounds';
 export type { FillOutline } from './shape/path-gradient';
 export { buildShapePath, drawStar, drawPolygon, ooxmlArcTo } from './shape/preset';
 export {
@@ -470,6 +471,8 @@ export {
   type Polyline,
 } from './shape/text-warp';
 export {
+  createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
   applyOuterShadow,
   applyInnerShadow,
   applySoftEdge,
