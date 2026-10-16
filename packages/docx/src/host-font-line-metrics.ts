@@ -3,6 +3,8 @@ import {
   findReferenceFontMetrics,
   loadOfficeFontFallbacks,
   measureLocalFontNormalLine,
+  loadLocalFontCoverageProbe,
+  measureLocalFontSourceNormalLine,
   type LocalFontNormalLine,
   type OfficeFontFallbackRoute,
   type ResolvedFontMetric,
@@ -38,6 +40,7 @@ export function hostFontLineMetric(
     && ascent >= 0 && descent >= 0 && ascent + descent > 0)) return route.metric;
   return Object.freeze({
     ...route.metric,
+    requiresGlyphCoverage: true,
     lineHeightRatio: ascent + descent,
     designAscentRatio: ascent,
     designDescentRatio: descent,
@@ -46,32 +49,87 @@ export function hostFontLineMetric(
   });
 }
 
-/** Reuse the positively loaded local() paint registrations. Measurements are
- * cached by their retained FontFace, with no per-segment probes, additional
- * loads, network access or font discovery. DOM-free realms cannot measure the
- * normal-line gap and explicitly keep catalog fallback. */
+/** The DOM supplies leading unavailable on OffscreenCanvas. A worker asks its
+ * owning DOM realm for numeric measurements of its positively resolved source;
+ * the response is admitted only after matching resource identity and tuple.
+ * No parser model or font bytes cross this measurement boundary. */
+export interface HostFontLineMeasurement {
+  resourceIdentity: string;
+  weight: number;
+  style: 'normal' | 'italic';
+  measured: LocalFontNormalLine | null;
+}
+
+function probeEm(route: OfficeFontFallbackRoute): number | undefined {
+  if (route.metric.lineHeightRatio != null) return undefined;
+  const profiles = findReferenceFontMetrics(route.requestedFamily, {
+    weight: route.weight, style: route.style,
+  });
+  return route.source === 'substitute' || profiles.every(profile => profile.farEastCodePage === false)
+    ? profiles[0]?.unitsPerEm : undefined;
+}
+
+export async function measureHostFontLines(
+  routes: readonly OfficeFontFallbackRoute[],
+): Promise<HostFontLineMeasurement[]> {
+  const owner = typeof document === 'undefined' ? null : document;
+  return Promise.all(routes.map(async route => {
+    const em = probeEm(route);
+    const source = localSource(route);
+    const measured = owner?.body && source && em
+      ? await measureLocalFontSourceNormalLine(source, route.family, route.weight, route.style, em, owner)
+      : null;
+    return { resourceIdentity: route.resourceIdentity, weight: route.weight, style: route.style, measured };
+  }));
+}
+
+function localSource(route: OfficeFontFallbackRoute): string | undefined {
+  return route.source === 'local' && route.resourceIdentity.startsWith('office-local:local(')
+    ? route.resourceIdentity.slice('office-local:'.length) : undefined;
+}
+
+/** Retain a native coverage probe alongside each measured paint resource.
+ * Headless/Node consumers without Canvas keep the existing catalog fallback.
+ * All font loads and DOM reads finish before immutable layout; coverage uses
+ * a bounded cache of native shaping results, never per-segment DOM probes. */
+export async function prepareDocxHostFontMetrics(
+  loaded: Awaited<ReturnType<typeof loadOfficeFontFallbacks>>,
+  fontSet: FontFaceSet | null,
+  hostMeasurements?: readonly HostFontLineMeasurement[],
+): Promise<Awaited<ReturnType<typeof loadOfficeFontFallbacks>>> {
+  const owner = typeof document === 'undefined' ? null : document;
+  if (!fontSet) return loaded;
+  const context = owner?.body && owner.fonts === fontSet
+    ? owner.createElement('canvas').getContext('2d') : null;
+  const routes: typeof loaded.routes = {};
+  for (const [key, route] of Object.entries(loaded.routes)) {
+    const face = loaded.faces.find(candidate => candidate.family === route.family);
+    const em = probeEm(route);
+    const transferred = hostMeasurements?.find(measurement =>
+      measurement.resourceIdentity === route.resourceIdentity
+      && measurement.weight === route.weight && measurement.style === route.style);
+    const measured = face && em && context && owner?.body
+      ? measureLocalFontNormalLine(face, fontSet, context, em, owner)
+      : transferred?.measured ?? null;
+    let metric = hostFontLineMetric(route, measured);
+    const source = localSource(route);
+    if (metric !== route.metric) {
+      const probe = face && source ? await loadLocalFontCoverageProbe(face, source, fontSet) : null;
+      if (probe) {
+        loaded.faces.push(probe);
+        metric = Object.freeze({ ...metric, glyphCoverageProbeFamily: probe.family });
+      }
+      // Without proof the new measured resource projection is unavailable.
+      else metric = route.metric;
+    }
+    routes[key] = { ...route, metric };
+  }
+  return { ...loaded, routes };
+}
+
 export async function loadDocxOfficeFontFallbacks(
   ...args: Parameters<typeof loadOfficeFontFallbacks>
 ): ReturnType<typeof loadOfficeFontFallbacks> {
   const loaded = await loadOfficeFontFallbacks(...args);
-  const owner = typeof document === 'undefined' ? null : document;
-  const fontSet = args[1] === undefined ? activeFontSet() : args[1];
-  if (!owner?.body || !fontSet || owner.fonts !== fontSet) return loaded;
-  const context = owner.createElement('canvas').getContext('2d');
-  if (!context) return loaded;
-  const routes = Object.fromEntries(Object.entries(loaded.routes).map(([key, route]) => {
-    const profiles = findReferenceFontMetrics(route.requestedFamily, {
-      weight: route.weight, style: route.style,
-    });
-    const face = loaded.faces.find((candidate) => candidate.family === route.family);
-    // A catalog UPM sets only the probe resolution, never the measured answer.
-    // Without a design UPM or an exact registration, decline the optional probe.
-    const em = profiles[0]?.unitsPerEm;
-    const measured = face && em && route.metric.lineHeightRatio == null
-      && (route.source === 'substitute'
-        || profiles.every((profile) => profile.farEastCodePage === false))
-      ? measureLocalFontNormalLine(face, fontSet, context, em, owner) : null;
-    return [key, { ...route, metric: hostFontLineMetric(route, measured) }];
-  }));
-  return { ...loaded, routes };
+  return prepareDocxHostFontMetrics(loaded, args[1] === undefined ? activeFontSet() : args[1]);
 }

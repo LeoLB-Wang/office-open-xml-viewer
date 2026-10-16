@@ -1,4 +1,4 @@
-import { loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from './host-font-line-metrics.js';
+import { measureHostFontLines, loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from './host-font-line-metrics.js';
 import { recordResourceDiagnostics, resourceDiagnosticsOf } from './resource-diagnostics.js';
 import type { DocxDiagnostic } from './types.js';
 import { readingHooks } from './internal/reading-hooks.js';
@@ -955,13 +955,16 @@ export class DocxDocument {
       return;
     }
     const res = await this._bridge.request(
-      (id) =>
-        this._mode === 'worker'
+      (id) => {
+        this._parseRequestId = id;
+        return this._mode === 'worker'
           ? ({ type: 'parse', id, data: buffer, resourcePolicy, useGoogleFonts, allowFootnoteContinuation: this._allowFootnoteContinuation, cjkFallback: this._cjkFallback, defaultCurrentDateMs: documentLayoutRuntimeOf(this).defaultCurrentDateMs, ...this._parseViewFields(), renderers } satisfies RenderWorkerRequest)
-          : ({ type: 'parse', id, data: buffer, resourcePolicy } satisfies WorkerRequest),
+          : ({ type: 'parse', id, data: buffer, resourcePolicy } satisfies WorkerRequest);
+      },
       [buffer],
       { timeoutMs },
     );
+    this._parseRequestId = null;
     if ('protocol' in res) {
       throw new Error('DOCX parse open returned a pull-protocol response');
     }
@@ -1016,6 +1019,13 @@ export class DocxDocument {
     // Any push proves the worker is alive and working, which is the only thing
     // the watchdog is asking about.
     this._rearmParseWatchdog();
+    if (res.type === 'measureHostFontLines') {
+      void measureHostFontLines(res.routes).catch(() => []).then(measurements => {
+        if (res.forId !== this._parseRequestId) return;
+        this._worker.postMessage({ type: 'hostFontLinesMeasured', forId: res.forId, measurements } satisfies RenderWorkerRequest);
+      });
+      return;
+    }
     const progressive = this._progressive;
     if (progressive?.settled) return;
     if (res.type === 'layoutProgress') {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type OfficeFontFallbackRoute, type LocalFontNormalLine, canvasFontString } from '@silurus/ooxml-core';
-import { loadDocxOfficeFontFallbacks, hostFontLineMetric } from './host-font-line-metrics.js';
+import { loadDocxOfficeFontFallbacks, hostFontLineMetric, prepareDocxHostFontMetrics } from './host-font-line-metrics.js';
 import { selectedFontLineMetric } from './line-breaker/font-metrics.js';
 import { createFontResolver } from './layout/font-service.js';
 import { unloadOfficeFontFallbacks } from '@silurus/ooxml-core';
@@ -36,7 +36,9 @@ describe('DOCX host-face line geometry', () => {
       status = 'unloaded';
       readonly weight: string;
       readonly style: string;
+      readonly sizeAdjust: string;
       constructor(readonly family: string, _source: string, descriptors: FontFaceDescriptors) {
+        this.sizeAdjust = (descriptors as FontFaceDescriptors & { sizeAdjust?: string }).sizeAdjust ?? '100%';
         this.weight = descriptors.weight!;
         this.style = descriptors.style!;
       }
@@ -65,13 +67,55 @@ describe('DOCX host-face line geometry', () => {
       expect(prepared.metric.sourceIdentity).toBe(prepared.resourceIdentity);
       expect(second.routes['times new roman'].metric).toEqual(prepared.metric);
       expect(probes).toBe(1);
-      expect(registrations.size).toBe(1);
+      expect(registrations.size).toBe(2);
     } finally {
       if (first) unloadOfficeFontFallbacks(first.faces);
       if (second) unloadOfficeFontFallbacks(second.faces);
       vi.unstubAllGlobals();
     }
     expect(registrations.size).toBe(0);
+  });
+
+  it('admits DOM-realm worker measurements only for the resolved source and tuple', async () => {
+    const fonts = new Set<FontFace>() as unknown as FontFaceSet;
+    class ProbeFace {
+      status = 'loaded';
+      weight: string;
+      style: string;
+      sizeAdjust: string;
+      constructor(readonly family: string, _source: string,
+        descriptors: FontFaceDescriptors & { sizeAdjust: string }) {
+        this.weight = descriptors.weight!;
+        this.style = descriptors.style!;
+        this.sizeAdjust = descriptors.sizeAdjust;
+      }
+      async load() { return this; }
+    }
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('FontFace', ProbeFace);
+    const identity = 'office-local:local("exact-host-source")';
+    const loadedRoute = { ...route(), resourceIdentity: identity,
+      metric: { ...route().metric, sourceIdentity: identity } };
+    const face = { family: loadedRoute.family, weight: '400', style: 'normal', status: 'loaded' } as FontFace;
+    const measurements = { resourceIdentity: identity, weight: 400, style: 'normal' as const, measured: host };
+    const prepared: FontFace[] = [];
+    try {
+      for (const mismatch of [{ resourceIdentity: 'other-source' }, { weight: 700 }, { style: 'italic' as const }]) {
+        const result = await prepareDocxHostFontMetrics({ faces: [face], routes: { host: loadedRoute }, checked: [] },
+          fonts, [{ ...measurements, ...mismatch }]);
+        expect(result.routes.host.metric.lineHeightRatio).toBeUndefined();
+      }
+      const result = await prepareDocxHostFontMetrics({ faces: [face], routes: { host: loadedRoute }, checked: [] },
+        fonts, [measurements]);
+      prepared.push(...result.faces);
+      expect(result.routes.host.metric.lineHeightRatio).toBe(2355 / 2048);
+      expect(result.routes.host.metric.requiresGlyphCoverage).toBe(true);
+      expect(result.routes.host.metric.glyphCoverageProbeFamily).toBeDefined();
+    } finally {
+      unloadOfficeFontFallbacks(prepared);
+      vi.unstubAllGlobals();
+    }
+    expect([...fonts]).toHaveLength(0);
   });
 
   it('uses measured host leading ahead of the catalog and retains the exact paint resource', () => {

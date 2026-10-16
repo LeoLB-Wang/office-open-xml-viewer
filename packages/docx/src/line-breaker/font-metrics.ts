@@ -1,5 +1,5 @@
-import type { ResolvedFontMetric } from '@silurus/ooxml-core';
-import { normalizeFontMetricFamily } from '@silurus/ooxml-core';
+import type { CanvasFontRoute, ResolvedFontMetric } from '@silurus/ooxml-core';
+import { localFontMetricCoversText, normalizeFontMetricFamily } from '@silurus/ooxml-core';
 import type { FontResolution } from '../layout/font-service.js';
 import { referenceFontLineMetrics } from '../reference-font-line-metrics.js';
 
@@ -10,11 +10,12 @@ export function selectedFontLineMetric(
   selected: FontResolution | undefined,
   localFont: ResolvedFontMetric | undefined,
   naturalMetricAllowed: boolean,
+  referenceMetricAllowed = true,
 ) {
   const resourceMetric = (naturalMetricAllowed || localFont?.designAscentRatio == null)
     && (localFont?.lineHeightRatio != null || localFont?.designAscentRatio != null
       || localFont?.eastAsianLineHeightRatio != null) ? localFont : undefined;
-  const referenceMetric = naturalMetricAllowed && !resourceMetric
+  const referenceMetric = naturalMetricAllowed && referenceMetricAllowed && !resourceMetric
     && mayUseAuthoredReferenceVerticalMetric(selected)
     ? referenceFontLineMetrics(selected.requestedFamily, selected.weight, selected.style)
     : undefined;
@@ -24,7 +25,10 @@ export function selectedFontLineMetric(
 /** A subset face lends design metrics only to spans whose every scalar it owns.
  * A FontFace tuple can win CSS selection while Canvas silently paints missing
  * glyphs from another face. Ranges are normalized once at the service boundary. */
-export function metricCoversText(metric: ResolvedFontMetric, text: string): boolean {
+export function metricCoversText(
+  metric: ResolvedFontMetric, text: string, route?: CanvasFontRoute,
+): boolean {
+  if (metric.requiresGlyphCoverage && !localFontMetricCoversText(metric, text, route)) return false;
   const ranges = metric.unicodeRanges;
   if (ranges === undefined || text.length === 0) return true;
   for (const scalar of text) {
@@ -50,11 +54,8 @@ export function metricMatchesSelectedFont(
   selected: FontResolution,
   text: string,
 ): boolean {
-  if (normalizeFontMetricFamily(metric.family)
-    !== normalizeFontMetricFamily(selected.resolvedFamily)
-    || (metric.weight ?? 400) !== selected.weight
-    || (metric.style ?? 'normal') !== selected.style
-    || !metricCoversText(metric, text)) return false;
+  if (resourceMetricKey(metric) !== resolutionMetricKey(selected)
+    || !metricCoversText(metric, text, selected.route)) return false;
   const identity = metric.sourceIdentity;
   if (selected.source === 'embedded') {
     // The production loader routes Canvas to a resource-derived private family.
@@ -102,6 +103,30 @@ export function selectedMetricKey(
 }
 
 
+const resourceMetricKeys = new WeakMap<ResolvedFontMetric, string>();
+
+function resourceMetricKey(metric: ResolvedFontMetric): string {
+  const cached = resourceMetricKeys.get(metric);
+  if (cached !== undefined) return cached;
+  const key = selectedMetricKey(metric.family, metric.weight ?? 400, metric.style ?? 'normal');
+  if (Object.isFrozen(metric)) resourceMetricKeys.set(metric, key);
+  return key;
+}
+
+const resolutionMetricKeys = new WeakMap<FontResolution, string>();
+
+/** Retained resolutions are immutable and shared by every span of a tuple.
+ * Local aliases can be long: normalize once rather than at every line-metric
+ * and catalog-admission lookup. Mutable custom resolutions stay uncached. */
+function resolutionMetricKey(selected: FontResolution): string {
+  const cached = resolutionMetricKeys.get(selected);
+  if (cached !== undefined) return cached;
+  const key = selectedMetricKey(selected.resolvedFamily, selected.weight, selected.style);
+  if (Object.isFrozen(selected)) resolutionMetricKeys.set(selected, key);
+  return key;
+}
+
+
 /** A frozen service snapshot is immutable for the document lifetime, so one
  * tuple/source index can serve every paragraph. A custom mutable service gets
  * one temporary index per synchronous buildSegments call, then can change its
@@ -118,7 +143,7 @@ export function indexedFontMetrics(
   const cacheable = frozenRoot && values.every((metric) => Object.isFrozen(metric));
   const mutable = new Map<string, ResolvedFontMetric[]>();
   for (const metric of values) {
-    const key = selectedMetricKey(metric.family, metric.weight ?? 400, metric.style ?? 'normal');
+    const key = resourceMetricKey(metric);
     const candidates = mutable.get(key);
     if (candidates) candidates.push(metric);
     else mutable.set(key, [metric]);
@@ -136,9 +161,7 @@ export function selectResourceMetric(
 ): ResolvedFontMetric | undefined {
   if (selected.source !== 'embedded' && selected.source !== 'local'
     && selected.source !== 'substitute') return undefined;
-  const candidates = index.get(selectedMetricKey(
-    selected.resolvedFamily, selected.weight, selected.style,
-  )) ?? [];
+  const candidates = index.get(resolutionMetricKey(selected)) ?? [];
   let first: ResolvedFontMetric | undefined;
   for (const metric of candidates) {
     if (!metricMatchesSelectedFont(metric, selected, probeText)) continue;
@@ -149,7 +172,7 @@ export function selectResourceMetric(
   // overlapping CSS faces Canvas actually paints. Compare every covering
   // resource in the tuple, including resources acquired from other sources.
   for (const metric of candidates) {
-    if (metricCoversText(metric, probeText)
+    if (metricCoversText(metric, probeText, selected.route)
       && !sameResourceGeometry(first, metric)) return undefined;
   }
   return first;
@@ -165,14 +188,12 @@ export function selectResourceAverageWidthRatio(
 ): number | undefined {
   if (selected.source !== 'embedded' && selected.source !== 'local'
     && selected.source !== 'substitute') return undefined;
-  const candidates = index.get(selectedMetricKey(
-    selected.resolvedFamily, selected.weight, selected.style,
-  )) ?? [];
+  const candidates = index.get(resolutionMetricKey(selected)) ?? [];
   const withSpace = `${probeText} `;
   const first = candidates.find((metric) => metricMatchesSelectedFont(metric, selected, withSpace));
   const ratio = first?.averageCharWidthRatio;
   if (ratio == null || ratio <= 0) return undefined;
-  return candidates.every((metric) => !metricCoversText(metric, withSpace)
+  return candidates.every((metric) => !metricCoversText(metric, withSpace, selected.route)
     || metric.averageCharWidthRatio === ratio) ? ratio : undefined;
 }
 
@@ -203,4 +224,12 @@ export function mayUseAuthoredReferenceVerticalMetric(
   // authored font's vertical geometry.
   return selected?.source === 'native'
     || mayUseExactLocalReferenceWidthMetric(selected);
+}
+
+/** A prepared host face that failed coverage must fall through to the span's
+ * native measurement, never re-enter through its authored catalog profile. */
+export function allowsReferenceFontMetric(
+  index: MetricTupleIndex, selected: FontResolution | undefined,
+): boolean {
+  return !selected || !(index.get(resolutionMetricKey(selected)) ?? []).some(metric => metric.requiresGlyphCoverage);
 }
