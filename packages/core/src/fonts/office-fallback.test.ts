@@ -107,6 +107,30 @@ describe('loadOfficeFontFallbacks', () => {
     expect(deleted).toContain(result.faces[0]);
   });
 
+  it('never lets a catalog family name stand in for a named cut of that family', async () => {
+    // "Arial Black" resolves to the catalog's "Arial" 900 profile, whose aliases
+    // include "Arial". Loading local("Arial") would paint the regular face.
+    const { set, added } = fontSet(['Arial', 'Arial Black']);
+    globals.fetch = async () => { throw new Error('unexpected fetch'); };
+    const result = await loadOfficeFontFallbacks([{ family: 'Arial Black', weight: 900 }], set);
+    expect(added.length).toBeGreaterThan(0);
+    for (const face of added) expect(String(face.source)).not.toContain('local("Arial")');
+    expect(result.routes['arial black:900:normal']?.resourceIdentity).toContain('local("Arial Black")');
+    unloadOfficeFontFallbacks(result.faces);
+  });
+
+  it('never lets a broader catalog family prove a named cut present', async () => {
+    // Only regular Arial / Calibri are installed: their names must not prove
+    // the absent Arial Black / Calibri Light cuts present.
+    const { set } = fontSet(['Arial', 'Calibri']);
+    globals.fetch = async () => { throw new Error('unexpected fetch'); };
+    const result = await loadOfficeFontFallbacks([
+      { family: 'Arial Black', presenceOnly: true }, { family: 'Calibri Light', presenceOnly: true },
+      { family: 'Arial', presenceOnly: true },
+    ], set);
+    expect(result.installed).toEqual(['arial']);
+  });
+
   it('retains one local face across concurrent holders in the same font set', async () => {
     const { set, added, deleted } = fontSet(['Calibri']);
     const [first, second] = await Promise.all([

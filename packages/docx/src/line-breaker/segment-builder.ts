@@ -1565,6 +1565,7 @@ function emitResolvedTextSegment(
     fontFamily: resolvedSpan?.font.resolvedFamily ?? localFont?.family ?? fontFamily,
     authoredFontFamily: resolvedSpan?.font.requestedFamily ?? fontFamily,
     fontSource: resolvedSpan?.font.source,
+    ...(resolvedSpan?.font.installedFamily ? { fontInstalledFamily: true as const } : {}),
     authoredReferenceMetricAllowed: mayUseAuthoredReferenceVerticalMetric(resolvedSpan?.font),
     fontRoute: resolvedSpan?.fontRoute,
     resolvedLineHeightRatio: familyLineMetric?.lineHeightRatio,
@@ -1787,6 +1788,11 @@ function appendRunsToSegments(
             if (!('text' in segment)) throw new Error('A note metric probe lost its text authority');
             segment.text = '';
             segment.metricOnly = true;
+            // An absent authored face (native CSS fallback) has no selected-face
+            // metric, so the host's vertical box comes from its painting face.
+            // Every present face (embedded, local, substitute, CSS, Google)
+            // keeps its established metric-only behaviour.
+            if (segment.fontSource === 'native' && segment.fontInstalledFamily !== true) segment.metricProbeText = 'x';
             segment.sourceRunIndex = runIndex;
             if (segment.textShapeRequest) {
               segment.textShapeRequest = Object.freeze(independentTextShapeRequest(segment.textShapeRequest, ''));

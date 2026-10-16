@@ -58,6 +58,8 @@ export interface LayoutTextSeg extends LayoutSegSource {
    * substitute without inspecting the CSS alias or changing its paint route. */
   authoredFontFamily?: string | null;
   fontSource?: import('../layout/font-service.js').FontResolutionSource;
+  /** Native resolution of a family installed in another tuple (present). */
+  fontInstalledFamily?: true;
   /** Existing selected-face reference policy; application-provided SFNT
    * resources are local inventory entries but are not installed Office faces. */
   authoredReferenceMetricAllowed?: boolean;

@@ -344,7 +344,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
           if (requestedGeneration !== parseGeneration) throw new Error('render-worker parse was superseded');
         }
         let officeFonts = await loadOfficeFontFallbacks(docxOfficeFontFallbackRequests(model, { useGoogleFonts: req.useGoogleFonts, cjkFallback: req.cjkFallback }).filter((request) =>
-          !embeddedFonts.routes.some((route) => route.requestedFamily.toLowerCase() === request.family.toLowerCase()
+          request.presenceOnly || !embeddedFonts.routes.some((route) => route.requestedFamily.toLowerCase() === request.family.toLowerCase()
             && route.weight === (request.weight ?? 400) && route.style === (request.style ?? 'normal'))));
         officeFaces = officeFonts.faces;
         if (requestedGeneration !== parseGeneration) throw new Error('render-worker parse was superseded');
@@ -379,6 +379,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
           officeRoutes: Object.values(officeFonts.routes),
           googleFaces,
           installedSubstituteFamilies,
+          installedFamilies: officeFonts.installed,
           mathResources: preparedMath?.records,
           mathDrawables: preparedMath?.drawables,
         });

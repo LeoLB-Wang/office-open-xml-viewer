@@ -62,6 +62,8 @@ export interface ProductionLayoutServiceOptions {
   /** Normalized families whose authored face is installed; they are never
    * routed to a different-family Google substitute (`docxGoogleFontPlan`). */
   readonly installedSubstituteFamilies?: readonly string[];
+  /** Normalized authored families the family presence probe found installed. */
+  readonly installedFamilies?: readonly string[];
 }
 
 /** Registry families with a script-scoped visual substitute (core
@@ -224,9 +226,14 @@ export function createProductionLayoutServices(
   // A face loaded after this snapshot needs a new layout service/pagination.
   const requestedNames = new Set(routedFontFamilies.map(normalizedFaceFamily));
   const fontSet = options.fontSet === undefined ? activeFontSet() : options.fontSet;
+  // Any loaded application face declaring an authored family shadows the
+  // system family for every tuple, whatever its descriptors (oblique, weight
+  // 950...), even ones the exact-tuple inventory below cannot represent.
+  const shadowedFamilies = new Set<string>();
   if (fontSet && typeof fontSet[Symbol.iterator] === 'function') {
     for (const face of fontSet) {
       if (!requestedNames.has(normalizedFaceFamily(face.family))) continue;
+      if (face.status === 'loaded') shadowedFamilies.add(normalizedFaceFamily(face.family));
       for (const loaded of loadedFaces([face])) {
         inventory.push({
           requestedFamily: loaded.displayFamily,
@@ -241,6 +248,8 @@ export function createProductionLayoutServices(
   const text = createTextLayoutService({
     ...(context ? { glyphContours: acquireCanvasGlyphContours, glyphContourFingerprint: 'canvas-half-coverage-contours-v1' } : {}),
     fonts: createFontResolver(inventory, {
+      installedFamilies: options.installedFamilies,
+      shadowedFamilies: [...shadowedFamilies],
       regionalFamilyLists: Object.fromEntries((['sc', 'tc', 'hk', 'jp', 'kr'] as const).map(region => [
         region,
         Object.fromEntries([...new Set([...routedFontFamilies, 'sans-serif', 'serif', 'monospace'])]

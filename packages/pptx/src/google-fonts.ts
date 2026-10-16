@@ -10,6 +10,7 @@ import {
 } from '@silurus/ooxml-core';
 import { ScriptPreloadAccumulator } from '@silurus/ooxml-core/internal/script-preload-accumulator';
 import type { Presentation, Slide, SlideElement, TextBody } from './types';
+import { officeFaceWeight } from './powerpoint-line-metrics.js';
 
 /** Theme-referenced typefaces commonly used by PPTX templates. Keys are
  *  lower-cased family names.
@@ -184,6 +185,8 @@ export function pptxFontPreloadNames(
  * inherit through paragraph/body defaults (§21.1.2.3.9); theme tokens resolve
  * against the same major/minor values used by the renderer. Loading is delayed
  * until the slide is requested, so unused slides and styles fetch no assets. */
+const CSS_GENERIC_FAMILY_NAMES = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui']);
+
 export function pptxSlideOfficeFontRequests(
   slide: Slide,
   majorFont: string | null,
@@ -201,14 +204,28 @@ export function pptxSlideOfficeFontRequests(
     return family.split(',')[0]?.trim() ?? null;
   };
   const add = (family: string | null | undefined, bold: boolean, italic: boolean) => {
-    if (resolved(family)?.toLowerCase() !== 'calibri') return;
-    const weight = bold ? 700 : 400;
+    // Every authored face is probed, so layout can admit catalog geometry
+    // only for faces proven present (no family-name gate).
+    const name = resolved(family);
+    if (!name || CSS_GENERIC_FAMILY_NAMES.has(name.toLowerCase())) return;
+    const weight = officeFaceWeight(name, bold, italic);
     const style = italic ? 'italic' : 'normal';
-    requests.set(`${weight}:${style}`, { family: 'Calibri', weight, style });
+    requests.set(`${name.toLowerCase()}:${weight}:${style}`, { family: name, weight, style });
+    // Family presence is probed independently of the styled tuples a slide
+    // uses, so an installed regular-only family stays present for bold runs.
+    requests.set(`presence:${name.toLowerCase()}`, { family: name, presenceOnly: true });
   };
   const body = (textBody: TextBody | null | undefined) => {
     for (const paragraph of textBody?.paragraphs ?? []) {
       for (const run of paragraph.runs) {
+        if (run.type === 'break') {
+          // a:br carries its own character properties (CT_TextLineBreak); the
+          // renderer sizes the break's line with that face.
+          add(run.fontFamily ?? paragraph.defFontFamily,
+            run.bold ?? paragraph.defBold ?? textBody?.defaultBold ?? false,
+            run.italic ?? paragraph.defItalic ?? textBody?.defaultItalic ?? false);
+          continue;
+        }
         if (run.type !== 'text') continue;
         const bold = run.bold ?? paragraph.defBold ?? textBody?.defaultBold ?? false;
         const italic = run.italic ?? paragraph.defItalic ?? textBody?.defaultItalic ?? false;
@@ -216,6 +233,13 @@ export function pptxSlideOfficeFontRequests(
         if (run.fontFamilyEa) add(run.fontFamilyEa, bold, italic);
         if (run.fontFamilyCs) add(run.fontFamilyCs, bold, italic);
         if (run.fontFamilySym) add(run.fontFamilySym, bold, italic);
+      }
+      // a:endParaRPr: the end mark contributes its face to the last line.
+      const end = paragraph.endRunProperties;
+      if (end) {
+        add(end.fontFamily ?? paragraph.defFontFamily,
+          end.bold ?? paragraph.defBold ?? textBody?.defaultBold ?? false,
+          end.italic ?? paragraph.defItalic ?? textBody?.defaultItalic ?? false);
       }
       if (paragraph.bullet.type === 'char' || paragraph.bullet.type === 'autoNum') {
         // The marker renderer uses normal weight/style for both bullet kinds.

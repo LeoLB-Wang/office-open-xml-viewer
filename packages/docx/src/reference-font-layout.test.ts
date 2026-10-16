@@ -205,9 +205,11 @@ describe('native reference font vertical layout', () => {
     }
   });
 
-  it('uses authored Calibri vertical geometry with a native CSS fallback, without borrowing widths', () => {
-    // A CSS fallback does not prove that Calibri paints the glyph. Its catalog
-    // sides still define Word pagination; glyph advances remain measured.
+  it('sizes an absent authored face from its painting fallback, not the authored catalog', () => {
+    // Layout follows the face that paints: with Calibri absent, a native CSS
+    // family list paints a browser fallback, so the authored catalog line box
+    // is not admitted and the span keeps that fallback's Canvas box. Pagination
+    // differences from Office caused by the missing face are accepted.
     const layoutServices = services();
     const segment = buildSegments([{
       type: 'text', text: 'A B', fontFamily: 'Calibri', fontFamilyEastAsia: 'Calibri',
@@ -217,11 +219,11 @@ describe('native reference font vertical layout', () => {
       pageIndex: 0, totalPages: 1, layoutServices,
       characterSpacingControl: 'compressPunctuation',
     })[0] as LayoutTextSeg;
-    expect(segment.referenceFontVerticalMetric).toBe(true);
-    expect(segment.resolvedLineHeightRatio).toBe(2500 / 2048);
+    expect(segment.referenceFontVerticalMetric).toBeFalsy();
+    expect(segment.resolvedLineHeightRatio).toBeUndefined();
     expect(segment.latinSpaceAverageWidthRatio).toBeUndefined();
     const line = layoutLines(context, [segment], 100, 0, 1)[0]!;
-    expect(line.intendedSingle).toBeCloseTo(10 * 2500 / 2048, 8);
+    expect(line.ascent + line.descent).toBeCloseTo(8 + 2, 8);
     expect(line.segments[0]?.measuredWidth).toBe(10);
   });
 
@@ -475,12 +477,109 @@ describe('native reference font vertical layout', () => {
     expect(referenceFontLineMetrics('BIZ UDMincho', 400, 'italic')).toBeUndefined();
   });
 
-  it('allocates the BIZ UD line box for its Japanese family names at 10.5 pt', () => {
-    // Name identity is shared font metadata (core catalogue aliases), not a
-    // Word policy: the Japanese names reach the same pinned vertical profile.
-    // No local resource is confirmed here, so Canvas glyph widths stay in force.
+  it('treats a family installed in another tuple as present (synthesized bold)', () => {
+    // Only the regular BIZ UDMincho face is installed; a bold run still paints
+    // that installed family through CSS font matching, so the family is
+    // present and its catalog line box applies, unlike a fully absent face.
+    const layoutServices = services({ 'biz udmincho': {
+      requestedFamily: 'BIZ UDMincho', family: 'BIZ UDMincho', weight: 400, style: 'normal',
+      sourceIdentity: 'office-local:local("BIZ UDMincho")',
+    } });
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBe(true);
+    const segment = buildSegments([{
+      type: 'text', text: '資料', fontFamily: 'BIZ UDMincho', fontFamilyEastAsia: 'BIZ UDMincho',
+      fontSize: 10.5, bold: true, italic: false, underline: false, strikethrough: false,
+    }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices })[0] as LayoutTextSeg;
+    expect(segment.referenceFontVerticalMetric).toBe(true);
+    expect(segment.resolvedLineHeightRatio).toBeCloseTo(1.3, 8);
+  });
+
+  it('does not treat an application resource under a private alias as an installed family', () => {
+    const layoutServices = services({ 'biz udmincho': {
+      requestedFamily: 'BIZ UDMincho', family: 'BIZ UDMincho', weight: 400, style: 'normal',
+      sourceIdentity: 'provided-sfnt:app',
+    } });
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBeUndefined();
+  });
+
+  it('treats a family found by its presence probe as present in a bold-only document', () => {
+    // No styled tuple of BIZ UDMincho loaded (the bold cut is not installed and
+    // no regular text requested the regular route), but the family presence
+    // probe found the regular face: the bold run paints that installed family.
+    const empty = { default: null, first: null, even: null };
+    const layoutServices = createLayoutServices({
+      section: {
+        pageWidth: 612, pageHeight: 792, marginTop: 72, marginRight: 72,
+        marginBottom: 72, marginLeft: 72, headerDistance: 36, footerDistance: 36,
+        titlePage: false, evenAndOddHeaders: false,
+      },
+      body: [], headers: empty, footers: empty,
+    } as DocxDocumentModel, { measureContext: context, installedFamilies: ['biz udmincho'] });
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBe(true);
+    const segment = buildSegments([{
+      type: 'text', text: '資料', fontFamily: 'BIZ UDMincho', fontFamilyEastAsia: 'BIZ UDMincho',
+      fontSize: 10.5, bold: true, italic: false, underline: false, strikethrough: false,
+    }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices })[0] as LayoutTextSeg;
+    expect(segment.referenceFontVerticalMetric).toBe(true);
+    expect(segment.resolvedLineHeightRatio).toBeCloseTo(1.3, 8);
+  });
+
+  it('does not treat a family shadowed by an application @font-face as installed', () => {
+    // A declared application face owns the authored family name for every
+    // tuple, so the system installation cannot describe what paints.
+    const resolver = createFontResolver([{
+      requestedFamily: 'BIZ UDMincho', resolvedFamily: 'BIZ UDMincho', source: 'css', weight: 400, style: 'normal',
+    }], { installedFamilies: ['biz udmincho'] });
+    const resolution = resolver.resolve({ requestedFamily: 'BIZ UDMincho', weight: 700, style: 'normal' });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBeUndefined();
+  });
+
+  it.each([
+    ['400', 'oblique'], ['950', 'normal'],
+  ])('lets a loaded application face (%s %s) shadow an installed family', (weight, style) => {
+    // These descriptors have no exact WML tuple, but the face is still a CSS
+    // candidate for the family and paints instead of the system installation.
+    const empty = { default: null, first: null, even: null };
+    const declared = [{ family: 'Arial', status: 'loaded', weight, style }];
+    vi.stubGlobal('document', { fonts: { [Symbol.iterator]: () => declared[Symbol.iterator]() } });
+    const layoutServices = createLayoutServices({
+      section: {
+        pageWidth: 612, pageHeight: 792, marginTop: 72, marginRight: 72,
+        marginBottom: 72, marginLeft: 72, headerDistance: 36, footerDistance: 36,
+        titlePage: false, evenAndOddHeaders: false,
+      },
+      body: [{ type: 'paragraph', runs: [{ type: 'text', text: 'Ag', fontFamily: 'Arial', bold: true }] }],
+      headers: empty, footers: empty,
+    } as unknown as DocxDocumentModel, { measureContext: context, installedFamilies: ['arial'] });
+    vi.unstubAllGlobals();
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'Arial' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBeUndefined();
+  });
+
+  it('keeps absent BIZ UD faces on their painting fallback, whatever the family spelling', () => {
+    // Name identity is shared font metadata (core catalogue aliases): the
+    // Japanese names reach the same pinned profile. No local resource is
+    // confirmed here, so the face is absent and its catalog line box is not
+    // admitted; the painting fallback's Canvas box and widths stay in force.
     const layoutServices = services();
     for (const family of ['BIZ UD明朝', 'BIZ UDゴシック']) {
+      expect(referenceFontLineMetrics(family, 400, 'normal')?.lineHeightRatio).toBeCloseTo(1.3, 8);
       for (const bold of [false, true]) {
         const segments = buildSegments([{
           type: 'text', text: '資料を確認します。',
@@ -490,15 +589,15 @@ describe('native reference font vertical layout', () => {
         }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices });
         const segment = segments[0] as LayoutTextSeg;
         const line = layoutLines(context, segments, 200, 0, 1)[0]!;
-        expect(segment.referenceFontVerticalMetric).toBe(true);
-        expect(line.ascent + line.descent).toBeCloseTo(13.65, 8);
+        expect(segment.referenceFontVerticalMetric).toBeFalsy();
+        expect(line.ascent + line.descent).not.toBeCloseTo(13.65, 2);
         expect(line.segments[0]?.measuredWidth).toBe(45);
       }
       expect(referenceFontLineMetrics(family, 400, 'italic')).toBeUndefined();
     }
   });
 
-  it('allocates an auto table row from BIZ UDGothic normal spacing and cell margins', () => {
+  it('allocates an auto table row for an absent BIZ UDGothic from its painting fallback and cell margins', () => {
     const section = {
       pageWidth: 612, pageHeight: 792, marginTop: 72, marginRight: 72,
       marginBottom: 72, marginLeft: 72, headerDistance: 36,
@@ -534,7 +633,8 @@ describe('native reference font vertical layout', () => {
         cellMarginTop: 0, cellMarginBottom: 0, cellMarginLeft: 0, cellMarginRight: 0,
         jc: 'left',
       } as unknown as DocTable;
-      expect(layoutBodyTableRowAdvances(table, section, context)).toEqual([20.65]);
+      // Absent face: the fallback's Canvas box (8 + 2) plus the 3.5 pt margins.
+      expect(layoutBodyTableRowAdvances(table, section, context)).toEqual([3.5 + 10 + 3.5]);
     }
     expect(referenceFontLineMetrics('BIZ UDGothic', 400, 'italic')).toBeUndefined();
   });

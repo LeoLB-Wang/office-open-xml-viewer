@@ -9,6 +9,9 @@ const mainStreams = JSON.parse(readFileSync(
 // Follow word-space-fit-parity.test.ts's captured main-oracle data pattern.
 // Captured with this recording canvas at 4bcb91c487e38393aadb3f3b70a732adf2c7b708;
 // these are previous-renderer results, never Office fidelity references.
+// The fixture now declares Arial present (absent faces size lines from their
+// painting fallback), so only the recorded font strings gained the local
+// route's resolved family; every geometry value is unchanged.
 // All numeric fields are unrounded doubles, including retained cluster advances
 // and offsets, every transform argument, and every fill's complete paint state.
 describe('unexcluded text keeps main spacing arithmetic bit for bit', () => {

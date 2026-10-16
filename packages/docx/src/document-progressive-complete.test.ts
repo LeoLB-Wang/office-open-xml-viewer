@@ -238,7 +238,9 @@ describe('ordinary main-mode sliced load ownership', () => {
   it('releases a font registered after a viewer-owned load is aborted', async () => {
     installMainModeParse(3);
     const faces = new Set<FontFace>();
-    let finish!: () => void;
+    // The exact tuple and its family presence probe both load.
+    const finishers: (() => void)[] = [];
+    const finish = () => { for (const done of finishers) done(); };
     let entered!: () => void;
     const started = new Promise<void>((resolve) => { entered = resolve; });
     vi.stubGlobal('document', { fonts: faces });
@@ -248,7 +250,7 @@ describe('ordinary main-mode sliced load ownership', () => {
       load(): Promise<this> {
         entered();
         return new Promise((resolve) => {
-          finish = () => { this.status = 'loaded'; resolve(this); };
+          finishers.push(() => { this.status = 'loaded'; resolve(this); });
         });
       }
     });
@@ -261,7 +263,7 @@ describe('ordinary main-mode sliced load ownership', () => {
       },
     } as LoadOptions);
     await started;
-    expect(faces.size).toBe(1);
+    expect(faces.size).toBeGreaterThan(0);
     abort.abort();
     finish();
     await expect(loading).rejects.toBeInstanceOf(PaginationAbortError);

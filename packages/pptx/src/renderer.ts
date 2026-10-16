@@ -4,6 +4,7 @@ import { FONT_TRACKING_SENTINEL, FONT_BASELINE_SENTINEL, FONT_SPACE_SENTINEL } f
 import { preparedPowerPointText } from './font-display-text.js';
 import { pptxSlideCjkFallback } from './google-fonts.js';
 import type { CjkLang } from '@silurus/ooxml-core';
+import { normalizeLocalFontMetricFamily } from '@silurus/ooxml-core';
 import { containsHanScript } from '@silurus/ooxml-core/internal/script-preload-accumulator';
 import type {
   Slide,
@@ -176,7 +177,7 @@ import { resolveTableBorderConflict } from './table-border-conflict.js';
 import { isSmartArtFallbackShape, smartArtFallbackTextColor } from './smartart-fallback-contrast';
 import { resolveTabWidths, type TabItem, type TabStopPx } from './tab-layout.js';
 import {
-  powerPointCompatOffNaturalLine, powerPointExactLinePoints, powerPointFaceMetrics,
+  powerPointCompatOffNaturalLine, powerPointExactLinePoints, powerPointFaceMetrics, officeFaceWeight,
   powerPointNaturalLine, type PowerPointFaceMetrics,
   POWERPOINT_FONT_ALGN_UNIT_PT, powerPointFontAlgnOffset, powerPointFontAlgnReference,
 } from './powerpoint-line-metrics.js';
@@ -203,6 +204,8 @@ import {
 export interface RenderContext {
   cjkFallback?: CjkLang;
   officeFontRoutes?: Readonly<Record<string, import('@silurus/ooxml-core').OfficeFontFallbackRoute>>;
+  /** Normalized authored families with any installed face (presence probes). */
+  officeInstalledFamilies?: readonly string[];
   /** Presentation load explicitly enabled Google Fonts substitutions. */
   googleSubstitutes?: boolean;
   themeMajorFont: string | null;
@@ -1332,21 +1335,14 @@ export function buildFont(
 ): string {
   const style  = italic ? 'italic ' : '';
   const normalized = normalizeFontFamily(family, rc);
-  const authoredFamily = rc.embeddedFontAuthoredFamilies?.get(normalized) ?? normalized;
+  const { authoredFamily, officeRoute: selectedRoute } = selectOfficeFace(normalized, bold, italic, rc);
   const inferredWeight = namedFaceWeight(authoredFamily);
   const weight = bold ? 'bold ' : inferredWeight ? `${inferredWeight} ` : '';
-  const routeKey = bold || inferredWeight === 700
-    ? `calibri:700:${italic ? 'italic' : 'normal'}`
-    : italic ? 'calibri:400:italic' : 'calibri';
-  const embeddedTuple = `calibri:${bold || inferredWeight === 700 ? 700 : 400}:${italic ? 'italic' : 'normal'}`;
   // ECMA-376 §19.3.1.52: master txStyles is an optional source of text style.
   // The theme-minor CSS fallback when every font slot is absent is renderer
-  // policy, not evidence that an exact Calibri resource was selected. Preserve
-  // that established fallback until a run or inherited style names a face.
-  const officeRoute = hasNamedFamily && authoredFamily.toLowerCase() === 'calibri'
-    && !rc.embeddedFontTuples?.has(embeddedTuple)
-    ? rc.officeFontRoutes?.[routeKey]
-    : undefined;
+  // policy, not evidence that an exact resource was selected. Preserve that
+  // established fallback until a run or inherited style names a face.
+  const officeRoute = hasNamedFamily ? selectedRoute : undefined;
   const fallback = containsHanScript(text)
     ? rc.cjkFallback ?? classifyCjkFont(rc.themeMajorFont) ?? classifyCjkFont(rc.themeMinorFont) ?? undefined
     : undefined;
@@ -1383,8 +1379,53 @@ function lineMetricFor(
   rc: RenderContext,
 ): PowerPointFaceMetrics | undefined {
   if (CSS_GENERIC_FAMILIES.has(family)) return undefined;
-  if (rc.embeddedFontAuthoredFamilies?.has(family)) return undefined;
+  // Layout follows the face that paints, selected exactly as buildFont does.
+  // Catalog geometry describes a face only when that face is present (an
+  // exact local() route was loaded, or its family is installed); an absent
+  // authored face paints with a browser fallback, so the run keeps the
+  // ordinary line model instead of the absent face's ascent share.
+  const normalized = normalizeFontFamily(family, rc);
+  const { authoredFamily, embedded, officeRoute } = selectOfficeFace(normalized, bold, italic, rc);
+  if (officeRoute) return powerPointFaceMetrics(embedded ? authoredFamily : family, bold, italic);
+  // Deck-embedded bytes (or CSS synthesis from them) paint the embedded alias;
+  // the catalog does not describe those bytes, and the alias shadows any
+  // installed system family of the same authored name.
+  if (embedded || !familyInstalled(authoredFamily, rc)) return undefined;
   return powerPointFaceMetrics(family, bold, italic);
+}
+
+/**
+ * The face selection shared by painting (buildFont) and line metrics: the
+ * authored family behind a deck-embedded alias, and the exact local() route
+ * that paints this tuple. A tuple the deck embeds paints its own bytes; a
+ * missing embedded style falls to the exact installed route when one loaded.
+ */
+function selectOfficeFace(normalized: string, bold: boolean, italic: boolean, rc: RenderContext): {
+  authoredFamily: string;
+  embedded: boolean;
+  officeRoute: import('@silurus/ooxml-core').OfficeFontFallbackRoute | undefined;
+} {
+  const embeddedAuthored = rc.embeddedFontAuthoredFamilies?.get(normalized);
+  const authoredFamily = embeddedAuthored ?? normalized;
+  const inferredWeight = namedFaceWeight(authoredFamily);
+  const embeddedTuple = `${authoredFamily.toLowerCase()}:${bold || inferredWeight === 700 ? 700 : 400}:${italic ? 'italic' : 'normal'}`;
+  const officeRoute = rc.embeddedFontTuples?.has(embeddedTuple)
+    ? undefined
+    : rc.officeFontRoutes?.[officeRouteKey(authoredFamily, officeFaceWeight(authoredFamily, bold, italic), italic)];
+  return { authoredFamily, embedded: embeddedAuthored !== undefined, officeRoute };
+}
+
+/** Whether an installed face of the family paints the authored name (see
+ * AcquiredOfficeRoutes.installed): CSS font matching then paints that
+ * installed family, synthesizing weight/style. */
+function familyInstalled(family: string, rc: RenderContext): boolean {
+  return rc.officeInstalledFamilies?.includes(normalizeLocalFontMetricFamily(family)) === true;
+}
+
+/** The core office-fallback route key for an authored family tuple. */
+function officeRouteKey(family: string, weight: number, italic: boolean): string {
+  const normalized = normalizeLocalFontMetricFamily(family);
+  return weight === 400 && !italic ? normalized : `${normalized}:${weight}:${italic ? 'italic' : 'normal'}`;
 }
 
 /**
@@ -8097,6 +8138,8 @@ export type SlideRenderOptions = RenderOptions & {
 type InternalSlideRenderOptions = SlideRenderOptions & {
   cjkFallback?: CjkLang;
   officeFontRoutes?: Readonly<Record<string, import('@silurus/ooxml-core').OfficeFontFallbackRoute>>;
+  /** Normalized authored families with any installed face (presence probes). */
+  officeInstalledFamilies?: readonly string[];
   googleSubstitutes?: boolean;
   embeddedFontAliases?: ReadonlyMap<string, string>;
   embeddedFontAuthoredFamilies?: ReadonlyMap<string, string>;
@@ -8401,6 +8444,7 @@ async function renderSlideLeased(
     embeddedFontAuthoredFamilies: opts.embeddedFontAuthoredFamilies,
     embeddedFontTuples: opts.embeddedFontTuples,
     officeFontRoutes: opts.officeFontRoutes,
+    officeInstalledFamilies: opts.officeInstalledFamilies,
     googleSubstitutes: opts.googleSubstitutes,
     // The backing store may have been clamped below `canvasSize × dpr`; downstream
     // crisp-offset math must use the SAME effective dpr the ctx was scaled by.

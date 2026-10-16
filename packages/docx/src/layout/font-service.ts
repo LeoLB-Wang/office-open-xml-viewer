@@ -35,6 +35,10 @@ export interface FontResolution {
   readonly style: FontStyle;
   readonly diagnostics: readonly LayoutDiagnostic[];
   readonly genericFamily: 'serif' | 'sans-serif' | 'monospace';
+  /** Native resolution of a family that has an installed local face in another
+   * tuple: CSS font matching paints that installed family (synthesizing
+   * weight/style), so the authored face is present on the host, not absent. */
+  readonly installedFamily?: true;
 }
 
 export interface FontResolver {
@@ -71,6 +75,19 @@ export interface FontResolverOptions {
    * of the family (explicit, native and regional CSS lists), so Canvas can
    * never select them for other characters, even as a CSS fallback.
    */
+  /**
+   * Normalized authored families proven installed on the host by the family
+   * presence probe (any face of the family), independent of which styled
+   * tuples the document requests. CSS font matching paints an installed family
+   * for every tuple, synthesizing weight/style.
+   */
+  readonly installedFamilies?: readonly string[];
+  /**
+   * Normalized authored families declared by a loaded application FontFace,
+   * in any descriptor. Such a face shadows the system family for every tuple,
+   * so a system installation never describes what paints.
+   */
+  readonly shadowedFamilies?: readonly string[];
   readonly scriptScopedFamilies?: Readonly<Record<string, Readonly<{
     script: FontSubstituteScript;
     substituteFamilies: readonly string[];
@@ -181,8 +198,14 @@ export function createFontResolver(
       ))
       .join(', ');
   };
+  const installedFamilies = [...new Set((options.installedFamilies ?? []).map(normalizeFamily))].sort();
+  const installedFamilySet = new Set(installedFamilies);
+  const shadowedFamilies = [...new Set((options.shadowedFamilies ?? []).map(normalizeFamily))].sort();
+  const shadowedFamilySet = new Set(shadowedFamilies);
   const fingerprint = stableFingerprint('fonts', {
     faces, nativeFamilyLists, regionalFamilyLists, scriptScopedFamilies,
+    ...(installedFamilies.length > 0 ? { installedFamilies } : {}),
+    ...(shadowedFamilies.length > 0 ? { shadowedFamilies } : {}),
   });
 
   // Every shaped script span, line segment and east-Asian line floor asks for a
@@ -241,7 +264,19 @@ export function createFontResolver(
     if (authored) {
       const familyList = familyListFor(authored, request.language, request.cjkFallback)
         ?? cssFamilyList(authored, generic);
+      // Only a system installation (the family presence probe, or a face found
+      // by the office local() loader) shows that CSS matching paints this
+      // family; an application resource under a private alias does not. An
+      // application @font-face declaring the authored family shadows the
+      // system family for every tuple, so the system face cannot describe it.
+      const candidates = byFamily.get(normalizeFamily(authored)) ?? [];
+      const installedFamily = !shadowedFamilySet.has(normalizeFamily(authored))
+        && !candidates.some((candidate) => candidate.source === 'css')
+        && (installedFamilySet.has(normalizeFamily(authored))
+          || candidates.some((candidate) => candidate.source === 'local'
+            && candidate.resourceIdentity?.startsWith('office-local:') === true));
       return freezeResolution({
+        ...(installedFamily ? { installedFamily: true as const } : {}),
         requestedFamily,
         resolvedFamily: authored,
         route: createCanvasFontRoute(

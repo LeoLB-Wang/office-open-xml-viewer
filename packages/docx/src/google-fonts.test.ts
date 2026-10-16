@@ -91,7 +91,11 @@ it('collects the distinct authored font tuples used by rendered text', () => {
   expect(requests).toContainEqual({ family: 'Calibri', weight: 400, style: 'normal' });
   expect(requests).toContainEqual({ family: 'calibri', weight: 700, style: 'italic' });
   expect(requests).toContainEqual({ family: 'Calibri Light', weight: 400, style: 'normal' });
-  expect(requests.filter((request) => request.family.toLowerCase() === 'calibri')).toHaveLength(2);
+  expect(requests.filter((request) => request.family.toLowerCase() === 'calibri' && !request.presenceOnly))
+    .toHaveLength(2);
+  // One family presence probe per authored family, independent of its tuples.
+  expect(requests.filter((request) => request.presenceOnly).map((request) => request.family))
+    .toEqual(['Aptos', 'Calibri', 'Calibri Light']);
 });
 
 it('preloads every registered rendered family without theme names and omits unregistered ones', () => {
@@ -121,7 +125,10 @@ it('checks substitute family presence independent of the styles used', () => {
     { family: 'Franklin Gothic Book', weight: 700, style: 'normal' },
     { family: 'Franklin Gothic Book', presenceOnly: true },
   ]);
-  expect(docxOfficeFontFallbackRequests(doc).some((request) => request.presenceOnly)).toBe(false);
+  // Without web fonts the family is still probed once (layout's installed
+  // families), so presence never depends on the styles the document uses.
+  expect(docxOfficeFontFallbackRequests(doc).filter((request) => request.presenceOnly))
+    .toEqual([{ family: 'Franklin Gothic Book', presenceOnly: true }]);
 
   for (const officeFonts of [
     { routes: {}, installed: ['franklin gothic book'] },

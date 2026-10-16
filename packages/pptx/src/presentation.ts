@@ -13,6 +13,7 @@ import {
   resolveInternalSlideTarget,
   type SlidePartNames,
 } from './slide-nav';
+import { acquireOfficeRoutes, distinctOfficeRouteLoads, type AcquiredOfficeRoutes } from './office-route-acquisition.js';
 import {
   GoogleFontPreloadLease,
   type FontPreloadDemand,
@@ -1052,26 +1053,19 @@ export class PptxPresentation {
   private async _officeRoutesForRequests(
     requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
     fontSet: FontFaceSet | null,
-  ): Promise<Record<string, OfficeFontFallbackRoute>> {
+  ): Promise<AcquiredOfficeRoutes> {
     if (this._destroyed) throw new Error('Presentation destroyed');
-    if (!fontSet) return {};
+    if (!fontSet) return { routes: {}, installed: [] };
     const uncovered = uncoveredOfficeFontRequests(requests, this._embeddedFontTuples);
     let loads = this._officeFontLoads.get(fontSet);
     if (!loads) {
       loads = new Map();
       this._officeFontLoads.set(fontSet, loads);
     }
-    const loaded = await Promise.all(uncovered.map((request) => {
-      const key = `calibri:${request.weight}:${request.style}`;
-      let pending = loads.get(key);
-      if (!pending) {
-        pending = loadOfficeFontFallbacks([request], fontSet);
-        loads.set(key, pending);
-      }
-      return pending;
-    }));
+    const acquired = await acquireOfficeRoutes(loads, uncovered,
+      (fresh) => loadOfficeFontFallbacks(fresh, fontSet), fontSet);
     if (this._destroyed) throw new Error('Presentation destroyed');
-    return Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
+    return acquired;
   }
 
   /** Render a slide onto the given canvas. */
@@ -1101,7 +1095,7 @@ export class PptxPresentation {
       const fontSet = isHTMLCanvas(canvas)
         ? canvas.ownerDocument.fonts
         : (typeof document !== 'undefined' ? document.fonts : null);
-      const officeFontRoutes = await this._officeRoutesForRequests(requests, fontSet);
+      const { routes: officeFontRoutes, installed: officeInstalledFamilies } = await this._officeRoutesForRequests(requests, fontSet);
       await repository.withSlide(slideIndex, (slide) => {
         // A render may have waited behind another consumer after its public
         // entrance check. Re-check the presentation poison at the ownership
@@ -1125,6 +1119,7 @@ export class PptxPresentation {
             embeddedFontAuthoredFamilies: this._embeddedFontAuthoredFamilies,
             embeddedFontTuples: this._embeddedFontTuples,
             officeFontRoutes,
+            officeInstalledFamilies,
             googleSubstitutes: this._googleSubstitutes,
             fetchMedia: this._fetchMedia,
             fetchImage: this._fetchImage,
@@ -1518,7 +1513,7 @@ export class PptxPresentation {
     this._googleFonts?.release();
     this._googleFonts = null;
     for (const loads of this._officeFontLoads.values()) {
-      for (const pending of loads.values()) {
+      for (const pending of distinctOfficeRouteLoads(loads)) {
         void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces));
       }
     }

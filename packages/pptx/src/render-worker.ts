@@ -3,6 +3,7 @@ import type { CjkLang } from '@silurus/ooxml-core';
 import init, { PptxArchive, reinit } from './wasm/pptx_parser.js';
 import type { PptxTextRunInfo } from './renderer';
 import { PPTX_GOOGLE_FONTS, pptxSlideOfficeFontRequests } from './google-fonts';
+import { acquireOfficeRoutes, distinctOfficeRouteLoads, type AcquiredOfficeRoutes } from './office-route-acquisition.js';
 import {
   findPreflightMimeType,
   PresentationPreflightBuilder,
@@ -13,6 +14,7 @@ import { loadPptxSlideFromCursor, readPptxSlideCursorUsage } from './slide-curso
 import { SlidePullWorker } from './slide-pull-worker';
 import {
   GoogleFontPreloadLease,
+  activeFontSet,
   loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
   unregisterEmbeddedFonts,
@@ -85,22 +87,14 @@ const officeFontLoads = new Map<string, Promise<LoadedOfficeFontFallbacks>>();
 
 async function officeRoutesForRequests(
   requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
-): Promise<Record<string, OfficeFontFallbackRoute>> {
+): Promise<AcquiredOfficeRoutes> {
   const uncovered = uncoveredOfficeFontRequests(requests, embeddedFontTuples);
-  const loaded = await Promise.all(uncovered.map((request) => {
-    const key = `calibri:${request.weight}:${request.style}`;
-    let pending = officeFontLoads.get(key);
-    if (!pending) {
-      pending = loadOfficeFontFallbacks([request]);
-      officeFontLoads.set(key, pending);
-    }
-    return pending;
-  }));
-  return Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
+  const fontSet = activeFontSet();
+  return acquireOfficeRoutes(officeFontLoads, uncovered, (fresh) => loadOfficeFontFallbacks(fresh, fontSet), fontSet);
 }
 
 function releaseOfficeFonts(): void {
-  for (const pending of officeFontLoads.values()) {
+  for (const pending of distinctOfficeRouteLoads(officeFontLoads)) {
     void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces), () => undefined);
   }
   officeFontLoads.clear();
@@ -374,7 +368,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
       const officeRequests = await requireSlides().withSlide(request.slideIndex, (slide) =>
         pptxSlideOfficeFontRequests(slide, compact.majorFont, compact.minorFont));
       await fontsLoaded;
-      const officeFontRoutes = await officeRoutesForRequests(officeRequests);
+      const { routes: officeFontRoutes, installed: officeInstalledFamilies } = await officeRoutesForRequests(officeRequests);
       const { bitmap, runs } = await requireSlides().withSlide(request.slideIndex, async (slide) => {
         await slidePull.run(() => executeArchive((archive) => archive.assert_healthy()));
         const { renderSlideWithEmbeddedFonts } = await rendererModule;
@@ -395,6 +389,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
           embeddedFontAuthoredFamilies,
           embeddedFontTuples,
           officeFontRoutes,
+          officeInstalledFamilies,
           googleSubstitutes,
           fetchMedia: getMedia,
           fetchImage: getImage,
@@ -417,7 +412,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
       const officeRequests = await requireSlides().withSlide(request.slideIndex, (slide) =>
         pptxSlideOfficeFontRequests(slide, compact.majorFont, compact.minorFont));
       await fontsLoaded;
-      const officeFontRoutes = await officeRoutesForRequests(officeRequests);
+      const { routes: officeFontRoutes, installed: officeInstalledFamilies } = await officeRoutesForRequests(officeRequests);
       const runs = await requireSlides().withSlide(request.slideIndex, async (slide) => {
         await slidePull.run(() => executeArchive((archive) => archive.assert_healthy()));
         const { renderSlideWithEmbeddedFonts } = await rendererModule;
@@ -434,6 +429,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
           embeddedFontAuthoredFamilies,
           embeddedFontTuples,
           officeFontRoutes,
+          officeInstalledFamilies,
           googleSubstitutes,
           fetchMedia: getMedia,
           fetchImage: getImage,
