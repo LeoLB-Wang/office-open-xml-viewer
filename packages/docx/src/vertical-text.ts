@@ -16,7 +16,7 @@ import { textSpacingAdvance } from './character-spacing.js';
 //   • vo=Tu (transform, fallback upright): 、。，．！？ and small kana. When
 //     this DOM canvas/font proves that `vert` changes the code point, the original
 //     character is drawn with its featured A/D placement. Otherwise the existing
-//     FE10–FE12 / centred-upright / corner-nudge machinery remains the fallback.
+//     FE10–FE12 / upright base-glyph machinery remains the fallback.
 //   • vo=Tr (transform, fallback rotate): the fullwidth brackets （「」〈〉【】… and
 //     the white lenticular brackets 〖〗 have a U+FE1x/FE3x vertical presentation
 //     form (core `verticalBracketFormSubstitute`) present in the substitute fonts;
@@ -49,7 +49,7 @@ import { textSpacingAdvance } from './character-spacing.js';
 // resolved against the physical page then projected into the logical flow
 // (PDF-verified centroid); inline/anchored/float image uprighting; and the
 // vertical text-layer transform. Still approximated / deferred (flagged inline):
-// the U+FF0E Tu upper-right corner fallback is a font-dependent heuristic;
+// an unreachable U+FF0E vertical alternate retains the upright base glyph;
 // paragraph-relative vertical anchors are a follow-up. `btLr` shares the +90°
 // page FRAME but bypasses this module's
 // upright/substitute glyph handling entirely (issue #988 re-adjudication: every
@@ -110,41 +110,6 @@ export function verticalDrawMode(cp: number): VerticalDrawMode {
  */
 export function isUprightVerticalGlyph(cp: number): boolean {
   return verticalDrawMode(cp) === 'upright';
-}
-
-/** The Tu punctuation whose upper-right cell position is approximated by a
- *  draw-time nudge WHEN the font has no U+FExx vertical form to substitute (see
- *  {@link verticalGlyphOffset}). The comma/full stop that DO have a vertical form
- *  ({@link verticalFormSubstitute}: 、。，) are substituted instead and the font
- *  positions them, so they are NOT nudged. The fullwidth full stop ． (FF0E) has
- *  no vertical form in Unicode, so it stays on the nudge fallback. */
-const VERTICAL_PUNCT_UPPER_RIGHT = new Set<number>([
-  0xff0e, // ． fullwidth full stop (no U+FExx vertical form → nudge fallback)
-]);
-
-/**
- * Per-glyph draw offset (in em fractions of the font size) applied in the
- * glyph's own UPRIGHT local frame — i.e. after the −90° counter-rotation, in
- * physical (dx = rightward, dy = downward) terms. Returns `{ dx, dy }` em
- * fractions; the caller multiplies by the font px size.
- *
- * This is the FALLBACK for a Tu code point whose upper-right cell position would
- * otherwise be supplied by a substituted vertical presentation form
- * ({@link verticalFormSubstitute}) but for which Unicode has none (only ． FF0E
- * today). The nudge moves the glyph toward the upper-right corner of the cell.
- * Everything with a vertical form is substituted and returns `{0,0}` here.
- */
-export function verticalGlyphOffset(cp: number): { dx: number; dy: number } {
-  if (VERTICAL_PUNCT_UPPER_RIGHT.has(cp)) {
-    // HEURISTIC (approximation, font-dependent): move ． toward the upper-right
-    // corner of the cell by ~0.4em each way. NOT a spec constant — JIS X 4051
-    // §4.x gives the punctuation cell geometry (the glyph occupies a quarter-em
-    // corner box), not a 0.4em nudge. The correct fix would be a Unicode vertical
-    // form for ． (none exists), so this narrow fallback remains. Tracked in issue
-    // #771 (vertical-text).
-    return { dx: 0.4, dy: -0.4 };
-  }
-  return { dx: 0, dy: 0 };
 }
 
 /**
@@ -386,6 +351,24 @@ function plannedVerticalBlockAxisInkBounds(
   });
 }
 
+// UAX #50 §3.1 / Vertical_Orientation=Tu permits an upright base glyph when the
+// vertical alternate is unavailable. OpenType `vert` selects a distinct glyph;
+// `vrt2` additionally supplies rotation and must not be stacked with `vert`.
+// ECMA-376 §§17.6.20, 17.18.93 specify flow, not a punctuation translation.
+//
+// Windows Word 16.0 build 16.0.20430: seven reference-catalog CJK families at
+// 8/12/20/32pt, section tbRl and ideographic VML textboxes, with horizontal
+// counterexamples, select different glyph IDs for ．、。，. The U+FF0E alternate
+// can change outline dimensions as well as position. Neither horizontal Canvas
+// ink bounds nor the catalog's font-wide metrics identify that alternate or its
+// vertical origin. No Unicode vertical presentation character exists for FF0E.
+// Therefore the reachable-feature path below keeps the font's design, while
+// the unreachable path uses ordinary upright placement, including its measured
+// along-column ink centering. It deliberately does not synthesize a corner
+// glyph by translating the horizontal one. This fallback has residuals in all
+// seven tested families; worker/offscreen hosts can differ from the DOM path.
+// The FE10–FE12 fallbacks for 、。， retain their existing designed placement.
+
 /** The single cell router shared by layout measurement and paint. */
 function routedVerticalGlyphCell(
   ctx: Ctx2D,
@@ -482,14 +465,13 @@ export function planVerticalRunWithCapability(
         const puncCp = bracketCp !== null ? null : verticalFormSubstitute(cp);
         const drawCp = bracketCp ?? puncCp;
         const drawText = drawCp === null ? ch : String.fromCodePoint(drawCp);
-        const offset = drawCp === null ? verticalGlyphOffset(cp) : { dx: 0, dy: 0 };
         const preserveCorner = wordPreservesVerticalTuCorner(puncCp);
-        const alongEm = offset.dy === 0 && !preserveCorner
+        const alongEm = !preserveCorner
           ? inkCenterAboveMiddlePx(ctx, drawText) / fontPt
           : 0;
         const drawOffsetPt = {
-          xPt: offset.dx * fontPt,
-          yPt: (alongEm + offset.dy) * fontPt,
+          xPt: 0,
+          yPt: alongEm * fontPt,
         };
         const blockAxisInkBounds = plannedVerticalBlockAxisInkBounds(
           ctx, drawText, 'upright', drawOffsetPt, charScale, writingMode, false,
@@ -737,16 +719,13 @@ export function drawVerticalRunWithCapability(
       const drawCp = bracketCp !== null ? bracketCp : puncCp;
       const drawStr = drawCp !== null ? String.fromCodePoint(drawCp) : ch;
       const cx = x + ax + adv / 2;
-      // Corner nudge fallback only for a Tu punct with NO vertical form (． FF0E);
-      // every substituted glyph is positioned by its own vertical metric below.
-      const off = drawCp !== null ? { dx: 0, dy: 0 } : verticalGlyphOffset(cp);
       // ALONG-COLUMN centring: an upright glyph's VERTICAL ink extent maps to the
       // column axis, so shift by its measured ink centre so the ink lands on the
       // cell centre. Per-GLYPH metric (the drawn glyph's tight ink box): for an
       // ideograph/kana it is ≈0 (cells unchanged); for a substituted vertical
-      // bracket (ink hugging one cell end) it is the needed correction. Replaces
-      // the old `+0.12em` font-tuned heuristic. Skipped when the ． corner nudge is
-      // active (`off.dy`), which is a self-contained upper-right cell placement.
+      // bracket (ink hugging one cell end) it is the needed correction. An
+      // unreachable Tu base glyph (including ．) uses this ordinary upright
+      // fallback; its horizontal ink cannot identify a vertical alternate.
       //
       // Under `word-vertical-tu-corner-placement`, this is NOT applied to a
       // substituted Tu punctuation form (comma/full stop 、。， → FE10–FE12):
@@ -759,7 +738,7 @@ export function drawVerticalRunWithCapability(
       // full cell apart and the font centres the em box, not the ink (#792).
       const isPunctSubstitute = wordPreservesVerticalTuCorner(puncCp);
       const alongEm =
-        off.dy === 0 && !isPunctSubstitute
+        !isPunctSubstitute
           ? inkCenterAboveMiddlePx(ctx, drawStr) / fontPx
           : 0;
       ctx.save();
@@ -767,12 +746,11 @@ export function drawVerticalRunWithCapability(
       ctx.rotate(-Math.PI / 2);
       if (scaled) ctx.scale(1, charScale);
       // In the upright local frame: `center`/`middle` puts the em box on the cell
-      // centre; local +x = cross axis, local +y = along-column. `off.dx` nudges
-      // ． toward the cell's upper-right corner (cross axis); `alongEm + off.dy`
-      // centres the ink along the column.
+      // centre; local +x = cross axis, local +y = along-column. Only the
+      // measured along-column correction is applied to ordinary upright glyphs.
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(drawStr, off.dx * fontPx, (alongEm + off.dy) * fontPx);
+      ctx.fillText(drawStr, 0, alongEm * fontPx);
       ctx.restore();
     } else if (mode === 'rotate') {
       // vo=Tr with NO substituted vertical form and NOT the upright-fallback

@@ -24,6 +24,9 @@ mod types;
 mod xml_util;
 
 #[cfg(test)]
+mod allocation_tests;
+
+#[cfg(test)]
 thread_local! {
     static DOCX_RETAINED_MODEL_JSON_LIMIT_OVERRIDE: std::cell::Cell<Option<u64>> =
         const { std::cell::Cell::new(None) };

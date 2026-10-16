@@ -32,6 +32,7 @@ import { asBullet } from './types';
 import {
   usesPathShade,
   trackPaintPath,
+  measurePaintBounds,
   currentStrokeBounds,
   resolveArrowPaint,
   renderChart,
@@ -43,12 +44,15 @@ import {
   withInheritedPatternScope,
   applyStroke as applyStrokeCore,
   buildShapePath,
+  EMU_PER_INCH,
   EMU_PER_PT as PT_TO_EMU,
   mathToMathML,
   rasterizeMathSvg,
   tintMathRaster,
   applyOuterShadow,
   applyInnerShadow,
+  createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
   applySoftEdge,
   applyReflection,
   renderPresetShape,
@@ -3562,6 +3566,34 @@ function authoredAlignmentAnchor(
   return transformPoint(transform, x + u * w, y + v * h);
 }
 
+/** One surface plane for body projection, effect bounds/anchors and masks.
+ * MS-OI29500 §2.1.1268 places bevelB at the extrusion base. Keep the
+ * existing planar compositor's face selection, including its winding test;
+ * effect dispatch must not silently move that surface back to z=0. Depth comes
+ * from a prepared bottom bevel or wireframe input; this planar painter still
+ * does not construct an unbeveled solid's back mesh. Quantize padding here too,
+ * so cache/effect bounds include the same device-pixel margin as the raster.
+ */
+function projectedSurface(
+  camera: CameraInput, w: number, h: number, backDepthCss = 0,
+  edgePadCss = 0, devScale = 1,
+) {
+  // The selected face and its effect footprint belong to one solid, including
+  // when a caller supplies a rear plane without pre-binding sceneDepth.
+  if (backDepthCss > (camera.sceneDepth ?? 0)) camera = { ...camera, sceneDepth: backDepthCss };
+  const front = computeScene3dQuad(camera, w, h);
+  const [p0, p1, , p3] = front.corners;
+  const backFacing = (p1.x - p0.x) * (p3.y - p0.y) - (p1.y - p0.y) * (p3.x - p0.x) < 0;
+  const quad = backFacing && backDepthCss > 0
+    ? computeScene3dQuad(camera, w, h, backDepthCss) : front;
+  let padDev = Math.max(0, Math.ceil(edgePadCss * devScale));
+  const expanded = padDev > 0
+    ? expandProjectedQuad(quad.corners, padDev / devScale / w, padDev / devScale / h) : null;
+  if (!expanded) padDev = 0;
+  return { face: quad.corners, corners: expanded ?? quad.corners,
+    backFacing, padDev, padCss: padDev / devScale };
+}
+
 export function projectedEffectGeometry(
   camera: CameraInput,
   transform: EffectTransform,
@@ -3571,11 +3603,11 @@ export function projectedEffectGeometry(
   h: number,
   edgePadCss: number,
   algn: Shadow['algn'],
+  backDepthCss = 0,
 ): { bbox: { x: number; y: number; w: number; h: number }; anchor: [number, number] } {
-  const face = computeScene3dQuad(camera, w, h).corners;
-  const painted = edgePadCss > 0
-    ? expandProjectedQuad(face, edgePadCss / w, edgePadCss / h) ?? face
-    : face;
+  const det = Math.abs(transform.a * transform.d - transform.b * transform.c);
+  const devScale = det > 0 ? Math.sqrt(det) : 1;
+  const { face, corners: painted } = projectedSurface(camera, w, h, backDepthCss, edgePadCss, devScale);
   const devicePoints = painted.map((point) => transformPoint(transform, x + point.x, y + point.y));
   const xs = devicePoints.map(([px]) => px);
   const ys = devicePoints.map(([, py]) => py);
@@ -3649,7 +3681,7 @@ function paintWithRasterEffects(
   effectScale: number,
   liveTransform: EffectTransform,
   hasInterior = true,
-  paintInnerMask: EffectPaint = paintMask,
+  rasterMask = false,
 ): void {
   const deviceW = (ctx.canvas as { width: number }).width || 0;
   const deviceH = (ctx.canvas as { height: number }).height || 0;
@@ -3664,10 +3696,15 @@ function paintWithRasterEffects(
     applyLiveTransform(target);
     withInheritedPatternScope(ctx, target, () => paintMask(target));
   };
-  const innerMask = (target: CanvasRenderingContext2D) => {
-    applyLiveTransform(target);
-    withInheritedPatternScope(ctx, target, () => paintInnerMask(target));
-  };
+  // Projected bodies supply the complete geometry, but their RGBA opacity
+  // and color must never become an effect mask. Convert once and share the
+  // dedicated coverage raster across softEdge and innerShdw.
+  const coverage = rasterMask && haveAux && (effects.softEdge || effects.innerShadow)
+    ? createRasterCoveragePaint(mask as never, rasterEffectCoverageBounds(
+        bbox, effects, effectScale, deviceW, deviceH,
+      ))
+    : null;
+  const haveMask = !rasterMask || Boolean(coverage);
   let nativeShadowFallback = false;
   if (effects.shadow && haveAux) {
     ctx.save();
@@ -3696,7 +3733,7 @@ function paintWithRasterEffects(
   if (nativeShadowFallback) applyShadow(ctx, effects.shadow ?? null, scale);
   else if (effects.glow) applyGlow(ctx, effects.glow, scale);
 
-  if (effects.softEdge && haveAux) {
+  if (effects.softEdge && haveAux && haveMask) {
     ctx.save();
     ctx.setTransform(identity);
     applySoftEdge(
@@ -3707,7 +3744,7 @@ function paintWithRasterEffects(
       effectScale,
       deviceW,
       deviceH,
-      mask as never,
+      (coverage ?? mask) as never,
     );
     ctx.restore();
   } else {
@@ -3715,12 +3752,12 @@ function paintWithRasterEffects(
   }
   if (nativeShadowFallback || effects.glow) clearShadow(ctx);
 
-  if (effects.innerShadow && hasInterior && haveAux) {
+  if (effects.innerShadow && hasInterior && haveAux && haveMask) {
     ctx.save();
     ctx.setTransform(identity);
     applyInnerShadow(
       ctx,
-      innerMask as never,
+      (coverage ?? mask) as never,
       bbox,
       effects.innerShadow,
       effectScale,
@@ -3797,8 +3834,8 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   }
 
   // ── scene3d camera projection for p:sp (ECMA-376 §20.1.5.5, Phase B) ──────
-  // A text-bearing shape with a non-identity 3-D camera is rendered to a local
-  // offscreen (fill + stroke + TEXT), optionally bevel-shaded, then warped onto
+  // A text-bearing shape with a non-identity 3-D camera uses local offscreens:
+  // the body is bevel-shaded and text is painted unshaded onto
   // the live ctx through the camera homography — the same pipeline the picture
   // path uses. Authored flips are part of the local face before projection;
   // the element's 2-D rotation stays on the live ctx outside the warp.
@@ -3808,7 +3845,13 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   // follow the per-pixel perspective warp applied here. So a projected shape's
   // text is drawn into the bitmap but EXCLUDED from the selection overlay
   // (onTextRun is suppressed below). See README "Bevel / 3D" note.
-  const spScene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera) ? el.scene3d : null;
+  // Camera framing uses document inches, even when the slide renders at an
+  // arbitrary target width. Group sizing is already folded into w/h by Annex L.
+  const spCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale,
+    sceneDepth: (el.sp3d?.extrusionH ?? 0) * scale };
+  const spScene3d = spCamera && isScene3dNonIdentity(
+    spCamera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
+  ) ? { ...el.scene3d, camera: spCamera } : null;
   if (spScene3d && w > 0 && h > 0) {
     const tf = ctx.getTransform();
     const det = Math.abs(tf.a * tf.d - tf.b * tf.c);
@@ -3819,7 +3862,9 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
       (el.sp3d as { prstMaterial?: string } | undefined)?.prstMaterial,
       scale,
       ctxDevScale,
+      spScene3d.camera,
     );
+    const backDepthCss = (bevels.find(bevel => bevel.bottom)?.depthPx ?? 0) / ctxDevScale;
     const extrusion = buildExtrusion(
       el.sp3d as Sp3dLike | undefined,
       spScene3d.camera,
@@ -3899,13 +3944,19 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
           renderShape(octx, projectedElement, scale, themeDefaultColor, slideNumber, rc, undefined);
         },
         padded
-          ? { bevels, extrusion: extrusion ?? undefined, edgePadCss, preservePatternFrame }
-          : { preservePatternFrame },
+          ? { bevels, backDepthCss, extrusion: extrusion ?? undefined, edgePadCss, preservePatternFrame }
+          : { preservePatternFrame, measureOverflow: true },
       );
     const paintProjectedBody = (target: CanvasRenderingContext2D): boolean =>
       paintProjectedElement(target, localBodyEl, true);
-    const paintProjectedText = (target: CanvasRenderingContext2D): boolean =>
-      !el.textBody || paintProjectedElement(target, localTextEl, false, projectedTextHasPattern);
+    const paintProjectedText = (target: CanvasRenderingContext2D): void => {
+      if (!el.textBody || paintProjectedElement(target, localTextEl, false, projectedTextHasPattern)) return;
+      // Match the body allocation/horizon fallback: retain readable flat text.
+      target.save();
+      target.translate(x, y);
+      renderShape(target, localTextEl, scale, themeDefaultColor, slideNumber, rc);
+      target.restore();
+    };
     const hasRasterEffects = Boolean(
       el.shadow || el.innerShadow || el.glow || el.softEdge || el.reflection,
     );
@@ -3922,6 +3973,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         h,
         edgePadCss,
         el.shadow?.algn,
+        backDepthCss,
       );
       let projectionSucceeded = false;
       const rawPaint: EffectPaint = (target) => {
@@ -3952,18 +4004,27 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         scale * devScale,
         liveTransform,
         Boolean(el.fill),
+        true,
       );
       if (projectionSucceeded) {
         paintProjectedText(ctx);
         ctx.restore();
         return;
       }
-    } else if (paintProjectedElement(
-      ctx, localEl, true,
-      projectedTextHasPattern && el.fill?.fillType !== 'pattern',
-    )) {
-      ctx.restore();
-      return;
+    } else {
+      // sp3d belongs to the shape body (§20.1.5.12); text has its own run
+      // properties. Use the same unshaded text pass as the raster-effect path.
+      // Without a material pass, retain the combined face's rasterization and
+      // single warp, including the established pattern coordinate frame.
+      const projected = bevels.length > 0
+        ? paintProjectedBody(ctx)
+        : paintProjectedElement(ctx, localEl, true,
+            projectedTextHasPattern && el.fill?.fillType !== 'pattern');
+      if (projected) {
+        if (bevels.length > 0) paintProjectedText(ctx);
+        ctx.restore();
+        return;
+      }
     }
     // Headless fallback (no offscreen): draw flat below, but still without the
     // projection. Restore and fall through to the normal path.
@@ -4248,6 +4309,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
         el.sp3d?.prstMaterial,
         scale,
         devScale,
+        el.scene3d?.camera,
       )
     : [];
   const flatBevelEdgePadCss = (el.stroke ? (el.stroke.width * scale) / 2 : 0) + 2;
@@ -4405,7 +4467,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     effScale,
     liveTransform,
     Boolean(fillStyle) || hasPreparedImageFill,
-    (target) => paintShapeBody(target, '#000'),
+    true,
   );
 
   // Render text inside the rotation context so text follows shape rotation
@@ -6182,16 +6244,14 @@ export function buildBevelInputs(
   prstMaterial: string | undefined,
   scale: number,
   devScale: number,
+  camera?: CameraInput,
 ): BevelInput[] {
   if (!sp3d) return [];
   const rig = lightRig?.rig ?? 'threePt';
   const dir = lightRig?.dir ?? 't';
-  // Full lightRig `<a:rot>` semantics (§20.1.5.11) are not yet applied; retain
-  // the historical rev-only approximation. PowerPoint-exported orthographic
-  // matte circle/threePt controls (dir t/r/br; axis quarter-turns and mixed
-  // rotations) show explicit rot overrides dir, zero differs from absent, and
-  // side/back lighting darkens the face. This face-preserving model cannot
-  // express those results; lat/lon support requires a lighting-model replacement.
+  // ECMA §§20.1.5.9/.11 and MS-OI29500 §2.1.1274(b): preserve explicit
+  // zero rot as an override of dir. Core rotates the entire rig (including
+  // flat-face illumination), with revolution about the tilted rig axis.
   const light = lightDirFromRig(rig, dir, lightRig?.rot);
   const material = materialClass(prstMaterial);
   const emuToDev = scale * devScale;
@@ -6203,6 +6263,8 @@ export function buildBevelInputs(
       prst: sp3d.bevelT.prst || 'circle',
       material,
       light,
+      camera,
+      wireframeLinePx: devScale,
     });
   }
   if (sp3d.bevelB && sp3d.bevelB.w > 0 && sp3d.bevelB.h > 0) {
@@ -6213,7 +6275,20 @@ export function buildBevelInputs(
       material,
       light,
       bottom: true,
+      camera,
+      depthPx: (sp3d.extrusionH ?? 0) * emuToDev,
+      wireframeLinePx: devScale,
     });
+  }
+  // Wireframe has geometry even without a bevel; it must not retain a solid
+  // face just because there is no bevel band to send to the compositor.
+  if (material === 'legacyWireframe') {
+    for (const bottom of [false, true]) {
+      if (!out.some(bevel => Boolean(bevel.bottom) === bottom))
+        out.push({ widthPx: 0, heightPx: 0, prst: 'circle', material, light, camera,
+          bottom, depthPx: bottom ? (sp3d.extrusionH ?? 0) * emuToDev : 0,
+          wireframeLinePx: devScale });
+    }
   }
   return out;
 }
@@ -6238,7 +6313,11 @@ function buildExtrusion(
   const depthDev = sp3d.extrusionH * scale * devScale;
   // Depth offset is computed in the device-px box (w·devScale × h·devScale) so
   // it matches the device-resolution offscreen the side wall is baked into.
-  const off = computeDepthOffset(camera, w * devScale, h * devScale, depthDev);
+  const off = computeDepthOffset(
+    { ...camera, unitsPerInch: (camera.unitsPerInch ?? 96) * devScale,
+      sceneDepth: (camera.sceneDepth ?? 0) * devScale },
+    w * devScale, h * devScale, depthDev,
+  );
   if (Math.hypot(off.x, off.y) < 0.75) return null;
   let rgb: [number, number, number] = [64, 64, 64];
   if (sp3d.extrusionClr) {
@@ -6278,6 +6357,11 @@ function buildExtrusion(
  * then fall back to painting directly.
  */
 interface Project3dOpts {
+  /** Preserve overflow of the separate, unshaded text pass. Body material
+   * and effect rasters keep their established domains. */
+  measureOverflow?: boolean;
+  /** Extrusion-base depth of the prepared bottom surface, in CSS px. */
+  backDepthCss?: number;
   /** Text front faces retain the slide pattern frame before camera projection. */
   preservePatternFrame?: boolean;
   /** Bevel lips to bake into the body before the warp (§20.1.5.12 bevelT/B). */
@@ -6315,6 +6399,7 @@ function patternFrameToLocalRaster(
   padDev: number,
   x: number,
   y: number,
+  padYDev = padDev,
 ) {
   const det = tf.a * tf.d - tf.b * tf.c;
   if (Math.abs(det) <= 1e-12) return undefined;
@@ -6328,7 +6413,7 @@ function patternFrameToLocalRaster(
     a: devScale * ia, b: devScale * ib,
     c: devScale * ic, d: devScale * id,
     e: padDev + devScale * (ie - x),
-    f: padDev + devScale * (iff - y),
+    f: padYDev + devScale * (iff - y),
   };
 }
 
@@ -6354,35 +6439,58 @@ function projectScene3dPaint(
   // onto the destination by extrapolating the camera quad through its own
   // homography. The camera is defined for the authored w×h face, so it must not
   // be recomputed from the padded raster size. Degenerate extrapolation → pad 0.
-  let padDev = Math.max(0, Math.ceil((opts.edgePadCss ?? 0) * devScale));
-  const quad = computeScene3dQuad(camera, w, h);
-  let quadCorners = quad.corners;
-  if (padDev > 0) {
-    const padCss = padDev / devScale;
-    const expanded = expandProjectedQuad(quad.corners, padCss / w, padCss / h);
-    if (expanded) quadCorners = expanded;
-    else padDev = 0;
+  const backDepth = opts.backDepthCss ?? 0;
+  const { face, corners: paddedCorners, backFacing, padDev } =
+    projectedSurface(camera, w, h, backDepth, opts.edgePadCss, devScale);
+  let quadCorners = paddedCorners;
+  let originX = padDev, originY = padDev;
+  let ow = Math.max(1, Math.ceil(w * devScale) + 2 * padDev);
+  let oh = Math.max(1, Math.ceil(h * devScale) + 2 * padDev);
+  if (opts.measureOverflow) {
+    // ECMA-376 §21.1.2.1.1 bodyPr defaults horzOverflow/vertOverflow to
+    // overflow; §21.1.2.1.2 noAutofit does not scale text into its box.
+    // Measure actual paint in the local authored frame, including insets,
+    // vertical/stacked text and glyph overhangs. The camera still belongs to
+    // w×h: growing that face would change its centre, lens and text placement.
+    const ink = measurePaintBounds(target, octx => paintBody(octx, 0, 0, w, h));
+    if (ink) {
+      // Independent axis bounds keep a long, thin text run O(ink area), rather
+      // than allocating a square with its longest overflow as four-side padding.
+      // One device pixel encloses raster AA; integer origins preserve the grid.
+      const x0 = Math.min(-padDev, Math.floor(ink.x * devScale) - 1);
+      const y0 = Math.min(-padDev, Math.floor(ink.y * devScale) - 1);
+      const x1 = Math.max(ow - padDev, Math.ceil((ink.x + ink.w) * devScale) + 1);
+      const y1 = Math.max(oh - padDev, Math.ceil((ink.y + ink.h) * devScale) + 1);
+      const expanded = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        .map(([px, py]) => projectQuadPoint(face, px / devScale / w, py / devScale / h));
+      // An authored degenerate face has no drawable homography, as in
+      // drawProjected itself. Otherwise a null extrapolation crosses the
+      // projection horizon: retain the flat fallback, not an unbounded warp.
+      if (expanded.some(point => !point)) return projectQuadPoint(face, .5, .5) === null;
+      quadCorners = expanded as [Vec2, Vec2, Vec2, Vec2];
+      originX = -x0; originY = -y0;
+      ow = x1 - x0; oh = y1 - y0;
+    }
   }
-  const padCss = padDev / devScale;
-
-  const ow = Math.max(1, Math.ceil(w * devScale) + 2 * padDev);
-  const oh = Math.max(1, Math.ceil(h * devScale) + 2 * padDev);
+  if (opts.measureOverflow && (!Number.isFinite(ow * oh)
+    || ow > MAX_CANVAS_DIMENSION || oh > MAX_CANVAS_DIMENSION
+    || ow * oh > MAX_CANVAS_AREA)) return false;
   const aux = createAuxCanvas(ow, oh);
   if (!aux) return false;
   const octx = aux.getContext('2d') as CanvasRenderingContext2D | null;
   if (!octx) return false;
 
-  // Paint the body into the offscreen with the origin at (pad,pad); device px.
+  // Paint in authored local coordinates; only the raster origin is displaced.
   octx.save();
   octx.scale(devScale, devScale);
-  octx.translate(padCss, padCss);
+  octx.translate(originX / devScale, originY / devScale);
   // PowerPoint PDF rasterises projected pattern text as a front-face image
   // before the camera warp. Its 8 pt tile stays in the slide frame: moving an
   // otherwise identical dnDiag text shape by 4 pt changes the embedded image's
   // colour phase, while camera rotation and extrusion retain that phase. Map
   // the live slide root into this padded local raster before painting.
   if (opts.preservePatternFrame) {
-    const sourceToAux = patternFrameToLocalRaster(tf, devScale, padDev, x, y);
+    const sourceToAux = patternFrameToLocalRaster(tf, devScale, originX, x, y, originY);
     withInheritedPatternScope(target, octx, () => paintBody(octx, 0, 0, w, h), undefined, sourceToAux);
   } else {
     paintBody(octx, 0, 0, w, h);
@@ -6390,7 +6498,7 @@ function projectScene3dPaint(
   octx.restore();
 
   // The body silhouette occupies the offscreen's inner box (device px):
-  // [padDev, padDev + w·devScale] on each axis (the a:ln border, painted inside
+  // originX/Y + [0, w/h·devScale] (the a:ln border, painted inside
   // paintBody, extends ±half-line-width past it; the pad reserves that room).
   // Restricting the bevel/extrusion distance-transform + sweep to this box grown
   // by the effect's reach (perf: A3) skips the transparent pad border. Equivalent
@@ -6401,8 +6509,8 @@ function projectScene3dPaint(
   const bodyDevW = Math.ceil(w * devScale);
   const bodyDevH = Math.ceil(h * devScale);
   const regionFor = (reachPx: number): BevelRegion => ({
-    x: padDev - reachPx,
-    y: padDev - reachPx,
+    x: originX - reachPx,
+    y: originY - reachPx,
     w: bodyDevW + 2 * reachPx,
     h: bodyDevH + 2 * reachPx,
   });
@@ -6410,17 +6518,33 @@ function projectScene3dPaint(
   // Extrusion side wall first (it sits behind/around the front face), then the
   // bevel lip on the front-face silhouette (§20.1.5.12). Both are baked into the
   // offscreen so they ride the camera warp.
-  if (opts.extrusion) {
-    const reach = Math.ceil(Math.hypot(opts.extrusion.offsetX, opts.extrusion.offsetY)) + 2;
-    applyExtrusion(octx, opts.extrusion, regionFor(reach));
-  }
+  const extrusion = opts.extrusion && backFacing && backDepth > 0
+    ? { ...opts.extrusion, offsetX: -opts.extrusion.offsetX, offsetY: -opts.extrusion.offsetY }
+    : opts.extrusion;
+  const wireframe = opts.bevels?.some(bevel => bevel.material === 'legacyWireframe');
+  const shadeBackBeforeWall = backFacing && opts.bevels?.some(bevel => bevel.bottom);
+  const paintWall = () => {
+    if (!extrusion || wireframe) return;
+    const reach = Math.ceil(Math.hypot(extrusion.offsetX, extrusion.offsetY)) + 2;
+    applyExtrusion(octx, extrusion, regionFor(reach));
+  };
+  if (!shadeBackBeforeWall) paintWall();
   // Bake bevel lip shading into the body bitmap (device-px band) before the
   // warp so the lit/shadowed rim rides the camera homography (§20.1.5.12).
   if (opts.bevels && opts.bevels.length > 0) {
     for (const bevel of opts.bevels) {
-      applyBevelShading(octx, bevel, regionFor(Math.ceil(bevel.widthPx) + 2));
+      const wireframeDepth = wireframe && extrusion
+        ? { x: extrusion.offsetX, y: extrusion.offsetY } : undefined;
+      const reach = bevel.widthPx + (wireframeDepth ? Math.hypot(wireframeDepth.x, wireframeDepth.y) : 0);
+      applyBevelShading(octx, wireframeDepth ? { ...bevel, wireframeDepth } : bevel,
+        regionFor(Math.ceil(reach) + 2));
     }
   }
+
+  // The exposed back lip is measured from the back-face silhouette, not from
+  // the outside of a wall swept toward the front. Shade it before that sweep;
+  // keep the established front-face compositing order above.
+  if (shadeBackBeforeWall) paintWall();
 
   // Post-bevel edges (the contour rim) on top of the beveled body, still
   // pre-projection. The a:ln border is painted inside paintBody (see
@@ -6428,7 +6552,7 @@ function projectScene3dPaint(
   if (opts.paintEdges) {
     octx.save();
     octx.scale(devScale, devScale);
-    octx.translate(padCss, padCss);
+    octx.translate(originX / devScale, originY / devScale);
     opts.paintEdges(octx, 0, 0, w, h);
     octx.restore();
   }
@@ -6917,7 +7041,11 @@ function paintResolvedPicture(
     // to the normal flat draw (but sp3d bevel/extrusion still apply via the flat
     // path below). sp3d bevel/extrusion shading is wired in just after this; the
     // contour edge is the flat approximation in strokeContourEdge.
-    const scene3d = el.scene3d && isScene3dNonIdentity(el.scene3d.camera) ? el.scene3d : null;
+    const pictureCamera = el.scene3d && { ...el.scene3d.camera, unitsPerInch: EMU_PER_INCH * scale,
+      sceneDepth: (el.sp3d?.extrusionH ?? 0) * scale };
+    const scene3d = pictureCamera && isScene3dNonIdentity(
+      pictureCamera, w, h, (el.sp3d?.extrusionH ?? 0) * scale,
+    ) ? { ...el.scene3d, camera: pictureCamera } : null;
 
     // Paint JUST the (clipped, optionally cropped) bitmap body at a local rect —
     // no border/contour. Separated from the edges so the bevel shading reads the
@@ -6992,7 +7120,9 @@ function paintResolvedPicture(
       (el.sp3d as Sp3dLike | undefined) ? (el.sp3d as { prstMaterial?: string }).prstMaterial : undefined,
       scale,
       ctxDevScale,
+      el.scene3d?.camera,
     );
+    const backDepthCss = (bevels.find(bevel => bevel.bottom)?.depthPx ?? 0) / ctxDevScale;
     // Extrusion side wall only resolves under a camera that turns it visible
     // (§20.1.5.12). Computed against the active camera so a face-on view yields
     // null (no wall) and a tilted view reveals it.
@@ -7024,6 +7154,7 @@ function paintResolvedPicture(
       if (scene3d) {
         const ok = projectScene3dPaint(target, scene3d.camera, x, y, w, h, paintFaceAt, {
           bevels,
+          backDepthCss,
           extrusion: extrusion ?? undefined,
           paintEdges: strokeContourEdge,
           edgePadCss,
@@ -7047,9 +7178,8 @@ function paintResolvedPicture(
       paintImageAt(target, x, y, w, h);
     };
 
-    // Flat opaque silhouette of the clipped picture rectangle, used as the mask
-    // for innerShdw / softEdge. Falls back to the bounding rect when the picture
-    // is a plain rectangle (no clip path).
+    // Flat unbeveled pictures retain their opaque clip mask. Rasterized 3-D
+    // bodies supply full mesh geometry to the dedicated coverage pass below.
     const paintMaskAt = (
       target: CanvasRenderingContext2D,
       color: string,
@@ -7063,16 +7193,6 @@ function paintResolvedPicture(
       target.fillStyle = color;
       target.fillRect(ox, oy, ow, oh);
       target.restore();
-    };
-
-    const paintMask = (target: CanvasRenderingContext2D, color: string): void => {
-      if (scene3d) {
-        const ok = projectScene3dPaint(target, scene3d.camera, x, y, w, h, (octx, ox, oy, ow, oh) =>
-          paintMaskAt(octx, color, ox, oy, ow, oh),
-        );
-        if (ok) return;
-      }
-      paintMaskAt(target, color, x, y, w, h);
     };
 
     // ── effectLst (§19.3.1.37 routes p:pic's spPr through CT_ShapeProperties,
@@ -7106,6 +7226,7 @@ function paintResolvedPicture(
           h,
           edgePadCss,
           el.shadow?.algn,
+          backDepthCss,
         )
       : {
           bbox: transformedEffectBounds(
@@ -7128,19 +7249,21 @@ function paintResolvedPicture(
     const hasRasterEffects = Boolean(
       el.shadow || el.innerShadow || el.glow || el.softEdge || el.reflection,
     );
-    const rawMask: EffectPaint = (target) => paintMask(target, '#000');
+    const rawMask: EffectPaint = (target) => paintMaskAt(target, '#000', x, y, w, h);
     const effectBody = scene3d && hasRasterEffects
       ? cacheDevicePaint(paintImage, liveTransform, projectedGeometry.bbox, {
           w: (ctx.canvas as { width: number }).width || 0,
           h: (ctx.canvas as { height: number }).height || 0,
         })
       : paintImage;
-    const effectMask = scene3d && hasRasterEffects
-      ? cacheDevicePaint(rawMask, liveTransform, projectedGeometry.bbox, {
-          w: (ctx.canvas as { width: number }).width || 0,
-          h: (ctx.canvas as { height: number }).height || 0,
-        })
-      : rawMask;
+    // ECMA-376 §20.1.5.12 includes bevels, extrusion and contour in the 3-D
+    // shape. The shared effects dispatcher derives a dedicated opaque coverage
+    // mask from the complete projected raster, preserving walls and mesh holes.
+    // Its source color/opacity remain exclusively in the body; innerShdw owns
+    // its own color, and softEdge must preserve interior fill opacity (§20.1.8).
+    // Bounds/padding already come from the body's shared projectedSurface.
+    const rasterMask = Boolean(scene3d) || bevels.length > 0;
+    const effectMask = rasterMask ? effectBody : rawMask;
     // The caller paints this prepared picture in the slide pattern scope,
     // including transparent blip areas and any authored rotation or flip.
     paintWithRasterEffects(
@@ -7153,6 +7276,8 @@ function paintResolvedPicture(
       scale,
       effScale,
       liveTransform,
+      true,
+      rasterMask,
     );
 
     ctx.restore();
