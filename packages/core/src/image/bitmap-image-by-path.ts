@@ -57,7 +57,7 @@ import {
 } from './adaptive-image-budget.js';
 import type { TiffRenderer } from './tiff-contract.js';
 import { wmfRasterTarget } from './wmf.js';
-import type { SvgBlobDecoder } from '../worker/svg-decode-bridge.js';
+import type { SvgBlobDecoder } from './svg-raster.js';
 
 type FetchImage = (path: string, mime: string) => Promise<Blob>;
 export type DecodedBitmapCacheOwner = object;

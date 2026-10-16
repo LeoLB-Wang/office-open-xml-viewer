@@ -136,6 +136,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['getCachedBitmapByPath', 'value'],
     ['getCachedDerivedBitmap', 'value'],
     ['getCachedSvgImageByPath', 'value'],
+    // Bounded SVG rasterization is a resource primitive, with no layout access.
+    ['decodeSvgBlobOnMainThread', 'value'],
     // Header inspection reuses the document-owned byte profile to decide
     // whether browser target-resize is available. Both predicates remain
     // paint-resource admission and cannot affect acquired layout geometry.
@@ -199,6 +201,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['ImageResourceOptions', 'type'],
     ['MathRenderer', 'type'],
     ['TiffRenderer', 'type'],
+    // Erased SVG decoder capability; paint forwards it to the shared image owner.
+    ['SvgBlobDecoder', 'type'],
   ])],
 ]);
 

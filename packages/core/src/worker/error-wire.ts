@@ -441,6 +441,7 @@ const OOXML_ERROR_CODES = new Set<OoxmlErrorCode>([
   'legacy-binary-format',
   'not-ooxml',
   'invalid-numbering',
+  'unsupported-image-effect',
 ]);
 
 const DECODED_IMAGE_LIMIT_METRICS = {

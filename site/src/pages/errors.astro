@@ -34,6 +34,7 @@ export function previewErrorMessage(error: unknown): string {
       case 'encrypted': return 'Enter the password to preview this file.';
       case 'invalid-password': return 'The password is incorrect.';
       case 'unsupported-encryption': return 'This encryption method is not supported.';
+      case 'unsupported-image-effect': return 'This file uses an unsupported picture effect. Export the picture with its corrections baked in.';
       case 'unsupported-content': return 'This file uses content outside the enabled reader’s supported subset. Convert it to DOCX, XLSX or PPTX.';
       case 'legacy-binary-format': return 'This .doc, .xls or .ppt file has no matching legacy source. Enable @silurus/ooxml-legacy-office or convert it to .docx, .xlsx or .pptx.';
       case 'not-ooxml': return 'This is not a supported Office Open XML file.';
@@ -157,14 +158,15 @@ try {
     </section>
 
     <section id="ooxml-error" class="error-section error-detail">
-      <p class="error-kicker">Container failure</p>
+      <p class="error-kicker">Input or rendering failure</p>
       <h2><code>OoxmlError</code></h2>
-      <p>This is the actionable container-level error. Use <code>error.code</code>; the human-readable <code>message</code> is diagnostic text and may change.</p>
+      <p>This reports actionable input and rendering failures. Use <code>error.code</code>; the human-readable <code>message</code> is diagnostic text and may change.</p>
       <div class="code-actions">
         <div><code>encrypted</code><span>No password was supplied.</span><strong>Ask for a password and retry.</strong></div>
         <div><code>invalid-password</code><span>The supplied password did not decrypt the file.</span><strong>Ask the user to check it and retry.</strong></div>
         <div><code>unsupported-encryption</code><span>The file uses an encryption scheme the library cannot decrypt.</span><strong>Request an unencrypted or supported copy.</strong></div>
         <div><code>legacy-binary-format</code><span>The input is <code>.doc</code>, <code>.xls</code> or <code>.ppt</code> and no matching legacy source claimed it.</span><strong>Enable <code>@silurus/ooxml-legacy-office</code> for that format or request conversion to DOCX, XLSX or PPTX.</strong></div>
+        <div><code>unsupported-image-effect</code><span>A picture has an unsupported or malformed DrawingML effect chain, or its pixel-effect surface is unavailable. The chain is rejected instead of rendering partial corrections.</span><strong>Remove the unsupported effect or export the picture with its corrections baked in.</strong></div>
         <div><code>unsupported-content</code><span>A configured model source rejected input outside its supported subset.</span><strong>Offer conversion to a supported format.</strong></div>
         <div><code>not-ooxml</code><span>The bytes are not a recognized OOXML package: not a readable ZIP (including empty input), a ZIP without <code>[Content_Types].xml</code>, or a package without the main document part.</span><strong>Reject the file as unsupported or invalid.</strong></div>
       </div>

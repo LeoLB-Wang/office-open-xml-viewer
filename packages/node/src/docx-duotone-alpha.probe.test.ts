@@ -72,6 +72,7 @@ function storedZip(files: Record<string, string | Uint8Array>): Uint8Array {
 /** A `<w:drawing>` inline picture, optionally carrying a duotone and/or an
  *  alphaModFix on its blip. cx/cy in EMU (12700 EMU/pt). */
 interface PictureOptions {
+  effects?: string;
   duotone?: boolean;
   alpha?: string;
   bright?: string;
@@ -81,12 +82,12 @@ interface PictureOptions {
 
 function inlinePicXml(opts: PictureOptions): string {
   const cx = 200 * 12700; // 200pt square
-  const effects =
+  const effects = opts.effects ?? (
     (opts.duotone
       ? '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="DAB6BA"/></a:duotone>'
       : '') + (opts.alpha ? `<a:alphaModFix amt="${opts.alpha}"/>` : '')
       + (opts.bright || opts.contrast
-        ? `<a:lum bright="${opts.bright ?? '0'}" contrast="${opts.contrast ?? '0'}"/>` : '');
+        ? `<a:lum bright="${opts.bright ?? '0'}" contrast="${opts.contrast ?? '0'}"/>` : ''));
   return (
     '<w:p><w:r><w:drawing>' +
     `<wp:inline><wp:extent cx="${cx}" cy="${cx}"/>` +
@@ -209,6 +210,31 @@ describe.skipIf(!skia || !docxMod || !rendererMod)('docx duotone + alphaModFix p
     }
     const contrast = sampleInside(await render(buildDocx(black, { contrast: '-50000' }), black));
     for (const channel of contrast) expect(Math.abs(channel - 64)).toBeLessThanOrEqual(1);
+  });
+
+  it('preserves alpha-sensitive replacement and independent palettes through body and header paint', async () => {
+    const black = await flatPngBytes(16, 16, '#000000');
+    const chains = [
+      { effects: '<a:alphaModFix amt="50000"/><a:clrChange useA="1">'
+        + '<a:clrFrom><a:srgbClr val="000000"><a:alpha val="50000"/></a:srgbClr></a:clrFrom>'
+        + '<a:clrTo><a:srgbClr val="FF0000"/></a:clrTo></a:clrChange>', expected: [255, 0, 0] },
+      { effects: '<a:lum bright="90000"/>'
+        + '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FF0000"/></a:duotone>'
+        + '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="00FF00"/></a:duotone>', expected: [0, 69, 0] },
+      { effects: '<a:lum bright="90000"/><a:clrRepl><a:srgbClr val="FF0000"/></a:clrRepl>', expected: [255, 0, 0] },
+    ];
+    for (const chain of chains) {
+      for (const inHeader of [false, true]) {
+        const actual = sampleInside(await render(buildDocx(black, { effects: chain.effects, inHeader }), black));
+        actual.forEach((value, index) => expect(Math.abs(value - chain.expected[index])).toBeLessThanOrEqual(1));
+      }
+    }
+  });
+
+  it('rejects an unsupported chain instead of painting a partial correction', async () => {
+    const black = await flatPngBytes(16, 16, '#000000');
+    const data = buildDocx(black, { effects: '<a:lum bright="90000"/><a:blur rad="12700"/>' });
+    await expect(render(data, black)).rejects.toMatchObject({ code: 'unsupported-image-effect' });
   });
 
   it('duotone remaps a mid-grey picture along the clr1→clr2 ramp (§20.1.8.23)', async () => {

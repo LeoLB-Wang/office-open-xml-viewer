@@ -8589,7 +8589,7 @@ fn resolve_inline_blip(
         .map(|bf| parse_blip_effects_docx(bf, theme))
         .unwrap_or_default();
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
-    let alpha = blip_fill.and_then(parse_blip_alpha);
+    let alpha = None; // Ordered blip effects bake alpha exactly once.
     let (width_pt, height_pt) = drawing_extent_points(container)?;
     Some(InlineBlip {
         image_path,
@@ -10481,7 +10481,7 @@ fn parse_group_pic(
         .map(|bf| parse_blip_effects_docx(bf, theme))
         .unwrap_or_default();
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
-    let alpha = blip.parent().and_then(parse_blip_alpha);
+    let alpha = None; // Ordered blip effects bake alpha exactly once.
 
     // Parse a:clrChange if present — used to make a specific color transparent.
     // clrFrom specifies the source color; clrTo with alpha=0 means replace with transparent.
@@ -21839,7 +21839,7 @@ mod svg_blip_tests {
                 image["blipEffects"],
                 serde_json::json!([
                     {"type": "luminance", "bright": 0.9, "contrast": 0.0},
-                    {"type": "duotone"},
+                    {"type": "duotone", "clr1":"000000", "clr2":"FFFFFF"},
                     {"type": "luminance", "bright": 0.0, "contrast": -0.5}
                 ]),
                 "{container}"
@@ -21893,8 +21893,11 @@ mod svg_blip_tests {
         let data = build_docx_with_media(body);
         let doc = parse_from_bytes(&data).expect("parse must succeed");
         let img = only_image(&doc);
-        let a = img.alpha.expect("alphaModFix must populate alpha");
-        assert!((a - 0.60).abs() < 1e-9, "alpha={a}");
+        assert!(
+            img.alpha.is_none(),
+            "ordered alpha must not also be painted globally"
+        );
+        assert_eq!(img.blip_effects, vec![BlipEffect::AlphaModFix { amt: 0.6 }]);
     }
 
     /// A picture without an `<a:alphaModFix>` (and one at 100%) leaves `alpha`

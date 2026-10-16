@@ -21,6 +21,8 @@
  *     reconstructed across the worker boundary.
  *   - `'unsupported-content'`  — a configured model source cannot represent
  *     the input; details identify its format and stable rejection category.
+ *   - `'unsupported-image-effect'` — an unsupported or malformed CT_Blip
+ *     chain, or an unavailable ordered pixel-effect surface at render time.
  *   - `'invalid-numbering'`     — a DOCX numbering level that Word cannot open
  *     normally (invalid paragraph ilvl or an out-of-range level definition).
  */
@@ -30,6 +32,7 @@ export type OoxmlErrorCode =
   | 'unsupported-encryption'
   | 'legacy-binary-format'
   | 'not-ooxml'
+  | 'unsupported-image-effect'
   | 'invalid-numbering'
   | 'unsupported-content';
 
@@ -51,7 +54,7 @@ export interface OoxmlUnsupportedContentDetails {
 }
 
 /**
- * Typed error thrown by the docx / pptx / xlsx `load()` factories for failures
+ * Typed error thrown by load factories and the image paint pipeline for failures
  * that carry a stable, programmatic {@link OoxmlErrorCode} (e.g. a
  * password-protected or legacy-binary file detected from its container magic).
  *

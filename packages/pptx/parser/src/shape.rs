@@ -6,10 +6,9 @@
 
 use crate::chart::{parse_chartex_with_images, parse_legacy_chart_with_style_parts_and_images};
 use crate::fill::{
-    line_properties_to_stroke, parse_blip_alpha, parse_color_node, parse_cust_geom,
-    parse_effect_lst, parse_fill, parse_scene3d, parse_sp3d, parse_stroke,
-    parse_style_matrix_effects, parse_style_matrix_fill_from_source, parse_table_style_fill,
-    parse_xfrm, EffectLst,
+    line_properties_to_stroke, parse_color_node, parse_cust_geom, parse_effect_lst, parse_fill,
+    parse_scene3d, parse_sp3d, parse_stroke, parse_style_matrix_effects,
+    parse_style_matrix_fill_from_source, parse_table_style_fill, parse_xfrm, EffectLst,
 };
 use crate::master::{
     DefaultTextLevels, InheritedShapeGeometry, LayoutPlaceholders, TableTextLevels,
@@ -1594,7 +1593,7 @@ pub(crate) fn parse_picture(
         prst_geom,
         prst_adjust,
         src_rect: parse_src_rect(blip_fill),
-        alpha: parse_blip_alpha(blip_fill),
+        alpha: None, /* alpha is baked by the ordered blip chain */
         // §20.1.8.23 `<a:duotone>` recolour, resolved through the slide's theme
         // palette with PowerPoint's linear tint. `None` ⇒ no effect.
         duotone: parse_blip_duotone(
@@ -1665,7 +1664,7 @@ pub(crate) fn parse_ole_preview_picture(
         prst_geom: None,
         prst_adjust: None,
         src_rect: parse_src_rect(blip_fill),
-        alpha: parse_blip_alpha(blip_fill),
+        alpha: None, /* alpha is baked by the ordered blip chain */
         duotone: parse_blip_duotone(
             blip_fill,
             &PptxSchemeResolver { theme },
@@ -3046,7 +3045,7 @@ fn parse_sp_node(
                     prst_geom,
                     prst_adjust,
                     src_rect: blip_fill_node.and_then(parse_src_rect),
-                    alpha: blip_fill_node.and_then(parse_blip_alpha),
+                    alpha: None, /* alpha is baked by the ordered blip chain */
                     duotone: blip_fill_node.and_then(|bf| {
                         parse_blip_duotone(
                             bf,
@@ -3244,7 +3243,7 @@ fn parse_pic_node(
                                 prst_geom: None,
                                 prst_adjust: None,
                                 src_rect: blip_fill.and_then(parse_src_rect),
-                                alpha: blip_fill.and_then(parse_blip_alpha),
+                                alpha: None, /* alpha is baked by the ordered blip chain */
                                 duotone: blip_fill.and_then(|bf| {
                                     parse_blip_duotone(
                                         bf,

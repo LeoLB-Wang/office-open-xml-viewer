@@ -273,7 +273,8 @@ export {
   type SvgImageSource,
   type SvgImageDecodeOptions,
 } from './image/svg-image-by-path';
-export type { SvgBlobDecoder, SvgDecodeTarget } from './worker/svg-decode-bridge';
+export { decodeSvgBlobOnMainThread } from './image/svg-raster';
+export type { SvgBlobDecoder, SvgDecodeTarget } from './image/svg-raster';
 // Shared per-document decoded-raster owner: one weighted LRU, decode gate and
 // render-pass lease covers base blips, media posters, and derived effects across
 // all three renderers. `fetchImage` remains the compatibility owner by default,

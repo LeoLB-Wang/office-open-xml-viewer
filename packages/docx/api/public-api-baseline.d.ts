@@ -32,6 +32,25 @@ export type BlipEffect = {
     contrast: number;
 } | {
     type: 'duotone';
+    clr1?: string;
+    clr2?: string;
+} | {
+    type: 'alphaBiLevel';
+    thresh: number;
+} | {
+    type: 'alphaCeiling' | 'alphaFloor' | 'alphaInv';
+} | {
+    type: 'alphaModFix';
+    amt: number;
+} | {
+    type: 'alphaRepl';
+    alpha: number;
+} | {
+    type: 'colorReplace';
+    color: string;
+} | {
+    type: 'unsupported';
+    effect: string;
 };
 export type BodyElement = ({
     type: 'paragraph';
@@ -1950,7 +1969,7 @@ export class OoxmlError extends Error {
     readonly details?: OoxmlUnsupportedContentDetails;
     constructor(code: OoxmlErrorCode, message: string, details?: OoxmlUnsupportedContentDetails);
 }
-export type OoxmlErrorCode = 'encrypted' | 'invalid-password' | 'unsupported-encryption' | 'legacy-binary-format' | 'not-ooxml' | 'invalid-numbering' | 'unsupported-content';
+export type OoxmlErrorCode = 'encrypted' | 'invalid-password' | 'unsupported-encryption' | 'legacy-binary-format' | 'not-ooxml' | 'unsupported-image-effect' | 'invalid-numbering' | 'unsupported-content';
 export type OoxmlErrorStage = 'container' | 'decompression' | 'parsing' | 'serialization' | 'layout' | 'rendering' | 'worker';
 export type OoxmlFormat = 'docx' | 'xlsx' | 'pptx';
 export type OoxmlResourceLimit = number | null;

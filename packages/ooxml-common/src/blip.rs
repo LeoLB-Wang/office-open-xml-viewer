@@ -207,8 +207,8 @@ pub struct Duotone {
 /// selects the Word/PowerPoint `<a:tint>` interpretation, exactly as every other
 /// colour path in the parser does.
 ///
-/// `<a:duotone>` is a sibling of `<a:blip>` inside `<a:blipFill>` (it is one of
-/// CT_BlipFillProperties' blip-effect children). Returns `None` when there is no
+/// `<a:duotone>` is a CT_Blip child. For legacy callers this helper also
+/// tolerates a direct blipFill child (outside the schema). Returns `None` when there is no
 /// duotone or fewer than two resolvable colours (a malformed effect is dropped
 /// rather than half-applied). The returned hexes carry NO `#` and are uppercase.
 pub fn parse_blip_duotone<R: crate::color::ThemeResolver + ?Sized>(
@@ -250,10 +250,8 @@ pub fn parse_blip_duotone<R: crate::color::ThemeResolver + ?Sized>(
     })
 }
 
-/// A CT_Blip pixel effect (ECMA-376 §20.1.8.13) that the renderers apply to
-/// the decoded raster, in document order. Only the effects with an
-/// established rendering are carried; `Duotone` marks where the blip's
-/// `<a:duotone>` (resolved separately as [`Duotone`]) sits in that order.
+/// Ordered CT_Blip effects (ECMA-376 §20.1.8.13). Each entry owns all of
+/// its parameters; unsupported or malformed effects remain explicit diagnostics.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum BlipEffect {
@@ -261,7 +259,9 @@ pub enum BlipEffect {
     Grayscale,
     /// §20.1.8.11 `<a:biLevel thresh>`, threshold as a 0–1 fraction.
     #[serde(rename_all = "camelCase")]
-    BiLevel { thresh: f64 },
+    BiLevel {
+        thresh: f64,
+    },
     /// §20.1.8.16 `<a:clrChange>`: colours as 6-char uppercase hex (no `#`)
     /// with their `<a:alpha>` as 0–1 fractions; `use_alpha` is `@useA`.
     #[serde(rename_all = "camelCase")]
@@ -275,16 +275,42 @@ pub enum BlipEffect {
     /// §20.1.8.42 `<a:lum bright contrast>` as signed fractions (100000 =
     /// 1.0). The rendering formula comes from PowerPoint's output (see the
     /// renderer).
-    Luminance { bright: f64, contrast: f64 },
-    /// Position of the blip's `<a:duotone>` among the effects.
-    Duotone,
+    Luminance {
+        bright: f64,
+        contrast: f64,
+    },
+    /// This duotone's own endpoints, not a reference to a global palette.
+    #[serde(rename_all = "camelCase")]
+    Duotone {
+        clr1: String,
+        clr2: String,
+    },
+    /// §20.1.8.1–4, 6, 8: alpha effects operate at their authored position.
+    AlphaBiLevel {
+        thresh: f64,
+    },
+    AlphaCeiling,
+    AlphaFloor,
+    AlphaInv,
+    AlphaModFix {
+        amt: f64,
+    },
+    AlphaRepl {
+        alpha: f64,
+    },
+    /// §20.1.8.18 replaces RGB, preserving the source alpha.
+    ColorReplace {
+        color: String,
+    },
+    /// Explicit fail-closed diagnostic, consumed before decode/paint. The
+    /// unsupported entry is retained even when it is the only blip effect.
+    Unsupported {
+        effect: String,
+    },
 }
 
-/// Parse the ordered CT_Blip pixel effects of a `<a:blipFill>`'s `<a:blip>`.
-/// Returns an empty list unless the blip carries grayscl, biLevel, clrChange
-/// or a non-identity lum, so a picture with at most a duotone keeps its existing
-/// duotone-only rendering path. A malformed effect (missing threshold or an
-/// unresolvable colour) is kept out of the list rather than half-applied.
+/// Parse CT_Blip effects without losing order or silently dropping effects.
+/// A single duotone retains the legacy fast path; every other chain is complete.
 pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
     blip_fill: Node<'_, '_>,
     resolver: &R,
@@ -310,7 +336,7 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
         Some((hex[..6].to_owned(), alpha))
     };
     let mut effects = Vec::new();
-    let mut pixel = false;
+
     for node in blip.children().filter(|n| n.is_element()) {
         let effect = match node.tag_name().name() {
             "grayscl" => Some(BlipEffect::Grayscale),
@@ -352,24 +378,77 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
                     (Some(bright), Some(contrast)) if bright != 0.0 || contrast != 0.0 => {
                         Some(BlipEffect::Luminance { bright, contrast })
                     }
+                    (Some(_), Some(_)) => continue,
                     _ => None,
                 }
             }
             "duotone" => {
-                effects.push(BlipEffect::Duotone);
-                continue;
+                let mut colors = node
+                    .children()
+                    .filter(|n| n.is_element())
+                    .filter_map(crate::color::color_source_from_element)
+                    .filter_map(|source| {
+                        crate::color::resolve_color_source(source, resolver, tint_mode)
+                    });
+                match (colors.next(), colors.next()) {
+                    (Some(clr1), Some(clr2)) if clr1.len() == 6 && clr2.len() == 6 => {
+                        Some(BlipEffect::Duotone {
+                            clr1: clr1.to_uppercase(),
+                            clr2: clr2.to_uppercase(),
+                        })
+                    }
+                    // The current duotone kernel has RGB endpoints only. Do
+                    // not silently strip authored endpoint alpha transforms.
+                    _ => None,
+                }
             }
-            _ => continue,
+            "alphaBiLevel" => node
+                .attribute("thresh")
+                .and_then(crate::units::drawingml_percentage_to_fraction)
+                .map(|thresh| BlipEffect::AlphaBiLevel {
+                    thresh: thresh.clamp(0.0, 1.0),
+                }),
+            "alphaCeiling" => Some(BlipEffect::AlphaCeiling),
+            "alphaFloor" => Some(BlipEffect::AlphaFloor),
+            "alphaInv" if !node.children().any(|n| n.is_element()) => Some(BlipEffect::AlphaInv),
+            "alphaModFix" => {
+                match node
+                    .attribute("amt")
+                    .map(crate::units::drawingml_percentage_to_fraction)
+                    .unwrap_or(Some(1.0))
+                {
+                    // The schema default is identity. Like lum(0,0), it must
+                    // not force an otherwise uncorrected image onto readback.
+                    Some(1.0) => continue,
+                    Some(amt) => Some(BlipEffect::AlphaModFix { amt: amt.max(0.0) }),
+                    None => None,
+                }
+            }
+            "alphaRepl" => node
+                .attribute("a")
+                .and_then(crate::units::drawingml_percentage_to_fraction)
+                .map(|alpha| BlipEffect::AlphaRepl {
+                    alpha: alpha.clamp(0.0, 1.0),
+                }),
+            "clrRepl" => color(Some(node)).map(|(color, _)| BlipEffect::ColorReplace { color }),
+            // §20.1.8: alphaMod needs an effect-container evaluator; blur
+            // needs a spatial kernel/grow policy; fillOverlay needs fill/blend
+            // evaluation. hsl/tint specify adjustments but no exact transfer
+            // formula. Until supported, retain a diagnostic rather than guess
+            // or render a partially corrected picture. extLst is metadata.
+            "extLst" => continue,
+            _ => None,
         };
-        if let Some(effect) = effect {
-            pixel = true;
-            effects.push(effect);
-        }
+        effects.push(effect.unwrap_or_else(|| BlipEffect::Unsupported {
+            effect: node.tag_name().name().to_owned(),
+        }));
     }
-    if pixel {
-        effects
-    } else {
+    // Preserve the established single-duotone fast path. Multiple duotones
+    // must retain their independent endpoints and authored order.
+    if effects.len() == 1 && matches!(effects[0], BlipEffect::Duotone { .. }) {
         Vec::new()
+    } else {
+        effects
     }
 }
 
@@ -637,9 +716,13 @@ mod tests {
                     to_alpha: 0.0,
                     use_alpha: false,
                 },
-                BlipEffect::Duotone,
+                BlipEffect::Duotone {
+                    clr1: "000000".into(),
+                    clr2: "FF0000".into()
+                },
                 BlipEffect::Grayscale,
                 BlipEffect::BiLevel { thresh: 0.5 },
+                BlipEffect::AlphaModFix { amt: 0.5 },
             ]
         );
         assert_eq!(
@@ -656,6 +739,100 @@ mod tests {
             crate::color::TintMode::PowerPointLinear
         )
         .is_empty());
+    }
+
+    #[test]
+    fn ordered_effects_own_alpha_palettes_and_replacement() {
+        let xml = format!(
+            r#"<a:blipFill xmlns:a="{A_NS}"><a:blip>
+            <a:alphaModFix amt="50000"/>
+            <a:clrChange useA="1"><a:clrFrom><a:srgbClr val="000000"><a:alpha val="50000"/></a:srgbClr></a:clrFrom>
+              <a:clrTo><a:srgbClr val="FF0000"/></a:clrTo></a:clrChange>
+            <a:lum bright="90000"/>
+            <a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FF0000"/></a:duotone>
+            <a:duotone><a:srgbClr val="000000"/><a:srgbClr val="00FF00"/></a:duotone>
+            <a:clrRepl><a:srgbClr val="FF0000"><a:alpha val="0"/></a:srgbClr></a:clrRepl>
+            </a:blip></a:blipFill>"#
+        );
+        let doc = Document::parse(&xml).unwrap();
+        let effects = parse_blip_effects(
+            doc.root_element(),
+            &DuoResolver,
+            crate::color::TintMode::PowerPointLinear,
+        );
+        let json = serde_json::to_value(effects).unwrap();
+        assert_eq!(
+            json[0],
+            serde_json::json!({"type":"alphaModFix", "amt":0.5})
+        );
+        assert_eq!(json[1]["fromAlpha"], 128.0 / 255.0);
+        assert_eq!(
+            json[3],
+            serde_json::json!({"type":"duotone", "clr1":"000000", "clr2":"FF0000"})
+        );
+        assert_eq!(json[4]["clr2"], "00FF00");
+        assert_eq!(
+            json[5],
+            serde_json::json!({"type":"colorReplace", "color":"FF0000"})
+        );
+    }
+
+    #[test]
+    fn alpha_effects_preserve_sequence_and_schema_units() {
+        let xml = format!(
+            r#"<a:blipFill xmlns:a="{A_NS}"><a:blip>
+            <a:alphaBiLevel thresh="50%"/><a:alphaCeiling/><a:alphaFloor/>
+            <a:alphaInv/><a:alphaModFix amt="200000"/><a:alphaRepl a="25%"/>
+            </a:blip></a:blipFill>"#
+        );
+        let doc = Document::parse(&xml).unwrap();
+        assert_eq!(
+            parse_blip_effects(
+                doc.root_element(),
+                &DuoResolver,
+                crate::color::TintMode::PowerPointLinear
+            ),
+            vec![
+                BlipEffect::AlphaBiLevel { thresh: 0.5 },
+                BlipEffect::AlphaCeiling,
+                BlipEffect::AlphaFloor,
+                BlipEffect::AlphaInv,
+                BlipEffect::AlphaModFix { amt: 2.0 },
+                BlipEffect::AlphaRepl { alpha: 0.25 },
+            ]
+        );
+    }
+
+    #[test]
+    fn every_unimplemented_or_malformed_effect_remains_an_explicit_diagnostic() {
+        for effect in [
+            "alphaMod",
+            "blur",
+            "fillOverlay",
+            "hsl",
+            "tint",
+            "biLevel",
+            "clrChange",
+            "clrRepl",
+            "duotone",
+            "alphaRepl",
+            "alphaBiLevel",
+        ] {
+            let xml = format!(
+                r#"<a:blipFill xmlns:a="{A_NS}"><a:blip><a:{effect}/></a:blip></a:blipFill>"#
+            );
+            let doc = Document::parse(&xml).unwrap();
+            assert_eq!(
+                parse_blip_effects(
+                    doc.root_element(),
+                    &DuoResolver,
+                    crate::color::TintMode::PowerPointLinear
+                ),
+                vec![BlipEffect::Unsupported {
+                    effect: effect.into()
+                }]
+            );
+        }
     }
 
     #[test]
@@ -689,6 +866,8 @@ mod tests {
                 contrast: 0.0
             }]
         );
+        assert!(parse(r#"<a:alphaModFix/>"#).is_empty());
+        assert!(parse(r#"<a:alphaModFix amt="100000"/>"#).is_empty());
         assert!(parse(r#"<a:lum/>"#).is_empty());
         assert!(parse(r#"<a:lum bright="0" contrast="0"/>"#).is_empty());
     }

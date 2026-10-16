@@ -64,8 +64,8 @@ export function luminance601(r: number, g: number, b: number): number {
 /** In-place duotone remap of an RGBA buffer along the `clr1`→`clr2` ramp by
  *  per-pixel Rec. 601 luminance. The alpha channel is left untouched (a duotone
  *  recolours; it does not change opacity — {@link alphaModFix} is a separate
- *  §20.1.8.6 effect). Fully transparent pixels are skipped (their RGB is
- *  irrelevant and left as-is). Returns the same buffer for chaining. */
+ *  §20.1.8.6 effect). Transparent RGB is transformed too: a later ordered
+ *  alphaRepl/alphaInv can make those colors visible. Returns the same buffer. */
 export function duotoneImageData(buf: RgbaBuffer, dark: string, light: string): RgbaBuffer {
   const c1 = hex6ToRgb(dark);
   const c2 = hex6ToRgb(light);
@@ -74,7 +74,6 @@ export function duotoneImageData(buf: RgbaBuffer, dark: string, light: string): 
   const [lr, lg, lb] = c2;
   const d = buf.data;
   for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] === 0) continue; // fully transparent: nothing to recolour
     const t = luminance601(d[i], d[i + 1], d[i + 2]);
     d[i] = Math.round(dr + (lr - dr) * t);
     d[i + 1] = Math.round(dg + (lg - dg) * t);

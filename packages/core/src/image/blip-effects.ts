@@ -1,8 +1,8 @@
 // Shared CT_Blip pixel effects (ECMA-376 §20.1.8.13) beyond the duotone:
 // `<a:grayscl>` (§20.1.8.34), `<a:biLevel>` (§20.1.8.11) and `<a:clrChange>`
 // (§20.1.8.16), applied in document order to the decoded raster. The parser
-// emits the list only when one of these effects is present; a `duotone` entry
-// marks where the blip's `<a:duotone>` applies in that order.
+// emits complete chains; each duotone carries its own endpoints and alpha
+// modulation is baked here, never reapplied through a global alpha field.
 //
 // Office behaviour that the standard leaves implicit, and the evidence used:
 // - Luminance. ECMA-376 converts to gray "corresponding to their luminance"
@@ -44,6 +44,7 @@
 //   saved as a binary .ppt matches it too, with the stored contrast used
 //   directly as k. At c = 1 the result is a threshold at v + b/2 = ½.
 
+import { OoxmlError } from '../errors/ooxml-error.js';
 import type { RgbaBuffer, Duotone } from './duotone';
 import { duotoneImageData, hex6ToRgb } from './duotone';
 import {
@@ -65,10 +66,18 @@ export type BlipEffect =
       useAlpha: boolean;
     }
   | { type: 'luminance'; bright: number; contrast: number }
-  | { type: 'duotone' };
+  // Optional endpoints accept legacy model-source markers; parsers always
+  // emit this entry's own endpoints. Legacy markers use value.duotone.
+  | { type: 'duotone'; clr1?: string; clr2?: string }
+  | { type: 'alphaBiLevel'; thresh: number }
+  | { type: 'alphaCeiling' | 'alphaFloor' | 'alphaInv' }
+  | { type: 'alphaModFix'; amt: number }
+  | { type: 'alphaRepl'; alpha: number }
+  | { type: 'colorReplace'; color: string }
+  | { type: 'unsupported'; effect: string };
 
-/** A picture's pixel transform: ordered effects plus the duotone colours the
- *  `duotone` entry refers to. */
+/** Ordered pixel effects plus the legacy single-duotone palette, retained
+ *  for model-source callers that still emit a position-only marker. */
 export interface BlipPixelEffects {
   readonly effects: readonly BlipEffect[];
   readonly duotone?: Duotone | null;
@@ -91,7 +100,16 @@ export function blipPixelEffectsKey(value: BlipPixelEffects): string {
       case 'luminance':
         return `l${effect.bright}.${effect.contrast}`;
       case 'duotone':
-        return value.duotone ? `d${value.duotone.clr1}.${value.duotone.clr2}` : 'd';
+        return effect.clr1 && effect.clr2 ? `d${effect.clr1}.${effect.clr2}`
+          : value.duotone ? `d${value.duotone.clr1}.${value.duotone.clr2}` : 'd';
+      case 'alphaBiLevel': return `ab${effect.thresh}`;
+      case 'alphaCeiling': return 'ac';
+      case 'alphaFloor': return 'af';
+      case 'alphaInv': return 'ai';
+      case 'alphaModFix': return `am${effect.amt}`;
+      case 'alphaRepl': return `ar${effect.alpha}`;
+      case 'colorReplace': return `r${effect.color}`;
+      case 'unsupported': return `u${JSON.stringify(effect.effect)}`;
     }
   });
   // A duotone without a position marker (a producer that placed it directly
@@ -123,7 +141,7 @@ export function blipPixelEffectPasses(value: BlipPixelEffects): number {
 }
 
 /**
- * Reject a transform whose pass count or cumulative pixel work exceeds the
+ * Reject unsupported chains, or a transform whose pass count or pixel work exceeds the
  * shared resource policy (`MAX_IMAGE_EFFECT_PASSES`,
  * `MAX_IMAGE_EFFECT_PIXEL_WORK` in pixel-budget.ts) before any pixel is
  * touched. A crossing is an `OoxmlDecodedImageLimitError`, the same catchable
@@ -131,6 +149,12 @@ export function blipPixelEffectPasses(value: BlipPixelEffects): number {
  * truncated to fit. `pixels` 0 checks the pass count alone (before decoding).
  */
 export function assertBlipPixelEffectsBudget(value: BlipPixelEffects, pixels: number): void {
+  // Preflight the whole chain, even when an unsupported entry follows valid
+  // effects. Never publish partially transformed pixels or an uncorrected image.
+  const unsupported = value.effects.find(effect => effect.type === 'unsupported');
+  if (unsupported?.type === 'unsupported') {
+    throw new OoxmlError('unsupported-image-effect', `Unsupported CT_Blip effect: ${unsupported.effect}`);
+  }
   const passes = blipPixelEffectPasses(value);
   if (passes > MAX_IMAGE_EFFECT_PASSES) {
     throw new OoxmlDecodedImageLimitError('image-effect-count', MAX_IMAGE_EFFECT_PASSES, passes);
@@ -145,8 +169,8 @@ export function assertBlipPixelEffectsBudget(value: BlipPixelEffects, pixels: nu
   }
 }
 
-/** Apply the effects in place, in order. Alpha is preserved except by
- *  clrChange, whose target alpha replaces the matched pixel's. Throws
+/** Apply the effects in place, in order. Alpha effects mutate alpha at their
+ *  authored position; clrChange replaces a matched pixel's color and alpha. Throws
  *  `OoxmlDecodedImageLimitError` before touching the buffer when the transform
  *  exceeds the effect budget (see {@link assertBlipPixelEffectsBudget}). */
 export function applyBlipPixelEffects(buf: RgbaBuffer, value: BlipPixelEffects): RgbaBuffer {
@@ -197,8 +221,38 @@ export function applyBlipPixelEffects(buf: RgbaBuffer, value: BlipPixelEffects):
         }
         break;
       }
+      // §20.1.8.1–4, 6, 8: alpha operations are pointwise and ordered.
+      // Rounding to the nearest byte matches clrChange's alpha matching grid.
+      case 'alphaBiLevel':
+      case 'alphaCeiling':
+      case 'alphaFloor':
+      case 'alphaInv':
+      case 'alphaModFix':
+      case 'alphaRepl':
+        for (let i = 3; i < d.length; i += 4) {
+          const alpha = d[i];
+          switch (effect.type) {
+            case 'alphaBiLevel': d[i] = alpha / 255 >= effect.thresh ? 255 : 0; break;
+            case 'alphaCeiling': d[i] = alpha > 0 ? 255 : 0; break;
+            case 'alphaFloor': d[i] = alpha < 255 ? 0 : 255; break;
+            case 'alphaInv': d[i] = 255 - alpha; break;
+            case 'alphaModFix': d[i] = Math.min(255, Math.max(0, Math.round(alpha * effect.amt))); break;
+            case 'alphaRepl': d[i] = Math.round(255 * effect.alpha); break;
+          }
+        }
+        break;
+      case 'colorReplace': { // §20.1.8.18: RGB only; alpha is unaffected.
+        const color = hex6ToRgb(effect.color);
+        if (!color) throw new OoxmlError('unsupported-image-effect', 'Invalid CT_Blip replacement color');
+        for (let i = 0; i < d.length; i += 4) {
+          d[i] = color[0]; d[i + 1] = color[1]; d[i + 2] = color[2];
+        }
+        break;
+      }
+      case 'unsupported': break; // rejected by preflight above
       case 'duotone':
-        if (value.duotone) duotoneImageData(buf, value.duotone.clr1, value.duotone.clr2);
+        if (effect.clr1 && effect.clr2) duotoneImageData(buf, effect.clr1, effect.clr2);
+        else if (value.duotone) duotoneImageData(buf, value.duotone.clr1, value.duotone.clr2);
         duotoneApplied = true;
         break;
     }

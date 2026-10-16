@@ -748,3 +748,10 @@ it('keeps measured resource errors distinct when a source owner bundles another 
   expect(restored).toBeInstanceOf(OoxmlResourceLimitError);
   expect((restored as OoxmlResourceLimitError).details).toEqual(original.details);
 });
+
+it('round-trips typed CT_Blip diagnostics from render worker to viewer', () => {
+  const error = new OoxmlError('unsupported-image-effect', 'Unsupported CT_Blip effect: blur');
+  const restored = deserializeWorkerError(serializeWorkerError(error));
+  expect(restored).toBeInstanceOf(OoxmlError);
+  expect(restored).toMatchObject({ code: 'unsupported-image-effect', message: error.message });
+});

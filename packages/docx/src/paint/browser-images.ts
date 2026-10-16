@@ -1,5 +1,6 @@
 import {
   captureDecodedBitmapCacheEpoch,
+  decodeSvgBlobOnMainThread,
   decodedBitmapTargetResizeOptions,
   duotoneImageData,
   applyBlipPixelEffects,
@@ -28,6 +29,7 @@ import {
 } from '@silurus/ooxml-core';
 import type {
   Duotone,
+  SvgBlobDecoder,
   BlipEffect,
   ImageResourceOptions,
   OptionalImageCodecUnavailableError,
@@ -187,6 +189,7 @@ export async function decodeRaster(
   target?: Readonly<{ targetWidthPx: number; targetHeightPx: number }>,
   plannedPixelLimit?: number,
   blipEffects?: readonly BlipEffect[],
+  svgDecoder?: SvgBlobDecoder,
 ): Promise<ImageBitmap | null> {
   // Source + offscreen backing + ImageData + result = four surfaces; all effects share the same ImageData before the final bitmap bake.
   const hasEffects = colorReplaceFrom || duotone || blipEffects?.length;
@@ -204,6 +207,12 @@ export async function decodeRaster(
     heightPt,
     tiff,
     maxRetainedPixels,
+    // SVG must be rasterized via the HTML image/Canvas route (or worker host
+    // bridge), never createImageBitmap(svgBlob). The shared owner enforces the
+    // same four-surface ceiling before allocating any effect buffers.
+    ...(mimeType === 'image/svg+xml' ? {
+      svgDecoder: svgDecoder ?? (typeof Image !== 'undefined' ? decodeSvgBlobOnMainThread : undefined),
+    } : {}),
     // The shared decoder preserves the native grid while it fits the explicit
     // effect working-set ceiling. Supplying the display target as a fallback
     // lets adaptive mode downsample an oversized effect source before the four
@@ -516,6 +525,7 @@ export async function preloadPaintImages(
                   : undefined,
                 request.plannedPixelLimit,
                 request.blipEffects,
+                svgDecoder,
               );
           if (!fallback) throw vectorError;
           image = fallback;
@@ -538,6 +548,7 @@ export async function preloadPaintImages(
             : undefined,
           request.plannedPixelLimit,
           request.blipEffects,
+          svgDecoder,
         );
       }
       return image == null

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   applyBlipPixelEffects,
+  blipPixelEffectsKey,
   assertBlipPixelEffectsBudget,
   blipGrayLevel,
   blipLuminance,
@@ -82,6 +83,72 @@ describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
     expect([...unmarked.data]).toEqual([255, 0, 0, 255]);
   });
 
+  it.each([
+    [{ type: 'alphaBiLevel', thresh: 128 / 255 }, [0, 0, 255, 255]],
+    [{ type: 'alphaCeiling' }, [0, 255, 255, 255]],
+    [{ type: 'alphaFloor' }, [0, 0, 0, 255]],
+    [{ type: 'alphaInv' }, [255, 128, 127, 0]],
+    [{ type: 'alphaModFix', amt: 2 }, [0, 254, 255, 255]],
+    [{ type: 'alphaRepl', alpha: .5 }, [128, 128, 128, 128]],
+  ] satisfies [BlipEffect, number[]][])('applies the specified alpha boundaries for %j', (effect, expected) => {
+    const buf = buffer(...[0, 127, 128, 255].map(alpha => [10, 20, 30, alpha]));
+    applyBlipPixelEffects(buf, { effects: [effect] });
+    expect([...buf.data]).toEqual(expected.flatMap(alpha => [10, 20, 30, alpha]));
+  });
+
+  it('allows a later alpha replacement to reveal a duotone applied to transparent RGB', () => {
+    const buf = buffer([0, 0, 0, 0]);
+    applyBlipPixelEffects(buf, { effects: [
+      { type: 'duotone', clr1: 'FF0000', clr2: 'FFFFFF' },
+      { type: 'alphaRepl', alpha: 1 },
+    ] });
+    expect([...buf.data]).toEqual([255, 0, 0, 255]);
+  });
+
+  it('modulates alpha before an alpha-sensitive color change', () => {
+    const buf = buffer([0, 0, 0, 255]);
+    applyBlipPixelEffects(buf, { effects: [
+      { type: 'alphaModFix', amt: .5 },
+      { type: 'colorChange', from: '000000', fromAlpha: 128 / 255,
+        to: 'FF0000', toAlpha: 1, useAlpha: true },
+    ] });
+    expect([...buf.data]).toEqual([255, 0, 0, 255]);
+  });
+
+  it('retains each duotone palette and keys different second palettes apart', () => {
+    const effects: BlipEffect[] = [
+      { type: 'luminance', bright: .9, contrast: 0 },
+      { type: 'duotone', clr1: '000000', clr2: 'FF0000' },
+      { type: 'duotone', clr1: '000000', clr2: '00FF00' },
+    ];
+    const buf = buffer([0, 0, 0, 255]);
+    applyBlipPixelEffects(buf, { effects });
+    expect(buf.data[0]).toBe(0);
+    expect(buf.data[1]).toBeGreaterThan(0);
+    expect(buf.data[2]).toBe(0);
+    expect(blipPixelEffectsKey({ effects })).not.toBe(blipPixelEffectsKey({
+      effects: [...effects.slice(0, 2), { type: 'duotone', clr1: '000000', clr2: '0000FF' }],
+    }));
+  });
+
+  it('replaces RGB after luminance while retaining source alpha', () => {
+    const buf = buffer([0, 0, 0, 64]);
+    applyBlipPixelEffects(buf, { effects: [
+      { type: 'luminance', bright: .9, contrast: 0 },
+      { type: 'colorReplace', color: 'FF0000' },
+    ] });
+    expect([...buf.data]).toEqual([255, 0, 0, 64]);
+  });
+
+  it.each(['alphaMod', 'blur', 'fillOverlay', 'hsl', 'tint'])('rejects %s before mutating pixels', (effect) => {
+    const buf = buffer([0, 0, 0, 255]);
+    expect(() => applyBlipPixelEffects(buf, { effects: [
+      { type: 'luminance', bright: .9, contrast: 0 },
+      { type: 'unsupported', effect },
+    ] })).toThrow(expect.objectContaining({ code: 'unsupported-image-effect' }));
+    expect([...buf.data]).toEqual([0, 0, 0, 255]);
+  });
+
   // Levels read from PowerPoint's PDF export of a 256-step gray ramp under
   // <a:lum> (inputs 0, 32, 64, 96, 128, 160, 192, 224, 255).
   it('lum follows the brightness/contrast levels PowerPoint renders', () => {
@@ -108,6 +175,14 @@ describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
 
 describe('getCachedDuotoneBitmapByPath with CT_Blip effects', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it('rejects ordered effects when the pixel pipeline is unavailable', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 1, height: 1, close() {} })));
+    await expect(getCachedDuotoneBitmapByPath('picture.png', 'image/png', {
+      effects: [{ type: 'alphaModFix', amt: .5 }],
+    }, async () => new Blob(), { offscreenFactory: () => null }))
+      .rejects.toMatchObject({ code: 'unsupported-image-effect' });
+  });
 
   it('runs the ordered effects once through the shared decode cache, keyed apart from the duotone', async () => {
     const base = { width: 1, height: 1, close() {} } as unknown as ImageBitmap;

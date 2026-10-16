@@ -24,6 +24,7 @@ import {
   isBlipPixelEffects,
   type BlipPixelEffects,
 } from './blip-effects';
+import { OoxmlError } from '../errors/ooxml-error.js';
 import { imageNaturalSize } from './crop';
 import { MAX_IMAGE_EFFECT_BASE_PIXELS, MAX_RASTER_PIXELS } from './pixel-budget.js';
 import { decodedBitmapTargetResizeOptions } from './raster-target.js';
@@ -176,6 +177,12 @@ export async function getCachedDuotoneBitmapByPath(
       // display-sized copy so an unavailable effect surface cannot silently
       // defeat the caller's bounded-resolution request.
       if (recoloured === base) {
+        // A complete ordered chain must never degrade to uncorrected pixels
+        // when Canvas/readback is unavailable. Keep only the legacy duotone
+        // caller's explicit compatibility fallback.
+        if (isBlipPixelEffects(duotone)) {
+          throw new OoxmlError('unsupported-image-effect', 'Image effects unavailable');
+        }
         if (failClosedOnDuotoneFailure) return { bitmap: null, owned: false };
         if (!resizeOptions) return { bitmap: base, owned: false };
         if (typeof createImageBitmap === 'undefined') {
