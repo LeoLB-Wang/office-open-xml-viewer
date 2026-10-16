@@ -78,7 +78,8 @@ export function metricMatchesSelectedFont(
  * authored alias does not control Canvas's choice among overlapping faces;
  * only geometry shared by every covering resource is safe to admit. */
 export function sameResourceGeometry(a: ResolvedFontMetric, b: ResolvedFontMetric): boolean {
-  return a.lineHeightRatio === b.lineHeightRatio
+  return a.farEastCodePage === b.farEastCodePage
+    && a.lineHeightRatio === b.lineHeightRatio
     && a.designAscentRatio === b.designAscentRatio
     && a.designDescentRatio === b.designDescentRatio
     && a.lineGapRatio === b.lineGapRatio
@@ -195,10 +196,11 @@ export function mayUseAuthoredReferenceVerticalMetric(
   // the authored font; a controlled missing-Calibri case matched Word's five
   // pages only with this vertical projection. This says nothing about glyph
   // coverage or advances, which remain selected-resource/Canvas measurements.
-  // A loaded local() tuple may also use the pinned reference when no parsed
-  // resource metric exists. A registered substitute is a different selected
-  // face: if its resource metric is unavailable, use its Canvas line box in
-  // both axes instead of importing the authored font's vertical geometry.
+  // A loaded local() tuple uses the catalog only when neither parsed nor
+  // prepared host measurements supply the required geometry. A registered
+  // substitute is a different selected face: if its resource metric is
+  // unavailable, use its Canvas line box in both axes instead of importing the
+  // authored font's vertical geometry.
   return selected?.source === 'native'
     || mayUseExactLocalReferenceWidthMetric(selected);
 }

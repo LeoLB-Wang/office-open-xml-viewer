@@ -123,7 +123,11 @@ export function specifiedTextLineMetrics(
       && ((segment.authoredFontFamily ?? segment.fontFamily) !== authoredFamily
         || segment.bold || segment.italic || !referenceSourceAdmitted(segment))) return null;
   }
-  const profile = referenceFontLineMetrics(authoredFamily, 400, 'normal');
+  // Ordinary installed faces retain their measured host normal box; the
+  // homogeneous native/local gate above excludes unrelated caller resources.
+  const profile = first.resolvedLineHeightRatio != null && first.resolvedDesignDescentRatio != null
+    ? { lineHeightRatio: first.resolvedLineHeightRatio, designDescentRatio: first.resolvedDesignDescentRatio }
+    : referenceFontLineMetrics(authoredFamily, 400, 'normal');
   if (!profile) return null;
   return wordSpecifiedTextLineMetrics({
     rule: spacing.rule,

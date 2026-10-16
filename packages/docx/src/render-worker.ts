@@ -1,3 +1,4 @@
+import { loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from './host-font-line-metrics.js';
 import type { LayoutDiagnostic } from './layout/types.js';
 import { readingDefaultOwners } from './internal/reading-default-owners.js';
 import { readingPaintHooks } from './paint/reading-hooks.js';
@@ -16,7 +17,6 @@ import init, { DocxArchive, reinit } from './wasm/docx_parser.js';
 import {
   decodeDataUrl,
   preloadGoogleFonts,
-  loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
   unloadGoogleFonts,
   unregisterEmbeddedFonts,

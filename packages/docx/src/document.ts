@@ -1,3 +1,4 @@
+import { loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from './host-font-line-metrics.js';
 import { recordResourceDiagnostics, resourceDiagnosticsOf } from './resource-diagnostics.js';
 import type { DocxDiagnostic } from './types.js';
 import { readingHooks } from './internal/reading-hooks.js';
@@ -9,7 +10,6 @@ import InlineWorker from './worker.ts?worker&inline';
 import wasmAssetUrl from './wasm/docx_parser_bg.wasm?url';
 import {
   preloadGoogleFonts,
-  loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
   releaseOwnedBitmap,
   unloadGoogleFonts,

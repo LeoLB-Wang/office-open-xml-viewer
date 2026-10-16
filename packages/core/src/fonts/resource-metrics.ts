@@ -4,6 +4,10 @@
 export interface ResolvedFontMetric {
   /** Concrete FontFace family registered for Canvas measure and paint. */
   family: string;
+  /** Admitted allocation class accompanying this geometry. A format may use
+   * catalog classification when browser measurement cannot expose OS/2 bits;
+   * this does not assert that the resource bytes were inspected. */
+  farEastCodePage?: boolean;
   /** General single-line height divided by em, when provided by the resource
    * owner for a documented format policy. */
   lineHeightRatio?: number;

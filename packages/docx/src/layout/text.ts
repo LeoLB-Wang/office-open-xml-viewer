@@ -665,6 +665,7 @@ export function snapshotFontMetrics(
       }
       const copy: ResolvedFontMetric = {
         family: metric.family,
+        ...(metric.farEastCodePage === undefined ? {} : { farEastCodePage: metric.farEastCodePage }),
         ...(metric.lineHeightRatio === undefined ? {} : { lineHeightRatio: metric.lineHeightRatio }),
         ...(metric.designAscentRatio === undefined ? {} : { designAscentRatio: metric.designAscentRatio }),
         ...(metric.designDescentRatio === undefined ? {} : { designDescentRatio: metric.designDescentRatio }),

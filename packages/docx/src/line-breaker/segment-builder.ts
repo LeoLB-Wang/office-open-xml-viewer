@@ -1560,7 +1560,8 @@ function emitResolvedTextSegment(
     authoredReferenceMetricAllowed: mayUseAuthoredReferenceVerticalMetric(resolvedSpan?.font),
     fontRoute: resolvedSpan?.fontRoute,
     resolvedLineHeightRatio: familyLineMetric?.lineHeightRatio,
-    resolvedLatinGridCellAllocation: referenceLineMetric?.farEastCodePage === false,
+    resolvedLatinGridCellAllocation: (resourceFamilyLineMetric?.farEastCodePage
+      ?? referenceLineMetric?.farEastCodePage) === false,
     ...(resourceFamilyLineMetric?.lineHeightRatio != null
       ? {
           resolvedResourceVerticalMetric: true as const,

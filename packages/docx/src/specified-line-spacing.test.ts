@@ -99,6 +99,16 @@ describe('Word specified spacing for ordinary Latin text', () => {
     expect(paragraph.lines[0].baselinePt - 72).toBe(24);
   });
 
+  it('uses admitted host sides for atLeast baselines instead of the authored catalog', () => {
+    const paragraph = render('Times New Roman', 10,
+      { rule: 'atLeast', value: 1, explicit: true },
+      false, undefined, 15, false, 10, false, true);
+    // The installed fixture has its own 2355-unit line and 434-unit descent;
+    // the authored catalog's 2268-unit line / 443-unit descent cannot replace it.
+    expect(paragraph.lines[0].advancePt).toBeCloseTo(10 * 2355 / 2048, 10);
+    expect(paragraph.lines[0].baselinePt - 72).toBeCloseTo(10 * (2355 - 434) / 2048, 10);
+  });
+
   it('preserves selected application-provided resources instead of borrowing authored reference geometry', () => {
     const spacing = { rule: 'exact', value: 30, explicit: true } as const;
     const paragraph = render('Arial', 10, spacing, false, undefined, 15, false, 10, false, 'provided');

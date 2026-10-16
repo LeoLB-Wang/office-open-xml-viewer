@@ -1,3 +1,4 @@
+import { loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from '../host-font-line-metrics.js';
 import { recordResourceDiagnostics } from '../resource-diagnostics.js';
 import { readingHooks } from './reading-hooks.js';
 import { installNativeReadingRuntime } from './native-reading-runtime.js';
@@ -5,7 +6,6 @@ import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-ass
 import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
 import {
   preloadGoogleFonts,
-  loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
   releaseOwnedBitmap,
   unloadGoogleFonts,

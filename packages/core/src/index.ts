@@ -791,6 +791,7 @@ export {
   type ResolvedLocalFontMetric,
   type LoadedLocalFontMetrics,
 } from './fonts/local-metrics';
+export { measureLocalFontNormalLine, type LocalFontNormalLine } from './fonts/local-line-metrics';
 // Deprecated compatibility export; production layout no longer calls it.
 export { fontAdvanceBiasEm } from './text/font-advance-metrics';
 // IX2 in-document text search (findText). Format-agnostic index + match →

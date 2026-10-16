@@ -109,13 +109,17 @@ function identicalProjection(
  * at 11pt, atLeast 0–269 twips stays at 13.44pt while 360/480 twips yields
  * 18/24pt; at 24pt, 0/480 twips both retain 29.28pt. Those observations do
  * not establish the atLeast projection for other faces or grid cases. The
- * lookup is a reference policy rather than proof of the
- * installed face. It remains separate from resource identity, cmap coverage,
- * shaping, width measurement, and paint routing.
+ * lookup is fallback metadata rather than proof of the installed face.
+ * Prepared host resources take precedence (host-font-line-metrics.ts).
+ * Resource identity, cmap coverage, shaping, widths and paint routing remain
+ * independent admission checks.
  *
- * Library policy uses Windows Office as the layout reference, independent of
- * the browser or Node host OS. Both vertical and xAvg lookups prefer Office
- * metadata, then macOS system/Supplemental, then published open-font profiles.
+ * For identical font data, apply the projection documented beside
+ * wordOpenTypeAutoLineRatios, independently of the viewer OS. Different
+ * installed resources retain their own measured geometry. Only when required host data is unavailable or
+ * unmeasurable do vertical lookups use this catalog order: Office, then macOS
+ * system/Supplemental, then published open-font profiles. xAvg remains a
+ * separate metadata-only lookup with its existing exact-route gate.
  * The catalog's `office-mac` source is a snapshot of Office-for-Mac bundled
  * faces (see scripts/generate-font-reference-metrics.py), not a verified
  * Windows catalog. Preferring it is reference policy, not evidence that every
