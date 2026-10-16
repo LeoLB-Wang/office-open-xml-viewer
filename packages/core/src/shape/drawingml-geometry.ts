@@ -110,7 +110,7 @@ export function resolveDrawingMLGeometry(plan: DrawingMLShapePaintPlan, scale: n
       subpaths.forEach((subpath, index) => {
         const path = createGeometryPath(charge);
         buildCustomPath(path.sink, [subpath], x, y, w, h);
-        add(Object.freeze(path.commands), paint[index].fill ?? null, paint[index].stroke === false ? null : stroke);
+        add(Object.freeze(path.commands), paint[index].fill ?? null, paint[index].stroke === false ? null : stroke, paint[index].fillRule);
       });
     } else {
       const path = createGeometryPath(charge);

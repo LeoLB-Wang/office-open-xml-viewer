@@ -1,3 +1,4 @@
+import type { VmlShapeAcquisitionFacts } from './layout/types.js';
 import { readingHooks } from './internal/reading-hooks.js';
 import type { NativeReadingPictureBulletWire } from './native-reading-picture-bullet.js';
 import { resolveAutomaticParagraphMarginsPt } from './layout/paragraph-spacing.js';
@@ -1436,7 +1437,7 @@ export type InternalTextBoxBlock =
   | Extract<BodyElement, { type: 'paragraph' | 'table' }>
   | InternalUnsupportedTextBoxBlock;
 
-export interface InternalShapeRun extends ShapeRun {
+export interface InternalShapeRun extends ShapeRun, VmlShapeAcquisitionFacts {
   textPath?: InternalVmlTextPath | null;
   textBoxContent?: InternalTextBoxBlock[];
 }

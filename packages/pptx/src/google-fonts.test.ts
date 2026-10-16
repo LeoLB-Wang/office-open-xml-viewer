@@ -237,3 +237,27 @@ it('keeps the union of stable per-slide preferences during progressive preflight
   expect(pptxSlideCjkFallback(kana, 'Calibri', 'Calibri', 'sc')).toBe('jp');
   expect(pptxSlideCjkFallback(korean, 'Calibri', 'Calibri', 'sc')).toBe('kr');
 });
+
+it.each(['shape', 'table'])('preloads override defaults and %s equation preview fonts in both render modes', (type) => {
+  const slide = {
+    theme: { majorFont: 'Override Heading', minorFont: 'Override Body', defaultTextColor: null, hlinkColor: null },
+    elements: [{ type, textBody: null, rows: [], mathFallback: { before: 0, after: 0,
+      elements: [{ type: 'shape', textBody: { paragraphs: [{ bullet: { type: 'none' },
+        runs: [{ type: 'text', text: 'Preview', fontFamily: 'Calibri', bold: true }] }] } }],
+    } }],
+  } as unknown as Slide;
+  const accumulator = new PptxFontPreloadAccumulator('Parent Heading', 'Parent Body');
+  accumulator.addSlide(slide);
+  expect(accumulator.names()).toEqual(expect.arrayContaining(['Override Heading', 'Override Body', 'Calibri']));
+  expect(pptxSlideOfficeFontRequests(slide, 'Parent Heading', 'Parent Body'))
+    .toEqual([{ family: 'Calibri', weight: 700, style: 'normal' }]);
+});
+
+it('preloads script fonts present only in an inline equation branch preview', () => {
+  const slide = { elements: [{ type: 'shape', textBody: { paragraphs: [{ runs: [],
+    mathFallbacks: [{ start: 0, end: 2, text: '漢字かな' }],
+  }] } }] } as unknown as Slide;
+  const fonts = new PptxFontPreloadAccumulator('Calibri', 'Calibri');
+  fonts.addSlide(slide);
+  expect(fonts.names()).toContain('Noto Sans JP');
+});
