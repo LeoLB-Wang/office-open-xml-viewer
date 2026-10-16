@@ -104,6 +104,18 @@ describe('buildDocxHighlightLayer', () => {
     expect(layer.children[0].style.width).toBe(`${(7 / 100) * 100}%`);
   });
 
+  it('keeps main fractional pitch multiplication for an unchanged slice', () => {
+    vi.stubGlobal('document', { createElement: (t: string) => makeEl(t) });
+    const layer = makeEl('div');
+    const text = 'AV To WAVE AVATAR';
+    buildDocxHighlightLayer(layer as unknown as HTMLDivElement,
+      [run({ text, letterSpacingPx: 0.35 })],
+      [{ slices: [{ runIndex: 0, start: 3, end: 11 }], active: false }],
+      100, 100, measureForFont);
+    expect(layer.children[0].style.left).toBe(`${((3 * W + 3 * 0.35) / 100) * 100}%`);
+    expect(layer.children[0].style.width).toBe(`${((8 * W + 7 * 0.35) / 100) * 100}%`);
+  });
+
   it('uses the active colour for the active match', () => {
     vi.stubGlobal('document', { createElement: (t: string) => makeEl(t) });
     const layer = makeEl('div');

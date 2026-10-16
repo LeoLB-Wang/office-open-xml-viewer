@@ -1,4 +1,4 @@
-import { textSpacingAdvance } from './character-spacing.js';
+import { countSpacingCharacters } from './character-spacing.js';
 /**
  * IX2 docx find-highlight overlay.
  *
@@ -92,9 +92,11 @@ export function buildDocxHighlightLayer(
       const pitch = run.letterSpacingPx ?? 0;
       const start = Math.max(0, Math.min(slice.start, run.text.length));
       const end = Math.max(start, Math.min(slice.end, run.text.length));
-      const sliceSpacing = textSpacingAdvance(run.text.slice(start, end), 0, pitch);
-      const pitchedX = extent.x + textSpacingAdvance(run.text.slice(0, start), 0, pitch);
-      const pitchedWidth = extent.width + sliceSpacing - (sliceSpacing === 0 ? 0 : pitch);
+      const sliceCount = countSpacingCharacters(run.text.slice(start, end)).pitchBearing;
+      const prefixCount = countSpacingCharacters(run.text.slice(0, start)).pitchBearing;
+      const pitchedX = extent.x + prefixCount * pitch;
+      // Keep main's multiply-before-add order for ordinary slices as well.
+      const pitchedWidth = extent.width + Math.max(0, sliceCount - 1) * pitch;
       // §17.3.2.10 縦中横 alone compresses natural extents into the retained
       // one-em cell. Ordinary runs preserve the established natural measurement.
       const k = tateChuYokoOverlayScale(run, measure);

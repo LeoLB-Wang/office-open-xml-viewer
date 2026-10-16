@@ -433,7 +433,7 @@ export function planVerticalRunWithCapability(
   for (const piece of splitVerticalOrientationRuns(text)) {
     if (piece.mode === 'sideways') {
       const advancePt = ctx.measureText(piece.text).width * charScale
-        + textSpacingAdvance(piece.text, characterGridDeltaPt, letterSpacingPt - characterGridDeltaPt);
+        + textSpacingAdvance(piece.text, characterGridDeltaPt, letterSpacingPt - characterGridDeltaPt, letterSpacingPt);
       const drawOffsetPt = { xPt: 0, yPt: emBoxCenterPt };
       const blockAxisInkBounds = plannedVerticalBlockAxisInkBounds(
         ctx, piece.text, 'sideways', drawOffsetPt, charScale, writingMode, false,
@@ -461,7 +461,7 @@ export function planVerticalRunWithCapability(
         && verticalTrUprightFallback(cp);
       const routed = routedVerticalGlyphCell(ctx, ch, cp, vertCapability, growTrRotateInk);
       const advancePt = routed.naturalPx * charScale
-        + textSpacingAdvance(ch, characterGridDeltaPt, letterSpacingPt - characterGridDeltaPt);
+        + textSpacingAdvance(ch, characterGridDeltaPt, letterSpacingPt - characterGridDeltaPt, letterSpacingPt);
       const range = { start: sourceOffset, end: sourceOffset + ch.length };
       if (routed.vert !== null) {
         const drawOffsetPt = { xPt: 0, yPt: 0 };
@@ -654,7 +654,7 @@ export function drawVerticalRunWithCapability(
       // frame). Letter spacing is applied inside the shaped piece, while the
       // trailing pitch remains part of the explicit cell advance as before.
       const naturalPx = ctx.measureText(piece.text).width;
-      const pieceAdvance = naturalPx * charScale + textSpacingAdvance(piece.text, 0, letterSpacingPx);
+      const pieceAdvance = naturalPx * charScale + textSpacingAdvance(piece.text, 0, letterSpacingPx, letterSpacingPx);
       const prevLetterSpacing = ctx.letterSpacing;
       ctx.textAlign = prevAlign;
       ctx.textBaseline = 'alphabetic';
@@ -706,7 +706,7 @@ export function drawVerticalRunWithCapability(
     const vertCell = routedCell.vert;
     const cellNaturalPx = routedCell.naturalPx;
     const rotateInkShiftPx = routedCell.rotateInkShiftPx;
-    const adv = cellNaturalPx * charScale + textSpacingAdvance(ch, 0, letterSpacingPx);
+    const adv = cellNaturalPx * charScale + textSpacingAdvance(ch, 0, letterSpacingPx, letterSpacingPx);
     if (vertCell !== null) {
       // Preserve the feature glyph's asymmetric A/D placement by keeping its
       // origin at the nominal half-advance measured under the same composed

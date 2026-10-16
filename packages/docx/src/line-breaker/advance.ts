@@ -1,4 +1,4 @@
-import { textSpacingAdvance } from '../character-spacing.js';
+import { countSpacingCharacters } from '../character-spacing.js';
 import { sliceTextBreakWindow } from './text-break-window.js';
 import { graphemeClusterOffsets } from '@silurus/ooxml-core';
 import { EAST_ASIAN_RE, sliceTextShapeRequest, semanticSlotStartIndex } from '../layout/text.js';
@@ -401,8 +401,12 @@ export function textAdvanceWidth(
   charScale: number,
   charSpacingPx: number,
 ): number {
+  const { scalars, pitchBearing } = countSpacingCharacters(text);
+  // Preserve main's left-to-right additions, separately from retained geometry's
+  // combined pitch. Regrouping these terms changes unaffected advances by ULPs.
   return naturalWidthPx * charScale
-    + textSpacingAdvance(text, characterGridDeltaPx, charSpacingPx);
+    + scalars * characterGridDeltaPx
+    + pitchBearing * charSpacingPx;
 }
 
 
@@ -415,7 +419,7 @@ export function textAdvanceWidth(
  *  segment (or none, when grid is inactive). For a mixed / Latin segment the
  *  grid delta is 0 (Latin is never snapped, §17.6.5) so only char-spacing
  *  contributes, and the value is still uniform across the segment. Measurement
- *  counts their contributions separately via textSpacingAdvance.
+ *  counts their contributions separately via textAdvanceWidth.
  *  Native engines may space standalone or spacing marks differently. Earlier
  *  measurement counted every scalar; retain the established contextual paint
  *  behavior instead of splitting shaped text to force measurement parity. */

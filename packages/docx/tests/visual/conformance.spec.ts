@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { CONFORMANCE_CASES } from '../../src/conformance/cases.js';
+import { readFileSync } from 'node:fs';
+const mainSpacingStreams = JSON.parse(readFileSync(
+  new URL('../../src/spacing-arithmetic-main.json', import.meta.url), 'utf8',
+));
 
 interface BrowserConformanceReport {
   readonly caseId: string;
@@ -35,6 +39,17 @@ interface BrowserConformanceReport {
     }[];
   };
 }
+
+test('fractional unchanged-text paint and advances equal main bit for bit', async ({ page }) => {
+  await page.goto('/tests/visual/conformance-fixture.html');
+  const streams = await page.evaluate(async () => {
+    const path = '/src/test-support/spacing-arithmetic.test-support.ts';
+    const { spacingFixtures, recordSpacingFixture } = await import(/* @vite-ignore */ path);
+    return Object.fromEntries(await Promise.all(spacingFixtures.map(async (fixture: { id: string }) =>
+      [fixture.id, await recordSpacingFixture(fixture)])));
+  });
+  expect(streams).toEqual(mainSpacingStreams);
+});
 
 for (let index = 0; index < CONFORMANCE_CASES.length; index += 1) {
   const testCase = CONFORMANCE_CASES[index]!;

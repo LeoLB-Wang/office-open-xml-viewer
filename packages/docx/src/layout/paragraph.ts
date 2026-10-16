@@ -1,4 +1,4 @@
-import { textSpacingAdvance } from '../character-spacing.js';
+import { countedSpacingAdvance, countSpacingCharacters, textSpacingAdvance } from '../character-spacing.js';
 import { charSpacingDeltaPx, segmentCharacterGridDeltaPx } from '../line-breaker/advance.js';
 import { shadowInkBounds } from './vml-shadow.js';
 import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
@@ -415,7 +415,7 @@ function contextualAdvance(segment: MeasuredTextPlanSegment, text: string): numb
   const scaleX = segment.basePaintOps[0]?.scaleX ?? 1;
   const pitchPt = segment.basePaintOps[0]?.letterSpacingPt ?? 0;
   const gridPt = segment.characterGridDeltaPt ?? 0;
-  return shaped.advancePt * scaleX + textSpacingAdvance(text, gridPt, pitchPt - gridPt);
+  return shaped.advancePt * scaleX + textSpacingAdvance(text, gridPt, pitchPt - gridPt, pitchPt);
 }
 
 function keepGraphemeSafeCuts(
@@ -2043,13 +2043,18 @@ function textPlanSegment(
       'Visible text acquisition requires complete authoritative grapheme clusters from TextLayoutService',
     );
   }
-  let precedingSpacingPt = 0;
+  let precedingScalars = 0;
+  let precedingPitchBearing = 0;
   let clusters = (shapedClusters ?? []).map((cluster, index) => {
     const prefix = segment.text.slice(0, cluster.range.start);
     const text = segment.text.slice(cluster.range.start, cluster.range.end);
-    const clusterSpacingPt = textSpacingAdvance(text, gridPt, trackingPt);
-    const prefixSpacingPt = precedingSpacingPt;
-    precedingSpacingPt += clusterSpacingPt;
+    const counts = countSpacingCharacters(text);
+    const clusterSpacingPt = countedSpacingAdvance(counts, gridPt, trackingPt, pitchPt);
+    const prefixSpacingPt = countedSpacingAdvance(
+      { scalars: precedingScalars, pitchBearing: precedingPitchBearing }, gridPt, trackingPt, pitchPt,
+    );
+    precedingScalars += counts.scalars;
+    precedingPitchBearing += counts.pitchBearing;
     const trailingFitPad = index === (shapedClusters?.length ?? 0) - 1
       ? segment.fitTextTrailingPadPx ?? 0
       : 0;
