@@ -1,7 +1,8 @@
+import referenceData from '../fonts/reference-font-metrics-data.json';
 import { describe, expect, it } from 'vitest';
 import { layoutStackedText, type StackedParagraph, type StackedLayoutOptions } from './stacked.js';
 import {
-  stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph, STACKED_CELL_FACTOR,
+  stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph, STACKED_CELL_FACTOR, STACKED_SIDEWAYS,
 } from './stacked-faces.js';
 
 // Arial 24 pt at 1 px/pt: cell = 7/6 × usWin (1.1172 em) × 24 = 31.28.
@@ -147,15 +148,28 @@ describe('stacked face and character tables', () => {
       .toEqual({ ascent: 1550 / 2048, descent: 717 / 2048 });
   });
 
+  it('uses the requested face coverage when weights differ, including named aliases', () => {
+    const cp = (ch: string) => ch.codePointAt(0) as number;
+    expect(stackedVerticalGlyph('Microsoft JhengHei', cp('ー'))).toBe(true);
+    expect(stackedVerticalGlyph('Microsoft JhengHei', cp('ー'), true)).toBe(false);
+    expect(stackedVerticalGlyph('MicrosoftJhengHeiBold', cp('ー'))).toBe(false);
+    expect(stackedVerticalGlyph('Yu Gothic', cp('〈'))).toBe(true);
+    expect(stackedVerticalGlyph('Yu Gothic Medium', cp('〈'))).toBe(false);
+  });
+
   it('turns only the measured set sideways and knows which faces have vertical glyphs', () => {
     const cp = (c: string) => c.codePointAt(0) as number;
     for (const c of '(（「、ー…∥') expect(stackedSidewaysCharacter(cp(c)), c).toBe(true);
     for (const c of '，．：-!—ぁ〜A日') expect(stackedSidewaysCharacter(cp(c)), c).toBe(false);
-    expect(stackedVerticalGlyph('Yu Gothic', cp('∥'))).toBe(true);
+    // U+2225 is covered by Yu Gothic's vrt2 only, excluded by the vert policy.
+    expect(stackedVerticalGlyph('Yu Gothic', cp('∥'))).toBe(false);
     expect(stackedVerticalGlyph('Meiryo', cp('∥'))).toBe(false);
     expect(stackedVerticalGlyph('ＭＳ ゴシック', cp('（'))).toBe(true);
     expect(stackedVerticalGlyph('Yu Gothic', cp('('))).toBe(false);
     expect(stackedVerticalGlyph('Arial', cp('（'))).toBe(false);
+    expect(stackedVerticalGlyph('Yu Mincho Light', cp('（'))).toBe(true);
+    expect(stackedVerticalGlyph('Arial Unicode MS', cp('('))).toBe(true);
+    expect(stackedVerticalGlyph('No Such Face', cp('（'))).toBe(false);
   });
 });
 
@@ -211,4 +225,8 @@ it('includes an atomic prefix in first-column wrapping, alignment and anchoring'
     options({ rect: { ...RECT, height: 4 * CELL }, anchorCtr: true }));
   expect(centered.columns[0].prefixTop).toBeCloseTo(CELL / 2);
   expect(centered.glyphs[0].cellTop).toBeCloseTo(2.5 * CELL);
+});
+
+it('keeps the generator coverage domain identical to the stacked sideways classifier', () => {
+  expect([...referenceData.stackedSideways].map((ch) => ch.codePointAt(0))).toEqual([...STACKED_SIDEWAYS]);
 });

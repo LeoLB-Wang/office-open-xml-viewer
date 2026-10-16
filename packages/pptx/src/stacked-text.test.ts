@@ -136,6 +136,20 @@ describe('pptx stacked vertical text (wordArtVert / wordArtVertRtl)', () => {
     expect(calls.some((c) => c.text === '「')).toBe(false);
   });
 
+  it('uses bold-specific vert coverage for the drawing face', () => {
+    const advances = [false, true].map((bold) => {
+      const { ctx } = mockCtx();
+      const b = body('ーA', 'wordArtVert', 'Microsoft JhengHei');
+      (b.paragraphs[0].runs[0] as TextRunData).bold = bold;
+      const runs: PptxTextRunInfo[] = [];
+      renderTextBody(ctx, b, 0, 0, 100, 470, SCALE,
+        null, 0, false, false, '#000000', undefined, undefined, (run) => runs.push(run));
+      return runs[0].h;
+    });
+    // Regular has a vert glyph (one em); bold rotates the horizontal glyph.
+    expect(advances).toEqual([24, 24 * 0.6]);
+  });
+
   it('stacks a grapheme cluster in one cell', () => {
     const { ctx, calls } = mockCtx();
     renderTextBody(ctx, body('e\u0301B', 'wordArtVert'), 0, 0, 60, 470, SCALE);

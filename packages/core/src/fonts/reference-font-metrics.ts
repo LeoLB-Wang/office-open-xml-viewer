@@ -19,6 +19,9 @@ export interface ReferenceFontMetricProfile {
   /** OS/2 [sTypoAscender, sTypoDescender, sTypoLineGap], present only when the
    * face sets fsSelection USE_TYPO_METRICS (OS/2 v4+). */
   readonly typoMetrics?: readonly [ascender: number, descender: number, lineGap: number];
+  /** GSUB vert single-substitution inputs within the generated stacked-sideways
+   * domain; vrt2 is excluded. Omitted when no coverage is recorded. */
+  readonly stackedVerticalGlyphs?: string;
   /** Derived OS/2 code-page class. Null means this source did not provide the
    * code-page field needed to classify Word's auto-line allocation. */
   readonly farEastCodePage: boolean | null;

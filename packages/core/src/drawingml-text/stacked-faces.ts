@@ -24,18 +24,14 @@ import { findReferenceFontMetrics } from '../fonts/reference-font-metrics.js';
 /** 7/6: the ratio of a stacked cell to the face box. */
 export const STACKED_CELL_FACTOR = 7 / 6;
 
-function normalizeFamily(family: string): string {
-  return family.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
-}
-
-/**
- * Canonical (reference-catalog) family for `family`, lower-cased, so a
- * localized or PostScript alias (游ゴシック, MS-Gothic, 宋体) finds the same
- * table entry as the English name.
- */
-function canonicalFamily(family: string): string {
-  const profiles = findReferenceFontMetrics(family);
-  return normalizeFamily(profiles.length > 0 ? profiles[0].family : family);
+/** Select the requested face (including localized/PostScript aliases), falling
+ * back to the family's available weight/style for named faces or synthetic styles.
+ * Keep the same source preference for the face box and vert coverage. */
+function stackedProfile(family: string, bold: boolean, italic: boolean) {
+  let profiles = findReferenceFontMetrics(family, { weight: bold ? 700 : 400, style: italic ? 'italic' : 'normal' });
+  if (profiles.length === 0) profiles = findReferenceFontMetrics(family);
+  return profiles.find((p) => p.source === 'macos-supplemental')
+    ?? profiles.find((p) => p.source === 'office-mac') ?? profiles[0];
 }
 
 /**
@@ -49,10 +45,7 @@ export function stackedFaceBox(
   bold: boolean,
   italic: boolean,
 ): { ascent: number; descent: number } | undefined {
-  let profiles = findReferenceFontMetrics(family, { weight: bold ? 700 : 400, style: italic ? 'italic' : 'normal' });
-  if (profiles.length === 0) profiles = findReferenceFontMetrics(family);
-  const profile = profiles.find((p) => p.source === 'macos-supplemental')
-    ?? profiles.find((p) => p.source === 'office-mac') ?? profiles[0];
+  const profile = stackedProfile(family, bold, italic);
   if (!profile || !(profile.unitsPerEm > 0)) return undefined;
   if (profile.typoMetrics) {
     const [ascender, descender, lineGap] = profile.typoMetrics;
@@ -70,7 +63,7 @@ export function stackedFaceBox(
  * in its cell, including ，．：；？！, small kana, 〜, – — and « ».
  * Characters outside the measured set are treated as upright.
  */
-const STACKED_SIDEWAYS = new Set(
+export const STACKED_SIDEWAYS: ReadonlySet<number> = new Set(
   [...'()<>[]{}…‥‐←→↑↓―∥、。ー～＝＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗'].map((c) => c.codePointAt(0)!),
 );
 
@@ -79,47 +72,13 @@ export function stackedSidewaysCharacter(cp: number): boolean {
 }
 
 /**
- * Which sideways characters a face draws with its own vertical glyph. Such a
- * glyph stands upright in a 1 em cell; a face without one draws the character
- * rotated 90° clockwise. Controls: Yu Gothic, MS Gothic, Meiryo and SimSun
- * draw their vertical glyphs; Arial and Cambria Math rotate. The sets are the
- * members of each Office-bundled face's GSUB `vert` coverage. Yu Gothic also
- * draws ∥ with a vertical glyph (wordartvert-supp slide 7), which its `vert`
- * lookup does not list; the other faces follow their `vert` coverage only.
- * A face not in this table (every Latin face) has no vertical glyphs.
+ * Whether the requested face covers a sideways character with a GSUB `vert`
+ * single substitution (all scripts/languages). Library policy uses `vert` only,
+ * excluding `vrt2`: Yu Gothic's U+2225 therefore rotates (#1827). Covered glyphs
+ * stand upright in a 1 em cell; uncovered/unknown faces rotate by their horizontal
+ * advance. Coverage comes from reference metadata, not the host's selected font.
  */
-const JP_FULL = '…‥‐←→↑↓―∥、。ー～＝＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗';
-const MEIRYO_YU = '…‥‐←→↑↓―、。ー～＝＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗';
-const SC_SONG = '…‥←→↑↓―∥、。ー～＝＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗';
-const SC_HEI = '…←→↑↓、。～＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗';
-const DENGXIAN = '←→↑↓∥、。ー～＝＿￣｜（）〔〕［］｛｝〈〉《》「」『』【】〖〗';
-const YAHEI = '…‥←→↑↓―∥、。ー～＝＿（）〔〕［］｛｝〈〉《》「」『』【】〖〗';
-const KOREAN = '…‥、。（）〔〕［］｛｝〈〉《》「」『』【】';
-const MINGLIU = '…‥（）〔〕［］｛｝〈〉《》「」『』【】';
-const VERTICAL_GLYPHS: ReadonlyMap<string, ReadonlySet<number>> = new Map(
-  ([
-    [['ms gothic', 'ms pgothic', 'ms ui gothic', 'ms mincho', 'ms pmincho', 'hggothice', 'hgpgothice', 'hgsgothice',
-      'hgminchoe', 'hgpminchoe', 'hgsminchoe', 'hgmarugothicmpro', 'hgsoeikakugothicub', 'hgpsoeikakugothicub',
-      'hgssoeikakugothicub'], JP_FULL],
-    [['yu gothic'], MEIRYO_YU + '∥'],
-    [['meiryo', 'meiryo ui', 'yu gothic ui', 'yu mincho', 'yu mincho demibold'], MEIRYO_YU],
-    [['yu gothic medium'], '…‥‐←→↑↓―、。ー～＝＿￣｜（）〔〕［］｛｝《》「」『』【】〖〗'],
-    [['simsun', 'nsimsun', 'stzhongsong'], SC_SONG],
-    [['simhei', 'kaiti', 'fangsong', 'sthupo', 'stliti', 'stxingkai', 'stxinwei'], SC_HEI],
-    [['dengxian'], DENGXIAN],
-    [['microsoft yahei', 'microsoft yahei ui'], YAHEI],
-    [['microsoft jhenghei'], '…‥、。ー（）〔〕［］｛｝〈〉《》「」『』【】〖〗'],
-    [['batang', 'batangche', 'gungsuh', 'gungsuhche', 'gulim', 'gulimche', 'dotum', 'dotumche', 'malgun gothic'], KOREAN],
-    [['mingliu', 'pmingliu'], MINGLIU],
-    [['mingliu_hkscs'], '…‥（）〔〕｛｝〈〉《》「」『』【】'],
-  ] as const).flatMap(([families, chars]) => {
-    const set = new Set([...chars].map((c) => c.codePointAt(0)!));
-    return families.map((f) => [f, set] as const);
-  }),
-);
-
-/** Whether `family` draws the sideways character `cp` with a vertical glyph. */
-export function stackedVerticalGlyph(family: string, cp: number): boolean {
-  const set = VERTICAL_GLYPHS.get(canonicalFamily(family)) ?? VERTICAL_GLYPHS.get(normalizeFamily(family));
-  return set?.has(cp) ?? false;
+export function stackedVerticalGlyph(family: string, cp: number, bold = false, italic = false): boolean {
+  if (!STACKED_SIDEWAYS.has(cp)) return false;
+  return stackedProfile(family, bold, italic)?.stackedVerticalGlyphs?.includes(String.fromCodePoint(cp)) ?? false;
 }
