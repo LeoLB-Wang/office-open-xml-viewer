@@ -6,6 +6,8 @@ export {
   type WorkerRequestOptions,
 } from './bridge.js';
 export { decodeDataUrl } from './decode-data-url.js';
+// Parser adapters share the wire error class without loading the rendering barrel.
+export { OoxmlError } from '../errors/ooxml-error.js';
 export {
   WasmParserHost,
   WasmTrapError,

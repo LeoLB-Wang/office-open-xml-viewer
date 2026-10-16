@@ -1,4 +1,5 @@
-import { OoxmlError } from '@silurus/ooxml-core';
+// This adapter also runs in workers and the Node/Markdown CLI source graphs.
+import { OoxmlError } from '@silurus/ooxml-core/worker';
 
 /** DOCX Word-compatibility rejection emitted by its numbering parser. */
 const DOCX_ILVL_PREFIX = 'OOXML_DOCX_ILVL:';

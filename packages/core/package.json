@@ -38,6 +38,7 @@
     "./internal/dom-geometry": "./src/internal/dom-geometry.ts",
     "./internal/drawingml-text": "./src/drawingml-text/index.ts",
     "./internal/bidi-line": "./src/text/bidi/segment-line.ts",
+    "./internal/text-breaks": "./src/internal/text-breaks.ts",
     "./internal/in-process-pull-transport": "./src/internal/in-process-pull-transport.ts",
     "./internal/owned-session": "./src/internal/owned-session.ts",
     "./internal/office-auto-line": "./src/fonts/office-auto-line.ts",

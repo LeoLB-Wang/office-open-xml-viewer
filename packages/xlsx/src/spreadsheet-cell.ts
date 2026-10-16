@@ -3,7 +3,7 @@ import {
   kinsokuAdjustedSplit, DEFAULT_KINSOKU_RULES,
   containsSeaScript, isGraphemeFillText, seaMixedBreakOffsets,
   fitSeaWordPrefix, graphemeClusterOffsets,
-} from '@silurus/ooxml-core';
+} from '@silurus/ooxml-core/internal/text-breaks';
 
 /** SpreadsheetML cell host hook: `xf@wrapText` and rich shared-string runs are
  * not `a:txBody`. Their token/overflow policy differs from shape paragraphs,
