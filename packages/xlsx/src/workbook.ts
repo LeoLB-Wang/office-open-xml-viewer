@@ -75,13 +75,13 @@ import type {
 } from './worker-protocol.js';
 import {
   createSizeOverriddenWorksheet,
-  extractViewerRenderContext,
+  extractViewerRenderContext, withViewerRenderContext,
 } from './worker-protocol.js';
 import {
   isXlsxWorksheetPullResponse,
   XlsxWorksheetPullClient,
 } from './worksheet-pull-client.js';
-import { applyAutoRowHeights, bindXlsxOfficeFontRoutes, bindXlsxWorksheetOfficeFontRoutes, inheritSheetRenderCache, getGridGeometryForWorksheet } from './renderer.js';
+import { computeMdw, pinXlsxGridGeometry, applyAutoRowHeights, bindXlsxOfficeFontRoutes, bindXlsxWorksheetOfficeFontRoutes, inheritSheetRenderCache, getGridGeometryForWorksheet } from './renderer.js';
 import {
   assertDelimitedTextSourceBytes,
   resolveDelimitedTextOptions,
@@ -368,7 +368,11 @@ export class XlsxWorkbook {
     const worksheetPolicy = normalizeXlsxWorksheetPolicy(opts);
     opts = { ...opts, xlsxWorksheetLimits: worksheetPolicy.worksheet };
     if (__OOXML_MODEL_SOURCES__ && opts.modelSources !== undefined) {
-      return (await import('./internal/workbook-model-source.js')).loadXlsxModelSource(source, opts, XlsxWorkbook);
+      return (await import('./internal/workbook-model-source.js')).loadXlsxModelSource(source, opts, XlsxWorkbook, [
+        resolveCjkFallback, disposeRejectedLoad, normalizeLoadResourceOptions,
+        OoxmlResourceMetricsSession, normalizeXlsxWorksheetPolicy,
+        computeMdw, pinXlsxGridGeometry, extractViewerRenderContext, withViewerRenderContext,
+      ]);
     }
     opts = { ...opts, cjkFallback: resolveCjkFallback(opts.cjkFallback) };
     const resourceOptions = normalizeLoadResourceOptions(opts);

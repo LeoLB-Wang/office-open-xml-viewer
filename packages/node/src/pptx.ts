@@ -88,7 +88,7 @@ async function openPptxPresentationImpl(
 ): Promise<PptxPresentationSessionImpl> {
   if (__OOXML_MODEL_SOURCES__ && options.modelSources !== undefined) {
     const { openPptxSource } = await import('./pptx-model-source.ts');
-    return openPptxSource(buffer, options, getPptxWasmModule);
+    return openPptxSource(buffer, options, getPptxWasmModule, PptxPresentationSessionImpl);
   }
   const cjkFallback = resolveCjkFallback(options.cjkFallback);
   const acquired = await acquirePptxNodeSession(toUint8(buffer), getPptxWasmModule(), options);

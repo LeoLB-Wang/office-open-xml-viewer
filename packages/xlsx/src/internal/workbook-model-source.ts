@@ -1,22 +1,10 @@
 import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-asset-url';
-import {
-  resolveCjkFallback,
-  type AdmittedModelSourceLoad,
-  type OoxmlResourceUsageSnapshot,
-} from '@silurus/ooxml-core';
-import {
-  disposeRejectedLoad,
-  normalizeLoadResourceOptions,
-  OoxmlResourceMetricsSession,
-  normalizeXlsxWorksheetPolicy,
-  type NormalizedOoxmlResourcePolicy,
-} from '@silurus/ooxml-core/worker';
+import type { AdmittedModelSourceLoad, OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
+import type { OoxmlResourceMetricsSession, NormalizedOoxmlResourcePolicy } from '@silurus/ooxml-core/worker';
 import { beginModelSourceLoad, selectModelSource } from '@silurus/ooxml-core/internal/model-source';
-import { computeMdw, pinXlsxGridGeometry } from '../renderer.js';
 import { respondToHostLayoutRequest } from './host-layout.js';
 import type { XlsxWorkbook, LoadOptions } from '../workbook.js';
 import type { ParsedWorkbook, Worksheet, ViewportRange, RenderViewportOptions } from '../types.js';
-import { extractViewerRenderContext, withViewerRenderContext } from '../worker-protocol.js';
 
 type WorkbookConstructor = new (worker: Worker, mode: 'main' | 'worker', wasmUrl?: string | URL) => XlsxWorkbook;
 
@@ -37,7 +25,24 @@ export async function loadXlsxModelSource(
   input: string | ArrayBuffer,
   opts: LoadOptions,
   workbookType: typeof import('../workbook.js')['XlsxWorkbook'],
+  // Use the ordinary workbook's existing resource/locale owners. Static
+  // back-edges from an optional adapter otherwise split their whole dependency
+  // graphs into eager dispatch chunks, even for OOXML-only callers.
+  owners: readonly [
+    resolveCjkFallback: typeof import('@silurus/ooxml-core')['resolveCjkFallback'],
+    disposeRejectedLoad: typeof import('@silurus/ooxml-core/worker')['disposeRejectedLoad'],
+    normalizeLoadResourceOptions: typeof import('@silurus/ooxml-core/worker')['normalizeLoadResourceOptions'],
+    metrics: typeof import('@silurus/ooxml-core/worker')['OoxmlResourceMetricsSession'],
+    normalizeWorksheetPolicy: typeof import('@silurus/ooxml-core/worker')['normalizeXlsxWorksheetPolicy'],
+    computeMdw: typeof import('../renderer.js')['computeMdw'],
+    pinGrid: typeof import('../renderer.js')['pinXlsxGridGeometry'],
+    extractContext: typeof import('../worker-protocol.js')['extractViewerRenderContext'],
+    withContext: typeof import('../worker-protocol.js')['withViewerRenderContext'],
+  ],
 ): Promise<XlsxWorkbook> {
+  const [resolveCjkFallback, disposeRejectedLoad, normalizeLoadResourceOptions,
+    OoxmlResourceMetricsSession, normalizeXlsxWorksheetPolicy, computeMdw, pinXlsxGridGeometry,
+    extractViewerRenderContext, withViewerRenderContext] = owners;
   const worksheetPolicy = normalizeXlsxWorksheetPolicy(opts);
   opts = { ...opts, xlsxWorksheetLimits: worksheetPolicy.worksheet };
   opts = { ...opts, cjkFallback: resolveCjkFallback(opts.cjkFallback) };
@@ -97,7 +102,7 @@ export async function loadXlsxModelSource(
         ? (await import('../render-worker-host.js')).createRenderWorker()
         : new (await import('../worker-source.ts?worker&inline')).default();
       let workbook: SourceWorkbook | undefined;
-      const wiredWorker = sourceWorker(worker, load, opts, (mdw) => { if (workbook) workbook.sourceMdw = mdw; });
+      const wiredWorker = sourceWorker(worker, load, opts, computeMdw, (mdw) => { if (workbook) workbook.sourceMdw = mdw; });
       try {
         workbook = new SourceWorkbook(wiredWorker, mode, opts.wasmUrl);
         const state = workbook as unknown as MutableWorkbook;
@@ -128,6 +133,7 @@ function sourceWorker(
   worker: Worker,
   load: AdmittedModelSourceLoad,
   opts: LoadOptions,
+  computeMdw: typeof import('../renderer.js')['computeMdw'],
   onMdw: (value: number) => void,
 ): Worker {
   const sourceOwnerUrl = resolveBundledAssetUrl(new URL(

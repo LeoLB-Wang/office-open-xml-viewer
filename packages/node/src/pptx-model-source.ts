@@ -4,7 +4,7 @@ import { resolveCjkFallback } from '@silurus/ooxml-core';
 import type { acquirePptxSessionFromArchive } from '@silurus/ooxml-pptx/internal/model-source-session';
 import type { OoxmlNodeSessionOptions } from './session-options.ts';
 import { resolveNodeSessionInput } from './model-source.ts';
-import { PptxPresentationSessionImpl, type OpenPptxPresentationOptions } from './pptx.ts';
+import type { PptxPresentationSessionImpl, OpenPptxPresentationOptions } from './pptx.ts';
 
 export type PptxModelSourceAcquisition = ReturnType<typeof acquirePptxSessionFromArchive>;
 
@@ -12,6 +12,9 @@ export async function openPptxSource(
   buffer: ArrayBuffer | Uint8Array,
   options: OpenPptxPresentationOptions,
   wasmModule: () => WebAssembly.Module,
+  // Keep the optional source adapter from statically importing its session
+  // owner and splitting the ordinary Node dispatch dependency graph.
+  Session: typeof PptxPresentationSessionImpl,
 ): Promise<PptxPresentationSessionImpl> {
   const acquired = await acquirePptxInput(buffer, options, wasmModule);
   // The ordinary session's media method is required. Fill the selected
@@ -25,7 +28,7 @@ export async function openPptxSource(
       return typeof value === 'function' ? value.bind(target) : value;
     },
   }) as unknown as PptxNodeArchive;
-  return new PptxPresentationSessionImpl(
+  return new Session(
     acquired.closeArchive, archive, acquired.bootstrap,
     acquired.metrics, options.signal, resolveCjkFallback(options.cjkFallback),
   );
