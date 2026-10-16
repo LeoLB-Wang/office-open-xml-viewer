@@ -30,6 +30,18 @@ export { createAuxCanvas };
 
 export type PaintShape = (ctx: AuxContext) => void;
 
+let rasterCoverageWarned = false;
+function rasterCoverageUnavailable(): null {
+  // Match the scene3d fallback warning: report degradation once per process,
+  // without flooding the console for every affected shape or chart mark.
+  if (!rasterCoverageWarned && typeof console !== 'undefined' && typeof console.warn === 'function') {
+    rasterCoverageWarned = true;
+    console.warn('[ooxml] effects: geometric coverage canvas unavailable or exceeds canvas limits; ' +
+      'soft edge and inner shadow omitted; the original body is still painted.');
+  }
+  return null;
+}
+
 /** Make a dedicated opaque geometric mask from a complete painted raster.
  * Raster policy: every nonzero-alpha sample belongs to the visible geometry;
  * zero-alpha samples remain holes. Source color and opacity are not coverage.
@@ -40,21 +52,26 @@ export type PaintShape = (ctx: AuxContext) => void;
  * `bbox` must cover the consumer's entire source raster, including strokes,
  * joins/caps and effect padding, rather than just vector geometry. Use
  * rasterEffectCoverageBounds when the consumer is a cropped edge effect.
- * The bounded mask belongs to this paint call; allocation failure lets callers
- * omit mask-dependent effects while still painting the original body.
+ * The bounded mask belongs to this paint call; allocation failure warns once
+ * and lets callers omit mask-dependent effects while painting the original body.
  */
 export function createRasterCoveragePaint(
   paint: PaintShape,
   bbox: EffectBBox,
 ): PaintShape | null {
-  const x = Math.floor(bbox.x) - 1, y = Math.floor(bbox.y) - 1;
-  const w = Math.max(1, Math.ceil(bbox.x + bbox.w) - x + 1);
-  const h = Math.max(1, Math.ceil(bbox.y + bbox.h) - y + 1);
-  if (clampCanvasSize(w, h).clamped) return null;
+  // bbox is the consumer's complete source domain, including its effect
+  // padding and viewport clipping. Round out to cover its raster samples, but
+  // do not add another guard outside that domain: those pixels cannot reach
+  // the consumer, and would reject sources at the canvas area/axis limit.
+  // The size guard is library resource policy, not a DrawingML effect rule.
+  const x = Math.floor(bbox.x), y = Math.floor(bbox.y);
+  const w = Math.max(1, Math.ceil(bbox.x + bbox.w) - x);
+  const h = Math.max(1, Math.ceil(bbox.y + bbox.h) - y);
+  if (clampCanvasSize(w, h).clamped) return rasterCoverageUnavailable();
   let canvas: AuxCanvas | null;
-  try { canvas = createAuxCanvas(w, h); } catch { return null; }
+  try { canvas = createAuxCanvas(w, h); } catch { return rasterCoverageUnavailable(); }
   const ctx = canvas ? get2d(canvas) : null;
-  if (!canvas || !ctx) return null;
+  if (!canvas || !ctx) return rasterCoverageUnavailable();
   paint(offsetPaintCtx(ctx, { x, y, w, h }));
   const image = ctx.getImageData(0, 0, w, h);
   for (let i = 0; i < image.data.length; i += 4) {

@@ -192,9 +192,9 @@ export function chartEffectRasterWorkUpperBound(
     + (effects.softEdge ? rasterCost(bbox, softReach, 3) : 0)
     + (effects.innerShadow ? rasterCost(bbox, innerReach, 2) : 0)
     // One shared geometric mask plus its transient readback buffer. Charge the
-    // complete effect-source domain (including its one-pixel mask guard), not
+    // complete effect-source domain (already padded by the consumer), not
     // just the mark's geometry; outlines and joins may extend past that box.
-    + (effects.softEdge || effects.innerShadow ? rasterCost(coverageBounds, 1, 2) : 0);
+    + (effects.softEdge || effects.innerShadow ? rasterCost(coverageBounds, 0, 2) : 0);
 }
 
 function nativeShadow(

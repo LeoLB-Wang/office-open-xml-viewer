@@ -4,6 +4,8 @@ import {
   applySoftEdge,
   applyReflection,
   createAuxCanvas,
+  createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
 } from './effects';
 import { createAuxCanvasForContext } from '../canvas/aux-canvas';
 import type { Shadow, SoftEdge, Reflection } from '../types/common';
@@ -82,6 +84,57 @@ const DEVICE_H = 600;
 // scale is px-per-EMU; 1 px == 9525 EMU in DrawingML, but the effect helper just
 // multiplies, so pick a scale where the arithmetic is easy to read.
 const SCALE = 1 / 9525; // 9525 EMU -> 1 px
+
+describe('raster effect coverage allocation', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it.each([
+    { width: 4096, height: 4096, bbox: { x: 10, y: 10, w: 4076, h: 4076 } },
+    { width: 32767, height: 1, bbox: { x: 10, y: 0, w: 32747, h: 1 } },
+  ])('keeps coverage available at the supported $width × $height boundary', ({ width, height, bbox }) => {
+    const allocations: number[][] = [];
+    vi.stubGlobal('OffscreenCanvas', class {
+      constructor(w: number, h: number) { allocations.push([w, h]); }
+      getContext() {
+        // Exercise the allocation guard without allocating a maximum-size
+        // backing store or readback buffer. Pixel semantics are covered by
+        // the real-canvas effect suites.
+        return Object.assign(new RecordingCtx(), {
+          getImageData: () => ({ data: new Uint8ClampedArray(0) }),
+          putImageData: () => {},
+        });
+      }
+    });
+    const bounds = rasterEffectCoverageBounds(bbox, {
+      softEdge: { radius: 8 },
+      innerShadow: { color: '000000', alpha: 0.5, blur: 2, dist: 2, dir: 0 },
+    }, 1, width, height);
+
+    const coverage = createRasterCoveragePaint(() => {}, bounds);
+
+    expect(coverage).toBeTypeOf('function');
+    expect(allocations).toEqual([[width, height]]);
+    const live = new RecordingCtx();
+    coverage?.(live as never);
+    expect(live.ops.find(op => op.op === 'drawImage')?.args?.slice(1)).toEqual([0, 0]);
+  });
+
+  it('rejects an oversized source before allocation and warns once about omitted effects', () => {
+    const allocate = vi.fn();
+    vi.stubGlobal('OffscreenCanvas', allocate);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const paint = vi.fn();
+    const bbox = { x: 0, y: 0, w: 4097, h: 4096 };
+
+    expect(createRasterCoveragePaint(paint, bbox)).toBeNull();
+    expect(createRasterCoveragePaint(paint, bbox)).toBeNull();
+
+    expect(allocate).not.toHaveBeenCalled();
+    expect(paint).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('soft edge and inner shadow omitted'));
+  });
+});
 
 describe('createAuxCanvas', () => {
   afterEach(() => vi.unstubAllGlobals());
