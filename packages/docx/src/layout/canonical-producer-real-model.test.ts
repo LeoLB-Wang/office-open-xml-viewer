@@ -116,7 +116,7 @@ function pageOwnedWrappingParagraph(): BodyElement {
   return result as unknown as BodyElement;
 }
 
-function unsupportedTextPathParagraph(): BodyElement {
+function fittedTextPathParagraph(): BodyElement {
   const result = ordinaryParagraph('');
   result.runs = [{
     type: 'shape',
@@ -682,7 +682,7 @@ describe('canonical producer with a real document model', () => {
       page.layers.body.at(-1)?.flowBounds.heightPt === 9 && page.layers.notes[0]?.advancePt === 16)).toBe(true);
   });
 
-  it('keeps valid surrounding body blocks when an optional drawing feature is unsupported', () => {
+  it('retains fitted path text without interrupting surrounding body blocks', () => {
     const section = {
       pageWidth: 200, pageHeight: 100,
       marginTop: 10, marginRight: 10, marginBottom: 10, marginLeft: 10,
@@ -693,7 +693,7 @@ describe('canonical producer with a real document model', () => {
       section,
       body: [
         ordinaryBodyParagraph('before'),
-        unsupportedTextPathParagraph(),
+        fittedTextPathParagraph(),
         ordinaryBodyParagraph('after'),
       ],
       headers: { default: null, first: null, even: null },
@@ -709,17 +709,11 @@ describe('canonical producer with a real document model', () => {
       .flatMap((line) => line.placements)
       .filter((placement) => placement.kind === 'text')
       .map((placement) => placement.text);
-    const unsupported = paragraphs.find((paragraph) => paragraph.source.path[0] === 1);
+    const fitted = paragraphs.find((paragraph) => paragraph.source.path[0] === 1);
 
     expect(text).toEqual(expect.arrayContaining(['before', 'after']));
-    expect(unsupported?.drawings[0]?.commands).toEqual([{ kind: 'noop' }]);
-    expect(layout.diagnostics).toContainEqual({
-      code: 'UNSUPPORTED_FEATURE',
-      severity: 'error',
-      source: { story: 'body', storyInstance: 'body', path: [1, 0] },
-      message: 'VML textPath fitPath=true is not rendered',
-    });
-    expect(Object.isFrozen(layout.diagnostics[0])).toBe(true);
+    expect(fitted?.drawings[0]?.commands).toMatchObject([{ kind: 'watermark-text', text: 'DRAFT' }]);
+    expect(layout.diagnostics).toEqual([]);
   });
 
   it('lays out document-end notes through the retained story engine', () => {

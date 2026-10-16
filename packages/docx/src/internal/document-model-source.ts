@@ -1,3 +1,4 @@
+import { recordResourceDiagnostics } from '../resource-diagnostics.js';
 import { readingHooks } from './reading-hooks.js';
 import { installNativeReadingRuntime } from './native-reading-runtime.js';
 import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-asset-url';
@@ -315,6 +316,7 @@ export async function loadDocxModelSource(
           unregisterEmbeddedFonts(loadedEmbedded.faces);
           throw new PaginationAbortError();
         }
+        recordResourceDiagnostics(doc, loadedEmbedded.diagnostics);
         doc._embeddedFontFaces = loadedEmbedded.faces;
         embeddedMetrics = loadedEmbedded.metrics;
         embeddedRoutes = loadedEmbedded.routes;

@@ -29,6 +29,18 @@ const NATIVE_DOC_MAIN_STREAM = 'WordDocument';
  * renderer mismatch. Each code is accepted only from its own part, so a
  * WordprocessingML fact and a native DOC fact cannot claim each other. */
 export const PARSER_DIAGNOSTIC_CONTRACT = Object.freeze({
+  REF_BOOKMARK_RESOURCE_LIMIT: Object.freeze({
+    severity: 'warning',
+    part: WORDPROCESSINGML_DOCUMENT_PART,
+    layoutCode: 'UNSUPPORTED_FEATURE',
+    message: 'REF bookmark acquisition exceeded its resource limits; cached field results were retained',
+  }),
+  UNSUPPORTED_VML_CONTENT: Object.freeze({
+    severity: 'warning',
+    part: WORDPROCESSINGML_DOCUMENT_PART,
+    layoutCode: 'UNSUPPORTED_FEATURE',
+    message: 'Some VML content could not be rendered',
+  }),
   UNSUPPORTED_TEXT_EFFECT: Object.freeze({
     severity: 'warning',
     part: WORDPROCESSINGML_DOCUMENT_PART,
