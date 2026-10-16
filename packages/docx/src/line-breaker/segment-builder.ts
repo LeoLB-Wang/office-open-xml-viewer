@@ -1787,13 +1787,11 @@ function appendRunsToSegments(
             if (!('text' in segment)) throw new Error('A note metric probe lost its text authority');
             segment.text = '';
             segment.metricOnly = true;
-            // Without a selected-face line metric (an absent authored face),
-            // the host's vertical box still comes from its painting face. A
-            // present face keeps its established metric-only behaviour.
-            if (segment.resolvedLineHeightRatio == null && segment.resolvedDesignAscentRatio == null
-              && segment.referenceFontVerticalMetric !== true && segment.resolvedResourceVerticalMetric !== true) {
-              segment.metricProbeText = 'x';
-            }
+            // An absent authored face (native CSS fallback) has no selected-face
+            // metric, so the host's vertical box comes from its painting face.
+            // Every present face (embedded, local, substitute, CSS, Google)
+            // keeps its established metric-only behaviour.
+            if (segment.fontSource === 'native') segment.metricProbeText = 'x';
             segment.sourceRunIndex = runIndex;
             if (segment.textShapeRequest) {
               segment.textShapeRequest = Object.freeze(independentTextShapeRequest(segment.textShapeRequest, ''));

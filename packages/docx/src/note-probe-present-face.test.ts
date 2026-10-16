@@ -35,4 +35,29 @@ describe('custom note-mark host metric probe', () => {
       expect(geometry(layoutLines(ctx, segs, 100, 0, 1)[0]!)).toEqual(geometry(layoutLines(ctx, withoutProbe, 100, 0, 1)[0]!));
     }
   });
+
+  it('does not probe a present face that has no prepared line metric', () => {
+    for (const position of [0, 2]) {
+      // A positively selected local resource without numeric vertical metrics
+      // is still present: its host keeps the established metric-only geometry.
+      const services = createLayoutServices(model, { measureContext: ctx, localMetrics: { arial: {
+        requestedFamily: 'Arial', family: 'Arial', weight: 400, style: 'normal', sourceIdentity: 'office-local:arial',
+      } } });
+      const run = { type: 'text', text: '', fontFamily: 'Arial', fontSize: 10, bold: false, italic: false, position,
+        noteRef: { kind: 'footnote', id: '1', customMarkFollows: true } } as unknown as DocRun;
+      const segs = buildSegments([run], { pageIndex: 0, totalPages: 1, layoutServices: services });
+      expect(segs.some((segment) => 'fontSource' in segment && segment.fontSource === 'local')).toBe(true);
+      expect(segs.every((segment) => !('metricProbeText' in segment) || segment.metricProbeText === undefined)).toBe(true);
+    }
+  });
+
+  it('probes the painting face when the authored face is absent', () => {
+    const services = createLayoutServices(model, { measureContext: ctx });
+    const run = { type: 'text', text: '', fontFamily: 'Absent Authored Face', fontSize: 10, bold: false, italic: false,
+      noteRef: { kind: 'footnote', id: '1', customMarkFollows: true } } as unknown as DocRun;
+    const segs = buildSegments([run], { pageIndex: 0, totalPages: 1, layoutServices: services });
+    expect(segs.some((segment) => 'metricProbeText' in segment && segment.metricProbeText === 'x')).toBe(true);
+    const line = layoutLines(ctx, segs, 100, 0, 1)[0]!;
+    expect(line.ascent + line.descent).toBeCloseTo(10, 8);
+  });
 });
