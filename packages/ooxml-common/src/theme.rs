@@ -23,6 +23,35 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Optional whole-scheme replacements in CT_BaseStylesOverride
+/// (ECMA-376 §20.1.6.12). Presence is distinct from an empty scheme: missing
+/// schemes inherit, present schemes replace every slot of their parent.
+#[derive(Debug, Clone, Default)]
+pub struct ThemeOverride {
+    pub colors: Option<ThemeColorScheme>,
+    pub fonts: Option<ThemeFonts>,
+    pub format: Option<ThemeFormatScheme>,
+}
+
+impl ThemeOverride {
+    pub fn parse(xml: &str) -> Self {
+        let Ok(doc) = crate::depth::parse_guarded(xml) else {
+            return Self::default();
+        };
+        let root = doc.root_element();
+        let present = |name| {
+            root.children().any(|n| {
+                n.is_element() && is_a_ns(n.tag_name().namespace()) && n.tag_name().name() == name
+            })
+        };
+        Self {
+            colors: present("clrScheme").then(|| ThemeColorScheme::parse(xml)),
+            fonts: present("fontScheme").then(|| ThemeFonts::parse(xml)),
+            format: present("fmtScheme").then(|| ThemeFormatScheme::parse(xml)),
+        }
+    }
+}
+
 type NamespaceDeclarations = Arc<[(Option<String>, Arc<str>)]>;
 
 /// One style-matrix entry retained for on-demand self-contained XML.
@@ -1020,5 +1049,24 @@ mod tests {
         assert!(ThemeColorScheme::parse("<not xml").is_empty());
         assert_eq!(ThemeFonts::parse(""), ThemeFonts::default());
         assert_eq!(ThemeFormatScheme::parse(""), ThemeFormatScheme::default());
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    #[test]
+    fn absent_schemes_inherit_but_empty_authored_schemes_replace() {
+        let value = ThemeOverride::parse(
+            r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:fontScheme name="Empty"/><a:fmtScheme name="Empty"/></a:themeOverride>"#,
+        );
+        assert!(value.colors.is_none());
+        assert_eq!(value.fonts, Some(ThemeFonts::default()));
+        assert_eq!(value.format, Some(ThemeFormatScheme::default()));
+        let foreign = ThemeOverride::parse(
+            r#"<a:themeOverride xmlns:a="http://purl.oclc.org/ooxml/drawingml/main"><clrScheme xmlns="urn:other"/></a:themeOverride>"#,
+        );
+        assert!(foreign.colors.is_none());
     }
 }

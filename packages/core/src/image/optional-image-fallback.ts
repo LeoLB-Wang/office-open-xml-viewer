@@ -41,9 +41,10 @@ export interface OptionalImagePlaceholderBounds {
   readonly height: number;
 }
 
-const OPTIONAL_IMAGE_LABELS: Readonly<Record<OptionalImageCodec | 'pict', string>> = {
+const OPTIONAL_IMAGE_LABELS: Readonly<Record<OptionalImageCodec | 'pict' | 'equation', string>> = {
   tiff: 'TIFF image unavailable',
   pict: 'PICT image unsupported',
+  equation: 'Equation unavailable',
 };
 
 /**
@@ -54,7 +55,7 @@ const OPTIONAL_IMAGE_LABELS: Readonly<Record<OptionalImageCodec | 'pict', string
  */
 export function paintOptionalImagePlaceholder(
   ctx: CanvasRenderingContext2D,
-  codec: OptionalImageCodec | 'pict',
+  codec: OptionalImageCodec | 'pict' | 'equation',
   bounds: OptionalImagePlaceholderBounds,
   options?: Readonly<ImagePaintProjectionOptions>,
 ): void {

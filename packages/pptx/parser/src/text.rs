@@ -1809,17 +1809,86 @@ pub(crate) fn math_run_color(
         .find_map(|rpr| child(rpr, "solidFill").and_then(|sf| parse_color_node(sf, theme)))
 }
 
+/// Conversion-failure recovery is library policy, but the retained authored
+/// preview still obeys ECMA-376 Part 3 §§9.2–9.4: remove ignored subtrees,
+/// unwrap ProcessContent elements, and recursively select AlternateContent.
+/// Only DrawingML/OMML text contributes to the preview.
+fn inline_math_preview_text(fallback: roxmltree::Node<'_, '_>) -> String {
+    let mut text = String::new();
+    // Scope can originate outside the retained Fallback. Resolve it at each
+    // physical ancestor before walking selected preview nodes in document order.
+    let ancestors: Vec<_> = fallback
+        .ancestors()
+        .skip(1)
+        .filter(|n| n.is_element())
+        .collect();
+    let mut inherited = ooxml_common::bounded_xml::MceScope::root();
+    for ancestor in ancestors.into_iter().rev() {
+        inherited = ooxml_common::mce::derive_scope(ancestor, &inherited);
+    }
+    let mut pending = vec![(fallback, inherited)];
+    while let Some((node, inherited)) = pending.pop() {
+        let scope = ooxml_common::mce::derive_scope(node, &inherited);
+        let ns = node.tag_name().namespace();
+        // The existing Choice predicate lists extensions; DrawingML, OMML and
+        // PresentationML are also understood even if declared Ignorable.
+        let understood = ooxml_common::ns::is_a_ns(ns)
+            || ooxml_common::ns::is_m_ns(ns)
+            || ooxml_common::ns::is_p_ns(ns)
+            || ns.is_some_and(crate::shape::pptx_understands_ns)
+            || ns == Some(ooxml_common::bounded_xml::MCE_NS);
+        if !understood && ns.is_some_and(|ns| scope.is_ignorable(ns)) {
+            if ns.is_some_and(|ns| scope.processes_content(ns, node.tag_name().name())) {
+                pending.extend(
+                    node.children()
+                        .rev()
+                        .filter(|n| n.is_element())
+                        .map(|n| (n, scope.clone())),
+                );
+            }
+            // §9.4 removes the entire ignored subtree, including selected
+            // nested alternatives; ProcessContent alone retains its children.
+            continue;
+        }
+        if node.has_tag_name((ooxml_common::bounded_xml::MCE_NS, "AlternateContent")) {
+            if let Some(selected) = ooxml_common::mce::select_alternate_content(
+                node,
+                &crate::shape::pptx_understands_ns,
+            ) {
+                pending.push((selected, scope));
+            }
+        } else if node.tag_name().name() == "t" {
+            let ns = node.tag_name().namespace();
+            if ooxml_common::ns::is_a_ns(ns) || ooxml_common::ns::is_m_ns(ns) {
+                if let Some(value) = node.text() {
+                    text.push_str(value);
+                }
+            }
+        } else {
+            pending.extend(
+                node.children()
+                    .rev()
+                    .filter(|n| n.is_element())
+                    .map(|n| (n, scope.clone())),
+            );
+        }
+    }
+    text
+}
+
 pub(crate) fn push_math_runs(
     node: roxmltree::Node<'_, '_>,
     font_size: Option<f64>,
     theme: &HashMap<String, String>,
     runs: &mut Vec<TextRun>,
+    fallbacks: &mut Vec<InlineEquationFallback>,
 ) {
     match node.tag_name().name() {
         "oMath" => {
             let nodes = parse_omath_nodes(node);
             if !nodes.is_empty() {
                 runs.push(TextRun::Math {
+                    fallback_text: None,
                     nodes,
                     display: false,
                     font_size: math_run_size(node).or(font_size),
@@ -1835,6 +1904,7 @@ pub(crate) fn push_math_runs(
                 let nodes = parse_omath_nodes(om);
                 if !nodes.is_empty() {
                     runs.push(TextRun::Math {
+                        fallback_text: None,
                         nodes,
                         display: true,
                         font_size: math_run_size(om).or(font_size),
@@ -1844,21 +1914,37 @@ pub(crate) fn push_math_runs(
             }
         }
         "AlternateContent" => {
-            // §9.3 — take the understood Choice's live equation, else the Fallback
-            // (which for math is a raster this walker ignores).
+            // Part 3 §§9.3–9.4 selects complete alternatives. Keep one preview
+            // beside the entire emitted range: a Choice may hold several a14:m
+            // children and each oMathPara may itself emit several equations.
             if let Some(sel) = ooxml_common::mce::select_alternate_content(
                 node,
                 &crate::shape::pptx_understands_ns,
             ) {
+                let start = runs.len();
                 for c in sel.children().filter(|n| n.is_element()) {
-                    push_math_runs(c, font_size, theme, runs);
+                    push_math_runs(c, font_size, theme, runs, fallbacks);
+                }
+                if sel.tag_name().name() == "Choice" && runs.len() > start {
+                    let text = node
+                        .children()
+                        .find(|n| n.has_tag_name((ooxml_common::bounded_xml::MCE_NS, "Fallback")))
+                        .map(inline_math_preview_text)
+                        .unwrap_or_default();
+                    if !text.is_empty() {
+                        fallbacks.push(InlineEquationFallback {
+                            start,
+                            end: runs.len(),
+                            text,
+                        });
+                    }
                 }
             }
         }
         // a14:m wrapper (local name "m") holds an m:oMathPara.
         "m" => {
             for c in node.children().filter(|n| n.is_element()) {
-                push_math_runs(c, font_size, theme, runs);
+                push_math_runs(c, font_size, theme, runs, fallbacks);
             }
         }
         _ => {}
@@ -2046,6 +2132,7 @@ pub(crate) fn parse_paragraph(
         finalize_latin_face(defaults.font_family.as_deref(), theme, defaults.language());
 
     let mut runs = Vec::new();
+    let mut math_fallbacks = Vec::new();
     for node in p_node.children().filter(|n| n.is_element()) {
         match node.tag_name().name() {
             "r" => {
@@ -2087,7 +2174,7 @@ pub(crate) fn parse_paragraph(
             // math as a bare `a14:m` (local name "m") directly under `a:p`, and
             // also inside `mc:AlternateContent`; both reach push_math_runs.
             "oMath" | "oMathPara" | "AlternateContent" | "m" => {
-                push_math_runs(node, def_font_size, theme, &mut runs);
+                push_math_runs(node, def_font_size, theme, &mut runs, &mut math_fallbacks);
             }
             // ECMA-376 §21.1.2.2.7: a:fld has the same rPr/t content as a:r.
             // Resolve its formatting through the run cascade so defRPr and
@@ -2158,6 +2245,7 @@ pub(crate) fn parse_paragraph(
         ea_ln_brk,
         font_algn,
         runs,
+        math_fallbacks,
         end_run_properties,
     }
 }

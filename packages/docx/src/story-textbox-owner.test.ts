@@ -4,6 +4,9 @@ import init, { DocxArchive } from './wasm/docx_parser.js';
 import { storeZip } from './conformance/generate.js';
 import { layoutDocument } from './document-layout.js';
 import { createLayoutServices } from './layout-runtime.js';
+import { layoutSourceStore } from './layout-source-model-adapter.js';
+import { layoutDocumentProgressively } from './layout/progressive.js';
+import { layoutFingerprint } from './layout/invariants.js';
 import { textRunsForPage } from './text-run-projection.js';
 import type { DocxTextRunInfo } from './renderer.js';
 import type { DocxDocumentModel } from './types.js';
@@ -27,32 +30,51 @@ const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const V = 'urn:schemas-microsoft-com:vml';
 const PAGE = { width: 612, height: 792 };
 
-function textBox(content: string): string {
+function textBox(content: string, blocks = false): string {
   return `<w:r><w:pict><v:shape id="box" type="#_x0000_t202" style="width:72pt;height:36pt">`
-    + `<v:textbox inset="0,0,0,0"><w:txbxContent><w:p>${content}</w:p></w:txbxContent></v:textbox>`
+    + `<v:textbox inset="0,0,0,0"><w:txbxContent>${blocks ? content : `<w:p>${content}</w:p>`}</w:txbxContent></v:textbox>`
     + '</v:shape></w:pict></w:r>';
 }
 
-function parsedDocument(): DocxDocumentModel {
-  const body = `<w:p><w:r><w:t>One</w:t></w:r>${textBox('<w:r><w:t>Box</w:t></w:r>')}</w:p>`
+function parsedDocument(fields?: { kind: 'header' | 'footer'; pages: number; format: string }): DocxDocumentModel {
+  let body = `<w:p><w:r><w:t>One</w:t></w:r>${textBox('<w:r><w:t>Box</w:t></w:r>')}</w:p>`
     + '<w:p><w:r><w:br w:type="page"/><w:t>Two</w:t></w:r></w:p>';
-  const header = `<w:p>${textBox('<w:fldSimple w:instr=" PAGE "><w:r><w:t>9</w:t></w:r></w:fldSimple>')}</w:p>`;
+  let header = `<w:p>${textBox('<w:fldSimple w:instr=" PAGE "><w:r><w:t>9</w:t></w:r></w:fldSimple>')}</w:p>`;
+  const kind = fields?.kind ?? 'header';
+  if (fields) {
+    const page = '<w:fldSimple w:instr=" PAGE "><w:r><w:t>?</w:t></w:r></w:fldSimple>';
+    const table = (content: string) => '<w:tbl><w:tblPr><w:tblW w:w="1440" w:type="dxa"/></w:tblPr>'
+      + '<w:tblGrid><w:gridCol w:w="1440"/></w:tblGrid><w:tr><w:tc><w:tcPr/>'
+      + content + '</w:tc></w:tr></w:tbl>';
+    body = Array.from({ length: fields.pages }, (_, index) => '<w:p>'
+      + (index ? '<w:pPr><w:pageBreakBefore/></w:pPr>' : '') + page + '</w:p>').join('');
+    // Direct fields, table descendants and text boxes inside table cells all
+    // read the same destination, including a second detached text-box root.
+    header = `<w:p>${page}</w:p>` + table(`<w:p>${page}</w:p>`)
+      + `<w:p>${textBox(table(table(`<w:p>${page}${textBox(page)}</w:p>`) + '<w:p/>'), true)}</w:p>`
+      + table(`<w:p>${textBox(page)}</w:p>`);
+  }
   const files = new Map<string, string>([
     ['word/document.xml', `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:v="${V}"><w:body>${body}`
-      + '<w:sectPr><w:headerReference w:type="default" r:id="hdr"/><w:pgSz w:w="12240" w:h="15840"/>'
+      + `<w:sectPr><w:${kind}Reference w:type="default" r:id="hdr"/><w:pgSz w:w="12240" w:h="15840"/>`
+      + (fields ? `<w:pgNumType w:start="12" w:fmt="${fields.format}"/>` : '')
       + '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>'
       + '</w:sectPr></w:body></w:document>'],
-    ['word/header1.xml', `<w:hdr xmlns:w="${W}" xmlns:v="${V}">${header}</w:hdr>`],
+    [`word/${kind}1.xml`, `<w:${kind === 'header' ? 'hdr' : 'ftr'} xmlns:w="${W}" xmlns:v="${V}">${header}</w:${kind === 'header' ? 'hdr' : 'ftr'}>`],
     ['word/_rels/document.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-      + `<Relationship Id="hdr" Type="${R}/header" Target="header1.xml"/></Relationships>`],
+      + `<Relationship Id="hdr" Type="${R}/${kind}" Target="${kind}1.xml"/></Relationships>`],
     ['_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       + `<Relationship Id="doc" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`],
     ['[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
       + '<Default Extension="xml" ContentType="application/xml"/>'
       + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-      + '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
+      + `<Override PartName="/word/${kind}1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.${kind}+xml"/>`
       + '</Types>'],
   ]);
+  return parseFiles(files);
+}
+
+function parseFiles(files: Map<string, string>): DocxDocumentModel {
   const archive = new DocxArchive(storeZip(new Map([...files].map(([name, xml]) => [name, new TextEncoder().encode(xml)]))));
   try { return JSON.parse(new TextDecoder().decode(archive.parse())) as DocxDocumentModel; }
   finally { archive.free(); }
@@ -120,3 +142,58 @@ describe('nested text-box story ownership', () => {
     }
   });
 });
+
+// ECMA-376 Part 1 §17.6.12: numbering restarts and formats apply to PAGE.
+// One page keeps NUMPAGES constant during convergence, exposing a cached
+// parent's masked absent-to-resolved destination dependency in nested boxes.
+it.each([
+  { kind: 'header' as const, pages: 1, format: 'decimal', numbers: ['12'] },
+  { kind: 'footer' as const, pages: 1, format: 'decimal', numbers: ['12'] },
+  { kind: 'header' as const, pages: 1, format: 'upperRoman', numbers: ['XII'] },
+  { kind: 'footer' as const, pages: 2, format: 'upperRoman', numbers: ['XII', 'XIII'] },
+])('converges restarted $kind fields through nested tables and shapes ($pages pages, $format)', fields => {
+  const doc = parsedDocument(fields);
+  const layout = layoutDocument(doc, createLayoutServices(doc, { measureContext: context() }), { currentDateMs: 0 });
+  expect(layout.pages).toHaveLength(fields.pages);
+  fields.numbers.forEach((number, index) => {
+    const runs = textRunsForPage(layout, index, { scale: 1 });
+    expect(runs.filter(run => run.source?.story === 'body').map(run => run.text)).toEqual([number]);
+    expect(runs.filter(run => run.source?.story === fields.kind).map(run => run.text)).toEqual([number, number]);
+    expect(runs.filter(run => run.source?.story === 'textbox').map(run => run.text)).toEqual([number, number, number]);
+  });
+});
+
+// Detached rich text is source work on EVERY selected page, just like inline
+// header/footer paragraphs. The signed margins (§17.6.11) isolate accounting
+// from reserve geometry. No fields or changing selection can mint extra credit.
+it.each(['header', 'footer'] as const)('credits a repeated complete text box in a %s on blocking and progressive routes', async kind => {
+  const p = (text: string, pageBreak = false) => '<w:p><w:pPr>'
+    + (pageBreak ? '<w:pageBreakBefore/>' : '')
+    + '<w:spacing w:before="0" w:after="0" w:line="200" w:lineRule="exact"/></w:pPr>'
+    + `<w:r><w:rPr><w:sz w:val="20"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+  const box = textBox(Array.from({ length: 110 }, () => p('h')).join(''), true)
+    .replace('height:36pt', 'height:1400pt');
+  const tag = kind === 'header' ? 'hdr' : 'ftr';
+  const doc = parseFiles(new Map([
+    ['word/document.xml', `<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body>`
+      + Array.from({ length: 300 }, (_, i) => p('b', i > 0)).join('')
+      + `<w:sectPr><w:${kind}Reference w:type="default" r:id="story"/>`
+      + '<w:pgSz w:w="4000" w:h="30000"/>'
+      + '<w:pgMar w:top="-200" w:bottom="-200" w:left="200" w:right="200" w:header="100" w:footer="100"/>'
+      + '</w:sectPr></w:body></w:document>'],
+    [`word/${kind}.xml`, `<w:${tag} xmlns:w="${W}" xmlns:v="${V}"><w:p>${box}</w:p></w:${tag}>`],
+    ['word/_rels/document.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + `<Relationship Id="story" Type="${R}/${kind}" Target="${kind}.xml"/></Relationships>`],
+    ['[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Default Extension="xml" ContentType="application/xml"/></Types>'],
+  ]));
+  const source = layoutSourceStore(doc);
+  const open = () => createLayoutServices(source, { measureContext: context() });
+  const blocking = layoutDocument(source, open(), { currentDateMs: 0 });
+  const progressive = await layoutDocumentProgressively(source.bodyLayoutInput, open(), { currentDateMs: 0 });
+  expect(blocking.pages).toHaveLength(300);
+  expect(layoutFingerprint(progressive)).toBe(layoutFingerprint(blocking));
+  const texts = textRunsForPage(blocking, 299, { scale: 1 })
+    .filter(run => run.source?.story === 'textbox').map(run => run.text);
+  expect(texts).toEqual(Array(110).fill('h'));
+}, 60000);

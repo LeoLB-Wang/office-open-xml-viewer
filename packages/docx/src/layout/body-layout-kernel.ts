@@ -149,8 +149,14 @@ export interface AcquiredTableBlock {
 }
 
 export interface StoryLayoutAcquisitionInput {
+  /** Section occurrence selecting this header/footer. Direct root acquisition
+   * defaults to source ownership; production page composers supply the section. */
+  readonly pageStoryOwner?: string;
   readonly source: SourceRef;
   readonly pageIndex: number;
+  /** A selected page story already knows its displayed numbering, including
+   * section restarts on pages not observed by the previous pagination pass. */
+  readonly pageNumber?: Readonly<{ displayNumber: number; format: import('@silurus/ooxml-core').NumberFormat }>;
   readonly section: DeepReadonly<SectionLayoutContext>;
   readonly container: FlowContainer;
   /**
