@@ -90,7 +90,7 @@ describe('prepared local-face normal line measurement', () => {
     expect(measureLocalFontNormalLine(face, env.fonts, env.context, 2048, null)).toBeNull();
   });
 
-  it('measures glyph ownership once per distinct cluster, not per distinct text', () => {
+  it('measures glyph ownership per distinct cluster, settling owned texts in one probe', () => {
     const measured: string[] = [];
     vi.stubGlobal('OffscreenCanvas', class {
       getContext() {
@@ -112,8 +112,13 @@ describe('prepared local-face normal line measurement', () => {
       expect(localFontMetricCoversText(metric, 'abc', route)).toBe(true);
       expect(localFontMetricCoversText(metric, 'cab ba', route)).toBe(true);
       expect(localFontMetricCoversText(metric, 'ab\u6f22', route)).toBe(false);
-      // a, b, c, space and the CJK cluster: five native probes for three texts.
-      expect(measured.sort()).toEqual([' ', 'a', 'b', 'c', '\u6f22'].sort());
+      // One whole-text probe settles 'abc'; later texts probe only their
+      // unknown clusters (the space, then the CJK cluster): three probes.
+      expect(measured).toEqual(['abc', ' ', '\u6f22']);
+      // Mixed unknown clusters with fallback are split to find the culprit.
+      measured.length = 0;
+      expect(localFontMetricCoversText(metric, 'xy\u3042', route)).toBe(false);
+      expect(measured).toEqual(['xy\u3042', 'x', 'y', '\u3042']);
     } finally {
       vi.unstubAllGlobals();
     }

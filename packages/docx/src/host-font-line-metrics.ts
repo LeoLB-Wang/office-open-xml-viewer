@@ -101,8 +101,9 @@ export async function prepareDocxHostFontMetrics(
   if (!fontSet) return loaded;
   const context = owner?.body && owner.fonts === fontSet
     ? owner.createElement('canvas').getContext('2d') : null;
-  const routes: typeof loaded.routes = {};
-  for (const [key, route] of Object.entries(loaded.routes)) {
+  // Measurements are synchronous; the coverage-face loads they need run in
+  // parallel so preparation waits for the slowest load, not their sum.
+  const entries = await Promise.all(Object.entries(loaded.routes).map(async ([key, route]) => {
     const face = loaded.faces.find(candidate => candidate.family === route.family);
     const em = probeEm(route);
     const transferred = hostMeasurements?.find(measurement =>
@@ -113,16 +114,20 @@ export async function prepareDocxHostFontMetrics(
       : transferred?.measured ?? null;
     let metric = hostFontLineMetric(route, measured);
     const source = localSource(route);
+    let probe: FontFace | null = null;
     if (metric !== route.metric) {
-      const probe = face && source ? await loadLocalFontCoverageProbe(face, source, fontSet) : null;
-      if (probe) {
-        loaded.faces.push(probe);
-        metric = Object.freeze({ ...metric, glyphCoverageProbeFamily: probe.family });
-      }
-      // Without proof the new measured resource projection is unavailable.
-      else metric = route.metric;
+      probe = face && source ? await loadLocalFontCoverageProbe(face, source, fontSet) : null;
+      metric = probe
+        ? Object.freeze({ ...metric, glyphCoverageProbeFamily: probe.family })
+        // Without proof the new measured resource projection is unavailable.
+        : route.metric;
     }
-    routes[key] = { ...route, metric };
+    return { key, route: { ...route, metric }, probe };
+  }));
+  const routes: typeof loaded.routes = {};
+  for (const entry of entries) {
+    if (entry.probe) loaded.faces.push(entry.probe);
+    routes[entry.key] = entry.route;
   }
   return { ...loaded, routes };
 }

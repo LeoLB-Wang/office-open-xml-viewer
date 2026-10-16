@@ -225,36 +225,54 @@ export function localFontMetricCoversText(
   const cached = cache.get(text);
   if (cached !== undefined) return cached;
   // Native measurement happens once per distinct cluster, not per distinct
-  // text, so a document costs about as many probes as it has distinct
-  // clusters rather than one per segment.
+  // text. A text whose clusters are all known costs no measurement; otherwise
+  // one whole-text measurement settles the common all-owned case, and only a
+  // text with fallback is split into its unknown clusters.
+  const clusters = [...clustersOf(text)];
   let covered = true;
-  for (const cluster of clustersOf(text)) {
-    let owned = prepared.clusters.get(cluster);
-    if (owned === undefined) {
-      const measured = measureCoverage(prepared.font, cluster);
-      if (measured === undefined) return false;
-      owned = measured;
-      // Resource-governance bound, unrelated to layout or coverage decisions.
-      if (prepared.clusters.size >= 4096) prepared.clusters.delete(prepared.clusters.keys().next().value!);
-      prepared.clusters.set(cluster, owned);
+  const unknown: string[] = [];
+  for (const cluster of clusters) {
+    const owned = prepared.clusters.get(cluster);
+    if (owned === false) { covered = false; break; }
+    if (owned === undefined) unknown.push(cluster);
+  }
+  if (covered && unknown.length > 0) {
+    const whole = measureCoverage(prepared.font, unknown.length === clusters.length ? text : unknown.join(''));
+    if (whole === undefined) return false;
+    if (whole || unknown.length === 1) {
+      for (const cluster of unknown) rememberCluster(prepared, cluster, whole);
+      covered = whole;
+    } else {
+      for (const cluster of unknown) {
+        const owned = measureCoverage(prepared.font, cluster);
+        if (owned === undefined) return false;
+        rememberCluster(prepared, cluster, owned);
+        if (!owned) { covered = false; break; }
+      }
     }
-    if (!owned) { covered = false; break; }
   }
   if (cache.size >= 1024) cache.delete(cache.keys().next().value!);
   cache.set(text, covered);
   return covered;
 }
 
+function rememberCluster(prepared: CoverageRoute, cluster: string, owned: boolean): void {
+  // Resource-governance bound, unrelated to layout or coverage decisions.
+  if (prepared.clusters.size >= 4096) prepared.clusters.delete(prepared.clusters.keys().next().value!);
+  prepared.clusters.set(cluster, owned);
+}
+
+// The coverage context is private to this module, so its font is switched
+// only when the route changes instead of being restored after every probe.
+let coverageFont: string | undefined;
+
 function measureCoverage(font: string, text: string): boolean | undefined {
   coverageContext ??= newCoverageContext();
   if (!coverageContext) return undefined;
-  const previous = coverageContext.font;
-  try {
-    coverageContext.font = font;
-    const result = coverageContext.measureText(text);
-    return result.width === 0 && result.actualBoundingBoxAscent === 0
-      && result.actualBoundingBoxDescent === 0;
-  } finally { coverageContext.font = previous; }
+  if (coverageFont !== font) { coverageContext.font = font; coverageFont = font; }
+  const result = coverageContext.measureText(text);
+  return result.width === 0 && result.actualBoundingBoxAscent === 0
+    && result.actualBoundingBoxDescent === 0;
 }
 
 /** Measure a worker-resolved exact local source in the DOM realm. The caller
