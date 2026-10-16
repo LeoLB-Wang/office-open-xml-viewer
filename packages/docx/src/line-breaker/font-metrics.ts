@@ -1,7 +1,76 @@
 import type { CanvasFontRoute, ResolvedFontMetric } from '@silurus/ooxml-core';
 import { localFontMetricCoversText, normalizeFontMetricFamily } from '@silurus/ooxml-core';
 import type { FontResolution } from '../layout/font-service.js';
-import { referenceFontLineMetrics } from '../reference-font-line-metrics.js';
+import type { TextLayoutService } from '../layout/text.js';
+import {
+  referenceFontLineMetrics,
+  synthesizedFaceReferenceLineMetrics,
+  type ReferenceFontLineMetrics,
+  type SynthesizedFaceReferenceLineMetrics,
+} from '../reference-font-line-metrics.js';
+
+/** Service and probe text used to measure the face Canvas paints for a tuple
+ * that the reference catalog does not hold. */
+export interface FaceSynthesisProbe {
+  readonly text: TextLayoutService;
+  readonly probe: string;
+}
+
+// Large enough that integer-rounded engine font boxes resolve the tables to
+// 1/1000 em; the tolerance below is that rounding step.
+const SYNTHESIS_PROBE_PT = 1000;
+const synthesisProofs = new WeakMap<TextLayoutService, Map<string, boolean>>();
+
+/** True when the Canvas font box of the requested tuple, measured on its own
+ * selected route, equals the CSS-matched catalog face's vertical tables. A
+ * synthesized bold/oblique keeps the matched face's tables; a genuine face
+ * missing from the catalog with different tables fails, and keeps its native
+ * measurement. A genuine face with identical tables passes, which admits the
+ * same vertical geometry it really has. */
+function canvasFaceMatchesCatalogBox(
+  proof: FaceSynthesisProbe,
+  selected: FontResolution,
+  candidate: SynthesizedFaceReferenceLineMetrics,
+): boolean {
+  const probe = [...proof.probe].find((scalar) => !/\s/u.test(scalar));
+  if (!probe) return false;
+  let cache = synthesisProofs.get(proof.text);
+  if (!cache) { cache = new Map(); synthesisProofs.set(proof.text, cache); }
+  const key = JSON.stringify([selected.requestedFamily, selected.resolvedFamily,
+    selected.resourceIdentity, selected.weight, selected.style, probe]);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const family = selected.requestedFamily;
+  const span = proof.text.shape({
+    text: probe, fontSizePt: SYNTHESIS_PROBE_PT,
+    fonts: { ascii: family, highAnsi: family, eastAsia: family, complexScript: family },
+    weight: selected.weight, style: selected.style, measure: true,
+  }).spans[0];
+  const tolerance = 1 / SYNTHESIS_PROBE_PT + 1e-9;
+  const result = span !== undefined && span.font.resolvedFamily === selected.resolvedFamily
+    && candidate.fontBoxes.some(([ascent, descent]) =>
+      Math.abs(span.ascentPt / SYNTHESIS_PROBE_PT - ascent) <= tolerance
+      && Math.abs(span.descentPt / SYNTHESIS_PROBE_PT - descent) <= tolerance);
+  // Bounded per document service: arbitrary authored family names only.
+  if (cache.size >= 256) cache.clear();
+  cache.set(key, result);
+  return result;
+}
+
+/** Catalog vertical geometry for a selected face: the exact tuple, or, for a
+ * tuple absent from the catalog, the CSS-matched face's geometry once the
+ * measured Canvas box proves the painted face has that face's tables. */
+export function authoredReferenceVerticalMetric(
+  selected: FontResolution,
+  synthesis?: FaceSynthesisProbe,
+): ReferenceFontLineMetrics | undefined {
+  const exact = referenceFontLineMetrics(selected.requestedFamily, selected.weight, selected.style);
+  if (exact || !synthesis) return exact;
+  const candidate = synthesizedFaceReferenceLineMetrics(
+    selected.requestedFamily, selected.weight, selected.style);
+  return candidate && canvasFaceMatchesCatalogBox(synthesis, selected, candidate)
+    ? candidate.metric : undefined;
+}
 
 /** Vertical admission shared by ordinary text and numbering markers. Resource
  * identity, tuple ambiguity and glyph coverage are resolved before this gate.
@@ -11,13 +80,14 @@ export function selectedFontLineMetric(
   localFont: ResolvedFontMetric | undefined,
   naturalMetricAllowed: boolean,
   referenceMetricAllowed = true,
+  synthesis?: FaceSynthesisProbe,
 ) {
   const resourceMetric = (naturalMetricAllowed || localFont?.designAscentRatio == null)
     && (localFont?.lineHeightRatio != null || localFont?.designAscentRatio != null
       || localFont?.eastAsianLineHeightRatio != null) ? localFont : undefined;
   const referenceMetric = naturalMetricAllowed && referenceMetricAllowed && !resourceMetric
     && mayUseAuthoredReferenceVerticalMetric(selected)
-    ? referenceFontLineMetrics(selected.requestedFamily, selected.weight, selected.style)
+    ? authoredReferenceVerticalMetric(selected, synthesis)
     : undefined;
   return { resourceMetric, referenceMetric, lineMetric: resourceMetric ?? referenceMetric };
 }

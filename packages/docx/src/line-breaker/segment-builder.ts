@@ -61,6 +61,7 @@ import {
   allowsReferenceFontMetric,
   selectedFontLineMetric,
   type MetricTupleIndex,
+  authoredReferenceVerticalMetric,
 } from './font-metrics.js';
 
 /** Resolve §17.3.2.14 region geometry after raw Canvas advances are available.
@@ -1463,11 +1464,13 @@ function emitResolvedTextSegment(
   const { resourceMetric: resourceFamilyLineMetric, referenceMetric: referenceLineMetric,
     lineMetric: familyLineMetric } = selectedFontLineMetric(resolvedSpan?.font, localFont, naturalMetricAllowed,
       allowsReferenceFontMetric(indexedFontMetrics(environment.layoutServices?.text.fontMetrics
-        ?? environment.layoutServices?.text.localMetrics ?? {}), resolvedSpan?.font));
+        ?? environment.layoutServices?.text.localMetrics ?? {}), resolvedSpan?.font),
+      environment.layoutServices ? { text: environment.layoutServices.text, probe: text } : undefined);
   const { resourceMetric: resourceEaLineMetric, referenceMetric: referenceEaLineMetric,
     lineMetric: eaLineMetric } = selectedFontLineMetric(eaResolution, localEaFloor, naturalMetricAllowed,
       allowsReferenceFontMetric(indexedFontMetrics(environment.layoutServices?.text.fontMetrics
-        ?? environment.layoutServices?.text.localMetrics ?? {}), eaResolution));
+        ?? environment.layoutServices?.text.localMetrics ?? {}), eaResolution),
+      environment.layoutServices ? { text: environment.layoutServices.text, probe: 'あ' } : undefined);
   const resolvedEaFloorFamily =
     eaResolution?.resolvedFamily ?? localEaFloor?.family ?? eaFontFamily;
   // WORD_USE_FE_LAYOUT_INHERITED_GRID_MINIMUM was observed for an active
@@ -2025,7 +2028,10 @@ function appendRunsToSegments(
         naturalMetricAllowed && !resourceMetric && mayUseAuthoredReferenceVerticalMetric(selected)
           && allowsReferenceFontMetric(indexedFontMetrics(environment.layoutServices?.text.fontMetrics
             ?? environment.layoutServices?.text.localMetrics ?? {}), selected)
-          ? referenceFontLineMetrics(selected.requestedFamily, weight, style)
+          ? (selected.weight === weight && selected.style === style
+            ? authoredReferenceVerticalMetric(selected, environment.layoutServices
+              ? { text: environment.layoutServices.text, probe: probeText } : undefined)
+            : referenceFontLineMetrics(selected.requestedFamily, weight, style))
           : undefined;
       const familyLineMetric = resourceMetric ?? referenceMetric;
       segs.push({

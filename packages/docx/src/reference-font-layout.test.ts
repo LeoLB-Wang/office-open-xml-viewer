@@ -570,6 +570,40 @@ describe('native reference font vertical layout', () => {
     expect(measured.advancePx).toBeCloseTo(10 * 2500 / 2048, 8);
   });
 
+  it('sizes a bold mark of a 400-only catalog face from that face only when Canvas proves synthesis', () => {
+    // MS Mincho is catalogued only at 400 (hhea 220/36 per 256). A bold mark
+    // painted by synthesis keeps that face's box and its Far-East 1.3 em line;
+    // a genuine bold face with other tables keeps its own native measurement.
+    const markHeight = (boldBox: readonly [number, number]) => {
+      const measureContext = {
+        font: '10px serif', letterSpacing: '0px', fontKerning: 'auto',
+        measureText(this: { font: string }, text: string) {
+          const px = Number(/(\d+(?:\.\d+)?)px/.exec(this.font)?.[1] ?? 10);
+          const [ascent, descent] = /\b700\b|bold/.test(this.font) ? boldBox : [220 / 256, 36 / 256];
+          return {
+            width: [...text].length * px, actualBoundingBoxAscent: px * ascent,
+            actualBoundingBoxDescent: px * descent,
+            fontBoundingBoxAscent: Math.round(px * ascent), fontBoundingBoxDescent: Math.round(px * descent),
+          };
+        },
+      } as unknown as CanvasRenderingContext2D;
+      const layoutServices = services(undefined, measureContext);
+      const paragraph = {
+        runs: [], defaultFontFamily: 'ＭＳ 明朝', defaultFontFamilyEastAsia: 'ＭＳ 明朝',
+        defaultFontSize: 14, lineSpacing: null,
+      } as unknown as DocParagraph;
+      return paragraphMarkLineMetrics(
+        paragraph, 1, undefined, false, true, measureContext, {}, null,
+        layoutServices.text.fontMetrics, layoutServices.text,
+        { fontSizePt: 14, weight: 700, style: 'normal',
+          fonts: { ascii: 'ＭＳ 明朝', highAnsi: 'ＭＳ 明朝', eastAsia: 'ＭＳ 明朝', complexScript: 'ＭＳ 明朝' } } as never,
+      ).advancePx;
+    };
+    expect(referenceFontLineMetrics('ＭＳ 明朝', 700, 'normal')).toBeUndefined();
+    expect(markHeight([220 / 256, 36 / 256])).toBeCloseTo(14 * 1.3, 8);
+    expect(markHeight([0.95, 0.25])).not.toBeCloseTo(14 * 1.3, 2);
+  });
+
   it('keeps a loaded East Asian floor under reference geometry authority', () => {
     const layoutServices = verifiedReferenceServices([{ family: 'Meiryo' }]);
     const segments = buildSegments([{
