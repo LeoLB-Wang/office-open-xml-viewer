@@ -547,6 +547,31 @@ describe('native reference font vertical layout', () => {
     expect(resolution.installedFamily).toBeUndefined();
   });
 
+  it.each([
+    ['400', 'oblique'], ['950', 'normal'],
+  ])('lets a loaded application face (%s %s) shadow an installed family', (weight, style) => {
+    // These descriptors have no exact WML tuple, but the face is still a CSS
+    // candidate for the family and paints instead of the system installation.
+    const empty = { default: null, first: null, even: null };
+    const declared = [{ family: 'Arial', status: 'loaded', weight, style }];
+    vi.stubGlobal('document', { fonts: { [Symbol.iterator]: () => declared[Symbol.iterator]() } });
+    const layoutServices = createLayoutServices({
+      section: {
+        pageWidth: 612, pageHeight: 792, marginTop: 72, marginRight: 72,
+        marginBottom: 72, marginLeft: 72, headerDistance: 36, footerDistance: 36,
+        titlePage: false, evenAndOddHeaders: false,
+      },
+      body: [{ type: 'paragraph', runs: [{ type: 'text', text: 'Ag', fontFamily: 'Arial', bold: true }] }],
+      headers: empty, footers: empty,
+    } as unknown as DocxDocumentModel, { measureContext: context, installedFamilies: ['arial'] });
+    vi.unstubAllGlobals();
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'Arial' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBeUndefined();
+  });
+
   it('keeps absent BIZ UD faces on their painting fallback, whatever the family spelling', () => {
     // Name identity is shared font metadata (core catalogue aliases): the
     // Japanese names reach the same pinned profile. No local resource is

@@ -82,6 +82,12 @@ export interface FontResolverOptions {
    * for every tuple, synthesizing weight/style.
    */
   readonly installedFamilies?: readonly string[];
+  /**
+   * Normalized authored families declared by a loaded application FontFace,
+   * in any descriptor. Such a face shadows the system family for every tuple,
+   * so a system installation never describes what paints.
+   */
+  readonly shadowedFamilies?: readonly string[];
   readonly scriptScopedFamilies?: Readonly<Record<string, Readonly<{
     script: FontSubstituteScript;
     substituteFamilies: readonly string[];
@@ -194,9 +200,12 @@ export function createFontResolver(
   };
   const installedFamilies = [...new Set((options.installedFamilies ?? []).map(normalizeFamily))].sort();
   const installedFamilySet = new Set(installedFamilies);
+  const shadowedFamilies = [...new Set((options.shadowedFamilies ?? []).map(normalizeFamily))].sort();
+  const shadowedFamilySet = new Set(shadowedFamilies);
   const fingerprint = stableFingerprint('fonts', {
     faces, nativeFamilyLists, regionalFamilyLists, scriptScopedFamilies,
     ...(installedFamilies.length > 0 ? { installedFamilies } : {}),
+    ...(shadowedFamilies.length > 0 ? { shadowedFamilies } : {}),
   });
 
   // Every shaped script span, line segment and east-Asian line floor asks for a
@@ -261,7 +270,8 @@ export function createFontResolver(
       // application @font-face declaring the authored family shadows the
       // system family for every tuple, so the system face cannot describe it.
       const candidates = byFamily.get(normalizeFamily(authored)) ?? [];
-      const installedFamily = !candidates.some((candidate) => candidate.source === 'css')
+      const installedFamily = !shadowedFamilySet.has(normalizeFamily(authored))
+        && !candidates.some((candidate) => candidate.source === 'css')
         && (installedFamilySet.has(normalizeFamily(authored))
           || candidates.some((candidate) => candidate.source === 'local'
             && candidate.resourceIdentity?.startsWith('office-local:') === true));
