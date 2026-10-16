@@ -542,6 +542,10 @@ async function planSlideImages(
         bitmapOwner ?? loader,
       );
     } else if (element.type === 'chart') {
+      if (!Number.isFinite(element.width) || !Number.isFinite(element.height) || element.width < 0 || element.height < 0) {
+        throw new OoxmlError('unsupported-image-effect', 'Invalid chart image frame');
+      }
+      if (!(element.width > 0 && element.height > 0)) continue;
       const frame = {
         widthPt: element.width / PT_TO_EMU,
         heightPt: element.height / PT_TO_EMU,
@@ -619,6 +623,7 @@ function* elementImageFillUsages(element: SlideElement): Generator<{
       ? { fill, width, height }
       : null;
   if (element.type === 'shape') {
+    if (element.fill?.fillType === 'image' && (![element.width, element.height].every(Number.isFinite) || element.width < 0 || element.height < 0)) throw new OoxmlError('unsupported-image-effect', 'Invalid image fill frame');
     const own = usage(element.fill, element.width, element.height);
     if (own && element.height > 0) yield own;
   } else if (element.type === 'table') {
@@ -2429,7 +2434,9 @@ function paintTiledBackground(
   const pixelToEmu = EMU_PER_PX_96 * 96 / dpi;
   const tileW = source.width * pixelToEmu * (tile.sx ?? 1) * scale;
   const tileH = source.height * pixelToEmu * (tile.sy ?? 1) * scale;
-  if (!(tileW > 0) || !(tileH > 0)) return false;
+  if (![tileW, tileH].every(v => Number.isFinite(v) && v > 0)) {
+    throw new OoxmlError('unsupported-image-effect', 'Unrepresentable picture tile size');
+  }
 
   const flipX = tile.flip === 'x' || tile.flip === 'xy';
   const flipY = tile.flip === 'y' || tile.flip === 'xy';
@@ -2442,7 +2449,9 @@ function paintTiledBackground(
   // createAuxCanvas rounds each requested axis up. Charge the actual allocation,
   // not the fractional geometry, so two individually-safe fractions cannot
   // cross the retained scratch-area limit after independent ceil operations.
-  if (!Number.isFinite(cellW) || !Number.isFinite(cellH)) return false;
+  if (!Number.isFinite(cellW) || !Number.isFinite(cellH)) {
+    throw new OoxmlError('unsupported-image-effect', 'Unrepresentable picture tile cell');
+  }
   // Preserve the previous rasterization for cells that fit: draw at the
   // authored size into the ceil-sized canvas and repeat those integer pixels.
   // Normalizing even fractional cells to their exact extent changes sampling
@@ -2468,9 +2477,9 @@ function paintTiledBackground(
   const rasterScaleX = oversized ? scratchW / cellW : 1;
   const rasterScaleY = oversized ? scratchH / cellH : 1;
   const aux = createAuxCanvas(scratchW, scratchH);
-  if (!aux) return false;
+  if (!aux) throw new OoxmlError('unsupported-image-effect', 'Picture tile surface unavailable');
   const actx = aux.getContext('2d') as CanvasRenderingContext2D | null;
-  if (!actx) return false;
+  if (!actx) throw new OoxmlError('unsupported-image-effect', 'Picture tile surface unavailable');
 
   actx.scale(rasterScaleX, rasterScaleY);
   const drawCell = (cx: number, cy: number, mx: boolean, my: boolean) => {
@@ -2487,7 +2496,7 @@ function paintTiledBackground(
   if (flipX && flipY) drawCell(tileW, tileH, true, true);
 
   const pattern = ctx.createPattern(aux as unknown as CanvasImageSource, 'repeat');
-  if (!pattern) return false;
+  if (!pattern) throw new OoxmlError('unsupported-image-effect', 'Picture tile surface unavailable');
 
   // Phase: register the grid against the alignment anchor, then add tx/ty.
   // PowerPoint registers an omitted algn at the top-left. CT_TileInfoProperties
@@ -2496,6 +2505,7 @@ function paintTiledBackground(
   const { ax, ay } = tileAnchorOffset(tile.algn ?? 'tl', canvasW, canvasH, tileW, tileH);
   const px = ax + emuToPx(tile.tx ?? 0, scale);
   const py = ay + emuToPx(tile.ty ?? 0, scale);
+  if (![px, py].every(Number.isFinite)) throw new OoxmlError('unsupported-image-effect', 'Unrepresentable picture tile phase');
   // `setTransform` exists where DOMMatrix is available (browser + skia-canvas).
   // The translate aligns a cell origin with (px, py); `repeat` covers the box.
   if (typeof pattern.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
@@ -2557,6 +2567,9 @@ export function paintPreparedShapeImageFill(
   evenOdd = false,
   shapeTransform: Readonly<{ rotation: number; flipH: boolean; flipV: boolean }> = { rotation: 0, flipH: false, flipV: false },
 ): boolean {
+  if (![bounds.x, bounds.y, bounds.w, bounds.h, scale].every(Number.isFinite) || bounds.w < 0 || bounds.h < 0) {
+    throw new OoxmlError('unsupported-image-effect', 'Invalid image fill geometry');
+  }
   if (!prepared || !(bounds.w > 0) || !(bounds.h > 0)) return false;
   if (!shapeImageFillModeIsPaintable(fill)) return false;
   const { x, y, w, h } = bounds;
@@ -2596,6 +2609,7 @@ export function paintPreparedShapeImageFill(
     const dy = y + (rect.t ?? 0) * h;
     const dw = (1 - (rect.l ?? 0) - (rect.r ?? 0)) * w;
     const dh = (1 - (rect.t ?? 0) - (rect.b ?? 0)) * h;
+    if (![dx, dy, dw, dh].every(Number.isFinite)) throw new OoxmlError('unsupported-image-effect', 'Unrepresentable image fill rectangle');
     if (!(dw > 0) || !(dh > 0)) return false;
     drawImageCropped(ctx, prepared.image, fill.srcRect, dx, dy, dw, dh);
     return true;

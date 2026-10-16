@@ -269,8 +269,10 @@ function imageDecodeRequests(
     if (occurrence.resourceKind !== 'image' && occurrence.resourceKind !== 'picture-bullet') {
       continue;
     }
-    if (!Number.isFinite(occurrence.widthPt) || occurrence.widthPt <= 0
-      || !Number.isFinite(occurrence.heightPt) || occurrence.heightPt <= 0) continue;
+    if (!Number.isFinite(occurrence.widthPt) || !Number.isFinite(occurrence.heightPt) || occurrence.widthPt < 0 || occurrence.heightPt < 0) {
+      throw new OoxmlError('unsupported-image-effect', 'Invalid image occurrence geometry');
+    }
+    if (occurrence.widthPt <= 0 || occurrence.heightPt <= 0) continue;
     const key = `${occurrence.resourceKind}:${occurrence.resourceKey}`;
     const prior = demandByResource.get(key);
     demandByResource.set(key, {
@@ -350,8 +352,10 @@ function imageDecodeRequests(
   for (const descriptor of descriptors) {
     if (descriptor.kind !== 'chart') continue;
     for (const occurrence of chartOccurrencesByResource.get(descriptor.resourceKey) ?? []) {
-      if (!Number.isFinite(occurrence.widthPt) || occurrence.widthPt <= 0
-        || !Number.isFinite(occurrence.heightPt) || occurrence.heightPt <= 0) continue;
+      if (!Number.isFinite(occurrence.widthPt) || !Number.isFinite(occurrence.heightPt) || occurrence.widthPt < 0 || occurrence.heightPt < 0) {
+        throw new OoxmlError('unsupported-image-effect', 'Invalid chart image occurrence geometry');
+      }
+      if (occurrence.widthPt <= 0 || occurrence.heightPt <= 0) continue;
       const frame = {
         widthPt: occurrence.widthPt,
         heightPt: occurrence.heightPt,
