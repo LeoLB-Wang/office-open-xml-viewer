@@ -62,6 +62,8 @@ export interface ProductionLayoutServiceOptions {
   /** Normalized families whose authored face is installed; they are never
    * routed to a different-family Google substitute (`docxGoogleFontPlan`). */
   readonly installedSubstituteFamilies?: readonly string[];
+  /** Normalized authored families the family presence probe found installed. */
+  readonly installedFamilies?: readonly string[];
 }
 
 /** Registry families with a script-scoped visual substitute (core
@@ -241,6 +243,7 @@ export function createProductionLayoutServices(
   const text = createTextLayoutService({
     ...(context ? { glyphContours: acquireCanvasGlyphContours, glyphContourFingerprint: 'canvas-half-coverage-contours-v1' } : {}),
     fonts: createFontResolver(inventory, {
+      installedFamilies: options.installedFamilies,
       regionalFamilyLists: Object.fromEntries((['sc', 'tc', 'hk', 'jp', 'kr'] as const).map(region => [
         region,
         Object.fromEntries([...new Set([...routedFontFamilies, 'sans-serif', 'serif', 'monospace'])]

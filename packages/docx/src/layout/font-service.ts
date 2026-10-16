@@ -75,6 +75,13 @@ export interface FontResolverOptions {
    * of the family (explicit, native and regional CSS lists), so Canvas can
    * never select them for other characters, even as a CSS fallback.
    */
+  /**
+   * Normalized authored families proven installed on the host by the family
+   * presence probe (any face of the family), independent of which styled
+   * tuples the document requests. CSS font matching paints an installed family
+   * for every tuple, synthesizing weight/style.
+   */
+  readonly installedFamilies?: readonly string[];
   readonly scriptScopedFamilies?: Readonly<Record<string, Readonly<{
     script: FontSubstituteScript;
     substituteFamilies: readonly string[];
@@ -185,8 +192,11 @@ export function createFontResolver(
       ))
       .join(', ');
   };
+  const installedFamilies = [...new Set((options.installedFamilies ?? []).map(normalizeFamily))].sort();
+  const installedFamilySet = new Set(installedFamilies);
   const fingerprint = stableFingerprint('fonts', {
     faces, nativeFamilyLists, regionalFamilyLists, scriptScopedFamilies,
+    ...(installedFamilies.length > 0 ? { installedFamilies } : {}),
   });
 
   // Every shaped script span, line segment and east-Asian line floor asks for a
@@ -245,12 +255,16 @@ export function createFontResolver(
     if (authored) {
       const familyList = familyListFor(authored, request.language, request.cjkFallback)
         ?? cssFamilyList(authored, generic);
-      // Only a system-installed face found by the office local() loader shows
-      // that CSS matching paints this family; an application resource under a
-      // private alias does not.
-      const installedFamily = (byFamily.get(normalizeFamily(authored)) ?? [])
-        .some((candidate) => candidate.source === 'local'
-          && candidate.resourceIdentity?.startsWith('office-local:') === true);
+      // Only a system installation (the family presence probe, or a face found
+      // by the office local() loader) shows that CSS matching paints this
+      // family; an application resource under a private alias does not. An
+      // application @font-face declaring the authored family shadows the
+      // system family for every tuple, so the system face cannot describe it.
+      const candidates = byFamily.get(normalizeFamily(authored)) ?? [];
+      const installedFamily = !candidates.some((candidate) => candidate.source === 'css')
+        && (installedFamilySet.has(normalizeFamily(authored))
+          || candidates.some((candidate) => candidate.source === 'local'
+            && candidate.resourceIdentity?.startsWith('office-local:') === true));
       return freezeResolution({
         ...(installedFamily ? { installedFamily: true as const } : {}),
         requestedFamily,

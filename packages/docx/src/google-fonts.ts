@@ -165,14 +165,22 @@ export function docxOfficeFontFallbackRequests(
       add(doc.minorFont, usage.bold, usage.italic);
     }
   }
-  // With useGoogleFonts, every family served by a different-family substitute
-  // is checked for installation as a family, independent of the styles the
-  // document uses (docxGoogleFontPlan).
-  const presence = options.useGoogleFonts
-    ? [...differentFamilySubstitutes(docxFontPreloadNames(doc, options.cjkFallback)).values()]
-      .map((family): OfficeFontFallbackRequest => ({ family, presenceOnly: true }))
-    : [];
-  return [...tuples.values(), ...presence];
+  // Every authored family is checked for installation as a family, independent
+  // of the styles the document uses: an installed family paints every tuple
+  // (layout's installedFamilies). With useGoogleFonts, so is every family served
+  // by a different-family substitute (docxGoogleFontPlan).
+  const presence = new Map<string, OfficeFontFallbackRequest>();
+  const addPresence = (family: string) => {
+    const key = family.trim().toLowerCase();
+    if (key && !presence.has(key)) presence.set(key, { family: family.trim(), presenceOnly: true });
+  };
+  for (const request of tuples.values()) addPresence(request.family);
+  if (options.useGoogleFonts) {
+    for (const family of differentFamilySubstitutes(docxFontPreloadNames(doc, options.cjkFallback)).values()) {
+      addPresence(family);
+    }
+  }
+  return [...tuples.values(), ...presence.values()];
 }
 
 

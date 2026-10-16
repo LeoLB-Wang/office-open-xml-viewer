@@ -510,6 +510,43 @@ describe('native reference font vertical layout', () => {
     expect(resolution.installedFamily).toBeUndefined();
   });
 
+  it('treats a family found by its presence probe as present in a bold-only document', () => {
+    // No styled tuple of BIZ UDMincho loaded (the bold cut is not installed and
+    // no regular text requested the regular route), but the family presence
+    // probe found the regular face: the bold run paints that installed family.
+    const empty = { default: null, first: null, even: null };
+    const layoutServices = createLayoutServices({
+      section: {
+        pageWidth: 612, pageHeight: 792, marginTop: 72, marginRight: 72,
+        marginBottom: 72, marginLeft: 72, headerDistance: 36, footerDistance: 36,
+        titlePage: false, evenAndOddHeaders: false,
+      },
+      body: [], headers: empty, footers: empty,
+    } as DocxDocumentModel, { measureContext: context, installedFamilies: ['biz udmincho'] });
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBe(true);
+    const segment = buildSegments([{
+      type: 'text', text: '資料', fontFamily: 'BIZ UDMincho', fontFamilyEastAsia: 'BIZ UDMincho',
+      fontSize: 10.5, bold: true, italic: false, underline: false, strikethrough: false,
+    }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices })[0] as LayoutTextSeg;
+    expect(segment.referenceFontVerticalMetric).toBe(true);
+    expect(segment.resolvedLineHeightRatio).toBeCloseTo(1.3, 8);
+  });
+
+  it('does not treat a family shadowed by an application @font-face as installed', () => {
+    // A declared application face owns the authored family name for every
+    // tuple, so the system installation cannot describe what paints.
+    const resolver = createFontResolver([{
+      requestedFamily: 'BIZ UDMincho', resolvedFamily: 'BIZ UDMincho', source: 'css', weight: 400, style: 'normal',
+    }], { installedFamilies: ['biz udmincho'] });
+    const resolution = resolver.resolve({ requestedFamily: 'BIZ UDMincho', weight: 700, style: 'normal' });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBeUndefined();
+  });
+
   it('keeps absent BIZ UD faces on their painting fallback, whatever the family spelling', () => {
     // Name identity is shared font metadata (core catalogue aliases): the
     // Japanese names reach the same pinned profile. No local resource is

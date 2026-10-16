@@ -323,7 +323,7 @@ export async function loadDocxModelSource(
       }
       const officeFonts = doc._mode === 'main' && doc._document
         ? await loadOfficeFontFallbacks(docxOfficeFontFallbackRequests(doc._document, { useGoogleFonts: opts.useGoogleFonts, cjkFallback: cjkFallback }).filter((request) =>
-            !embeddedRoutes?.some((route) => route.requestedFamily.toLowerCase() === request.family.toLowerCase()
+            request.presenceOnly || !embeddedRoutes?.some((route) => route.requestedFamily.toLowerCase() === request.family.toLowerCase()
               && route.weight === (request.weight ?? 400) && route.style === (request.style ?? 'normal'))))
         : { faces: [], routes: {} };
       if (signal?.aborted) {
@@ -365,6 +365,7 @@ export async function loadDocxModelSource(
           officeRoutes: Object.values(officeFonts.routes),
           googleFaces: doc._googleFontFaces,
           installedSubstituteFamilies,
+          installedFamilies: 'installed' in officeFonts ? officeFonts.installed : undefined,
           mathResources: preparedMath?.records,
           mathDrawables: preparedMath?.drawables,
         });
