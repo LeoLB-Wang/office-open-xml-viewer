@@ -1169,7 +1169,10 @@ export function performEastAsianSnapCellCount(
     const measuredSegment = {
       ...s,
       text,
-      ...slicedTextMetadata(s, start, end),
+      // Cell probes need shape/width metadata only, not cloned marker lists.
+      textShapeRequest: s.textShapeRequest
+        ? sliceTextShapeRequest(s.textShapeRequest, start, end) : undefined,
+      punctuationCompressions: slicedPunctuationCompressions(s, start, end),
     };
     let naturalAdvancePx: number;
     if (range.advancePx != null) {
@@ -1207,7 +1210,15 @@ export function performStrAdvance(
     text,
     // Snap-cell acquisition can remeasure this candidate, so it needs the
     // same retained range as strNaturalAdvance, not the parent word request.
-    ...slicedTextMetadata(s, Math.max(0, start), Math.max(0, start) + text.length),
+    // This is a measurement probe, not an accepted source slice. Keep marker
+    // arrays shared: filtering/cloning all optional breaks per candidate prefix
+    // makes dense-marker searches allocate quadratically before their quota.
+    ...(s.textShapeRequest ? { textShapeRequest: sliceTextShapeRequest(
+      s.textShapeRequest, Math.max(0, start), Math.max(0, start) + text.length,
+    ) } : {}),
+    punctuationCompressions: slicedPunctuationCompressions(
+      s, Math.max(0, start), Math.max(0, start) + text.length,
+    ),
     shapedClusters: text === s.text ? s.shapedClusters : undefined,
   };
   return standaloneSnapAdvance(

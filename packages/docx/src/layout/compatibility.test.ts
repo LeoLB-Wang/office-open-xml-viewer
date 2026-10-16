@@ -692,10 +692,26 @@ describe('layout compatibility inventory', () => {
     };
     expect(wordOpenTypeAutoLineRatios({ ...hhea, farEastCodePage: false }))
       .toEqual({ lineHeightRatio: 1.1, designAscentRatio: 0.9, designDescentRatio: 0.2 });
-    expect(wordOpenTypeAutoLineRatios({ ...hhea, farEastCodePage: true }))
+    expect(wordOpenTypeAutoLineRatios({ ...hhea, winAscent: 800, winDescent: 200, farEastCodePage: true }))
       .toEqual({ lineHeightRatio: 1.3, designAscentRatio: 0.95, designDescentRatio: 0.35 });
     expect(wordOpenTypeAutoLineRatios({ ...hhea, hheaLineGap: -100, farEastCodePage: false }))
       .toEqual({ lineHeightRatio: 0.9, designAscentRatio: 0.7, designDescentRatio: 0.2 });
+  });
+
+  it('uses the Far East usWin box when hhea differs, including grid boundaries', () => {
+    const metrics = {
+      unitsPerEm: 2048, hheaAscent: 1802, hheaDescent: -455, hheaLineGap: 1024,
+      winAscent: 2017, winDescent: 619, farEastCodePage: true,
+    };
+    const line = wordOpenTypeAutoLineRatios(metrics)!;
+    expect(line.lineHeightRatio).toBeCloseTo(1.6732421875, 12);
+    expect(line.designAscentRatio).toBeCloseTo((2017 + 0.15 * 2636) / 2048, 12);
+    expect(line.designDescentRatio).toBeCloseTo((619 + 0.15 * 2636) / 2048, 12);
+    expect([[8, 12], [12, 20], [20, 30]].map(([size, pitch]) =>
+      wordEastAsianGridLineCells(size * line.lineHeightRatio, pitch) * pitch))
+      .toEqual([24, 40, 60]);
+    expect(wordOpenTypeAutoLineRatios({ ...metrics, winAscent: undefined })).toBeNull();
+    expect(wordOpenTypeAutoLineRatios({ ...metrics, winDescent: -1 })).toBeNull();
   });
 
   it('pins the eight track-change author colors independently of author indexing', () => {

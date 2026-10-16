@@ -225,8 +225,8 @@ export async function loadEmbeddedFonts(
         let metric: ResolvedFontMetric | null = null;
         try {
           const openType = parseOpenTypeResourceMetrics(data);
-          // Word for Mac's observed auto-line class follows OS/2 code-page
-          // bits 17–20, including for Latin glyphs; cmap coverage is a separate
+          // The wordOpenTypeAutoLineRatios projection requires this face's
+          // OS/2 code-page class and usWin data; cmap coverage is a separate
           // question. A face without declared code-page ranges does not gain
           // this authority merely because it contains a CJK glyph.
           const line = openType?.farEastCodePage == null

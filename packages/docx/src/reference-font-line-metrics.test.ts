@@ -52,10 +52,11 @@ describe('DOCX reference font vertical metrics', () => {
     expect(metric?.designDescentRatio).toBeCloseTo((901 + 0.15 * box) / 2048, 12);
   });
 
-  it('keeps a 12pt Yu Mincho line below an 18pt grid step', () => {
+  it('projects Yu Mincho from its own usWin sides instead of hhea', () => {
     const metric = referenceFontLineMetrics('Yu Mincho', 400, 'normal');
-    expect(metric?.lineHeightRatio).toBeCloseTo(1.3 * (1802 + 455) / 2048, 12);
-    expect(12 * metric!.lineHeightRatio).toBeLessThan(18);
+    expect(metric?.lineHeightRatio).toBeCloseTo(1.3 * (2038 + 598) / 2048, 12);
+    expect(metric?.designAscentRatio).toBeCloseTo((2038 + .15 * 2636) / 2048, 12);
+    expect(metric?.designDescentRatio).toBeCloseTo((598 + .15 * 2636) / 2048, 12);
   });
 
   it('retains signed hhea leading, including a macOS-only fallback with a negative gap', () => {
