@@ -235,6 +235,36 @@ export const WORD_TIGHT_WRAP_LINE_STEP_ADVANCE = defineCompatibilityRule({
   description: 'When no gap beside a wrapTight polygon can hold a line, Word moves the line down by its own height and tries again (modes 14 and 15) instead of jumping to the polygon bottom as it does for square wrap.',
 });
 
+/** ECMA-376 §§20.4.2.11, 20.4.2.17, 20.4.2.19 and 20.4.2.20 define
+ * positioning and wrapping; this host-line decision records Office observation,
+ * not a normative rule for resolving a self-moving line reference.
+ * Issue #1805: 40 synthetic controls, Windows Word COM probes (2026-10-16).
+ * Full-width, first-line anchors with line/paragraph positionV references,
+ * 14pt exact lines, 28pt objects, offsets 7/18pt and 0/12pt vertical distances
+ * distinguish unpadded overlap, padding-only overlap and no overlap.
+ * TopAndBottom/square modes 14/15 move host caret Y from 72pt to 118.7/130.2pt
+ * (nominal padded bottoms 119/130pt); tight mode 15 moves it to 127.9/141.7pt.
+ * These support host-line wrapping, not exact line-top/padded-bottom equality:
+ * COM Information(6) is caret Y, and painted object bounds were not measured.
+ * Tight mode 14 retains 72pt for padding-only overlap in both reference frames,
+ * consistent with WORD_MODE14_TIGHT_ANCHOR_LINE_REWRAP below. A topAndBottom
+ * exact-touch control retains 72pt. A narrow square side-wrap probe cannot
+ * distinguish exemption by Y alone; later/empty hosts lack matched controls.
+ * Those cases, other modes and exact painted geometry remain outside this claim.
+ * Behavioral regression: table-cell-anchor-reflow.test.ts, suite
+ * 'line-relative anchor reference acquisition', test 'converges with $name'. */
+export const WORD_LINE_ANCHOR_HOST_LINE_WRAPS = defineCompatibilityRule({
+  id: 'word-line-anchor-host-line-wraps',
+  evidence: {
+    kind: 'office-observation',
+    syntheticFixtureId: 'line-anchor-host-line-wrap-1805',
+    application: 'Microsoft Word',
+    version: '16.0.20430.20146',
+    platform: 'Windows 11 ARM64',
+  },
+  description: 'After acquiring an anchored drawing reference without its own exclusion, keep that exclusion active on its host line. Windows Word controls support this for full-width wrapTopAndBottom and wrapSquare in compatibility modes 14/15 and wrapTight in mode 15, with line-relative and paragraph-relative first-line anchors and both unpadded and padding-only overlap. The existing mode-14 tight anchor-line exemption remains separate. This records host-wrap participation, not an exact painted-coordinate rule or an extension to unmeasured modes and host profiles.',
+});
+
 export const WORD_MODE14_TIGHT_ANCHOR_LINE_REWRAP = defineCompatibilityRule({
   id: 'word-mode14-tight-anchor-line-rewrap',
   evidence: {
