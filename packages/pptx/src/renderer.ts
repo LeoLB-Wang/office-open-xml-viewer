@@ -1333,18 +1333,14 @@ export function buildFont(
 ): string {
   const style  = italic ? 'italic ' : '';
   const normalized = normalizeFontFamily(family, rc);
-  const authoredFamily = rc.embeddedFontAuthoredFamilies?.get(normalized) ?? normalized;
+  const { authoredFamily, officeRoute: selectedRoute } = selectOfficeFace(normalized, bold, italic, rc);
   const inferredWeight = namedFaceWeight(authoredFamily);
   const weight = bold ? 'bold ' : inferredWeight ? `${inferredWeight} ` : '';
-  const routeKey = officeRouteKey(authoredFamily, officeFaceWeight(authoredFamily, bold, italic), italic);
-  const embeddedTuple = `${authoredFamily.toLowerCase()}:${bold || inferredWeight === 700 ? 700 : 400}:${italic ? 'italic' : 'normal'}`;
   // ECMA-376 §19.3.1.52: master txStyles is an optional source of text style.
   // The theme-minor CSS fallback when every font slot is absent is renderer
   // policy, not evidence that an exact resource was selected. Preserve that
   // established fallback until a run or inherited style names a face.
-  const officeRoute = hasNamedFamily && !rc.embeddedFontTuples?.has(embeddedTuple)
-    ? rc.officeFontRoutes?.[routeKey]
-    : undefined;
+  const officeRoute = hasNamedFamily ? selectedRoute : undefined;
   const fallback = containsHanScript(text)
     ? rc.cjkFallback ?? classifyCjkFont(rc.themeMajorFont) ?? classifyCjkFont(rc.themeMinorFont) ?? undefined
     : undefined;
@@ -1381,15 +1377,40 @@ function lineMetricFor(
   rc: RenderContext,
 ): PowerPointFaceMetrics | undefined {
   if (CSS_GENERIC_FAMILIES.has(family)) return undefined;
-  if (rc.embeddedFontAuthoredFamilies?.has(family)) return undefined;
-  // Layout follows the face that paints. Catalog geometry describes a face
-  // only when that face is present (an exact local() route was loaded); an
-  // absent authored face paints with a browser fallback, so the run keeps
-  // the ordinary line model instead of the absent face's ascent share.
-  const authored = normalizeFontFamily(family, rc);
-  if (!rc.officeFontRoutes?.[officeRouteKey(authored, officeFaceWeight(authored, bold, italic), italic)]
-    && !familyInstalled(authored, rc)) return undefined;
+  // Layout follows the face that paints, selected exactly as buildFont does.
+  // Catalog geometry describes a face only when that face is present (an
+  // exact local() route was loaded, or its family is installed); an absent
+  // authored face paints with a browser fallback, so the run keeps the
+  // ordinary line model instead of the absent face's ascent share.
+  const normalized = normalizeFontFamily(family, rc);
+  const { authoredFamily, embedded, officeRoute } = selectOfficeFace(normalized, bold, italic, rc);
+  if (officeRoute) return powerPointFaceMetrics(embedded ? authoredFamily : family, bold, italic);
+  // Deck-embedded bytes (or CSS synthesis from them) paint the embedded alias;
+  // the catalog does not describe those bytes, and the alias shadows any
+  // installed system family of the same authored name.
+  if (embedded || !familyInstalled(authoredFamily, rc)) return undefined;
   return powerPointFaceMetrics(family, bold, italic);
+}
+
+/**
+ * The face selection shared by painting (buildFont) and line metrics: the
+ * authored family behind a deck-embedded alias, and the exact local() route
+ * that paints this tuple. A tuple the deck embeds paints its own bytes; a
+ * missing embedded style falls to the exact installed route when one loaded.
+ */
+function selectOfficeFace(normalized: string, bold: boolean, italic: boolean, rc: RenderContext): {
+  authoredFamily: string;
+  embedded: boolean;
+  officeRoute: import('@silurus/ooxml-core').OfficeFontFallbackRoute | undefined;
+} {
+  const embeddedAuthored = rc.embeddedFontAuthoredFamilies?.get(normalized);
+  const authoredFamily = embeddedAuthored ?? normalized;
+  const inferredWeight = namedFaceWeight(authoredFamily);
+  const embeddedTuple = `${authoredFamily.toLowerCase()}:${bold || inferredWeight === 700 ? 700 : 400}:${italic ? 'italic' : 'normal'}`;
+  const officeRoute = rc.embeddedFontTuples?.has(embeddedTuple)
+    ? undefined
+    : rc.officeFontRoutes?.[officeRouteKey(authoredFamily, officeFaceWeight(authoredFamily, bold, italic), italic)];
+  return { authoredFamily, embedded: embeddedAuthored !== undefined, officeRoute };
 }
 
 /** Whether an installed face of the family paints the authored name (see

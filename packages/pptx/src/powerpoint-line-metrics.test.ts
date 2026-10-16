@@ -534,4 +534,39 @@ describe('absent authored faces (layout follows the painting face)', () => {
     expect(viaPresence).toEqual(viaRoute);
     expect(viaPresence).not.toEqual(absentBaselines('sans-serif'));
   });
+
+  it('follows the painting selection for a missing embedded style', () => {
+    // The deck embeds only regular Arial (under a private alias). A bold run
+    // paints the exact installed Arial Bold route, so it takes that face's
+    // metrics like the same run without the embedded metadata; the embedded
+    // regular tuple paints the deck's bytes and keeps the ordinary line model.
+    const body = (bold: boolean) => {
+      const paragraphs = [paragraph([{ text: 'Ag', font: 'Arial', size: 100 }]),
+        paragraph([{ text: 'Ag', font: 'Arial', size: 100 }])];
+      for (const p of paragraphs) for (const run of p.runs) (run as { bold?: boolean }).bold = bold;
+      return {
+        verticalAnchor: 't', paragraphs, defaultFontSize: 18, defaultBold: null, defaultItalic: null,
+        lIns: 0, rIns: 0, tIns: 0, bIns: 0, wrap: 'none', vert: 'horz', autoFit: 'none',
+      } as TextBody;
+    };
+    const ys = (b: TextBody, rc: Parameters<typeof renderTextBodyAsAuthored>[13]) => {
+      const { ctx, draws } = context();
+      renderTextBodyAsAuthored(ctx, b, 0, 0, 2000, 800, SCALE, null, 0, false, false, '#000000', undefined, rc);
+      const out: number[] = [];
+      for (const d of draws) if (!out.some((y) => Math.abs(y - d.y) < 1e-6)) out.push(d.y);
+      return out;
+    };
+    const routes = { 'arial:700:normal': { family: '__local_arial_bold' } as never };
+    const plain = { themeMajorFont: null, themeMinorFont: null, dpr: 1, officeFontRoutes: routes };
+    const embedded = {
+      ...plain,
+      embeddedFontAliases: new Map([['arial', '__embedded_arial']]),
+      embeddedFontAuthoredFamilies: new Map([['__embedded_arial', 'Arial']]),
+      embeddedFontTuples: new Set(['arial:400:normal']),
+      officeInstalledFamilies: ['arial'],
+    };
+    expect(ys(body(true), embedded)).toEqual(ys(body(true), plain));
+    expect(ys(body(true), embedded)).not.toEqual(absentBaselines('sans-serif'));
+    expect(ys(body(false), embedded)).toEqual(absentBaselines('sans-serif'));
+  });
 });
