@@ -493,6 +493,16 @@ pub fn parse_blip_effects<R: crate::color::ThemeResolver + ?Sized>(
     };
     let context = &mut EffectParseContext::default();
     let mut effects = parse_effect_children(blip, resolver, tint_mode, context);
+    // CT_Blip's immediate effects form a sequential chain. Only here can
+    // identities be omitted without deleting a separately composited branch.
+    // §20.1.8.6 / §20.1.10.22: a sibling identity contributes parent coverage.
+    // Keep all recursive containers (including named recipes) structurally intact.
+    effects.retain(|effect| {
+        !matches!(effect,
+        BlipEffect::AlphaModFix { amt } if *amt == 1.0)
+            && !matches!(effect, BlipEffect::Luminance { bright, contrast }
+            if *bright == 0.0 && *contrast == 0.0)
+    });
     complete_named_effects(&mut effects, blip, resolver, tint_mode, context);
     // Only outer hosts also parse a legacy standalone duotone palette.
     // Recursive fills/containers have no separate palette and keep the entry.
@@ -556,7 +566,7 @@ fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
                 }
             }
             // §20.1.8.42 CT_LuminanceEffect: ST_FixedPercentage bright and
-            // contrast, both defaulting to 0. The identity is not an effect.
+            // contrast, both defaulting to 0. Retain identity sibling branches.
             "lum" => {
                 let fraction = |name: &str| match node.attribute(name) {
                     None => Some(0.0),
@@ -564,10 +574,9 @@ fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
                         .map(|value| value.clamp(-1.0, 1.0)),
                 };
                 match (fraction("bright"), fraction("contrast")) {
-                    (Some(bright), Some(contrast)) if bright != 0.0 || contrast != 0.0 => {
+                    (Some(bright), Some(contrast)) => {
                         Some(BlipEffect::Luminance { bright, contrast })
                     }
-                    (Some(_), Some(_)) => continue,
                     _ => None,
                 }
             }
@@ -765,9 +774,6 @@ fn parse_effect_children<R: crate::color::ThemeResolver + ?Sized>(
                     .map(crate::units::drawingml_percentage_to_fraction)
                     .unwrap_or(Some(1.0))
                 {
-                    // The schema default is identity. Like lum(0,0), it must
-                    // not force an otherwise uncorrected image onto readback.
-                    Some(1.0) => continue,
                     Some(amt) => Some(BlipEffect::AlphaModFix { amt: amt.max(0.0) }),
                     None => None,
                 }
@@ -1667,6 +1673,41 @@ mod tests {
                 vec![BlipEffect::Unsupported {
                     effect: effect.into()
                 }]
+            );
+        }
+    }
+
+    #[test]
+    fn sibling_containers_keep_identity_branches() {
+        for identity in [
+            r#"<a:alphaModFix amt="100000"/>"#,
+            r#"<a:alphaModFix/>"#,
+            r#"<a:lum bright="0" contrast="0"/>"#,
+        ] {
+            let xml = format!(
+                r#"<a:blipFill xmlns:a="{A_NS}"><a:blip><a:alphaMod><a:cont type="sib">
+                {identity}<a:alphaInv/></a:cont></a:alphaMod></a:blip></a:blipFill>"#
+            );
+            let doc = Document::parse(&xml).unwrap();
+            let parsed = parse_blip_effects(
+                doc.root_element(),
+                &DuoResolver,
+                crate::color::TintMode::PowerPointLinear,
+            );
+            let BlipEffect::AlphaMod { container } = &parsed[0] else {
+                panic!("missing alphaMod")
+            };
+            let expected = if identity.contains("alphaModFix") {
+                BlipEffect::AlphaModFix { amt: 1.0 }
+            } else {
+                BlipEffect::Luminance {
+                    bright: 0.0,
+                    contrast: 0.0,
+                }
+            };
+            assert_eq!(
+                container.effects,
+                vec![expected, BlipEffect::AlphaInv { color: None }]
             );
         }
     }

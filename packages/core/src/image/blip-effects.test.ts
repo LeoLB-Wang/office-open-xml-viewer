@@ -79,6 +79,16 @@ describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
     expect(buf.data[3]).toBe(192); // 50% over 50%, not 25%
   });
 
+  it.each<BlipEffect>([
+    { type: 'alphaModFix', amt: 1 }, { type: 'luminance', bright: 0, contrast: 0 },
+  ])('an identity sibling preserves opaque coverage beside alphaInv: %j', identity => {
+    const buf = buffer([1, 2, 3, 255]);
+    applyBlipPixelEffects(buf, { effects: [{ type: 'alphaMod', container: {
+      kind: 'sib', effects: [identity, { type: 'alphaInv' }],
+    } }] });
+    expect([...buf.data]).toEqual([1, 2, 3, 255]);
+  });
+
   it.each([
     ['darken', [64, 64, 64, 255]], ['lighten', [128, 128, 128, 255]],
     ['mult', [32, 32, 32, 255]], ['over', [128, 64, 128, 255]],
