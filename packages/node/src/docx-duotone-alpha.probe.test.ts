@@ -73,6 +73,8 @@ function storedZip(files: Record<string, string | Uint8Array>): Uint8Array {
  *  alphaModFix on its blip. cx/cy in EMU (12700 EMU/pt). */
 interface PictureOptions {
   effects?: string;
+  sizesPt?: number[];
+  sizePt?: number;
   duotone?: boolean;
   alpha?: string;
   bright?: string;
@@ -81,7 +83,7 @@ interface PictureOptions {
 }
 
 function inlinePicXml(opts: PictureOptions): string {
-  const cx = 200 * 12700; // 200pt square
+  const cx = (opts.sizePt ?? 200) * 12700; // 200pt square
   const effects = opts.effects ?? (
     (opts.duotone
       ? '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="DAB6BA"/></a:duotone>'
@@ -128,7 +130,7 @@ function buildDocx(pngBytes: Uint8Array, opts: PictureOptions): Uint8Array {
     : imageRels;
   const document =
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${NS}><w:body>` +
-    (opts.inHeader ? '<w:p/>' : inlinePicXml(opts)) +
+    (opts.inHeader ? '<w:p/>' : (opts.sizesPt ?? [opts.sizePt ?? 200]).map(sizePt => inlinePicXml({ ...opts, sizePt })).join('')) +
     '<w:sectPr>' +
     (opts.inHeader ? '<w:headerReference w:type="default" r:id="rIdHeader"/>' : '') +
     '<w:pgSz w:w="12240" w:h="15840"/>' +
@@ -281,4 +283,17 @@ describe.skipIf(!skia || !docxMod || !rendererMod)('docx duotone + alphaModFix p
     expect(Math.abs(semi[0] - expectedComposite)).toBeLessThan(14);
     expect(semi[0]).toBeGreaterThan(opaque[0] + 30);
   });
+});
+
+
+it.skipIf(!skia || !docxMod || !rendererMod)('keeps the DOCX 8pt picture unchanged beside an 80pt copy sharing its PNG and 1pt blur', async () => {
+  const png = await flatPngBytes(16, 16, '#ff0000');
+  const effects = '<a:blur rad="12700" grow="false"/>';
+  const alone = await render(buildDocx(png, { effects, sizesPt: [8] }), png);
+  const copies = await render(buildDocx(png, { effects, sizesPt: [8, 80] }), png);
+  // The first paragraph and its full 8pt image occupy the same page region.
+  const region = (r: Rendered) => Array.from({ length: 8 }, (_, y) =>
+    [...r.data.slice(((36 + y) * r.w + 36) * 4, ((36 + y) * r.w + 44) * 4)]).flat();
+  expect(region(copies)).toEqual(region(alone));
+  expect(region(alone).some((v, i) => i % 4 === 1 && v > 0 && v < 255)).toBe(true);
 });

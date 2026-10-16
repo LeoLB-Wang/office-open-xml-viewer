@@ -292,11 +292,15 @@ function imageDecodeRequests(
     const raster = metafileRasterSize(
       image.mimeType,
       image.srcRect,
-      demand.widthPt,
-      demand.heightPt,
+      image.blipEffects?.length ? image.intrinsicSize.widthPt : demand.widthPt,
+      image.blipEffects?.length ? image.intrinsicSize.heightPt : demand.heightPt,
     );
     if (!raster) continue;
     const request: ImageDecodeRequest = {
+      // §20.1.8.15: rad is physical. Keep each authored occurrence's
+      // dimensions through preload and synchronous paint lookup; merging by
+      // PNG/effect recipe changes the blur when a larger copy is added.
+      ...(image.blipEffects?.length ? { cacheKey: image.resourceKey } : {}),
       imagePath: image.partPath,
       mimeType: image.mimeType,
       ...(image.svgImagePath === undefined ? {} : { svgImagePath: image.svgImagePath }),

@@ -2526,10 +2526,13 @@ interface PreparedShapeFill {
  * that share a PNG but differ in grayscl/biLevel/clrChange/lum/duotone need
  * distinct prepared images. `imagePlanKey` is the same path + ordered-effect
  * key the decode cache uses. */
-function shapeFillKey(fill: ImageFill): string {
+function shapeFillKey(fill: ImageFill, widthEmu: number, heightEmu: number): string {
   return JSON.stringify([
     fill.svgImagePath ?? null,
     imagePlanKey(fill.imagePath, pixelTransform(fill)),
+    // §20.1.8.15 rad uses physical coordinates. Prepared identity and paint
+    // lookup must retain the same authored frame as the effect decoder.
+    ...(fill.blipEffects?.length ? [widthEmu, heightEmu] : []),
   ]);
 }
 
@@ -4069,7 +4072,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     ? el.fill
     : null;
   const preparedImageFill = imageFill
-    ? rc.shapeFillImages?.get(shapeFillKey(imageFill))
+    ? rc.shapeFillImages?.get(shapeFillKey(imageFill, el.width, el.height))
     : undefined;
   const hasPreparedImageFill = Boolean(imageFill && preparedImageFill);
 
@@ -7758,11 +7761,11 @@ export function renderTable(
   // rasterizer difference is not a colour compensation rule for Canvas.
   // Image fills share shape decoding, effects, crop/tile placement and cache
   // ownership; ordinary fills keep the canvas-aware gradient/pattern resolver.
-  const paintTableFill = (fill: Fill | null, x: number, y: number, w: number, h: number) => {
+  const paintTableFill = (fill: Fill | null, x: number, y: number, w: number, h: number, authoredWidth: number, authoredHeight: number) => {
     if (fill?.fillType === 'image') {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
-      paintPreparedShapeImageFill(ctx, fill, rc.shapeFillImages?.get(shapeFillKey(fill)),
+      paintPreparedShapeImageFill(ctx, fill, rc.shapeFillImages?.get(shapeFillKey(fill, authoredWidth, authoredHeight)),
         { x, y, w, h }, scale, false, el);
     } else {
       const paint = resolveShapeFill(fill, ctx, x, y, w, h, el.rotation, scale * PT_TO_EMU);
@@ -7772,11 +7775,21 @@ export function renderTable(
       }
     }
   };
-  paintTableFill(el.background ?? null, x0, y0, tableW, tableHeight);
+  // Use the authored frame for both preparation and lookup, including rows
+  // whose painted box grows with text. Prefix sums match merged-cell preload
+  // arithmetic and keep this pass linear in the table grid.
+  const authoredCols = [0], authoredRows = [0];
+  for (const width of el.cols) authoredCols.push(authoredCols[authoredCols.length - 1] + width);
+  for (const row of el.rows) authoredRows.push(authoredRows[authoredRows.length - 1] + row.height);
+  const authoredTableWidth = authoredCols[authoredCols.length - 1];
+  const authoredTableHeight = authoredRows[authoredRows.length - 1] || el.height;
+  paintTableFill(el.background ?? null, x0, y0, tableW, tableHeight, authoredTableWidth, authoredTableHeight);
 
   // Pass 1: fills + text bodies.
   for (const { cell, colX, rowY, cellW, cellH, ci, ri } of jobs) {
-    paintTableFill(cell.fill, colX, rowY, cellW, cellH);
+    const authoredWidth = (authoredCols[Math.min(ci + (cell.gridSpan || 1), el.cols.length)] ?? 0) - (authoredCols[ci] ?? 0);
+    const authoredHeight = (authoredRows[Math.min(ri + (cell.rowSpan || 1), el.rows.length)] - authoredRows[ri]) || el.height;
+    paintTableFill(cell.fill, colX, rowY, cellW, cellH, authoredWidth, authoredHeight);
     // Text body — default run colour comes from the table style's tcTxStyle
     // (e.g. white header text on an accent fill); a run's explicit colour wins.
     // ECMA-376 Part 1 DrawingML CT_TableCell permits txBody to be absent. Empty
@@ -8466,7 +8479,7 @@ async function renderSlideLeased(
     }>();
     for (const { fill, width, height } of slideImageFillUsages(slide)) {
       if (!(width > 0) || !(height >= 0)) continue;
-      const key = shapeFillKey(fill);
+      const key = shapeFillKey(fill, width, height);
       const prior = shapeFills.get(key);
       const widthPt = width / PT_TO_EMU;
       const heightPt = height / PT_TO_EMU;

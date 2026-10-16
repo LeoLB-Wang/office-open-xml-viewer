@@ -541,7 +541,7 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
           : unavailablePaintResourceHandle('optional math renderer unavailable');
       }
       if (descriptor.kind === 'image' || descriptor.kind === 'picture-bullet') {
-        const image = images.get(imageKey(
+        const image = images.get(descriptor.blipEffects?.length ? descriptor.resourceKey : imageKey(
           descriptor.partPath,
           descriptor.colorReplaceFrom,
           descriptor.duotone as Duotone | undefined,

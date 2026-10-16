@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BlipEffect } from '@silurus/ooxml-core';
 import type { Presentation, Slide } from '@silurus/ooxml-pptx';
-import { renderSlideNode, type NodeCanvasFactory } from './render.js';
+import { installImageBitmapShim, renderSlideNode, type NodeCanvasFactory } from './render.js';
 import { loadSkiaForTests } from './test-imports.js';
 
 const skia = await loadSkiaForTests();
@@ -94,5 +94,47 @@ describe.skipIf(!skia)('PPTX ordered blip paint', () => {
       { type: 'luminance', bright: .9, contrast: 0 },
       { type: 'unsupported', effect: 'malformed picture effect' },
     ], site)).rejects.toMatchObject({ code: 'unsupported-image-effect' });
+  });
+});
+
+
+describe.skipIf(!skia)('PPTX physical blip identity and native failure propagation', () => {
+  async function renderCopies(site: 'picture' | 'shape-fill', sizes: number[]) {
+    const source = new skia!.Canvas(16, 16);
+    const ctx = source.getContext('2d');
+    ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 16, 16);
+    const png = await source.toBuffer('png');
+    const effects: BlipEffect[] = [{ type: 'blur', radius: 12700, grow: false }];
+    const elements = sizes.map((size, index) => {
+      const frame = { x: (index ? 20 : 0) * 12700, y: 0, width: size * 12700, height: size * 12700,
+        rotation: 0, flipH: false, flipV: false };
+      const image = { imagePath: 'ppt/media/shared.png', mimeType: 'image/png', blipEffects: effects };
+      return site === 'picture' ? { type: 'picture', ...frame, ...image, prstGeom: 'rect' }
+        : { type: 'shape', ...frame, geometry: 'rect', textBody: null,
+          fill: { fillType: 'image', ...image, stretch: true } };
+    });
+    const presentation = { slideWidth: 110 * 12700, slideHeight: 90 * 12700,
+      slides: [{ index: 0, slideNumber: 1, background: null, elements }],
+      defaultTextColor: null, majorFont: null, minorFont: null } as Presentation;
+    const canvas = new skia!.Canvas(110, 90);
+    await renderSlideNode(canvas as unknown as Parameters<typeof renderSlideNode>[0], presentation, 0,
+      { width: 110, dpr: 1, factory, fetchImage: async () => new Blob([new Uint8Array(png)]) });
+    return [...canvas.getContext('2d').getImageData(0, 0, 8, 8).data];
+  }
+  it.each(['picture', 'shape-fill'] as const)('keeps an 8pt %s unchanged when an 80pt copy shares its PNG and 1pt blur', async site => {
+    const alone = await renderCopies(site, [8]);
+    expect(alone).toEqual(await renderCopies(site, [8, 80]));
+    expect(alone.slice(0, 4)).not.toEqual([255, 0, 0, 255]);
+  });
+  it.each(['picture', 'shape-fill'] as const)('rejects native InvalidStateError during the %s effect bake', async site => {
+    const restore = installImageBitmapShim(factory);
+    const decode = globalThis.createImageBitmap;
+    vi.stubGlobal('createImageBitmap', async (source: ImageBitmapSource, ...args: unknown[]) => {
+      if (!(source instanceof Blob)) throw new DOMException('Injected native bake failure', 'InvalidStateError');
+      return Reflect.apply(decode, globalThis, [source, ...args]);
+    });
+    try {
+      await expect(renderCopies(site, [8])).rejects.toMatchObject({ code: 'unsupported-image-effect' });
+    } finally { vi.unstubAllGlobals(); restore(); }
   });
 });
