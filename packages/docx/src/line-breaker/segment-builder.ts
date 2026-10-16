@@ -58,6 +58,7 @@ import {
   mayUseExactLocalReferenceWidthMetric,
   selectResourceAverageWidthRatio,
   selectResourceMetric,
+  allowsReferenceFontMetric,
   selectedFontLineMetric,
   type MetricTupleIndex,
 } from './font-metrics.js';
@@ -1460,9 +1461,13 @@ function emitResolvedTextSegment(
   // exact spacing instead suppresses it.
   const naturalMetricAllowed = environment.lineSpacing?.rule !== 'exact';
   const { resourceMetric: resourceFamilyLineMetric, referenceMetric: referenceLineMetric,
-    lineMetric: familyLineMetric } = selectedFontLineMetric(resolvedSpan?.font, localFont, naturalMetricAllowed);
+    lineMetric: familyLineMetric } = selectedFontLineMetric(resolvedSpan?.font, localFont, naturalMetricAllowed,
+      allowsReferenceFontMetric(indexedFontMetrics(environment.layoutServices?.text.fontMetrics
+        ?? environment.layoutServices?.text.localMetrics ?? {}), resolvedSpan?.font));
   const { resourceMetric: resourceEaLineMetric, referenceMetric: referenceEaLineMetric,
-    lineMetric: eaLineMetric } = selectedFontLineMetric(eaResolution, localEaFloor, naturalMetricAllowed);
+    lineMetric: eaLineMetric } = selectedFontLineMetric(eaResolution, localEaFloor, naturalMetricAllowed,
+      allowsReferenceFontMetric(indexedFontMetrics(environment.layoutServices?.text.fontMetrics
+        ?? environment.layoutServices?.text.localMetrics ?? {}), eaResolution));
   const resolvedEaFloorFamily =
     eaResolution?.resolvedFamily ?? localEaFloor?.family ?? eaFontFamily;
   // WORD_USE_FE_LAYOUT_INHERITED_GRID_MINIMUM was observed for an active
@@ -1563,7 +1568,8 @@ function emitResolvedTextSegment(
     authoredReferenceMetricAllowed: mayUseAuthoredReferenceVerticalMetric(resolvedSpan?.font),
     fontRoute: resolvedSpan?.fontRoute,
     resolvedLineHeightRatio: familyLineMetric?.lineHeightRatio,
-    resolvedLatinGridCellAllocation: referenceLineMetric?.farEastCodePage === false,
+    resolvedLatinGridCellAllocation: (resourceFamilyLineMetric?.farEastCodePage
+      ?? referenceLineMetric?.farEastCodePage) === false,
     ...(resourceFamilyLineMetric?.lineHeightRatio != null
       ? {
           resolvedResourceVerticalMetric: true as const,
@@ -2017,6 +2023,8 @@ function appendRunsToSegments(
         naturalMetricAllowed || localFont?.designAscentRatio == null ? localFont : undefined;
       const referenceMetric =
         naturalMetricAllowed && !resourceMetric && mayUseAuthoredReferenceVerticalMetric(selected)
+          && allowsReferenceFontMetric(indexedFontMetrics(environment.layoutServices?.text.fontMetrics
+            ?? environment.layoutServices?.text.localMetrics ?? {}), selected)
           ? referenceFontLineMetrics(selected.requestedFamily, weight, style)
           : undefined;
       const familyLineMetric = resourceMetric ?? referenceMetric;

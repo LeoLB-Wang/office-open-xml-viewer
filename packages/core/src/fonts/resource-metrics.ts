@@ -4,6 +4,10 @@
 export interface ResolvedFontMetric {
   /** Concrete FontFace family registered for Canvas measure and paint. */
   family: string;
+  /** Admitted allocation class accompanying this geometry. A format may use
+   * catalog classification when browser measurement cannot expose OS/2 bits;
+   * this does not assert that the resource bytes were inspected. */
+  farEastCodePage?: boolean;
   /** General single-line height divided by em, when provided by the resource
    * owner for a documented format policy. */
   lineHeightRatio?: number;
@@ -22,6 +26,11 @@ export interface ResolvedFontMetric {
   /** Format-owned East-Asian single-line height divided by em, derived from
    * this resolved face's OpenType tables rather than its family name. */
   eastAsianLineHeightRatio?: number;
+  /** A local() face has no readable cmap. Host-derived geometry requires a
+   * native fallback probe; unavailable proof must not imply full coverage. */
+  requiresGlyphCoverage?: boolean;
+  /** Exact-source size-adjust:0% registration retained beside the paint face. */
+  glyphCoverageProbeFamily?: string;
   /** Unicode scalar ranges mapped by this exact resource's supported cmap.
    * Resource metrics are applied only when every scalar in a shaped span is
    * covered, so a subset font cannot lend its geometry to fallback glyphs. */

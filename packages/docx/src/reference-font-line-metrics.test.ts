@@ -19,7 +19,7 @@ describe('DOCX reference font vertical metrics', () => {
     ['Win32', 'win32'],
     [undefined, 'darwin'],
     [undefined, 'linux'],
-  ])('uses the same Office references with navigator.platform=%s and process.platform=%s', async (
+  ])('keeps the same unmeasurable-host catalog fallback with navigator.platform=%s and process.platform=%s', async (
     browserPlatform, nodePlatform,
   ) => {
     vi.stubGlobal('navigator', browserPlatform === undefined ? undefined : { platform: browserPlatform });

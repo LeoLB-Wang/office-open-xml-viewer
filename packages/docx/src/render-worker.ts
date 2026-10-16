@@ -1,3 +1,5 @@
+import { prepareDocxHostFontMetrics, type HostFontLineMeasurement } from './host-font-line-metrics.js';
+import { activeFontSet, loadOfficeFontFallbacks } from '@silurus/ooxml-core';
 import { normalizeDocxParserError } from './internal/parser-errors.js';
 import type { LayoutDiagnostic } from './layout/types.js';
 import { readingDefaultOwners } from './internal/reading-default-owners.js';
@@ -17,7 +19,6 @@ import init, { DocxArchive, reinit } from './wasm/docx_parser.js';
 import {
   decodeDataUrl,
   preloadGoogleFonts,
-  loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
   unloadGoogleFonts,
   unregisterEmbeddedFonts,
@@ -167,6 +168,8 @@ function getImage(path: string, mimeType: string): Promise<Blob> {
   });
 }
 
+const hostFontMeasurements = new Map<number, (measurements: HostFontLineMeasurement[]) => void>();
+
 self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecodeResponse>) => {
   const req = e.data;
   if (isWorkerSvgDecodeResponse(req)) {
@@ -190,6 +193,11 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
     }
     return;
   }
+  if (req.type === 'hostFontLinesMeasured') {
+    hostFontMeasurements.get(req.forId)?.(req.measurements);
+    hostFontMeasurements.delete(req.forId);
+    return;
+  }
   if (req.type === 'init') {
     host.setWasmInput(decodeDataUrl(req.wasmUrl) ?? req.wasmUrl);
     return;
@@ -204,6 +212,8 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
     }
     if (req.type === 'parse') {
       requestedGeneration = ++parseGeneration;
+      for (const resolve of hostFontMeasurements.values()) resolve([]);
+      hostFontMeasurements.clear();
       layoutAbort?.abort();
       layoutAbort = null;
       await documentPull.reset();
@@ -333,10 +343,19 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
           });
           if (requestedGeneration !== parseGeneration) throw new Error('render-worker parse was superseded');
         }
-        const officeFonts = await loadOfficeFontFallbacks(docxOfficeFontFallbackRequests(model, { useGoogleFonts: req.useGoogleFonts, cjkFallback: req.cjkFallback }).filter((request) =>
+        let officeFonts = await loadOfficeFontFallbacks(docxOfficeFontFallbackRequests(model, { useGoogleFonts: req.useGoogleFonts, cjkFallback: req.cjkFallback }).filter((request) =>
           !embeddedFonts.routes.some((route) => route.requestedFamily.toLowerCase() === request.family.toLowerCase()
             && route.weight === (request.weight ?? 400) && route.style === (request.style ?? 'normal'))));
         officeFaces = officeFonts.faces;
+        if (requestedGeneration !== parseGeneration) throw new Error('render-worker parse was superseded');
+        const routes = Object.values(officeFonts.routes);
+        if (routes.length > 0) {
+          const hostMeasurements = await new Promise<HostFontLineMeasurement[]>(resolve => {
+            hostFontMeasurements.set(id, resolve);
+            post({ type: 'measureHostFontLines', forId: id, routes });
+          });
+          officeFonts = await prepareDocxHostFontMetrics(officeFonts, activeFontSet(), hostMeasurements);
+        }
         if (requestedGeneration !== parseGeneration) throw new Error('render-worker parse was superseded');
         let installedSubstituteFamilies: readonly string[] = [];
         if (req.useGoogleFonts) {
