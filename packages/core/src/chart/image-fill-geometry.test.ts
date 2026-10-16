@@ -3,6 +3,15 @@ import { paintChartImageFill, withChartImageLookup } from './image-fill.js';
 import { OoxmlDecodedImageLimitError } from '../image/pixel-budget.js';
 import { EMU_PER_PT, PT_TO_PX } from '../units.js';
 import type { ImageFill } from '../types/common.js';
+import { MAX_CHART_IMAGE_FILL_TILES } from './resource-limits.js';
+
+/** A draw spy that turns a non-terminating tile loop into a bounded failure. */
+function guardedDrawImage() {
+  const spy = vi.fn(() => {
+    if (spy.mock.calls.length > MAX_CHART_IMAGE_FILL_TILES) throw new Error('tile loop did not terminate');
+  });
+  return spy;
+}
 
 it('paints a huge finite tile translation at its remainder phase', () => {
   const translations = (tx: number) => {
@@ -36,7 +45,7 @@ it('rejects the extreme shifted tile grid instead of stalling', () => {
   // Before phase normalization x0 + step === x0 and this loop never advanced.
   // Its tiles are far narrower than the offset's rounding, so the phase is not
   // representable and the fill fails closed before any draw.
-  const drawImage = vi.fn();
+  const drawImage = guardedDrawImage();
   const ctx = new Proxy({ drawImage }, {
     get: (target, key) => key === 'drawImage' ? target.drawImage : () => {},
   }) as unknown as CanvasRenderingContext2D;
@@ -51,8 +60,7 @@ it('rejects the extreme shifted tile grid instead of stalling', () => {
 });
 
 it('fails closed when conversion rounding would misregister a huge mirrored tile phase', () => {
-  const draws = vi.fn();
-  const ctx = new Proxy({ drawImage: draws }, {
+  const ctx = new Proxy({ drawImage: guardedDrawImage() }, {
     get: (target, key) => key === 'drawImage' ? target.drawImage : () => {},
   }) as unknown as CanvasRenderingContext2D;
   const fill = (tx: number): ImageFill => ({
