@@ -310,6 +310,8 @@ export function nativeCanvasLineRatio(
  *  the ascent/descent to locate the mark baseline within the box). */
 export interface MarkLineMetrics {
   readonly advancePx: number;
+  /** Grid-only leading below the centered own (natural/authored) box. */
+  readonly gridAfterLeadingPx: number;
   readonly ascentPx: number;
   readonly descentPx: number;
 }
@@ -516,7 +518,19 @@ export function paragraphMarkLineMetrics(
         scale,
       })
     : ordinaryAdvancePx;
-  return { advancePx, ascentPx: asc, descentPx: desc };
+  // WORD_GRID_LINE_CONTENT_FIT_ADMISSION also covers an empty mark. Resolve
+  // its own box from the same selected font and spacing, without re-shaping.
+  // §17.6.5 grid allocation remains the full retained advance; authored exact,
+  // atLeast and automatic multiples never become an admission allowance.
+  const ownAdvancePx = lineBoxHeight(
+    effectiveLineSpacing, asc, desc, scale, undefined, paraHasRuby,
+    intendedSingle, eastAsian, gridCountSingle,
+  );
+  const gridAfterLeadingPx = isGridLineRule(grid)
+    ? Math.max(0, Math.min((advancePx - ownAdvancePx) / 2,
+        lineBelowBaselinePx(advancePx, asc, desc) - desc))
+    : 0;
+  return { advancePx, gridAfterLeadingPx, ascentPx: asc, descentPx: desc };
 }
 
 

@@ -81,10 +81,10 @@ export const WORD_AUTOMATIC_PARAGRAPH_TOP_SPACING = defineCompatibilityRule({
     kind: 'office-observation',
     syntheticFixtureId: 'automatic-paragraph-top-spacing',
     application: 'Microsoft Word',
-    version: '16.111.1',
-    platform: 'macOS 26.5.2',
+    version: '16.0.20430',
+    platform: 'Windows',
   },
-  description: 'A controlled ordinary-text exact-line paragraph with before=6pt does not retain that before spacing when ordinary overflow moves the complete paragraph to a fresh physical page. A before=0pt paragraph defines the page-top control. Empty mark-only paragraphs retain authored before spacing in observed Word output. Image-only and mixed-object paragraphs are outside these controls, so the library conservatively retains their authored spacing. Table and float overflow, same-page columns, and paragraph continuations have separate ownership.',
+  description: 'trr3 family C controls: before=0/15pt pairs put After at the same position after automatic page overflow for empty, visible-text and line-break-only paragraphs, in modes 14/15 with keepNext off/on. This supersedes the earlier Mac empty-mark inference. ECMA-376 §17.3.1.33 defines the authored spacing, not this page-top suppression. Image-only and mixed-object paragraphs remain outside the controls and keep their existing ordinary-overflow spacing. Keep-next groups, table/float overflow, same-page columns and continuations have separate ownership. The auto=1.15/grid pitch discrepancies in these controls are not settled by the spacing pairs.',
 });
 
 export const WORD_STANDALONE_HARD_PAGE_BREAK_TOP_SPACING = defineCompatibilityRule({
@@ -93,10 +93,10 @@ export const WORD_STANDALONE_HARD_PAGE_BREAK_TOP_SPACING = defineCompatibilityRu
     kind: 'office-observation',
     syntheticFixtureId: 'standalone-hard-page-break-top-spacing',
     application: 'Microsoft Word',
-    version: '16.111.1',
-    platform: 'macOS 26.5.2',
+    version: '16.0.20430',
+    platform: 'Windows',
   },
-  description: 'Controlled before=0/6pt documents in compatibility modes 14 and 15 place the first paragraph after a standalone hard page break at the same page-top origin: its before spacing is suppressed. The first paragraph of a document or a new section retains before spacing. A pageBreakBefore paragraph differs by mode (retained in 14, suppressed in 15); compatibilityMode is not yet represented in the parser model. This rule applies only to parser-proven authored breaks, excluding synthetic Cover Pages breaks, parity section breaks, and inline breaks after visible content.',
+  description: 'Windows trr3 family C before=0/15pt pairs (empty, visible text, line-break-only; modes 14/15; keepNext off/on) confirm suppression after a standalone hard page break. pageBreakBefore retains before-spacing in mode 14 and suppresses it in mode 15; the latter is selected only for that explicit mode. Without pageBreakBefore, the first paragraph of a document or a new section retains before-spacing. Standalone suppression applies only to parser-proven authored breaks, excluding synthetic Cover Pages breaks, parity section breaks and inline breaks after visible content. Word caret Y is not paragraph top: the paired After positions establish the spacing effect; these controls do not establish exact twip rounding or automatic grid pitch.',
 });
 
 export const WORD_TRAILING_SPACE_AFTER_FIT_ADMISSION = defineCompatibilityRule({
@@ -114,7 +114,7 @@ export const WORD_GRID_LINE_CONTENT_FIT_ADMISSION = defineCompatibilityRule({
     kind: 'regression-test',
     reference: 'packages/docx/src/line-spacing-baseline.test.ts#paginates a centered natural box with body bottom %s',
   },
-  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. Only leading added beyond its own natural/authored height is eligible; authored atLeast minima and auto multiples remain charged. The allowance is restricted to a positive whitelist of plain glyph paint in undecorated paragraphs: paragraph/run borders (including between/bar rules), shading/highlight, underline/strike/emphasis, ruby, fields, tabs, objects and unknown retained paint retain the full cell, even when a continuation slice omits paragraph edges. Off-grid and exact lines retain full-box admission. This observation applies only at the physical body bottom with no intervening reservation; note bands, wrap exclusions and shortened column regions retain the whole grid cell.',
+  description: 'Windows Word 16.0 build 20430 admits a centered text box inside a 20pt line-grid cell when the natural box ends inside the body, even when the cell overhangs the bottom margin. A later-positioned caption whose natural box crosses the body bottom moves to the next page. These inside/outside observations support content-box admission, not baseline-only admission or a fixed overhang tolerance. ECMA-376 §§17.6.5 and 17.3.1.32 define grid participation, not this page-edge rule. trr3 family D further observes the same page boundary for 11pt MS Mincho empty marks and single-character paragraphs on a 16.4pt grid (modes 14/15, lines/linesAndChars, zero/one preceding empty mark): 15pt moves and 15.5pt stays. Empty marks carry the equivalent metric-only allowance through word-trailing-empty-mark-baseline-admission. Only leading added beyond its own natural/authored height is eligible; authored atLeast minima and auto multiples remain charged. The allowance is restricted to a positive whitelist of plain glyph paint in undecorated paragraphs: paragraph/run borders (including between/bar rules), shading/highlight, underline/strike/emphasis, ruby, fields, tabs, objects and unknown retained paint retain the full cell, even when a continuation slice omits paragraph edges. Off-grid and exact lines retain full-box admission. This observation applies only at the physical body bottom with no intervening reservation; note bands, wrap exclusions and shortened column regions retain the whole grid cell.',
 });
 
 // Positive paint whitelist for the bounded plain-caption observation. Unknown

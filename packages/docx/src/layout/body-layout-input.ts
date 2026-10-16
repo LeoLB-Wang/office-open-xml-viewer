@@ -150,8 +150,8 @@ export interface BodyParagraphSourceInput {
   readonly styleId: string | null;
   /** Source-level visibility used only for pagination look-ahead across unmeasured blocks. */
   readonly inkless?: boolean;
-  /** Parser-established ordinary text, excluding inline objects and mark-only paragraphs. */
-  readonly onlyVisibleText?: boolean;
+  /** Parser-established text/line-break-only content, including an empty mark; excludes objects. */
+  readonly onlyTextualContent?: boolean;
   /** Mutually exclusive Word/LibreOffice section-mark spacing interop role. */
   readonly continuousSectionRole?:
     | 'suppress-before'
@@ -213,6 +213,8 @@ export type BodyLayoutSequenceEntryFor<TSection> =
 export type BodyLayoutSequenceEntry = BodyLayoutSequenceEntryFor<BodySectionLayoutInput>;
 
 export interface BodyLayoutInput {
+  /** Authored Word compatibility mode (§17.15.3.4). */
+  readonly compatibilityMode?: number;
   readonly source: SourceRef;
   readonly initialSection: BodySectionLayoutInput;
   readonly sequence: readonly BodyLayoutSequenceEntry[];
@@ -250,6 +252,7 @@ export interface NoteNumberingInput {
 }
 
 export interface BodyLayoutAcquisitionInput {
+  readonly compatibilityMode?: number;
   readonly sectionIndex: BodySectionIndexInput;
   readonly evenAndOddHeaders: boolean;
   readonly parserDiagnostics?: readonly LayoutDiagnostic[];
@@ -401,6 +404,7 @@ export function projectBodyLayoutInput(acquired: BodyLayoutAcquisitionInput): Bo
   });
   return snapshotPlainData({
     source: { story: 'body', storyInstance: 'body', path: [] },
+    compatibilityMode: acquired.compatibilityMode,
     initialSection,
     sequence,
     parserDiagnostics: acquired.parserDiagnostics ?? [],

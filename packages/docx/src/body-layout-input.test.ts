@@ -41,7 +41,7 @@ const createBodyLayoutInput = (document: DocxDocumentModel) =>
   projectBodyLayoutInput(bodyLayoutAcquisitionInput(document));
 
 describe('canonical body layout input', () => {
-  it('distinguishes ordinary visible text from inline-object and mark-only paragraphs', () => {
+  it('distinguishes textual paragraphs and empty marks from inline objects', () => {
     const image = { type: 'image', src: 'word/media/picture.png' };
     const withRuns = (runs: readonly unknown[]): BodyElement => ({
       ...paragraph(''), runs,
@@ -52,6 +52,7 @@ describe('canonical body layout input', () => {
         withRuns([image]),
         withRuns([{ type: 'text', text: 'caption' }, image]),
         paragraph(''),
+        withRuns([{ type: 'break', breakType: 'line' }]),
       ],
       section: finalSection(),
       headers: { default: null, first: null, even: null },
@@ -61,9 +62,9 @@ describe('canonical body layout input', () => {
 
     expect(bodyLayoutAcquisitionInput(document).sequence.map((entry) =>
       entry.kind === 'body-block' && entry.block.kind === 'paragraph'
-        ? entry.block.onlyVisibleText
+        ? entry.block.onlyTextualContent
         : undefined,
-    )).toEqual([true, false, false, false]);
+    )).toEqual([true, false, false, true, true]);
   });
 
   it('acquires clone-safe parser facts before resolving layout section owners', () => {
