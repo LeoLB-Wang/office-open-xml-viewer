@@ -54,22 +54,27 @@ fn policy(blob: &[u8], work_budget: &mut usize) -> Result<Policy, String> {
         .checked_sub(20)
         .filter(|at| uses_zip64 && blob.get(*at..*at + 4) == Some(b"PK\x06\x07"))
     {
-        // The ZIP64 record can follow a self-extracting prefix and can contain
-        // an extensible-data sector. Resolve its physical end, not a guessed
-        // absolute offset. The search borrows input and allocates nothing.
-        let zip64 = blob[..locator]
-            .windows(4)
-            .enumerate()
-            .rev()
-            .find_map(|(relative, sig)| {
-                let at = relative;
-                (sig == b"PK\x06\x06"
-                    && u64_at(at + 4)? >= 44
-                    && (at as u64).checked_add(12)?.checked_add(u64_at(at + 4)?)
-                        == Some(locator as u64))
-                .then_some(at)
-            })
-            .ok_or_else(unreadable)?;
+        // The ZIP64 record may follow an inert SFX prefix and contain an
+        // extensible-data sector. Unlike the fixed 65,557-byte EOCD window,
+        // this backward search has no format bound. Charge each inspected
+        // position before examining it; never charge skipped prefix bytes.
+        let mut zip64 = None;
+        for (at, sig) in blob[..locator].windows(4).enumerate().rev() {
+            *work_budget = work_budget.checked_sub(1).ok_or_else(exhausted)?;
+            if sig == b"PK\x06\x06"
+                && u64_at(at + 4).is_some_and(|size| {
+                    size >= 44
+                        && (at as u64)
+                            .checked_add(12)
+                            .and_then(|end| end.checked_add(size))
+                            == Some(locator as u64)
+                })
+            {
+                zip64 = Some(at);
+                break;
+            }
+        }
+        let zip64 = zip64.ok_or_else(unreadable)?;
         // Charge the physically present footer extent before the ZIP crate
         // copies the extensible-data sector. A declaration beyond input is
         // malformed rather than a measured metadata resource crossing.

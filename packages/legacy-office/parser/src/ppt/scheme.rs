@@ -132,7 +132,9 @@ impl Resolver {
                 master_records.push((id, record_span));
                 if record.kind == 1016 {
                     let records = parse_records(record.payload, budget)?;
-                    if let Some(theme) = metro::master_theme(&records, &mut decoded_theme_budget)? {
+                    if let Some(theme) =
+                        metro::master_theme(&records, &mut decoded_theme_budget, budget)?
+                    {
                         metro_themes.insert(id, std::rc::Rc::new(theme));
                     }
                     text_styles.insert(
