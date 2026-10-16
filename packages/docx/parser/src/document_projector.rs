@@ -1697,7 +1697,7 @@ mod tests {
         // projected block, namespace state, and all rewrite intermediates.
         let mut peaks = Vec::new();
         for byte in *b"A\"" {
-            let peak = crate::test_allocations::peak(|| {
+            let peak = crate::allocation_tests::peak(|| {
                 let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, None, None, None);
                 let scope = governor.scope("parse");
                 let prefix = format!(

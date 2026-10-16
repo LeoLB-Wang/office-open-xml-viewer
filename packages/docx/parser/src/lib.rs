@@ -24,7 +24,7 @@ mod types;
 mod xml_util;
 
 #[cfg(test)]
-mod test_allocations;
+mod allocation_tests;
 
 #[cfg(test)]
 thread_local! {
