@@ -477,6 +477,26 @@ describe('native reference font vertical layout', () => {
     expect(referenceFontLineMetrics('BIZ UDMincho', 400, 'italic')).toBeUndefined();
   });
 
+  it('treats a family installed in another tuple as present (synthesized bold)', () => {
+    // Only the regular BIZ UDMincho face is installed; a bold run still paints
+    // that installed family through CSS font matching, so the family is
+    // present and its catalog line box applies, unlike a fully absent face.
+    const layoutServices = services({ 'biz udmincho': {
+      requestedFamily: 'BIZ UDMincho', family: 'BIZ UDMincho', weight: 400, style: 'normal',
+    } });
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBe(true);
+    const segment = buildSegments([{
+      type: 'text', text: '資料', fontFamily: 'BIZ UDMincho', fontFamilyEastAsia: 'BIZ UDMincho',
+      fontSize: 10.5, bold: true, italic: false, underline: false, strikethrough: false,
+    }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices })[0] as LayoutTextSeg;
+    expect(segment.referenceFontVerticalMetric).toBe(true);
+    expect(segment.resolvedLineHeightRatio).toBeCloseTo(1.3, 8);
+  });
+
   it('keeps absent BIZ UD faces on their painting fallback, whatever the family spelling', () => {
     // Name identity is shared font metadata (core catalogue aliases): the
     // Japanese names reach the same pinned profile. No local resource is

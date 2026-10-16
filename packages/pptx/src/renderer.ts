@@ -1385,8 +1385,16 @@ function lineMetricFor(
   // absent authored face paints with a browser fallback, so the run keeps
   // the ordinary line model instead of the absent face's ascent share.
   const authored = normalizeFontFamily(family, rc);
-  if (!rc.officeFontRoutes?.[officeRouteKey(authored, officeFaceWeight(authored, bold, italic), italic)]) return undefined;
+  if (!rc.officeFontRoutes?.[officeRouteKey(authored, officeFaceWeight(authored, bold, italic), italic)]
+    && !familyInstalled(authored, rc)) return undefined;
   return powerPointFaceMetrics(family, bold, italic);
+}
+
+/** Whether another tuple of the family is installed (a loaded route): CSS font
+ * matching then paints that installed family, synthesizing weight/style. */
+function familyInstalled(family: string, rc: RenderContext): boolean {
+  const key = normalizeLocalFontMetricFamily(family);
+  return Object.keys(rc.officeFontRoutes ?? {}).some((route) => route === key || route.startsWith(`${key}:`));
 }
 
 /** The core office-fallback route key for an authored family tuple. */

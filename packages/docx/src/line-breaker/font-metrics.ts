@@ -221,7 +221,10 @@ export function mayUseAuthoredReferenceVerticalMetric(
   // substitute is a different selected face: if its resource metric is
   // unavailable, use its Canvas line box in both axes instead of importing the
   // authored font's vertical geometry.
-  return mayUseExactLocalReferenceWidthMetric(selected);
+  // A native resolution of an installed family is present: the installed
+  // family paints (CSS font matching), so its catalog geometry may apply.
+  return (selected?.source === 'native' && selected.installedFamily === true)
+    || mayUseExactLocalReferenceWidthMetric(selected);
 }
 
 /** A prepared host face that failed coverage must fall through to the span's

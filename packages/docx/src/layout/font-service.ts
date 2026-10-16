@@ -35,6 +35,10 @@ export interface FontResolution {
   readonly style: FontStyle;
   readonly diagnostics: readonly LayoutDiagnostic[];
   readonly genericFamily: 'serif' | 'sans-serif' | 'monospace';
+  /** Native resolution of a family that has an installed local face in another
+   * tuple: CSS font matching paints that installed family (synthesizing
+   * weight/style), so the authored face is present on the host, not absent. */
+  readonly installedFamily?: true;
 }
 
 export interface FontResolver {
@@ -241,7 +245,10 @@ export function createFontResolver(
     if (authored) {
       const familyList = familyListFor(authored, request.language, request.cjkFallback)
         ?? cssFamilyList(authored, generic);
+      const installedFamily = (byFamily.get(normalizeFamily(authored)) ?? [])
+        .some((candidate) => candidate.source === 'local');
       return freezeResolution({
+        ...(installedFamily ? { installedFamily: true as const } : {}),
         requestedFamily,
         resolvedFamily: authored,
         route: createCanvasFontRoute(

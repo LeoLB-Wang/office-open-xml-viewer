@@ -71,7 +71,12 @@ function tupleFor(request: OfficeFontFallbackRequest): Tuple | undefined {
   // An alias shared by regular and bold is a family name, not proof of a
   // styled face. Prefer full/PostScript aliases unique to this tuple. For the
   // regular face only, a family name is also an exact local() candidate.
-  const otherAliases = new Set(findReferenceFontMetrics(family)
+  // A named cut ("Arial Black") can resolve to a profile of another catalog
+  // family ("Arial" 900), whose aliases include that family's own name. Collect
+  // the other tuples of every matched catalog family too, so local("Arial") can
+  // never stand in for the 900 cut and load the regular face.
+  const catalogFamilies = new Set([family, ...profiles.map((profile) => profile.family)]);
+  const otherAliases = new Set([...catalogFamilies].flatMap((name) => findReferenceFontMetrics(name))
     .filter((profile) => profile.weight !== weight || profile.style !== style)
     .flatMap((profile) => profile.aliases.map(normalizeLocalFontMetricFamily)));
   const distinct = [...new Set(profiles.flatMap((profile) => profile.aliases))];
