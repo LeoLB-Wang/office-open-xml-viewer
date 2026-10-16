@@ -8,11 +8,14 @@ import { defaultOffscreenFactory, type OffscreenFactory } from './duotone.js';
 import { OoxmlError } from '../errors/ooxml-error.js';
 import { MAX_IMAGE_EFFECT_PIXEL_WORK, OoxmlDecodedImageLimitError } from './pixel-budget.js';
 
+import type { ImageEffectWorkLedger } from './image-effect-work.js';
+
 export type BlendMode = 'darken' | 'lighten' | 'mult' | 'over' | 'screen';
 export interface BlipEffectRuntime {
   readonly offscreenFactory?: OffscreenFactory;
   readonly images?: ReadonlyMap<object, CanvasImageSource>;
   readonly baseImage?: CanvasImageSource;
+  readonly workLedger?: ImageEffectWorkLedger;
 }
 
 /** §20.1.8.29 / §20.1.10.11. Separable blend colors, then Porter-Duff

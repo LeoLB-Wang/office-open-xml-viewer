@@ -1,3 +1,4 @@
+import { ImageEffectWorkLedger } from './image-effect-work.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   applyBlipPixelEffects,
@@ -717,4 +718,115 @@ it('uses a hard reflection fade when start and end occupy the same position', ()
     blur: 0, dist: 0, dir: 0, stA: 1, stPos: .5, endA: 0, endPos: .5, sx: 1, sy: 1, fadeDir: 0,
   } }] });
   expect([result.data[3], result.data[7]]).toEqual([255, 0]);
+});
+
+
+it.each(['fill', 'fillLine'])('restores the original grid when budgeting %s references inside an alphaMod tree', reference => {
+  const value: BlipPixelEffects = { effects: [{ type: 'alphaMod', container: { kind: 'tree', effects: [
+    { type: 'transform', sx: .001, sy: .001, kx: 0, ky: 0, tx: 0, ty: 0 },
+    { type: 'reference', reference },
+    ...Array.from({ length: 4 }, (): BlipEffect => ({ type: 'blur', radius: 8 * 9525, grow: false })),
+  ] } }] };
+  // Four 1024-square, radius-eight convolutions alone need 155,189,520 visits.
+  expect(blipPixelEffectWork(value, 1024, 1024)).toBeGreaterThanOrEqual(155_189_520);
+  const data = new Uint8ClampedArray(1024 * 1024 * 4).fill(137);
+  expect(() => applyBlipPixelEffects({ width: 1024, height: 1024, data }, value))
+    .toThrowError(expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric: 'image-effect-work' }));
+  expect(data.every(v => v === 137)).toBe(true);
+});
+
+
+it('bounds live execution work for seeded random recursive grids and fails closed at the shared ceiling', () => {
+  let seed = 0x181005;
+  const next = (n: number) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return Math.floor(seed / 0x100000000 * n);
+  };
+  const shadow = { color: '000000', alpha: .5, blur: 9525, dist: 9525, dir: 90 };
+  const effects = (depth: number): BlipEffect[] => Array.from({ length: 1 + next(3) }, (): BlipEffect => {
+    switch (next(depth ? 18 : 10)) {
+      case 0: return { type: 'transform', sx: [.25, 1, 1.5][next(3)], sy: [.5, 1, 1.5][next(3)],
+        kx: next(2) * 10, ky: 0, tx: (next(3) - 1) * 9525, ty: next(2) * 9525 };
+      case 1: return { type: 'reference', reference: ['fill', 'fillLine', 'line', 'children', 'named'][next(5)] };
+      case 2: return { type: 'blur', radius: next(3) * 9525, grow: !!next(2) };
+      case 3: return { type: 'relativeOffset', tx: .25, ty: -.25 };
+      case 4: return { type: 'alphaOutset', radius: (next(2) ? 1 : -1) * 9525 };
+      case 5: return { type: 'luminance', bright: .2, contrast: -.3 };
+      case 6: return { type: 'fillOverlay', blend: 'mult', fill: { fillType: 'solid', color: 'FF0000' } };
+      case 7: return { type: 'fill', fill: { fillType: 'solid', color: '00FF00' } };
+      case 8: return { type: 'duotone', clr1: '000000', clr2: 'FFFFFF' };
+      case 9: return { type: 'alphaInv' };
+      case 10: return { type: 'glow', glow: { color: '0000FF', alpha: .5, radius: 9525 } };
+      case 11: return { type: 'shadow', shadow, inner: !!next(2) };
+      case 12: return { type: 'softEdge', radius: 9525 };
+      case 13: return { type: 'presetShadow', shadows: [shadow, { ...shadow, dir: 180 }] };
+      case 14: return { type: 'reflection', reflection: { ...shadow, sx: 1, sy: -1, stA: 1, endA: 0, stPos: 0, endPos: 1 } };
+      default: {
+        const container = { kind: next(2) ? 'tree' as const : 'sib' as const, effects: effects(depth - 1) };
+        return next(2) ? { type: next(2) ? 'alphaMod' : 'container', container } : { type: 'blend', blend: 'over', container };
+      }
+    }
+  });
+  let evaluated = 0;
+  for (let i = 0; i < 160; i++) {
+    const width = 1 + next(8), height = 1 + next(8);
+    const value: BlipPixelEffects = { effects: [
+      { type: 'definitions', work: 7, containers: [{ name: 'named', kind: 'tree', effects: [
+        { type: 'blur', radius: 9525, grow: true }, { type: 'reference', reference: 'fill' },
+      ] }] }, ...effects(3),
+    ], emuPerPixelX: 9525, emuPerPixelY: 12700, duotone: { clr1: '000000', clr2: 'FFFFFF' } };
+    const makeBuffer = () => ({ width, height, data: new Uint8ClampedArray(width * height * 4).fill(137) });
+    const label = `case ${i}, seed ${seed}: ${JSON.stringify(value)}`;
+    let planned: number;
+    try { planned = blipPixelEffectWork(value, width, height); }
+    catch (error) {
+      expect(error, label).toMatchObject({ code: 'ooxml-decoded-image-limit', metric: 'image-effect-count' });
+      expect(() => applyBlipPixelEffects(makeBuffer(), value), label)
+        .toThrowError(expect.objectContaining({ code: 'ooxml-decoded-image-limit' }));
+      continue;
+    }
+    const ledger = new ImageEffectWorkLedger();
+    try { applyBlipPixelEffects(makeBuffer(), value, { workLedger: ledger }); }
+    catch (error) {
+      // Random trees may legitimately exceed the finite pass envelope after
+      // compound lowering; every such refusal must be an explicit quota.
+      expect(error, label).toMatchObject({ code: 'ooxml-decoded-image-limit', metric: 'image-effect-count' });
+      continue;
+    }
+    expect(ledger.used, label).toBeLessThanOrEqual(planned);
+    expect(ledger.used, label).toBeGreaterThan(0);
+    // An independent earlier nested fill has already consumed the rest of the
+    // shared chain ceiling. Even an admitted plan must stop before overspend.
+    const busy = new ImageEffectWorkLedger();
+    busy.charge(MAX_IMAGE_EFFECT_PIXEL_WORK - ledger.used + 1);
+    expect(() => applyBlipPixelEffects(makeBuffer(), value, { workLedger: busy }), label)
+      .toThrowError(expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric: 'image-effect-work' }));
+    expect(busy.used, label).toBeLessThanOrEqual(MAX_IMAGE_EFFECT_PIXEL_WORK);
+    evaluated++;
+  }
+  expect(evaluated).toBeGreaterThan(80);
+});
+
+
+it('budgets restored original-fill workspace while the parent and original snapshot remain live', () => {
+  const width = 2048, height = 4096;
+  const value: BlipPixelEffects = { effects: [{ type: 'alphaMod', container: { kind: 'tree', effects: [
+    { type: 'transform', sx: .001, sy: .001, kx: 0, ky: 0, tx: 0, ty: 0 },
+    { type: 'reference', reference: 'fill' }, { type: 'blur', radius: 9525, grow: false },
+  ] } }] };
+  expect(blipPixelEffectWork(value, width, height)).toBeLessThan(MAX_IMAGE_EFFECT_PIXEL_WORK);
+  expect(() => assertBlipPixelEffectsBudget(value, width * height, { width, height }))
+    .toThrowError(expect.objectContaining({ code: 'ooxml-decoded-image-limit', metric: 'active-decoded-bytes' }));
+});
+
+it('restores the original frame before subsequent affine sampling', () => {
+  const original = { width: 8, height: 6, frame: { x: 2, y: 1, width: 4, height: 3 },
+    data: new Uint8ClampedArray(8 * 6 * 4).fill(137) };
+  const move: BlipEffect = { type: 'transform', sx: 1, sy: 1, kx: 0, ky: 0, tx: 9525, ty: -9525 };
+  const expected = applyBlipPixelEffects({ ...original, data: original.data.slice() }, { effects: [move] });
+  const actual = applyBlipPixelEffects(original, { effects: [
+    { type: 'transform', sx: .001, sy: .001, kx: 0, ky: 0, tx: 0, ty: 0 },
+    { type: 'reference', reference: 'fillLine' }, move,
+  ] });
+  expect(actual).toEqual(expected);
 });

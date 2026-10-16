@@ -44,6 +44,7 @@
 //   saved as a binary .ppt matches it too, with the stored contrast used
 //   directly as k. At c = 1 the result is a threshold at v + b/2 = ½.
 
+import { ImageEffectWorkLedger } from './image-effect-work.js';
 import { validateBlipEffect } from './blip-validation.js';
 import { fillPaintWorkspaceBytes } from '../shape/paint.js';
 import { affinePlan, affinePixels, unionEffectGrids, type Affine } from './blip-spatial.js';
@@ -216,10 +217,20 @@ export function blipPixelEffectPasses(value: BlipPixelEffects): number {
   return effectPlan(value, 0).count;
 }
 
+type EffectGrid = Pick<EffectBuffer, 'width' | 'height' | 'frame'>;
+interface EffectContext {
+  names: Map<string, BlipEffectContainer>;
+  original?: EffectBuffer;
+  charge(work: number): void;
+  chargedDefinitions: Set<BlipEffect>;
+}
+
 interface EffectPlan { count: number; work: number; pixels: number; peak: number; width: number; height: number; frame?: EffectBuffer['frame'] }
-function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width: number; height: number }, runtime?: BlipEffectRuntime): EffectPlan {
+function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: EffectGrid, runtime?: BlipEffectRuntime): EffectPlan {
   if (value.duotone) validateBlipEffect({ type: 'duotone' }, value);
   const names = effectContainers(value.effects, value);
+  const original = { width: geometry?.width ?? pixels, height: geometry?.height ?? 1,
+    frame: geometry?.frame, pixels };
   const active = new Set<BlipEffectContainer>();
   let count = 0, work = 0;
   const chargedDefinitions = new Set<BlipEffect>();
@@ -280,7 +291,15 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
           if (effect.type !== 'reference' || !['fill', 'fillLine', 'line', 'children'].includes(effect.reference)) {
             throw new OoxmlError('unsupported-image-effect', 'Invalid effect container reference');
           }
-          peak = Math.max(peak, current * 2); continue;
+          // §20.1.8.24: fill/fillLine refer to the original picture fill,
+          // including its frame, not the preceding effect's transformed grid.
+          // Keep the old grid live while copying the restored original.
+          if (effect.reference === 'fill' || effect.reference === 'fillLine') {
+            peak = Math.max(peak, current + original.pixels);
+            work += original.pixels;
+            ({ width, height, frame, pixels: current } = original);
+          } else peak = Math.max(peak, current * 2);
+          continue;
         }
         if (active.has(container)) throw new OoxmlError('unsupported-image-effect', 'Cyclic effect container');
         active.add(container);
@@ -317,20 +336,12 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
         active.delete(container);
       } else if (effect.type === 'fillOverlay' || effect.type === 'fill') {
         peak = Math.max(peak, current * 3 + fillPaintWorkspaceBytes(effect.fill) / 4);
-        if (current > 0) work += effectFillWork(effect.fill, { width, height, frame },
-          value.emuPerPixelX ?? 9525, value.emuPerPixelY ?? 9525, runtime);
-        // Brush construction also paints bounded auxiliary rasters (pattern,
-        // gradient tile and path-shade workspace), independently of base size.
-        // One visit per workspace byte conservatively covers the auxiliary
-        // fill/readback passes, mirrored cells, and shade init/solve/write.
-        // Effect fills use a rectangular outline, so edge work is bounded too.
-        if (current > 0) work += fillPaintWorkspaceBytes(effect.fill);
-        if (effect.fill.fillType === 'gradient') work += 2 * effect.fill.stops.length * (1 + Math.max(1, Math.ceil(Math.log2(effect.fill.stops.length)))); // outer and tile brush stops
+        work += fillWork(effect.fill, { width, height, frame }, value, runtime);
       }
     }
     return { count, work, width, height, frame, pixels: current, peak };
   };
-  const result = visit(value.effects, { width: geometry?.width ?? pixels, height: geometry?.height ?? 1, pixels });
+  const result = visit(value.effects, original);
   if (value.duotone && !value.effects.some(e => e.type === 'duotone')) { result.count++; result.work += result.pixels; }
   // One decoded source remains owned while the readback pipeline runs. The
   // readback backing store is explicitly released before graph evaluation.
@@ -409,7 +420,7 @@ function usesOriginalImage(effects: readonly BlipEffect[], seen = new Set<BlipEf
  * quota failure as an over-budget decode; effects are never dropped or
  * truncated to fit. `pixels` 0 checks the pass count alone (before decoding).
  */
-export function assertBlipPixelEffectsBudget(value: BlipPixelEffects, pixels: number, geometry?: { width: number; height: number }, additionalPixels = 0): void {
+export function assertBlipPixelEffectsBudget(value: BlipPixelEffects, pixels: number, geometry?: EffectGrid, additionalPixels = 0): void {
   const plan = effectPlan(value, pixels, geometry);
   if (plan.count > MAX_IMAGE_EFFECT_PASSES) throw new OoxmlDecodedImageLimitError('image-effect-count', MAX_IMAGE_EFFECT_PASSES, plan.count);
   if (!Number.isSafeInteger(plan.work) || plan.work > MAX_IMAGE_EFFECT_PIXEL_WORK) {
@@ -435,23 +446,38 @@ export function applyBlipPixelEffects(buf: EffectBuffer, value: BlipPixelEffects
     additional += size.width * size.height;
   }
   assertBlipPixelEffectsBudget(value, d.length / 4, buf, additional);
-  const work = blipPixelEffectWork(value, buf.width, buf.height, runtime);
+  const work = effectPlan(value, buf.width * buf.height, buf, runtime).work;
   if (!Number.isSafeInteger(work) || work > MAX_IMAGE_EFFECT_PIXEL_WORK) {
     throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK,
       Number.isSafeInteger(work) ? work : Number.MAX_SAFE_INTEGER);
   }
-  const context = { names: effectContainers(value.effects, value), original: usesOriginalImage(value.effects) ? clonePixels(buf) : undefined };
-  try { return evaluateBlipPixels(buf, value, runtime, context); }
-  catch (error) {
+  const local = new ImageEffectWorkLedger(Math.min(work, MAX_IMAGE_EFFECT_PIXEL_WORK));
+  const context: EffectContext = {
+    names: effectContainers(value.effects, value), chargedDefinitions: new Set(),
+    charge: amount => { local.charge(amount); runtime.workLedger?.charge(amount); },
+  };
+  try {
+    if (usesOriginalImage(value.effects)) context.original = clonePixels(buf, context);
+    return evaluateBlipPixels(buf, value, runtime, context);
+  } catch (error) {
     if (error instanceof OoxmlError || error instanceof OoxmlDecodedImageLimitError) throw error;
     throw new OoxmlError('unsupported-image-effect', 'Image effect evaluation unavailable');
   }
 }
 function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime: BlipEffectRuntime,
-  currentContext: { names: Map<string, BlipEffectContainer>; original?: EffectBuffer }): EffectBuffer {
+  currentContext: EffectContext): EffectBuffer {
   let d = buf.data;
   let duotoneApplied = false;
   for (const effect of value.effects) {
+    if (effect.type === 'definitions') {
+      if (!currentContext.chargedDefinitions.has(effect)) {
+        currentContext.charge(effect.work); currentContext.chargedDefinitions.add(effect);
+      }
+      continue;
+    }
+    // Charge from the live buffer before touching pixels. Control operations
+    // conservatively reserve a parent-grid visit as in the early plan.
+    currentContext.charge(buf.width * buf.height);
     const expanded = expandBlipEffect(effect, buf, value);
     if (expanded) {
       buf = evaluateBlipPixels(buf, { ...value, effects: expanded, duotone: undefined }, runtime, currentContext);
@@ -459,12 +485,15 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
     }
     switch (effect.type) {
       case 'effectCountLimit': break; // rejected by resource preflight
-      case 'definitions': break; // named recipes are evaluated only through references
-      case 'transform':
+      case 'transform': {
+        const grid = affinePlan(buf, blipAffine(effect, value));
+        currentContext.charge(grid.width * grid.height * 5);
         buf = affinePixels(buf, blipAffine(effect, value)); d = buf.data; break;
+      }
       case 'alphaOutset': {
-        const mask = evaluateBlipPixels(clonePixels(buf), { ...value, duotone: undefined,
+        const mask = evaluateBlipPixels(clonePixels(buf, currentContext), { ...value, duotone: undefined,
           effects: blipMaskOperations(effect, buf, value) as readonly BlipEffect[] }, runtime, currentContext);
+        currentContext.charge(buf.width * buf.height * 2 + mask.width * mask.height);
         for (let y = 0; y < mask.height; y++) for (let x = 0; x < mask.width; x++) {
           const i = (y * mask.width + x) * 4;
           const rgb = sampleEffectPixel(buf, mask, x, y);
@@ -474,7 +503,8 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
       }
       case 'reflection': {
         const r = effect.reflection;
-        const faded = clonePixels(buf);
+        const faded = clonePixels(buf, currentContext);
+        currentContext.charge(buf.width * buf.height * 2); // fade and mask postprocessing
         // The ramp spans the previous grid, including grown/transformed
         // pixels, in physical axes (§20.1.8.50). Pull page-fixed directions
         // back through the host just like the reflection's affine transform.
@@ -492,12 +522,14 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
           faded.data[i] = Math.round(faded.data[i] * (r.stA + (r.endA - r.stA) * t));
         }
         buf = evaluateBlipPixels(faded, { ...value, duotone: undefined,
-          effects: blipMaskOperations(effect, buf, value) as readonly BlipEffect[] }, runtime, currentContext); d = buf.data; break;
+          effects: blipMaskOperations(effect, buf, value) as readonly BlipEffect[] }, runtime, currentContext);
+        currentContext.charge(buf.width * buf.height); d = buf.data; break;
       }
       case 'shadow': { // Inner shadow is parent alpha * (1 - blurred shifted parent alpha).
         const shadow = effect.shadow;
-        const mask = evaluateBlipPixels(clonePixels(buf), { ...value, duotone: undefined,
+        const mask = evaluateBlipPixels(clonePixels(buf, currentContext), { ...value, duotone: undefined,
           effects: blipMaskOperations(effect, buf, value) as readonly BlipEffect[] }, runtime, currentContext);
+        currentContext.charge(buf.width * buf.height * 2 + mask.width * mask.height);
         const rgb = hex6ToRgb(shadow.color) ?? [0, 0, 0];
         for (let y = 0; y < buf.height; y++) for (let x = 0; x < buf.width; x++) {
           const i = (y * buf.width + x) * 4;
@@ -508,6 +540,7 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
         break;
       }
       case 'fill':
+        currentContext.charge(fillWork(effect.fill, buf, value, runtime));
         buf = { ...effectFillPixels(effect.fill, buf, value.emuPerPixelX ?? 9525,
           value.emuPerPixelY ?? 9525, runtime, value.hostRotation), frame: buf.frame }; d = buf.data; break;
       case 'glow': case 'relativeOffset': case 'softEdge': case 'presetShadow': break; // expanded above
@@ -527,7 +560,7 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
       case 'blend':
       case 'container':
         buf = effect.type === 'blend'
-          ? composeEffectBuffers(buf, evaluateContainer(buf, effect.container, value, runtime, currentContext), effect.blend)
+          ? composeEffectBuffers(buf, evaluateContainer(buf, effect.container, value, runtime, currentContext), effect.blend, currentContext)
           : evaluateContainer(buf, effect.container, value, runtime, currentContext);
         d = buf.data; break;
       case 'reference': {
@@ -536,11 +569,12 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
           // CT_Blip's input is the embedded image: it has fill coverage and
           // no line or logical children. Picture outlines/child shapes belong
           // to the host's separate outer shape-effect tree.
-          : ['fill', 'fillLine'].includes(effect.reference) ? clonePixels(currentContext.original ?? buf)
+          : ['fill', 'fillLine'].includes(effect.reference) ? clonePixels(currentContext.original ?? buf, currentContext)
             : { width: buf.width, height: buf.height, frame: buf.frame, data: new Uint8ClampedArray(d.length) };
         d = buf.data; break;
       }
       case 'fillOverlay': {
+        currentContext.charge(fillWork(effect.fill, buf, value, runtime));
         const overlay = effectFillPixels(effect.fill, buf, value.emuPerPixelX ?? 9525,
           value.emuPerPixelY ?? 9525, runtime, value.hostRotation);
         for (let i = 0; i < d.length; i += 4) {
@@ -549,6 +583,8 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
         break;
       }
       case 'blur':
+        if (effect.radius !== 0) currentContext.charge(blurPlan(buf.width, buf.height,
+          effect.radius / (value.emuPerPixelX ?? 9525), effect.radius / (value.emuPerPixelY ?? 9525), effect.grow).work);
         buf = blurPixels(buf, effect.radius / (value.emuPerPixelX ?? 9525),
           effect.radius / (value.emuPerPixelY ?? 9525), effect.grow);
         d = buf.data;
@@ -587,6 +623,7 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
         break;
       }
       case 'luminance': {
+        currentContext.charge(256);
         const table = luminanceTable(effect.bright, effect.contrast);
         for (let i = 0; i < d.length; i += 4) {
           d[i] = table[d[i]];
@@ -665,8 +702,23 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
         break;
     }
   }
-  if (!duotoneApplied && value.duotone) duotoneImageData(buf, value.duotone.clr1, value.duotone.clr2);
+  if (!duotoneApplied && value.duotone) {
+    currentContext.charge(buf.width * buf.height);
+    duotoneImageData(buf, value.duotone.clr1, value.duotone.clr2);
+  }
   return buf;
+}
+
+/** Bound brush construction as well as its output-grid raster/readback.
+ * One visit per auxiliary workspace byte conservatively covers pattern/gradient
+ * tile painting, mirrored cells, path-shade init/solve/write and readback.
+ * Effect fills use a rectangular outline, bounding their edge work too. */
+function fillWork(fill: BlipEffectFill, grid: EffectGrid, value: BlipPixelEffects, runtime?: BlipEffectRuntime): number {
+  const pixels = grid.width * grid.height;
+  let work = pixels > 0 ? effectFillWork(fill, grid, value.emuPerPixelX ?? 9525, value.emuPerPixelY ?? 9525, runtime)
+    + fillPaintWorkspaceBytes(fill) : 0;
+  if (fill.fillType === 'gradient') work += 2 * fill.stops.length * (1 + Math.max(1, Math.ceil(Math.log2(fill.stops.length))));
+  return work;
 }
 
 function blipAffine(effect: Extract<BlipEffect, { type: 'transform' }>, value: BlipPixelEffects): Affine {
@@ -674,8 +726,9 @@ function blipAffine(effect: Extract<BlipEffect, { type: 'transform' }>, value: B
   return [effect.sx, Math.tan(effect.ky * Math.PI / 180) * ex / ey,
     Math.tan(effect.kx * Math.PI / 180) * ey / ex, effect.sy, effect.tx / ex, effect.ty / ey];
 }
-function composeEffectBuffers(base: EffectBuffer, overlay: EffectBuffer, mode: BlendMode): EffectBuffer {
+function composeEffectBuffers(base: EffectBuffer, overlay: EffectBuffer, mode: BlendMode, context: EffectContext): EffectBuffer {
   const grid = unionEffectGrids(base, overlay);
+  context.charge(grid.width * grid.height);
   const bf = base.frame;
   const sameGrid = grid.width === base.width && grid.height === base.height
     && grid.frame.x === (bf?.x ?? 0) && grid.frame.y === (bf?.y ?? 0);
@@ -688,7 +741,8 @@ function composeEffectBuffers(base: EffectBuffer, overlay: EffectBuffer, mode: B
   return result;
 }
 
-function clonePixels(input: EffectBuffer): EffectBuffer {
+function clonePixels(input: EffectBuffer, context: EffectContext): EffectBuffer {
+  context.charge(input.width * input.height);
   // ImageData dimensions are prototype accessors in browsers, so object
   // spread would lose them and turn recursive masks into empty grids.
   return { width: input.width, height: input.height, frame: input.frame,
@@ -706,18 +760,18 @@ function sampleEffectPixel(source: EffectBuffer, target: EffectBuffer, x: number
   return i < 0 ? TRANSPARENT_PIXEL : source.data.subarray(i, i + 4);
 }
 function evaluateContainer(parent: EffectBuffer, container: BlipEffectContainer,
-  value: BlipPixelEffects, runtime: BlipEffectRuntime, context: { names: Map<string, BlipEffectContainer>; original?: EffectBuffer }): EffectBuffer {
+  value: BlipPixelEffects, runtime: BlipEffectRuntime, context: EffectContext): EffectBuffer {
   // §20.1.10.22: a tree is sequential; siblings independently consume the
   // parent and are composited in authored order. Empty tree = parent;
   // empty sibling container produces no effect pixels.
-  if (container.kind === 'tree') return evaluateBlipPixels(clonePixels(parent), {
+  if (container.kind === 'tree') return evaluateBlipPixels(clonePixels(parent, context), {
     ...value, duotone: undefined, effects: container.effects,
   }, runtime, context);
   let result: EffectBuffer = { width: parent.width, height: parent.height, frame: parent.frame,
     data: new Uint8ClampedArray(parent.data.length) };
   for (const effect of container.effects) {
-    const branch = evaluateBlipPixels(clonePixels(parent), { ...value, duotone: undefined, effects: [effect] }, runtime, context);
-    result = composeEffectBuffers(result, branch, 'over');
+    const branch = evaluateBlipPixels(clonePixels(parent, context), { ...value, duotone: undefined, effects: [effect] }, runtime, context);
+    result = composeEffectBuffers(result, branch, 'over', context);
   }
   return result;
 }

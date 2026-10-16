@@ -1,3 +1,4 @@
+import { ImageEffectWorkLedger } from './image-effect-work.js';
 import { preferVectorBlip } from './blip-gate.js';
 import { acquireCurrentBitmapCacheLease } from './bitmap-image-by-path.js';
 import { MAX_IMAGE_EFFECT_PIXEL_WORK, OoxmlDecodedImageLimitError } from './pixel-budget.js';
@@ -22,14 +23,14 @@ export async function getCachedDuotoneBitmapByPath(
   if (!isBlipPixelEffects(value)) return getCachedDuotoneOnlyBitmapByPath(imagePath, mimeType, value, fetchImage, opts);
   assertBlipPixelEffectsBudget(value, 0);
   const release = blipEffectImageFills(value.effects).length ? acquireCurrentBitmapCacheLease(fetchImage) : undefined;
-  return loadEffects(imagePath, mimeType, value, fetchImage, opts, { work: 0 }).finally(() => release?.());
+  return loadEffects(imagePath, mimeType, value, fetchImage, opts, { work: 0, execution: new ImageEffectWorkLedger() }).finally(() => release?.());
 }
 // Validation failures must reject the promise so the outer source lease is released.
 async function loadEffects(
   imagePath: string, mimeType: string, value: BlipPixelEffects,
   fetchImage: Parameters<typeof getCachedPixelTransformBitmapByPath>[3],
   opts: NonNullable<Parameters<typeof getCachedPixelTransformBitmapByPath>[4]>,
-  ledger: { work: number },
+  ledger: { work: number; execution: ImageEffectWorkLedger },
 ): Promise<ImageBitmap | null> {
   // JSON tuples encode valid finite physical dimensions without decimal
   // ambiguity. Reject invalid numbers before JSON can collapse them to null.
@@ -100,6 +101,6 @@ async function loadEffects(
       if (ledger.work > MAX_IMAGE_EFFECT_PIXEL_WORK) throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK, ledger.work);
     },
     apply: (base, options) => applyImageDataTransform(base,
-      data => applyBlipPixelEffects(data, physical(base.width, base.height), { offscreenFactory: opts.offscreenFactory, images, baseImage: base }), options),
+      data => applyBlipPixelEffects(data, physical(base.width, base.height), { offscreenFactory: opts.offscreenFactory, images, baseImage: base, workLedger: ledger.execution }), options),
   }, fetchImage, opts);
 }
