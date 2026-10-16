@@ -5214,11 +5214,11 @@ function acquireParagraphCandidate(
             if (reference) references.set(occurrenceId, reference);
           }
           lineReferences = references;
-          // Host-line policy B: after reference acquisition, all exclusions still
-          // apply to the host line. Whether Word instead exempts that line (A),
-          // especially for padding-only overlap, remains an open compatibility
-          // question requiring controlled Office evidence. Any future exemption
-          // belongs at the anchorLineExemptions decision below, not in this frame.
+          // WORD_LINE_ANCHOR_HOST_LINE_WRAPS: retaining the pre-wrap reference
+          // does not exempt the host line from its own exclusion, including
+          // padding-only overlap. Evidence and measurement limits live in
+          // anchor-compatibility.ts. The separate mode-14 tight exception belongs
+          // at anchorLineExemptions below, not in reference acquisition.
           if (measuredOtherObjects) {
             layout = projectAcquiredParagraph(
               paragraph, projectionOptions, measured, stage, lineReferences,
