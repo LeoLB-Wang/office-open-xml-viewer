@@ -1,3 +1,8 @@
+import {
+  DEFAULT_XLSX_WORKSHEET_POLICY,
+  normalizeXlsxWorksheetPolicy,
+  type NormalizedXlsxWorksheetPolicy,
+} from './internal/worksheet-policy.js';
 import { bindCellFontLanguage, snapshotJapaneseCellFonts } from './internal/cell-font-language.js';
 import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
 import { xlsxCjkFallback } from './google-fonts.js';
@@ -40,9 +45,6 @@ import {
   HARD_MAX_RAW_PART_CACHE_BYTES,
   HARD_MAX_RAW_PART_CACHE_ENTRIES,
   respondToWorkerSvgDecodeRequest,
-  DEFAULT_XLSX_WORKSHEET_POLICY,
-  normalizeXlsxWorksheetPolicy,
-  type NormalizedXlsxWorksheetPolicy,
 } from '@silurus/ooxml-core/worker';
 import { BoundedRawPartCache } from '@silurus/ooxml-core/internal/bounded-raw-part-cache';
 import type { ParsedWorkbook, Worksheet, ViewportRange, RenderViewportOptions, XlsxRenderViewportOptions, WorkerRequest, WorkerResponse, Cell, SheetVisibility, XlsxComment } from './types.js';
@@ -303,7 +305,7 @@ export class XlsxWorkbook {
       format: 'xlsx',
       mode,
       policy: resourceOptions.policy,
-      xlsxWorksheetPolicy: worksheetPolicy,
+      formatLimits: { xlsxWorksheetLimits: { ...worksheetPolicy.worksheet } },
       onMetrics: resourceOptions.onResourceMetrics,
       emitToConsole: resourceOptions.debug,
     });
@@ -378,7 +380,7 @@ export class XlsxWorkbook {
       format: 'xlsx',
       mode,
       policy: resourceOptions.policy,
-      xlsxWorksheetPolicy: worksheetPolicy,
+      formatLimits: { xlsxWorksheetLimits: { ...worksheetPolicy.worksheet } },
       onMetrics: resourceOptions.onResourceMetrics,
       emitToConsole: resourceOptions.debug,
     });

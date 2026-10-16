@@ -4,6 +4,7 @@ import {
   materializeDocumentPullLayoutSession,
   materializeDocumentPullSession,
   normalizeDocxDocumentModel,
+  normalizeDocxParserError,
   normalizeLayoutOptions,
   retainRenderWorkerDocumentLayout,
   type AcquiredDocxNodeDocument,
@@ -14,7 +15,7 @@ import {
   type DocxNodeArchive,
 } from '@silurus/ooxml-docx/internal/session';
 import { resolveCjkFallback } from '@silurus/ooxml-core';
-import { parseResourceLimitError } from '@silurus/ooxml-core/worker';
+import { parseResourceLimitError, parseTypedParserError } from '@silurus/ooxml-core/worker';
 import { usingOwnedSession } from '@silurus/ooxml-core/internal/owned-session';
 import type { DocxDocumentModel } from '@silurus/ooxml-docx';
 import type { OoxmlNodeSessionOptions } from './session-options.ts';
@@ -151,6 +152,7 @@ export async function acquireDocxInput<TResult>(
   } = await import('@silurus/ooxml-docx/internal/model-source-session');
   const input = await resolveNodeSessionInput(
     buffer, 'docx', options, validateDocxModelSourceArchive,
+    error => parseTypedParserError(error) ?? normalizeDocxParserError(error),
   );
   if (input.kind === 'ooxml') {
     return {

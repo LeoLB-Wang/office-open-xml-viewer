@@ -1,5 +1,8 @@
 import {
   DEFAULT_XLSX_WORKSHEET_POLICY,
+  type NormalizedXlsxWorksheetPolicy,
+} from './internal/worksheet-policy.js';
+import {
   HARD_MAX_XLSX_WORKBOOK_CACHED_CELLS,
   HARD_MAX_XLSX_WORKBOOK_CACHED_CELL_CONTENT_UTF8_BYTES,
   HARD_MAX_XLSX_WORKBOOK_CACHED_JSON_BYTES,
@@ -9,7 +12,6 @@ import {
   HARD_MAX_XLSX_WORKSHEET_JSON_BYTES,
   HARD_MAX_XLSX_WORKSHEET_ROWS,
   resourceLimitMessage,
-  type NormalizedXlsxWorksheetPolicy,
 } from '@silurus/ooxml-core/worker';
 import {
   OoxmlResourceLimitError,

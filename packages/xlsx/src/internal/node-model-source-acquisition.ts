@@ -1,7 +1,7 @@
+import { normalizeXlsxWorksheetPolicy } from './worksheet-policy.js';
 import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import {
   normalizeLoadResourceOptions,
-  normalizeXlsxWorksheetPolicy,
   OoxmlResourceMetricsSession,
   parseTypedParserError,
 } from '@silurus/ooxml-core/worker';
@@ -43,7 +43,7 @@ export function acquireXlsxSessionFromArchive(
     metrics = new OoxmlResourceMetricsSession({
       enabled: resourceOptions.debug || resourceOptions.onResourceMetrics !== undefined,
       format: 'xlsx', mode: 'node', scope: 'session', policy: resourceOptions.policy,
-      xlsxWorksheetPolicy: worksheetPolicy,
+      formatLimits: { xlsxWorksheetLimits: { ...worksheetPolicy.worksheet } },
       onMetrics: resourceOptions.onResourceMetrics, emitToConsole: resourceOptions.debug,
     });
     metrics.setSourceBytes(owned.sourceByteLength);

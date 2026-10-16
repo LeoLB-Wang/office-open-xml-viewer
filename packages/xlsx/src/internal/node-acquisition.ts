@@ -1,12 +1,14 @@
+import {
+  normalizeXlsxWorksheetPolicy,
+  xlsxWorksheetPolicyForWasm,
+  type NormalizedXlsxWorksheetPolicy,
+} from './worksheet-policy.js';
 import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import {
   normalizeLoadResourceOptions,
-  normalizeXlsxWorksheetPolicy,
   OoxmlResourceMetricsSession,
   parseTypedParserError,
   resourcePolicyForWasm,
-  xlsxWorksheetPolicyForWasm,
-  type NormalizedXlsxWorksheetPolicy,
 } from '@silurus/ooxml-core/worker';
 import {
   WasmRuntimeGenerationHost,
@@ -109,7 +111,7 @@ export async function acquireXlsxNodeSession(
     mode: 'node',
     scope: 'session',
     policy: resourceOptions.policy,
-    xlsxWorksheetPolicy: worksheetPolicy,
+    formatLimits: { xlsxWorksheetLimits: { ...worksheetPolicy.worksheet } },
     onMetrics: resourceOptions.onResourceMetrics,
     emitToConsole: resourceOptions.debug,
   });
