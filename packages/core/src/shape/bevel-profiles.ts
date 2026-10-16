@@ -1,10 +1,25 @@
 /** Office profile control points: MS-OI29500 §2.1.1316 (ECMA §20.1.10.9).
- * Each pair is (height, inward distance); height alone is stretched to its
- * maximum. Segments contain one, two or three pairs for line/quadratic/cubic.
- * These are reference definitions, not a fit to rendered samples. The literal
- * documented axis mapping still disagrees with Office's circle highlight rolloff
- * on front-view rectangle controls. That unresolved surface-coordinate mapping
- * is not antialiasing noise; no curve reversal or fitted correction is installed.
+ * Segments contain one, two or three points for line/quadratic/cubic; the
+ * coordinates are the documented pseudocode values, unchanged.
+ *
+ * Axis assignment (observed Office behavior, not the §2.1.1316 prose). The
+ * prose calls the first coordinate the height and the second the inward
+ * distance. Read that way, `circle` is a concave cove that is flat at the
+ * silhouette and vertical at the inner band edge, which paints a dark crease
+ * inside the rim and leaves the rim itself unlit. Windows PowerPoint front-view
+ * controls (all 12 presets on rectangles, bevel w = h from 3 to 23.4 pt, matte
+ * threePt, all four edges) instead place every documented feature at the FIRST
+ * coordinate as inward distance and the SECOND as height: circle darkens
+ * monotonically toward the silhouette (convex quarter round); cross creases at
+ * 0.5 of the band width and its face starts at 0.6 (the first coordinate is not
+ * stretched); artDeco creases at 1/3; slope's rising and falling flanks sit at
+ * 0–0.125 and 0.75–0.875; softRound rises within the first tenth and descends
+ * smoothly to its 1/3-height face. Each of those is mirrored or displaced under
+ * the prose reading. So each point is (inward distance, height): the inward
+ * axis is scaled 0..1 to 0..bevel width, and the height axis is normalized to
+ * its maximum (the prose's "stretched to fully fill the bevel height"). A
+ * profile ending at inward < 1 leaves the rest of the band as its flat face at
+ * the profile's end height. No coordinate is fitted, reversed or rescaled.
  */
 const CURVES: Readonly<Record<string, readonly (readonly number[])[]>> = {
   angle: [[1.0, 1.0]],
@@ -75,8 +90,9 @@ const CURVES: Readonly<Record<string, readonly (readonly number[])[]>> = {
 
 // A fixed 1024-interval visible-surface lookup bounds work independently of
 // canvas size, bevel dimensions and document input. Cubics are subdivided into
-// 256 line segments. At overhangs select the greatest height along the viewing
-// ray; the raised flat face occludes the curve beyond its final inward distance.
+// 256 line segments. Where the curve folds back over an inward distance (an
+// overhang), select the greatest height along the front viewing ray. Beyond
+// the final inward distance the band is the flat face at the end height.
 // This is a front-view surface, not a full camera-dependent bevel tessellation.
 const RESOLUTION = 1024;
 interface Profile {
@@ -86,63 +102,64 @@ interface Profile {
 function compile(segments: readonly (readonly number[])[]): Profile {
   const height = new Float64Array(RESOLUTION + 1).fill(-Infinity);
   const slope = new Float64Array(RESOLUTION + 1);
+  // x: inward distance (band fraction); y: height. See the CURVES note.
+  const xs = [0],
+    ys = [0];
   let x0 = 0,
     y0 = 0;
-  const last = segments[segments.length - 1];
-  const endY = last[last.length - 1];
-  // All documented curves reach their maximum height at the final endpoint.
-  const maxX = last[last.length - 2];
   for (const segment of segments) {
     const degree = segment.length / 2;
-    let prevX = x0,
-      prevY = y0;
     for (let step = 1; step <= 256; step++) {
       const t = step / 256,
         u = 1 - t;
-      let x: number, y: number;
       if (degree === 1) {
-        x = u * x0 + t * segment[0];
-        y = u * y0 + t * segment[1];
+        xs.push(u * x0 + t * segment[0]);
+        ys.push(u * y0 + t * segment[1]);
       } else if (degree === 2) {
-        x = u * u * x0 + 2 * u * t * segment[0] + t * t * segment[2];
-        y = u * u * y0 + 2 * u * t * segment[1] + t * t * segment[3];
+        xs.push(u * u * x0 + 2 * u * t * segment[0] + t * t * segment[2]);
+        ys.push(u * u * y0 + 2 * u * t * segment[1] + t * t * segment[3]);
       } else {
-        x =
+        xs.push(
           u * u * u * x0 +
-          3 * u * u * t * segment[0] +
-          3 * u * t * t * segment[2] +
-          t * t * t * segment[4];
-        y =
-          u * u * u * y0 +
-          3 * u * u * t * segment[1] +
-          3 * u * t * t * segment[3] +
-          t * t * t * segment[5];
-      }
-      const dy = y - prevY,
-        dx = (x - prevX) / maxX;
-      if (dy !== 0) {
-        const lo = Math.max(0, Math.ceil(Math.min(prevY, y) * RESOLUTION));
-        const hi = Math.min(
-          RESOLUTION,
-          Math.floor(Math.max(prevY, y) * RESOLUTION),
+            3 * u * u * t * segment[0] +
+            3 * u * t * t * segment[2] +
+            t * t * t * segment[4],
         );
-        for (let i = lo; i <= hi; i++) {
-          const z = prevX / maxX + ((i / RESOLUTION - prevY) * dx) / dy;
-          if (z > height[i]) {
-            height[i] = z;
-            slope[i] = dx / dy;
-          }
-        }
+        ys.push(
+          u * u * u * y0 +
+            3 * u * u * t * segment[1] +
+            3 * u * t * t * segment[3] +
+            t * t * t * segment[5],
+        );
       }
-      prevX = x;
-      prevY = y;
     }
     x0 = segment[segment.length - 2];
     y0 = segment[segment.length - 1];
   }
+  // Normalize to the curve's own peak height (not a control point's).
+  const maxY = Math.max(...ys);
+  for (let k = 1; k < xs.length; k++) {
+    const px = xs[k - 1],
+      x = xs[k],
+      py = ys[k - 1] / maxY,
+      dx = x - px,
+      dy = ys[k] / maxY - py;
+    // A vertical piece (dx = 0) is a crease between neighbouring samples.
+    if (dx === 0) continue;
+    const lo = Math.max(0, Math.ceil(Math.min(px, x) * RESOLUTION));
+    const hi = Math.min(RESOLUTION, Math.floor(Math.max(px, x) * RESOLUTION));
+    for (let i = lo; i <= hi; i++) {
+      const z = py + ((i / RESOLUTION - px) * dy) / dx;
+      if (z > height[i]) {
+        height[i] = z;
+        slope[i] = dy / dx;
+      }
+    }
+  }
+  // Beyond the final inward distance the band is the flat face.
   for (let i = 0; i <= RESOLUTION; i++) {
-    if (i / RESOLUTION >= endY) {
-      height[i] = 1;
+    if (i / RESOLUTION >= x0) {
+      height[i] = y0 / maxY;
       slope[i] = 0;
     }
   }
