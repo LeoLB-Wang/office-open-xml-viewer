@@ -7655,9 +7655,15 @@ export function renderTable(
       // already folded into body.vert, omitted or `horz`). How the physical x
       // interval maps onto rotated, stacked or unknown directions is not settled
       // here, so those bodies keep their previous unclipped paint and overlays.
-      // The parser resolves ST_TextVerticalType token padding for bodyPr and
-      // tcPr before painting; unknown directions keep the admission gate closed.
-      const isHorizontal = cell.textBody.vert === undefined || cell.textBody.vert === 'horz';
+      // DrawingML ST_TextVerticalType restricts xsd:token in both strict and
+      // transitional schemas. For this single-word enum, collapse accepts only
+      // U+0020/TAB/LF/CR at the ends; NBSP and internal whitespace cannot mean
+      // `horz`. Apply this only to admission, leaving the body/paint policy intact.
+      // Keep this tolerant for caller-supplied and previously parsed models too;
+      // normalizing the shared direction would also change orientation dispatch.
+      const rawVert = cell.textBody.vert;
+      const isHorizontal = rawVert === undefined || typeof rawVert === 'string'
+        && /^[ \t\r\n]*horz[ \t\r\n]*$/.test(rawVert);
       cellHorzOverflow = !isHorizontal ? undefined
         : cell.horzOverflow === 'overflow' ? 'overflow' : 'clip';
       ctx.save();

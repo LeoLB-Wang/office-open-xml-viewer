@@ -16,8 +16,8 @@ use crate::master::{
 };
 use crate::text::{
     complete_level_faces, complete_level_sizes, empty_level_bullets, parse_text_body,
-    parse_text_vertical_type, resolve_latin_face, InheritedBodyPr, LevelBullets, LevelFaces,
-    LevelFontSizes, LevelIndents, LevelRunProperties, RunProperties, HARD_DEFAULT_LATIN_FACE,
+    resolve_latin_face, InheritedBodyPr, LevelBullets, LevelFaces, LevelFontSizes, LevelIndents,
+    LevelRunProperties, RunProperties, HARD_DEFAULT_LATIN_FACE,
 };
 use crate::theme::{PptxRawSchemeResolver, PptxSchemeResolver, PptxThemeSource};
 use crate::types::*;
@@ -2562,9 +2562,7 @@ fn parse_table_cell_with_chain(
     let anchor = tc_pr
         .and_then(|n| attr(&n, "anchor"))
         .map(|a| a.to_string());
-    let text_direction = tc_pr
-        .and_then(|n| attr(&n, "vert"))
-        .map(|value| parse_text_vertical_type(&value));
+    let text_direction = tc_pr.and_then(|n| attr(&n, "vert"));
     // Table-cell margins (tcPr marL/marT/marR/marB) play the role of the
     // inherited insets for the cell's text body.
     let text_insets = tc_pr.map(|n| InheritedBodyPr {
@@ -4352,14 +4350,18 @@ mod style_ref_tests {
     }
 
     #[test]
-    fn table_cell_vertical_tokens_collapse_only_xml_padding() {
+    fn table_cell_vertical_tokens_preserve_raw_direction() {
         for (raw, expected) in [
             ("horz", "horz"),
-            ("&#x20;&#x9;horz&#xA;&#xD;", "horz"),
+            ("&#x20;&#x9;horz&#xA;&#xD;", " \thorz\n\r"),
             ("&#xA0;horz&#xA0;", "\u{a0}horz\u{a0}"),
             ("ho&#x9;rz", "ho\trz"),
-            (" vert270 ", "vert270"),
+            (" vert270 ", " vert270 "),
+            (" vert ", " vert "),
+            (" wordArtVert ", " wordArtVert "),
         ] {
+            // Keep the direction unchanged for orientation dispatch; only the
+            // renderer's horizontal clip admission tolerates XML token padding.
             // bodyPr serves table and shape text; tcPr overrides it for cells.
             for on_cell in [false, true] {
                 let (body_attr, cell_attr) = if on_cell {
