@@ -21,7 +21,7 @@ describe('independent DOC reading policy composition', () => {
     expect(() => readLegacySourceModuleConfig(descriptor.config, 'legacy PPT'))
       .toThrow('unknown field');
     expect(legacyDocSource({ wasmUrl }).beginLoad().module.config)
-      .toEqual({ wasmUrl, maxInputBytes: 256 * 1024 * 1024 });
+      .toEqual({ wasmUrl });
   });
 
   it('keeps concurrent mixed and single-capability opens independent of the strict constructor', async () => {
@@ -61,7 +61,7 @@ describe('independent DOC reading policy composition', () => {
     expect(() => readLegacyDocSourceModuleConfig(invalid)).toThrow(TypeError);
     // A failed mixed selection cannot contaminate a subsequent strict descriptor.
     expect(readLegacyDocSourceModuleConfig(legacyDocSource({ wasmUrl }).beginLoad().module.config))
-      .toEqual({ wasmUrl, maxInputBytes: 256 * 1024 * 1024,
+      .toEqual({ wasmUrl,
         nativeContourPolicy: 'strict', nativeWordBreakingPolicy: 'strict', nativePictureBulletPolicy: 'strict' });
   });
 });

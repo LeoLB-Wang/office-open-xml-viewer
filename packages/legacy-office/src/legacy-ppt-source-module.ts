@@ -24,7 +24,7 @@ export async function openModelSource(
   signal?: AbortSignal,
 ): Promise<Readonly<{ archive: LegacyPptNativeArchive; close(): void }>> {
   const { wasmUrl, maxInputBytes } = readLegacySourceModuleConfig(config, 'legacy PPT');
-  if (bytes.byteLength > maxInputBytes) {
+  if (maxInputBytes !== undefined && bytes.byteLength > maxInputBytes) {
     throw new RangeError('legacy PPT input exceeds the configured size limit');
   }
   const owned = await engine.open(bytes, wasmUrl, signal);

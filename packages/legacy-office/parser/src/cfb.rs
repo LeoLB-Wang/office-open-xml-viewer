@@ -2,12 +2,15 @@
 //!
 //! This intentionally implements only the read path the passive readers need.
 //! Sector chains, DIFAT/FAT tables, MiniFAT streams, and directory entries are
-//! validated before a legacy-format parser sees any bytes. The bounds follow
-//! [MS-CFB] sections 2.2 through 2.6. Format classification and the byte
+//! validated as their data is read, before returning it to a legacy parser.
+//! The structural bounds follow [MS-CFB] sections 2.2 through 2.6. Format classification and the byte
 //! conversion's XLS and PPT readers still use flat lookup; parent-scoped
 //! lookup, used by the DOC readers and the direct XLS and PPT sources,
 //! additionally validates the directory hierarchy from the root storage.
 
+mod budget;
+use budget::Budget;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -47,10 +50,14 @@ pub struct CompoundFile<'a> {
     mini_stream_cutoff: u64,
     physical_sectors: usize,
     fat: Vec<u32>,
-    mini_fat: Vec<u32>,
+    mini_fat: RefCell<Option<Vec<u8>>>,
+    first_mini_fat_sector: u32,
+    num_mini_fat_sectors: usize,
+    root: DirectoryEntry,
+    budget: Budget,
     // Raw directory IDs index this vector, including unallocated slots.
     directory: Vec<DirectorySlot>,
-    root_mini_stream: Vec<u8>,
+    root_mini_stream: RefCell<Option<Vec<u8>>>,
 }
 
 pub struct ScopedStreams<'cfb, 'data> {
@@ -67,6 +74,7 @@ impl ScopedStreams<'_, '_> {
     }
 
     fn resolve_stream_entry(&self, path: &[&str]) -> Result<Option<DirectoryEntry>, String> {
+        self.compound.budget.check()?;
         if path.is_empty() {
             return Err("empty CFB stream path".into());
         }
@@ -78,10 +86,11 @@ impl ScopedStreams<'_, '_> {
             if self.has_non_ascii_child[parent] {
                 return Err("non-ASCII sibling in CFB scoped path".into());
             }
-            let Some(id) = self.children[parent]
-                .get(&expected.to_ascii_uppercase())
-                .copied()
-            else {
+            let lookup = self.compound.budget.name(
+                expected.chars().map(|c| c.to_ascii_uppercase()),
+                expected.len(),
+            )?;
+            let Some(id) = self.children[parent].get(&lookup).copied() else {
                 return if index + 1 == path.len() {
                     Ok(None)
                 } else {
@@ -129,17 +138,18 @@ impl ScopedStreams<'_, '_> {
         let Some(entry) = self.resolve_stream_entry(path)? else {
             return Ok(None);
         };
-        if entry.stream_size > maximum_bytes as u64 {
-            return Err(crate::rejection::resource(
-                "CFB scoped stream exceeds its caller limit",
-            ));
-        }
-        self.compound.read_stream(entry).map(Some)
+        self.compound
+            .read_stream_bounded(entry, Some(maximum_bytes))
+            .map(Some)
     }
 }
 
 impl<'a> CompoundFile<'a> {
     pub fn open(bytes: &'a [u8]) -> Result<Self, String> {
+        Self::open_with_budget(bytes, Budget::default())
+    }
+
+    fn open_with_budget(bytes: &'a [u8], budget: Budget) -> Result<Self, String> {
         if bytes.len() < HEADER_BYTES || bytes[..8] != SIGNATURE {
             return Err("invalid CFB signature".into());
         }
@@ -194,10 +204,10 @@ impl<'a> CompoundFile<'a> {
             return Err("invalid CFB DIFAT sector count".into());
         }
 
-        let initial_fat_capacity = num_fat_sectors.min(109);
-        let mut fat_sector_ids = Vec::with_capacity(initial_fat_capacity);
-        let mut seen_fat_sector_ids = HashSet::with_capacity(initial_fat_capacity);
+        let mut fat_sector_ids = Vec::new();
+        let mut seen_fat_sector_ids = HashSet::new();
         for index in 0..109 {
+            budget.step()?;
             let id = u32_at(bytes, 76 + index * 4)?;
             if id != FREE_SECTOR {
                 push_sector_id(
@@ -206,6 +216,7 @@ impl<'a> CompoundFile<'a> {
                     id,
                     physical_sectors,
                     num_fat_sectors,
+                    &budget,
                 )?;
             }
         }
@@ -213,12 +224,14 @@ impl<'a> CompoundFile<'a> {
         let mut seen_difat = HashSet::new();
         let difat_entries_per_sector = sector_size / 4 - 1;
         for _ in 0..num_difat_sectors {
+            budget.step()?;
             validate_sector_id(difat_sector, physical_sectors)?;
-            if !seen_difat.insert(difat_sector) {
+            if !budget.insert(&mut seen_difat, difat_sector)? {
                 return Err("cyclic CFB DIFAT chain".into());
             }
             let sector = sector_slice(bytes, sector_size, physical_sectors, difat_sector)?;
             for index in 0..difat_entries_per_sector {
+                budget.step()?;
                 let id = u32_at(sector, index * 4)?;
                 if id != FREE_SECTOR {
                     push_sector_id(
@@ -227,6 +240,7 @@ impl<'a> CompoundFile<'a> {
                         id,
                         physical_sectors,
                         num_fat_sectors,
+                        &budget,
                     )?;
                 }
             }
@@ -248,10 +262,13 @@ impl<'a> CompoundFile<'a> {
         if fat_capacity < physical_sectors {
             return Err("CFB FAT does not cover physical sectors".into());
         }
-        let mut fat = Vec::with_capacity(fat_capacity.min(physical_sectors + sector_size / 4));
+        let mut fat = Vec::new();
         for id in fat_sector_ids {
+            budget.step()?;
             let sector = sector_slice(bytes, sector_size, physical_sectors, id)?;
+            budget.reserve(&mut fat, sector.len() / 4)?;
             for chunk in sector.as_chunks::<4>().0 {
+                budget.step()?;
                 fat.push(u32::from_le_bytes(*chunk));
             }
         }
@@ -269,49 +286,21 @@ impl<'a> CompoundFile<'a> {
                     as u64,
             ),
             Some(MAX_DIRECTORY_ENTRIES * DIRECTORY_ENTRY_BYTES),
+            &budget,
         )?;
-        let directory = parse_directory(&directory_bytes, major)?;
+        let directory = parse_directory(&directory_bytes, major, &budget)?;
         let root = directory
             .iter()
             .filter_map(Option::as_ref)
             .find_map(|(_, entry)| (entry.object_type == 5).then_some(*entry))
             .ok_or_else(|| "missing CFB root storage".to_string())?;
-        let root_mini_stream = if root.stream_size == 0 {
-            Vec::new()
-        } else {
-            read_regular_chain(
-                bytes,
-                sector_size,
-                physical_sectors,
-                &fat,
-                root.start_sector,
-                Some(root.stream_size),
-                None,
-            )?
-        };
-
-        let mini_fat = if num_mini_fat_sectors == 0 {
-            if first_mini_fat_sector != END_OF_CHAIN {
-                return Err("inconsistent CFB MiniFAT header".into());
-            }
-            Vec::new()
-        } else {
-            let mini_fat_bytes = read_regular_chain(
-                bytes,
-                sector_size,
-                physical_sectors,
-                &fat,
-                first_mini_fat_sector,
-                Some((num_mini_fat_sectors * sector_size) as u64),
-                None,
-            )?;
-            mini_fat_bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|chunk| u32::from_le_bytes(*chunk))
-                .collect()
-        };
+        if num_mini_fat_sectors == 0 && first_mini_fat_sector != END_OF_CHAIN {
+            return Err("inconsistent CFB MiniFAT header".into());
+        }
+        // [MS-CFB] 2.4 and 2.6.2: mini-sector IDs address the root mini-stream via
+        // MiniFAT. Neither chain is needed for regular stream reads. Defer both
+        // materializations until a mini-stream is requested, and retain one
+        // budgeted copy each. Unvisited declarations do not consume resources.
 
         Ok(Self {
             bytes,
@@ -320,14 +309,19 @@ impl<'a> CompoundFile<'a> {
             mini_stream_cutoff,
             physical_sectors,
             fat,
-            mini_fat,
+            mini_fat: RefCell::new(None),
+            first_mini_fat_sector,
+            num_mini_fat_sectors,
+            root,
+            budget,
             directory,
-            root_mini_stream,
+            root_mini_stream: RefCell::new(None),
         })
     }
 
     #[cfg(any(test, feature = "inspection"))]
     pub fn stream(&self, expected: &str) -> Result<Vec<u8>, String> {
+        self.budget.check()?;
         let mut matches = self
             .directory
             .iter()
@@ -354,12 +348,22 @@ impl<'a> CompoundFile<'a> {
         })
     }
 
+    #[cfg(any(test, feature = "inspection"))]
     fn read_stream(&self, entry: DirectoryEntry) -> Result<Vec<u8>, String> {
+        self.read_stream_bounded(entry, None)
+    }
+
+    fn read_stream_bounded(
+        &self,
+        entry: DirectoryEntry,
+        maximum_bytes: Option<usize>,
+    ) -> Result<Vec<u8>, String> {
+        self.budget.check()?;
         if entry.stream_size == 0 {
             return Ok(Vec::new());
         }
         if entry.stream_size < self.mini_stream_cutoff {
-            self.read_mini_chain(entry.start_sector, entry.stream_size)
+            self.read_mini_chain(entry.start_sector, entry.stream_size, maximum_bytes)
         } else {
             read_regular_chain(
                 self.bytes,
@@ -368,21 +372,24 @@ impl<'a> CompoundFile<'a> {
                 &self.fat,
                 entry.start_sector,
                 Some(entry.stream_size),
-                None,
+                maximum_bytes,
+                &self.budget,
             )
         }
     }
 
     fn validate_hierarchy(&self) -> Result<Hierarchy, String> {
-        let roots: Vec<_> = self
-            .directory
-            .iter()
-            .enumerate()
-            .filter_map(|(id, slot)| {
-                slot.as_ref()
-                    .and_then(|(_, entry)| (entry.object_type == 5).then_some(id))
-            })
-            .collect();
+        self.budget.check()?;
+        let mut roots = Vec::new();
+        for (id, slot) in self.directory.iter().enumerate() {
+            self.budget.step()?;
+            if slot
+                .as_ref()
+                .is_some_and(|(_, entry)| entry.object_type == 5)
+            {
+                self.budget.push(&mut roots, id)?;
+            }
+        }
         if roots.len() != 1 {
             return Err("invalid CFB root storage count".into());
         }
@@ -394,8 +401,12 @@ impl<'a> CompoundFile<'a> {
         if root_entry.left_sibling != NO_STREAM || root_entry.right_sibling != NO_STREAM {
             return Err("CFB root storage has siblings".into());
         }
-        let mut owner = vec![None; self.directory.len()];
-        let mut children = vec![Vec::new(); self.directory.len()];
+        let mut owner = Vec::new();
+        self.budget.reserve(&mut owner, self.directory.len())?;
+        owner.resize(self.directory.len(), None);
+        let mut children = Vec::new();
+        self.budget.reserve(&mut children, self.directory.len())?;
+        children.resize_with(self.directory.len(), Vec::new);
         for (parent, slot) in self.directory.iter().enumerate() {
             let Some((_, entry)) = slot else { continue };
             if entry.object_type == 2 && entry.child != NO_STREAM {
@@ -404,14 +415,16 @@ impl<'a> CompoundFile<'a> {
             if !matches!(entry.object_type, 1 | 5) || entry.child == NO_STREAM {
                 continue;
             }
-            let mut stack = vec![entry.child];
+            let mut stack = Vec::new();
+            self.budget.push(&mut stack, entry.child)?;
             let mut seen = HashSet::new();
             while let Some(raw) = stack.pop() {
+                self.budget.step()?;
                 let id = usize::try_from(raw).map_err(|_| "CFB directory link out of range")?;
                 let Some((_, child)) = self.directory.get(id).and_then(Option::as_ref) else {
                     return Err("CFB directory link references an unused or missing entry".into());
                 };
-                if !seen.insert(id) {
+                if !self.budget.insert(&mut seen, id)? {
                     return Err("cyclic CFB directory sibling tree".into());
                 }
                 if id == root {
@@ -420,12 +433,12 @@ impl<'a> CompoundFile<'a> {
                 if owner[id].replace(parent).is_some() {
                     return Err("multiply-owned CFB directory entry".into());
                 }
-                children[parent].push(id);
+                self.budget.push(&mut children[parent], id)?;
                 if child.left_sibling != NO_STREAM {
-                    stack.push(child.left_sibling);
+                    self.budget.push(&mut stack, child.left_sibling)?;
                 }
                 if child.right_sibling != NO_STREAM {
-                    stack.push(child.right_sibling);
+                    self.budget.push(&mut stack, child.right_sibling)?;
                 }
             }
         }
@@ -434,10 +447,10 @@ impl<'a> CompoundFile<'a> {
                 return Err("unowned CFB directory entry".into());
             }
         }
-        let mut child_index = Vec::with_capacity(children.len());
-        let mut has_non_ascii_child = Vec::with_capacity(children.len());
+        let mut child_index = Vec::new();
+        let mut has_non_ascii_child = Vec::new();
         for siblings in &children {
-            let mut names = HashMap::with_capacity(siblings.len());
+            let mut names = HashMap::new();
             let mut has_non_ascii = false;
             for id in siblings {
                 let (name, _) = self.directory[*id]
@@ -445,19 +458,27 @@ impl<'a> CompoundFile<'a> {
                     .expect("validated hierarchy entry");
                 if !name.is_ascii() {
                     has_non_ascii = true;
-                } else if names.insert(name.to_ascii_uppercase(), *id).is_some() {
-                    return Err("duplicate ASCII CFB child name".into());
+                } else {
+                    let name = self
+                        .budget
+                        .name(name.chars().map(|c| c.to_ascii_uppercase()), name.len())?;
+                    if self.budget.index(&mut names, name, *id)? {
+                        return Err("duplicate ASCII CFB child name".into());
+                    }
                 }
             }
-            child_index.push(names);
-            has_non_ascii_child.push(has_non_ascii);
+            self.budget.push(&mut child_index, names)?;
+            self.budget.push(&mut has_non_ascii_child, has_non_ascii)?;
         }
-        let mut reachable = HashSet::with_capacity(self.directory.len());
-        let mut stack = vec![root];
+        let mut reachable = HashSet::new();
+        let mut stack = Vec::new();
+        self.budget.push(&mut stack, root)?;
         while let Some(parent) = stack.pop() {
-            if !reachable.insert(parent) {
+            self.budget.step()?;
+            if !self.budget.insert(&mut reachable, parent)? {
                 return Err("cyclic CFB storage ancestry".into());
             }
+            self.budget.reserve(&mut stack, children[parent].len())?;
             stack.extend(children[parent].iter().copied());
         }
         if self
@@ -471,18 +492,55 @@ impl<'a> CompoundFile<'a> {
         Ok((root, child_index, has_non_ascii_child))
     }
 
-    fn read_mini_chain(&self, start: u32, size: u64) -> Result<Vec<u8>, String> {
+    fn read_mini_chain(
+        &self,
+        start: u32,
+        size: u64,
+        maximum_bytes: Option<usize>,
+    ) -> Result<Vec<u8>, String> {
+        self.budget.check()?;
         let target = usize::try_from(size).map_err(|_| "CFB mini stream too large")?;
-        if target > self.root_mini_stream.len() {
+        let mut root_cache = self.root_mini_stream.borrow_mut();
+        if root_cache.is_none() {
+            *root_cache = Some(read_regular_chain(
+                self.bytes,
+                self.sector_size,
+                self.physical_sectors,
+                &self.fat,
+                self.root.start_sector,
+                Some(self.root.stream_size),
+                None,
+                &self.budget,
+            )?);
+        }
+        let root_mini_stream = root_cache.as_ref().expect("initialized root mini-stream");
+        if target > root_mini_stream.len() {
             return Err("CFB mini stream exceeds root stream".into());
         }
+        let mut mini_cache = self.mini_fat.borrow_mut();
+        if mini_cache.is_none() {
+            *mini_cache = Some(read_regular_chain(
+                self.bytes,
+                self.sector_size,
+                self.physical_sectors,
+                &self.fat,
+                self.first_mini_fat_sector,
+                Some((self.num_mini_fat_sectors as u64) * (self.sector_size as u64)),
+                None,
+                &self.budget,
+            )?);
+        }
+        // Retain MiniFAT bytes directly: decoding each visited u32 avoids a
+        // simultaneous second table allocation merely to change element type.
+        let mini_fat = mini_cache.as_ref().expect("initialized MiniFAT");
         let expected_sectors = target.div_ceil(self.mini_sector_size);
-        let mut output = Vec::with_capacity(target);
+        let mut output = Vec::new();
         let mut current = start;
         let mut seen = HashSet::new();
         for _ in 0..expected_sectors {
+            self.budget.step()?;
             let id = usize::try_from(current).map_err(|_| "invalid CFB mini-sector id")?;
-            if id >= self.mini_fat.len() || !seen.insert(current) {
+            if id >= mini_fat.len() / 4 || !self.budget.insert(&mut seen, current)? {
                 return Err("invalid or cyclic CFB MiniFAT chain".into());
             }
             let offset = id
@@ -491,11 +549,14 @@ impl<'a> CompoundFile<'a> {
             let end = offset
                 .checked_add(self.mini_sector_size)
                 .ok_or_else(|| "CFB mini-sector end overflow".to_string())?;
-            if end > self.root_mini_stream.len() {
+            if end > root_mini_stream.len() {
                 return Err("CFB mini-sector outside root stream".into());
             }
-            output.extend_from_slice(&self.root_mini_stream[offset..end]);
-            current = self.mini_fat[id];
+            let count = (target - output.len()).min(end - offset);
+            enforce_stream_limit(output.len() + count, maximum_bytes, &self.budget)?;
+            self.budget
+                .append(&mut output, &root_mini_stream[offset..offset + count])?;
+            current = u32_at(mini_fat, id * 4)?;
         }
         if current != END_OF_CHAIN {
             return Err("CFB mini stream chain exceeds declared size".into());
@@ -505,24 +566,27 @@ impl<'a> CompoundFile<'a> {
     }
 }
 
-fn parse_directory(bytes: &[u8], major: u16) -> Result<Vec<DirectorySlot>, String> {
+fn parse_directory(
+    bytes: &[u8],
+    major: u16,
+    budget: &Budget,
+) -> Result<Vec<DirectorySlot>, String> {
     if !bytes.len().is_multiple_of(DIRECTORY_ENTRY_BYTES) {
         return Err("misaligned CFB directory stream".into());
     }
     let count = bytes.len() / DIRECTORY_ENTRY_BYTES;
     if count > MAX_DIRECTORY_ENTRIES {
-        return Err(crate::rejection::resource(
-            "CFB directory entry budget exceeded",
-        ));
+        return Err(budget.resource("CFB directory entry budget exceeded"));
     }
     if count == 0 {
         return Err("invalid CFB directory entry count".into());
     }
-    let mut entries = Vec::with_capacity(count);
+    let mut entries = Vec::new();
     for entry_bytes in bytes.as_chunks::<DIRECTORY_ENTRY_BYTES>().0 {
+        budget.step()?;
         let object_type = entry_bytes[66];
         if object_type == 0 {
-            entries.push(None);
+            budget.push(&mut entries, None)?;
             continue;
         }
         if !matches!(object_type, 1 | 2 | 5) {
@@ -535,11 +599,21 @@ fn parse_directory(bytes: &[u8], major: u16) -> Result<Vec<DirectorySlot>, Strin
         if entry_bytes[name_bytes - 2..name_bytes] != [0, 0] {
             return Err("unterminated CFB directory name".into());
         }
-        let mut utf16 = Vec::with_capacity(name_bytes / 2 - 1);
-        for chunk in entry_bytes[..name_bytes - 2].as_chunks::<2>().0 {
-            utf16.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+        let mut utf16 = [0u16; 31];
+        let length = name_bytes / 2 - 1;
+        for (index, chunk) in entry_bytes[..name_bytes - 2]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            utf16[index] = u16::from_le_bytes(*chunk);
         }
-        let name = String::from_utf16(&utf16).map_err(|_| "invalid CFB directory name")?;
+        let chars = || char::decode_utf16(utf16[..length].iter().copied());
+        if chars().any(|c| c.is_err()) {
+            return Err("invalid CFB directory name".into());
+        }
+        let name = budget.name(chars().map(Result::unwrap), length * 3)?;
         if name.contains('\0') {
             return Err("invalid NUL in CFB directory name".into());
         }
@@ -548,21 +622,25 @@ fn parse_directory(bytes: &[u8], major: u16) -> Result<Vec<DirectorySlot>, Strin
         if major == 3 {
             stream_size &= 0xffff_ffff;
         }
-        entries.push(Some((
-            name,
-            DirectoryEntry {
-                object_type,
-                left_sibling: u32_at(entry_bytes, 68)?,
-                right_sibling: u32_at(entry_bytes, 72)?,
-                child: u32_at(entry_bytes, 76)?,
-                start_sector,
-                stream_size,
-            },
-        )));
+        budget.push(
+            &mut entries,
+            Some((
+                name,
+                DirectoryEntry {
+                    object_type,
+                    left_sibling: u32_at(entry_bytes, 68)?,
+                    right_sibling: u32_at(entry_bytes, 72)?,
+                    child: u32_at(entry_bytes, 76)?,
+                    start_sector,
+                    stream_size,
+                },
+            )),
+        )?;
     }
     Ok(entries)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_regular_chain(
     bytes: &[u8],
     sector_size: usize,
@@ -571,6 +649,7 @@ fn read_regular_chain(
     start: u32,
     declared_size: Option<u64>,
     maximum_bytes: Option<usize>,
+    budget: &Budget,
 ) -> Result<Vec<u8>, String> {
     let physical_bytes = physical_sectors
         .checked_mul(sector_size)
@@ -580,11 +659,6 @@ fn read_regular_chain(
             let size = usize::try_from(size).map_err(|_| "CFB stream too large")?;
             if size > physical_bytes {
                 return Err("CFB stream size exceeds the physical file".into());
-            }
-            if maximum_bytes.is_some_and(|maximum| size > maximum) {
-                return Err(crate::rejection::resource(
-                    "CFB stream exceeds its implementation limit",
-                ));
             }
             size.div_ceil(sector_size)
         }
@@ -596,23 +670,21 @@ fn read_regular_chain(
     if maximum_sectors == 0 {
         return Ok(Vec::new());
     }
-    let capacity = maximum_sectors
-        .checked_mul(sector_size)
-        .ok_or_else(|| "CFB stream capacity overflow".to_string())?;
-    let initial_capacity = if declared_size.is_some() {
-        capacity
-    } else {
-        capacity.min(sector_size)
-    };
-    let mut output = Vec::with_capacity(initial_capacity);
+    let mut output = Vec::new();
     let mut current = start;
     let mut seen = HashSet::new();
     for _ in 0..maximum_sectors {
+        budget.step()?;
         validate_sector_id(current, physical_sectors)?;
-        if !seen.insert(current) {
+        if !budget.insert(&mut seen, current)? {
             return Err("cyclic CFB sector chain".into());
         }
-        output.extend_from_slice(sector_slice(bytes, sector_size, physical_sectors, current)?);
+        let sector = sector_slice(bytes, sector_size, physical_sectors, current)?;
+        let count = declared_size.map_or(sector_size, |size| {
+            (size as usize - output.len()).min(sector_size)
+        });
+        enforce_stream_limit(output.len() + count, maximum_bytes, budget)?;
+        budget.append(&mut output, &sector[..count])?;
         let index = current as usize;
         current = *fat
             .get(index)
@@ -628,9 +700,7 @@ fn read_regular_chain(
         // remains malformed CFB, independently of that implementation ceiling.
         if declared_size.is_none() && maximum_bytes.is_some_and(|maximum| maximum < physical_bytes)
         {
-            return Err(crate::rejection::resource(
-                "CFB stream exceeds its implementation limit",
-            ));
+            return Err(budget.resource("CFB stream exceeds its implementation limit"));
         }
         return Err("CFB stream chain exceeds its bound".into());
     }
@@ -644,21 +714,36 @@ fn read_regular_chain(
     Ok(output)
 }
 
+// Limits apply to actual bytes selected from visited sectors. Declarations
+// still constrain MS-CFB chain integrity, but cannot preallocate or admit data.
+fn enforce_stream_limit(
+    actual: usize,
+    maximum: Option<usize>,
+    budget: &Budget,
+) -> Result<(), String> {
+    if maximum.is_some_and(|maximum| actual > maximum) {
+        Err(budget.resource("CFB stream exceeds its caller limit"))
+    } else {
+        Ok(())
+    }
+}
+
 fn push_sector_id(
     ids: &mut Vec<u32>,
     seen: &mut HashSet<u32>,
     id: u32,
     physical_sectors: usize,
     maximum: usize,
+    budget: &Budget,
 ) -> Result<(), String> {
     if ids.len() >= maximum {
         return Err("too many CFB FAT sector ids".into());
     }
     validate_sector_id(id, physical_sectors)?;
-    if !seen.insert(id) {
+    if !budget.insert(seen, id)? {
         return Err("duplicate CFB FAT sector id".into());
     }
-    ids.push(id);
+    budget.push(ids, id)?;
     Ok(())
 }
 
@@ -981,6 +1066,104 @@ mod tests {
         CompoundFile, END_OF_CHAIN,
     };
 
+    // Faults are thread-local and armed only after fixture/source acquisition.
+    // Exercise the production parser's actual allocations, including dependencies.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod allocation_fault {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static MAX_ALLOCATION: Cell<usize> = const { Cell::new(usize::MAX) };
+        }
+        struct Allocator;
+        #[global_allocator]
+        static ALLOCATOR: Allocator = Allocator;
+        fn denied(size: usize) -> bool {
+            MAX_ALLOCATION
+                .try_with(|limit| {
+                    if size > limit.get() {
+                        // Fail one real allocation, leaving room for its diagnostic.
+                        limit.set(usize::MAX);
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false)
+        }
+        unsafe impl GlobalAlloc for Allocator {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                if denied(layout.size()) {
+                    std::ptr::null_mut()
+                } else {
+                    System.alloc(layout)
+                }
+            }
+            unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+                System.dealloc(pointer, layout);
+            }
+            unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+                if denied(size) {
+                    std::ptr::null_mut()
+                } else {
+                    System.realloc(pointer, layout, size)
+                }
+            }
+        }
+        pub fn with_limit<T>(limit: usize, run: impl FnOnce() -> T) -> T {
+            struct Reset(usize);
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    MAX_ALLOCATION.with(|limit| limit.set(self.0));
+                }
+            }
+            let _reset = Reset(MAX_ALLOCATION.with(|value| value.replace(limit)));
+            run()
+        }
+    }
+
+    #[cfg(all(feature = "inspection", not(target_arch = "wasm32")))]
+    #[test]
+    fn parser_entry_classifies_nested_cfb_allocation_failure_after_source_acquisition() {
+        let bytes = super::test_support::build_scoped_cfb(&[("Workbook", vec![0; 64 * 1024])]);
+        // With memory available, the complete source reaches BIFF validation.
+        let control = crate::inspect_xls_anchors(&bytes).unwrap_err();
+        assert!(control.starts_with("UNSUPPORTED:"), "{control}");
+        // Fail secondary metadata growth and regular-stream growth separately.
+        for maximum in [256, 16 * 1024] {
+            let error = allocation_fault::with_limit(maximum, || {
+                crate::inspect_xls_anchors(&bytes).unwrap_err()
+            });
+            assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
+        }
+    }
+
+    #[cfg(all(feature = "direct-ppt", not(target_arch = "wasm32")))]
+    #[test]
+    fn standalone_large_prefix_package_allocation_failure_is_classified() {
+        use std::io::{Cursor, Write};
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("shape.xml", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(br#"<p:sp xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></a:xfrm></p:spPr></p:sp>"#).unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+        let mut bytes = vec![0; 32 * 1024 * 1024];
+        bytes.extend_from_slice(&zip);
+        let parse =
+            || pptx_parser::parse_standalone_shape_part(&bytes, "shape.xml", "", None, 1024, 4096);
+        assert!(parse().unwrap().is_some());
+        let result = allocation_fault::with_limit(16 * 1024 * 1024, parse);
+        let error = result.err().expect("package allocation must fail fallibly");
+        let details: serde_json::Value =
+            serde_json::from_str(error.strip_prefix("OOXML_RESOURCE_LIMIT:").unwrap()).unwrap();
+        let violation = &details["details"]["violation"];
+        assert_eq!(violation["resource"], "package-source-allocation");
+        assert_eq!(violation["observed"], bytes.len());
+        assert_eq!(crate::rejection::unsupported(error.clone()), error);
+    }
+
     fn directory_offset(streams: usize) -> usize {
         // build_cfb pads every synthetic regular stream to eight sectors.
         512 + streams * 8 * 512
@@ -1021,6 +1204,79 @@ mod tests {
     }
 
     #[test]
+    fn unused_root_mini_stream_does_not_consume_retention_budget() {
+        let mut bytes = build_cfb(&[
+            ("Workbook", vec![1; 4096]),
+            ("MiniBacking", vec![0; 64 * 1024]),
+        ]);
+        let directory = 512 + u32::from_le_bytes(bytes[48..52].try_into().unwrap()) as usize * 512;
+        // Transfer the second stream's sectors to the root mini-stream.
+        bytes[directory + 2 * 128 + 66] = 0;
+        bytes[directory + 116..directory + 120].copy_from_slice(&8u32.to_le_bytes());
+        bytes[directory + 120..directory + 128].copy_from_slice(&(64u64 * 1024).to_le_bytes());
+        let cfb =
+            CompoundFile::open_with_budget(&bytes, super::Budget::with_limits(16 * 1024, 4096))
+                .unwrap();
+        assert_eq!(cfb.stream("Workbook").unwrap(), vec![1; 4096]);
+    }
+
+    #[test]
+    fn chain_budgets_charge_actual_retention_and_walks_instead_of_declarations() {
+        let bytes = vec![0; 3 * 512];
+        let read = |fat: &[u32], budget: super::Budget| {
+            super::read_regular_chain(&bytes, 512, 2, fat, 0, Some(1024), None, &budget)
+        };
+        // The declaration fits the input but exceeds the chain. Only one
+        // sector is retained; the error is integrity, not a speculative quota.
+        let malformed = read(
+            &[END_OF_CHAIN, END_OF_CHAIN],
+            super::Budget::with_limits(1024, 2),
+        )
+        .unwrap_err();
+        assert_eq!(malformed, "truncated CFB stream");
+        let fat = [1, END_OF_CHAIN];
+        assert_eq!(
+            read(&fat, super::Budget::with_limits(4096, 2))
+                .unwrap()
+                .len(),
+            1024
+        );
+        for budget in [
+            super::Budget::with_limits(1024, 2),
+            super::Budget::with_limits(4096, 1),
+        ] {
+            assert!(read(&fat, budget)
+                .unwrap_err()
+                .starts_with("LEGACY_RESOURCE_LIMIT:"));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn lazy_root_and_minifat_allocation_failures_poison_subsequent_reads() {
+        let bytes = build_mini_cfb("Workbook", b"small stream");
+        assert_eq!(
+            CompoundFile::open(&bytes)
+                .unwrap()
+                .stream("Workbook")
+                .unwrap(),
+            b"small stream"
+        );
+        // These allow the small chain index, then fail root payload or MiniFAT
+        // retention respectively. Opening/source acquisition precedes the fault.
+        for maximum in [48, 256] {
+            let cfb = CompoundFile::open(&bytes).unwrap();
+            let error =
+                allocation_fault::with_limit(maximum, || cfb.stream("Workbook").unwrap_err());
+            assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
+            assert!(cfb
+                .stream("absent")
+                .unwrap_err()
+                .starts_with("LEGACY_RESOURCE_LIMIT:"));
+        }
+    }
+
+    #[test]
     fn reads_regular_streams() {
         let source = b"hello compound file".to_vec();
         let bytes = build_cfb(&[("Workbook", source.clone())]);
@@ -1046,35 +1302,49 @@ mod tests {
                 .unwrap()[..19],
             b"second presentation"
         );
+        assert!(cfb.stream("OlePres000").unwrap_err().contains("duplicate"));
         assert!(scoped
             .stream(&["ObjectPool", "_1", "OlePres000"], 4095)
             .unwrap_err()
             .contains("caller limit"));
-        assert!(cfb.stream("OlePres000").unwrap_err().contains("duplicate"));
     }
 
     #[test]
     fn regular_chain_policy_limit_is_distinct_from_declared_size_mismatch() {
         let bytes = vec![0; 3 * 512];
         let fat = [1, END_OF_CHAIN];
-        assert!(
-            super::read_regular_chain(&bytes, 512, 2, &fat, 0, None, Some(512))
-                .unwrap_err()
-                .starts_with("LEGACY_RESOURCE_LIMIT:")
-        );
+        assert!(super::read_regular_chain(
+            &bytes,
+            512,
+            2,
+            &fat,
+            0,
+            None,
+            Some(512),
+            &super::Budget::default()
+        )
+        .unwrap_err()
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
         // The same chain exceeds its declared stream size: malformed CFB,
         // rather than a caller's implementation quota.
-        assert!(
-            !super::read_regular_chain(&bytes, 512, 2, &fat, 0, Some(512), None)
-                .unwrap_err()
-                .starts_with("LEGACY_RESOURCE_LIMIT:")
-        );
+        assert!(!super::read_regular_chain(
+            &bytes,
+            512,
+            2,
+            &fat,
+            0,
+            Some(512),
+            None,
+            &super::Budget::default()
+        )
+        .unwrap_err()
+        .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 
     #[test]
     fn directory_entry_ceiling_keeps_resource_classification_before_parsing_entries() {
         let bytes = vec![0; (super::MAX_DIRECTORY_ENTRIES + 1) * super::DIRECTORY_ENTRY_BYTES];
-        assert!(super::parse_directory(&bytes, 3)
+        assert!(super::parse_directory(&bytes, 3, &super::Budget::default())
             .err()
             .unwrap()
             .starts_with("LEGACY_RESOURCE_LIMIT:"));

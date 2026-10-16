@@ -821,8 +821,6 @@ impl Context<'_> {
                     span.view(self.backing)?,
                     theme,
                     self.media,
-                    self.work_budget,
-                    self.text_budget,
                     self.model_budget,
                 )?
             }

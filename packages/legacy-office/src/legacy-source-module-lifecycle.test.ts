@@ -50,7 +50,6 @@ vi.mock('./direct-ppt-engine.js', engineMock('createLegacyPptSourceEngine'));
 
 import { openModelSource as openDoc } from './legacy-doc-source-module.js';
 import { openModelSource as openPpt } from './legacy-ppt-source-module.js';
-import { MAX_LEGACY_SOURCE_BYTES } from './legacy-source.js';
 import { openModelSource as openXls } from './legacy-xls-source-module.js';
 
 const WASM = 'https://cdn.example.test/legacy.wasm';
@@ -67,7 +66,7 @@ describe.each(modules)('legacy $family source module lifecycle', ({ open }) => {
     for (const config of [null, 'config', { wasmUrl: WASM, extra: 1 }, {}, { wasmUrl: 42 }]) {
       await expect(open(bytes, config)).rejects.toThrow(TypeError);
     }
-    for (const maxInputBytes of [0, 1.5, '8', MAX_LEGACY_SOURCE_BYTES + 1]) {
+    for (const maxInputBytes of [0, 1.5, '8', Number.MAX_SAFE_INTEGER + 1]) {
       await expect(open(bytes, { wasmUrl: WASM, maxInputBytes })).rejects.toThrow(RangeError);
     }
     await expect(open(bytes, { wasmUrl: './relative.wasm' })).rejects.toThrow(TypeError);
@@ -75,6 +74,14 @@ describe.each(modules)('legacy $family source module lifecycle', ({ open }) => {
     const aborted = AbortSignal.abort();
     await expect(open(bytes, { wasmUrl: WASM }, aborted)).rejects.toMatchObject({ name: 'AbortError' });
     expect(fake.loads.length).toBe(loads);
+  });
+
+  it.each([undefined, 256 * 1024 * 1024 + 1])('opens above the former default with optional cap %s', async maxInputBytes => {
+    // No large allocation is needed: the runtime forwards the acquired view.
+    const bytes = { byteLength: 256 * 1024 * 1024 + 1 } as Uint8Array;
+    const opened = await open(bytes, { wasmUrl: WASM, ...(maxInputBytes === undefined ? {} : { maxInputBytes }) });
+    expect(fake.opened.at(-1)?.bytes).toBe(bytes);
+    opened.close();
   });
 
   it('opens with the configured WASM URL and closes the native archive exactly once', async () => {

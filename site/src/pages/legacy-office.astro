@@ -156,8 +156,10 @@ const assetExample = `const source = legacyPptSource({
           <code>details: &#123; format: 'doc' | 'xls' | 'ppt', reason: 'source-subset' &#125;</code>.
           Offer conversion for this code, including failures during lazy reads. Do not branch on message text.
           Encryption, resource limits, crashes and companion mismatches remain distinct.
-          The source input-size guard throws a
-          <code>RangeError</code>; it defaults to, and cannot exceed, 256 MiB.</p>
+          The optional <code>maxInputBytes</code> guard accepts any positive safe integer
+          and throws a <code>RangeError</code> when claimed input exceeds it. There is no
+          default input-size ceiling. To retain the former 256 MiB limit, explicitly set
+          <code>maxInputBytes: 256 * 1024 * 1024</code>.</p>
         <p><a href="/errors">Error delivery and application messages →</a></p>
       </section>
       <section id="loading">

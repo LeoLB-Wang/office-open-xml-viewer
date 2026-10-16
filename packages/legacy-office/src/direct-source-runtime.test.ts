@@ -16,7 +16,7 @@ const wasmUrl = 'https://example.test/runtime.wasm';
 
 function engine(glue: object, construct: () => Archive) {
   return createDirectSourceRuntime({
-    label: 'test', maximumSourceBytes: 100,
+    label: 'test',
     loadGlue: async () => glue as { default(input: { module_or_path: unknown }): Promise<unknown> },
     resolveWasm: async () => new Uint8Array(),
     construct,
@@ -44,16 +44,15 @@ describe('direct source WASM trap containment', () => {
       .toBe('data:application/wasm;base64,AGFzbQ==');
   });
 
-  it('rejects URL, byte budget and abort failures before loading, then pins one WASM URL', async () => {
+  it('rejects URL and abort failures before loading, then pins one WASM URL', async () => {
     const glue = { default: vi.fn(async () => undefined) };
     const loadGlue = vi.fn(async () => glue);
     const runtime = createDirectSourceRuntime({
-      label: 'test', maximumSourceBytes: 2, loadGlue,
+      label: 'test', loadGlue,
       resolveWasm: async () => new Uint8Array(), construct: () => new Archive(),
       closeNative: archive => archive.close(),
     });
     await expect(runtime.open(new Uint8Array(), './relative.wasm')).rejects.toThrow(TypeError);
-    await expect(runtime.open(new Uint8Array(3), wasmUrl)).rejects.toThrow(RangeError);
     await expect(runtime.open(new Uint8Array(), wasmUrl, AbortSignal.abort()))
       .rejects.toMatchObject({ name: 'AbortError' });
     expect(loadGlue).not.toHaveBeenCalled();

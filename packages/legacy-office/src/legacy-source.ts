@@ -13,11 +13,9 @@ import { cfbDirectoryNames } from '@silurus/ooxml-core/internal/cfb-directory-na
 import { assertCompanionRuntime, MODEL_SOURCE_MODULE_PROTOCOL } from '@silurus/ooxml/internal/companion';
 import { COMPANION_VERSION } from '../../../src/companion-version.js';
 
-import { MAX_LEGACY_SOURCE_BYTES } from './legacy-source-limits.js';
-import { readNativeDocReadingPolicies, type NativeDocReadingPolicies } from './source-module-config.js';
+import { readLegacyMaxInputBytes, readNativeDocReadingPolicies, type NativeDocReadingPolicies } from './source-module-config.js';
 
 export type LegacyFamily = 'doc' | 'xls' | 'ppt';
-export { MAX_LEGACY_SOURCE_BYTES };
 
 /** Options accepted by every legacy source factory. */
 export interface LegacySourceOptions {
@@ -28,7 +26,7 @@ export interface LegacySourceOptions {
    * the emitted asset; override it when an asset pipeline relocates files.
    */
   readonly moduleUrl?: string;
-  /** Reject larger input. Defaults to, and may not exceed, 256 MiB. */
+  /** Optional caller limit on input bytes; omitted means no whole-file gate. */
   readonly maxInputBytes?: number;
 }
 
@@ -76,20 +74,13 @@ export function createLegacySource<T extends ModelSourceTarget>(
   }
   const wasmUrl = absoluteUrl(options.wasmUrl ?? defaults.wasmUrl, 'wasmUrl', label);
   const moduleUrl = absoluteUrl(options.moduleUrl ?? defaults.moduleUrl, 'moduleUrl', label);
-  const maxInputBytes = options.maxInputBytes ?? MAX_LEGACY_SOURCE_BYTES;
-  if (
-    !Number.isSafeInteger(maxInputBytes)
-    || maxInputBytes <= 0
-    || maxInputBytes > MAX_LEGACY_SOURCE_BYTES
-  ) {
-    throw new RangeError(`${label} maxInputBytes is invalid`);
-  }
+  const maxInputBytes = readLegacyMaxInputBytes(options.maxInputBytes, label);
   const target = TARGETS[family] as T;
   const module: ModelSourceModuleDescriptor = Object.freeze({
     protocol: MODEL_SOURCE_MODULE_PROTOCOL,
     target,
     moduleUrl,
-    config: Object.freeze({ wasmUrl, maxInputBytes, ...docConfig }),
+    config: Object.freeze({ wasmUrl, ...(maxInputBytes === undefined ? {} : { maxInputBytes }), ...docConfig }),
   });
   return Object.freeze({
     target,
@@ -97,7 +88,7 @@ export function createLegacySource<T extends ModelSourceTarget>(
       const names = cfbDirectoryNames(bytes);
       // Encrypted packages stay on the OOXML path, which reports them.
       if (!names || names.has('EncryptionInfo') || cfbFamily(names) !== family) return false;
-      if (bytes.byteLength > maxInputBytes) {
+      if (maxInputBytes !== undefined && bytes.byteLength > maxInputBytes) {
         throw new RangeError(`${label} input exceeds the configured size limit`);
       }
       return true;
