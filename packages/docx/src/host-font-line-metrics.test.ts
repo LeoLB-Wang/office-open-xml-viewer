@@ -24,6 +24,25 @@ function select(loaded: OfficeFontFallbackRoute) {
   }]).resolve({ requestedFamily: loaded.requestedFamily });
 }
 
+// Browser contract the preparation relies on: font boxes scale linearly with
+// the requested size (given here at a 2048px probe), and the size-adjust 0%
+// coverage face measures its own glyphs as zero while fallback keeps advance.
+function contractCanvas() {
+  const px = (font: string) => Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 0);
+  return {
+    font: '',
+    measureText(text: string) {
+      if (this.font.includes('_coverage')) {
+        const owned = /^[\x20-\x7e]*$/.test(text);
+        return { width: owned ? 0 : 100, actualBoundingBoxAscent: owned ? 0 : 80,
+          actualBoundingBoxDescent: 0 } as TextMetrics;
+      }
+      const scale = px(this.font) / 2048;
+      return { fontBoundingBoxAscent: 1825 * scale, fontBoundingBoxDescent: 443 * scale } as TextMetrics;
+    },
+  };
+}
+
 describe('DOCX host-face line geometry', () => {
   it('prepares measured geometry on the retained local paint route, shared across document loads', async () => {
     const registrations = new Set<FontFace>();
@@ -45,15 +64,16 @@ describe('DOCX host-face line geometry', () => {
       async load() { this.status = 'loaded'; return this; }
     }
     let probes = 0;
-    const context = {
-      font: '', measureText: () => ({ fontBoundingBoxAscent: 1825, fontBoundingBoxDescent: 443 }),
-    };
+    const context = contractCanvas();
     vi.stubGlobal('FontFace', LocalFace);
     vi.stubGlobal('document', {
       fonts, body: { append() {} },
       createElement: (tag: string) => tag === 'canvas' ? { getContext: () => context } : {
-        style: {}, textContent: '', remove() {},
-        get offsetHeight() { probes++; return 2355; },
+        style: { cssText: '' }, textContent: '', remove() {},
+        get offsetHeight() {
+          probes++;
+          return Math.round(2355 * Number(/(\d+)px/.exec(this.style.cssText)?.[1] ?? 0) / 2048);
+        },
       },
     });
     let first: Awaited<ReturnType<typeof loadDocxOfficeFontFallbacks>> | undefined;
@@ -66,7 +86,8 @@ describe('DOCX host-face line geometry', () => {
       expect(prepared.metric.family).toBe(prepared.family);
       expect(prepared.metric.sourceIdentity).toBe(prepared.resourceIdentity);
       expect(second.routes['times new roman'].metric).toEqual(prepared.metric);
-      expect(probes).toBe(1);
+      // The requested em and half of it, once per retained resource.
+      expect(probes).toBe(2);
       expect(registrations.size).toBe(2);
     } finally {
       if (first) unloadOfficeFontFallbacks(first.faces);
@@ -93,6 +114,7 @@ describe('DOCX host-face line geometry', () => {
     }
     vi.stubGlobal('document', undefined);
     vi.stubGlobal('FontFace', ProbeFace);
+    vi.stubGlobal('OffscreenCanvas', class { getContext() { return contractCanvas(); } });
     const identity = 'office-local:local("exact-host-source")';
     const loadedRoute = { ...route(), resourceIdentity: identity,
       metric: { ...route().metric, sourceIdentity: identity } };
@@ -113,6 +135,46 @@ describe('DOCX host-face line geometry', () => {
       expect(result.routes.host.metric.glyphCoverageProbeFamily).toBeDefined();
     } finally {
       unloadOfficeFontFallbacks(prepared);
+      vi.unstubAllGlobals();
+    }
+    expect([...fonts]).toHaveLength(0);
+  });
+
+  it('keeps the catalog when the engine cannot prove glyph ownership', async () => {
+    // An engine that zeroes every glyph under size-adjust 0% (owned or not)
+    // cannot distinguish the paint face from fallback, so the measured
+    // projection is declined rather than suppressing both geometries.
+    const fonts = new Set<FontFace>() as unknown as FontFaceSet;
+    class ProbeFace {
+      status = 'loaded';
+      weight: string;
+      style: string;
+      sizeAdjust: string;
+      constructor(readonly family: string, _source: string,
+        descriptors: FontFaceDescriptors & { sizeAdjust: string }) {
+        this.weight = descriptors.weight!;
+        this.style = descriptors.style!;
+        this.sizeAdjust = descriptors.sizeAdjust;
+      }
+      async load() { return this; }
+    }
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('FontFace', ProbeFace);
+    vi.stubGlobal('OffscreenCanvas', class {
+      getContext() {
+        return { font: '', measureText: () => ({ width: 0, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 0 }) };
+      }
+    });
+    const identity = 'office-local:local("exact-host-source")';
+    const loadedRoute = { ...route(), resourceIdentity: identity,
+      metric: { ...route().metric, sourceIdentity: identity } };
+    const face = { family: loadedRoute.family, weight: '400', style: 'normal', status: 'loaded' } as FontFace;
+    try {
+      const result = await prepareDocxHostFontMetrics({ faces: [face], routes: { host: loadedRoute }, checked: [] },
+        fonts, [{ resourceIdentity: identity, weight: 400, style: 'normal', measured: host }]);
+      expect(result.routes.host.metric).toBe(loadedRoute.metric);
+      expect(result.routes.host.metric.requiresGlyphCoverage).toBeUndefined();
+    } finally {
       vi.unstubAllGlobals();
     }
     expect([...fonts]).toHaveLength(0);

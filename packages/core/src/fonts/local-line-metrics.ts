@@ -37,12 +37,41 @@ export function measureLocalFontNormalLine(
     || !ownerDocument?.body || ownerDocument.fonts !== fontSet) return null;
   const cached = measuredLines.get(face);
   if (cached?.emPx === emPx) return cached.metric;
+  // Engines may clamp a large requested size, so a successful measurement does
+  // not prove the requested scale. Accept an em only when the box measured at
+  // half that size scales linearly; otherwise halve and retry, and decline
+  // (catalog fallback) when no measured scale is linear.
+  let result: LocalFontNormalLine | null = null;
+  for (let em = emPx, attempt = 0; attempt < LINEAR_PROBE_ATTEMPTS; em /= 2, attempt++) {
+    const full = measureNormalBox(face, context, em, ownerDocument);
+    const half = full && measureNormalBox(face, context, em / 2, ownerDocument);
+    if (!full || !half) break;
+    if (scalesLinearly(full, half)) {
+      result = Object.freeze({
+        ascentRatio: full.ascent / em,
+        descentRatio: full.descent / em,
+        lineGapRatio: (full.height - full.ascent - full.descent) / em,
+      });
+      break;
+    }
+  }
+  measuredLines.set(face, { emPx, metric: result });
+  return result;
+}
+
+/** Halvings tried before declining; bounds probe work per resource. */
+const LINEAR_PROBE_ATTEMPTS = 4;
+
+interface NormalBox { readonly height: number; readonly ascent: number; readonly descent: number }
+
+function measureNormalBox(
+  face: FontFace, context: CanvasFontBoxProbeContext, emPx: number, ownerDocument: Document,
+): NormalBox | null {
   const font = `${face.style} ${face.weight} ${emPx}px ${quoteCssFontFamily(face.family)}`;
   const probe = ownerDocument.createElement('span');
   probe.style.cssText = `all:initial;position:fixed;visibility:hidden;white-space:pre;font:${font};line-height:normal;`;
   probe.textContent = '\u200b';
   const previousFont = context.font;
-  let result: LocalFontNormalLine | null = null;
   try {
     context.font = font;
     const box = context.measureText('');
@@ -50,22 +79,24 @@ export function measureLocalFontNormalLine(
     const height = probe.offsetHeight;
     const ascent = box.fontBoundingBoxAscent;
     const descent = box.fontBoundingBoxDescent;
-    if (Number.isFinite(height) && height > 0 && Number.isFinite(ascent)
-      && ascent >= 0 && Number.isFinite(descent) && descent >= 0) {
-      result = Object.freeze({
-        ascentRatio: ascent / emPx,
-        descentRatio: descent / emPx,
-        lineGapRatio: (height - ascent - descent) / emPx,
-      });
-    }
+    return Number.isFinite(height) && height > 0 && Number.isFinite(ascent)
+      && ascent >= 0 && Number.isFinite(descent) && descent >= 0
+      ? { height, ascent, descent } : null;
   } catch {
     // An unavailable measurement leaves the caller's catalog fallback intact.
+    return null;
   } finally {
     probe.remove();
     context.font = previousFont;
   }
-  measuredLines.set(face, { emPx, metric: result });
-  return result;
+}
+
+/** offsetHeight is an integer CSS pixel, so each reading carries up to one
+ * pixel of rounding; Canvas font boxes carry sub-pixel quantization. */
+function scalesLinearly(full: NormalBox, half: NormalBox): boolean {
+  return Math.abs(full.height - 2 * half.height) <= 3
+    && Math.abs(full.ascent - 2 * half.ascent) <= 1
+    && Math.abs(full.descent - 2 * half.descent) <= 1;
 }
 
 /** A second registration of the exact source, with only size-adjust changed.
@@ -89,10 +120,42 @@ export async function loadLocalFontCoverageProbe(
   });
   try {
     const loaded = await withFontCeiling(probe.load());
-    if (loaded && probe.status === 'loaded' && (probe as FontFace & { sizeAdjust?: string }).sizeAdjust === '0%') return probe;
+    if (loaded && probe.status === 'loaded'
+      && (probe as FontFace & { sizeAdjust?: string }).sizeAdjust === '0%'
+      && coverageOracleWorks(probe)) return probe;
   } catch { /* Optional coverage unavailable: decline resource geometry. */ }
   releaseFaces([probe]);
   return null;
+}
+
+/** A readable size-adjust descriptor does not prove the engine applies it to
+ * Canvas geometry. Before trusting zero geometry as ownership, the probe must
+ * show both sides of the contract: the face's own Latin glyph measures zero,
+ * and at least one glyph from scripts a Latin face rarely carries keeps a
+ * positive fallback advance. An engine (or a face) failing either side
+ * declines the measured projection and keeps the catalog path. */
+const OWNED_PROBE = 'A';
+const FALLBACK_PROBE = '漢あ한अ';
+
+function coverageOracleWorks(probe: FontFace): boolean {
+  // Once per loaded probe, so a fresh context costs nothing measurable.
+  const context = newCoverageContext();
+  if (!context) return false;
+  try {
+    context.font = `${probe.style} ${probe.weight} 100px ${quoteCssFontFamily(probe.family)}`;
+    const owned = context.measureText(OWNED_PROBE);
+    const fallback = context.measureText(FALLBACK_PROBE);
+    return owned.width === 0 && owned.actualBoundingBoxAscent === 0
+      && owned.actualBoundingBoxDescent === 0 && fallback.width > 0;
+  } catch {
+    return false;
+  }
+}
+
+function newCoverageContext(): CanvasFontBoxProbeContext | null {
+  return typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(1, 1).getContext('2d')
+    : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
 }
 
 let coverageContext: CanvasFontBoxProbeContext | null | undefined;
@@ -130,9 +193,7 @@ export function localFontMetricCoversText(
   const cache = prepared.results;
   const cached = cache.get(text);
   if (cached !== undefined) return cached;
-  coverageContext ??= typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(1, 1).getContext('2d')
-    : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+  coverageContext ??= newCoverageContext();
   if (!coverageContext) return false;
   const previous = coverageContext.font;
   let covered = false;
