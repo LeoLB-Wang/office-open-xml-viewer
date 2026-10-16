@@ -1,3 +1,6 @@
+// XLSX consumes the duotone palette only. Import the lean adapter directly
+// so source dispatch does not retain the DOCX/PPTX recursive effect interpreter.
+import { getCachedDuotoneOnlyBitmapByPath as getCachedDuotoneBitmapByPath } from '@silurus/ooxml-core/internal/duotone-only-bitmap';
 import { decodeSvgBlobOnMainThread } from '@silurus/ooxml-core/worker';
 import type { CjkLang } from '@silurus/ooxml-core';
 import {
@@ -5,7 +8,6 @@ import {
   isHTMLCanvas,
   clampCanvasSize,
   getCachedSvgImageByPath,
-  getCachedDuotoneBitmapByPath,
   inspectCachedRasterSource,
   isBrowserResizableRasterMimeType,
   isDecodeTargetResizableRasterFormat,
