@@ -33,12 +33,9 @@ impl Reference {
             return Err(unsupported("invalid Word list reference"));
         }
         // [MS-DOC] 2.6.2 sprmPIlvl: the byte MUST be 0x0-0x8 (the level) or
-        // 0xC (the list skips this paragraph). These are exactly the byte
-        // classes where Word's measured DOCX paragraph-level rule
-        // (ooxml_common::numbering::word_level_use) is the identity or "no
-        // marker, no counter"; every other byte violates the binary format,
-        // and the file is rejected instead of borrowing the XML-lexical
-        // fallback classes.
+        // 0xC (the list skips this paragraph). Every other byte violates the
+        // binary format and is rejected; DOCX's XML-lexical malformed-level
+        // compatibility classes do not apply to this reader.
         if level == 12 {
             return Ok(None);
         }

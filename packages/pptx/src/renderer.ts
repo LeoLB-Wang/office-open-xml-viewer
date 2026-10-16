@@ -7784,6 +7784,8 @@ export function renderTable(
       // transitional schemas. For this single-word enum, collapse accepts only
       // U+0020/TAB/LF/CR at the ends; NBSP and internal whitespace cannot mean
       // `horz`. Apply this only to admission, leaving the body/paint policy intact.
+      // Keep this tolerant for caller-supplied and previously parsed models too;
+      // normalizing the shared direction would also change orientation dispatch.
       const rawVert = cell.textBody.vert;
       const isHorizontal = rawVert === undefined || typeof rawVert === 'string'
         && /^[ \t\r\n]*horz[ \t\r\n]*$/.test(rawVert);

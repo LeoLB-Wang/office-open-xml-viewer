@@ -161,37 +161,19 @@ fn preserves_reference_removal_skip_and_negative_indent_semantics() {
         assert!(Reference::new(value, 255).unwrap().is_none());
     }
     for value in [1, 2046, -1, -2046] {
-        let r = Reference::new(value, 8).unwrap().unwrap();
-        assert_eq!(r.index, value.unsigned_abs() as usize - 1);
-        assert_eq!(r.preserve_indent, value < 0);
-        assert_eq!(r.level, 8);
+        for level in [0, 8] {
+            let r = Reference::new(value, level).unwrap().unwrap();
+            assert_eq!(r.index, value.unsigned_abs() as usize - 1);
+            assert_eq!(r.preserve_indent, value < 0);
+            assert_eq!(r.level, level);
+        }
         assert!(Reference::new(value, 12).unwrap().is_none());
-        for invalid in [9, 10, 11, 13, 255] {
+        for invalid in [9, 10, 11, 13, 15, 16, 255] {
             assert!(Reference::new(value, invalid).is_err());
         }
     }
     for value in [2047, i16::MAX, -2048, i16::MIN] {
         assert!(Reference::new(value, 0).is_err());
-    }
-}
-
-#[test]
-fn binary_list_levels_agree_with_the_word_paragraph_level_rule() {
-    use ooxml_common::numbering::word_level_use;
-    for byte in 0..=u8::MAX {
-        let word = word_level_use(byte);
-        match Reference::new(1, byte) {
-            Ok(Some(reference)) => {
-                assert_eq!(word.marker_level, Some(u32::from(reference.level)));
-                assert_eq!(word.counter_level, Some(u32::from(reference.level)));
-                assert_eq!(word.fixed_counter, None);
-            }
-            Ok(None) => {
-                assert_eq!(byte, 12);
-                assert_eq!((word.marker_level, word.counter_level), (None, None));
-            }
-            Err(_) => assert!(byte > 8 && byte != 12, "ilvl {byte}"),
-        }
     }
 }
 
