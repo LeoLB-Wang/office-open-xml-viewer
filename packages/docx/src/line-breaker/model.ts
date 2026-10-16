@@ -617,8 +617,8 @@ export interface DocGridCtx {
 export interface LineLayoutEnvironment {
   readonly pageIndex: number;
   readonly totalPages: number;
-  /** Effective §17.3.1.33 paragraph spacing. The Word-for-Mac OpenType
-   * projection has been established for automatic spacing only. */
+  /** Effective §17.3.1.33 paragraph spacing. The Word OpenType
+   * projection supplies the normal box for automatic/atLeast spacing. */
   readonly lineSpacing?: LineSpacing | null;
   readonly displayPageNumber?: number;
   readonly pageNumberFormat?: NumberFormat;

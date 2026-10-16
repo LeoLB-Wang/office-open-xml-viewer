@@ -105,6 +105,8 @@ function metricSfnt(codePageRange1 = 1 << 17): Uint8Array {
   view.setInt16(hheaOffset + 4, 1802);
   view.setInt16(hheaOffset + 6, -455);
   view.setUint16(os2Offset, 1);
+  view.setUint16(os2Offset + 74, 2017);
+  view.setUint16(os2Offset + 76, 619);
   view.setUint32(os2Offset + 78, codePageRange1);
   view.setUint16(cmapOffset + 2, 1);
   view.setUint16(cmapOffset + 4, 3);
@@ -192,12 +194,12 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
       style: 'normal',
     });
     expect(loaded.metrics['unlisted cjk face'].lineHeightRatio)
-      .toBeCloseTo(((1802 + 455) * 1.3) / 2048, 12);
+      .toBeCloseTo(((2017 + 619) * 1.3) / 2048, 12);
     expect(loaded.metrics['unlisted cjk face'].eastAsianLineHeightRatio)
-      .toBeCloseTo(((1802 + 455) * 1.3) / 2048, 12);
+      .toBeCloseTo(((2017 + 619) * 1.3) / 2048, 12);
     const retained = snapshotFontMetrics(loaded.metrics)['unlisted cjk face'];
-    expect(retained.designAscentRatio).toBeCloseTo((1802 + (2257 * 0.3) / 2) / 2048, 12);
-    expect(retained.designDescentRatio).toBeCloseTo((455 + (2257 * 0.3) / 2) / 2048, 12);
+    expect(retained.designAscentRatio).toBeCloseTo((2017 + (2636 * 0.3) / 2) / 2048, 12);
+    expect(retained.designDescentRatio).toBeCloseTo((619 + (2636 * 0.3) / 2) / 2048, 12);
   });
 
   it('keeps code-page line allocation but withholds East-Asian coverage when cmap lacks glyphs', async () => {
@@ -214,7 +216,7 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
 
     expect(loaded.faces).toHaveLength(1);
     expect(loaded.metrics['latin embedded face'].lineHeightRatio)
-      .toBeCloseTo(((1802 + 455) * 1.3) / 2048, 12);
+      .toBeCloseTo(((2017 + 619) * 1.3) / 2048, 12);
     expect(loaded.metrics['latin embedded face'].eastAsianLineHeightRatio).toBeUndefined();
   });
 
@@ -257,7 +259,7 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
       layoutServices: { text: textService } as unknown as
         NonNullable<Parameters<typeof buildSegments>[1]['layoutServices']>,
     })[0] as LayoutTextSeg;
-    expect(segment('国').resolvedLineHeightRatio).toBeCloseTo(1.3 * 2257 / 2048, 12);
+    expect(segment('国').resolvedLineHeightRatio).toBeCloseTo(1.3 * 2636 / 2048, 12);
     expect(segment('日').resolvedLineHeightRatio).toBeUndefined();
     expect(segment('日').resolvedEastAsianLineHeightRatio).toBeUndefined();
 
@@ -302,7 +304,7 @@ describe('loadEmbeddedFonts (ECMA-376 §17.8.1 / §17.8.3)', () => {
     expect(added).toHaveLength(1);
     expect(loaded.faces).toHaveLength(1);
     expect(loaded.metrics['duplicate face'].lineHeightRatio)
-      .toBeCloseTo(((1802 + 455) * 1.3) / 2048, 12);
+      .toBeCloseTo(((2017 + 619) * 1.3) / 2048, 12);
     expect(loaded.metrics['duplicate face'].eastAsianLineHeightRatio).toBeUndefined();
   });
 
