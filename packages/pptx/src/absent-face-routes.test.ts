@@ -75,6 +75,15 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
     expect(calls.map((batch) => batch.map((request) => request.family))).toEqual([['Arial', 'Calibri'], ['Georgia']]);
   });
 
+  it('returns only the routes this call requested, independent of earlier slides', async () => {
+    const cache = new Map();
+    const route = (family: string) => ({ family } as never);
+    const load = async () => ({ faces: [], routes: { arial: route('arial'), 'yu gothic': route('yu gothic') } });
+    await acquireOfficeRoutes(cache, [{ family: 'Arial' }, { family: 'Yu Gothic' }], load);
+    const later = await acquireOfficeRoutes(cache, [{ family: 'Arial' }], load);
+    expect(Object.keys(later)).toEqual(['arial']);
+  });
+
   it('probes an installed named cut under its catalogued weight', async () => {
     expect(officeFaceWeight('Calibri Light', false, false)).toBe(300);
     // A bold run synthesizes bold on the Light face, which is still present.

@@ -301,7 +301,7 @@ describe('pptx render-worker.ts — init failure never hangs a request (AR4)', (
     const face = { family: 'active-deck-face' };
     const route = { family: 'active-deck-face' };
     fontMocks.requests.mockReturnValue([{ family: 'Calibri', weight: 400, style: 'normal' }]);
-    fontMocks.load.mockResolvedValue({ faces: [face], routes: { 'calibri:400:normal': route } });
+    fontMocks.load.mockResolvedValue({ faces: [face], routes: { calibri: route } });
     fontMocks.render.mockResolvedValue(undefined);
     vi.stubGlobal('OffscreenCanvas', class { constructor(_width: number, _height: number) {} });
     const fake = await loadRenderWorker();
@@ -331,7 +331,7 @@ describe('pptx render-worker.ts — init failure never hangs a request (AR4)', (
     expect(fontMocks.load).toHaveBeenCalledTimes(1);
     expect(fontMocks.render).toHaveBeenLastCalledWith(
       expect.anything(), expect.anything(), expect.any(Number), expect.any(Number),
-      expect.objectContaining({ officeFontRoutes: { 'calibri:400:normal': route } }),
+      expect.objectContaining({ officeFontRoutes: { calibri: route } }),
       expect.any(Function),
     );
   });

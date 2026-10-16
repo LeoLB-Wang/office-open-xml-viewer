@@ -38,7 +38,23 @@ export async function acquireOfficeRoutes(
   }
   const pending = new Set(requests.map((request) => cache.get(requestKey(request))!));
   const loaded = await Promise.all(pending);
-  return Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
+  const available = Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
+  // A batch may hold routes for tuples another slide requested; return only
+  // this call's tuples so what the renderer knows never depends on history.
+  const routes: Record<string, OfficeFontFallbackRoute> = {};
+  for (const request of requests) {
+    const key = routeKeyFor(request);
+    if (available[key]) routes[key] = available[key];
+  }
+  return routes;
+}
+
+/** The core office-fallback route key (regular tuples key by family alone). */
+function routeKeyFor(request: OfficeFontFallbackRequest): string {
+  const family = normalizeLocalFontMetricFamily(request.family);
+  const weight = request.weight ?? 400;
+  const style = request.style ?? 'normal';
+  return weight === 400 && style === 'normal' ? family : `${family}:${weight}:${style}`;
 }
 
 /** Every distinct load in the cache (one batch backs several tuples). */
