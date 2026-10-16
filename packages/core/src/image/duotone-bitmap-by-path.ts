@@ -36,7 +36,7 @@ function loadEffects(
   });
   const images = new Map<object, CanvasImageSource>();
   return getCachedPixelTransformBitmapByPath(imagePath, mimeType, {
-    key: `fx:${blipPixelEffectsKey(value)}|physical:${opts.widthPt ?? 0}.${opts.heightPt ?? 0}`,
+    key: `fx:${blipPixelEffectsKey(value)}|physical:${JSON.stringify([opts.widthPt ?? 0, opts.heightPt ?? 0])}`,
     strict: true,
     preflight: (pixels, width, height) => {
       assertBlipPixelEffectsBudget(physical(width, height), pixels, width && height ? { width, height } : undefined);

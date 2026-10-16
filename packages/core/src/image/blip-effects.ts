@@ -145,46 +145,16 @@ export function blipEffectImageFills(effects: readonly BlipEffect[]): BlipEffect
 /** Stable cache-key suffix for a pixel transform. */
 export function blipPixelEffectsKey(value: BlipPixelEffects): string {
   assertBlipPixelEffectsBudget(value, 0);
-  const parts = value.effects.map((effect) => {
-    switch (effect.type) {
-      case 'grayscale':
-        return 'g';
-      case 'biLevel':
-        return `b${effect.thresh}`;
-      case 'colorChange':
-        return `c${effect.from}.${effect.fromAlpha}>${effect.to}.${effect.toAlpha}${effect.useAlpha ? 'a' : ''}`;
-      case 'luminance':
-        return `l${effect.bright}.${effect.contrast}`;
-      case 'duotone':
-        return effect.clr1 && effect.clr2 ? `d${effect.clr1}.${effect.clr2}`
-          : value.duotone ? `d${value.duotone.clr1}.${value.duotone.clr2}` : 'd';
-      case 'alphaBiLevel': return `ab${effect.thresh}`;
-      case 'alphaCeiling': return 'ac';
-      case 'alphaFloor': return 'af';
-      case 'alphaInv': return `ai${effect.color ?? ''}`;
-      case 'hsl': return `h${effect.hue}.${effect.sat}.${effect.lum}`;
-      case 'tint': return `t${effect.hue}.${effect.amt}`;
-      case 'blur': return `z${effect.radius}.${effect.grow}`;
-      case 'alphaMod': case 'container': return `${effect.type}:${JSON.stringify(effect.container)}`;
-      case 'blend': return `blend:${effect.blend}:${JSON.stringify(effect.container)}`;
-      case 'reference': return `ref:${effect.reference}`;
-      case 'definitions': return `defs:${JSON.stringify(effect.containers)}`;
-      case 'effectCountLimit': return `limit:${effect.observed}`;
-      case 'alphaOutset': case 'fill': case 'glow': case 'shadow': case 'softEdge':
-      case 'reflection': case 'transform': case 'relativeOffset': case 'presetShadow': return JSON.stringify(effect);
-      case 'fillOverlay': return `f${effect.blend}:${JSON.stringify(effect.fill)}`;
-      case 'alphaModFix': return `am${effect.amt}`;
-      case 'alphaRepl': return `ar${effect.alpha}`;
-      case 'colorReplace': return `r${effect.color}`;
-      case 'unsupported': return `u${JSON.stringify(effect.effect)}`;
+  // Delimiters such as '.' also occur in decimal numbers; effect names and
+  // references can contain punctuation too. Encode the full ordered recipe
+  // and both physical axes structurally, including named-definition work.
+  return JSON.stringify([value.effects, value.duotone ?? null,
+    value.emuPerPixelX ?? null, value.emuPerPixelY ?? null], (_key, value: unknown) => {
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new OoxmlError('unsupported-image-effect', 'Non-finite image effect parameter');
     }
+    return value;
   });
-  // A duotone without a position marker (a producer that placed it directly
-  // under blipFill) applies after the listed effects.
-  if (value.duotone && !value.effects.some((effect) => effect.type === 'duotone')) {
-    parts.push(`d${value.duotone.clr1}.${value.duotone.clr2}`);
-  }
-  return parts.join(',') + (value.emuPerPixelX ? `@${value.emuPerPixelX}.${value.emuPerPixelY}` : '');
 }
 
 /** Rec. 709 luma (0–1) of gamma-encoded sRGB bytes; see the evidence above. */

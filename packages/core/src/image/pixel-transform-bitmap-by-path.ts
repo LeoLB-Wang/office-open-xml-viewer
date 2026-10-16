@@ -122,7 +122,9 @@ export async function getCachedPixelTransformBitmapByPath(
   const resizeKey = resizeOptions
     ? `|resize:${resizeOptions.resizeWidth}x${resizeOptions.resizeHeight}`
     : '';
-  const key = `${resolvedBaseKey}|${duotone.key}${resizeKey}${failClosedOnDuotoneFailure ? '|strict' : ''}`;
+  // Tuple boundaries remain unambiguous even when paths/effect recipes
+  // contain punctuation used by the individual cache namespaces.
+  const key = JSON.stringify([resolvedBaseKey, duotone.key, resizeKey, failClosedOnDuotoneFailure]);
   return getCachedDerivedBitmap(
     DUOTONE_CACHE_NAMESPACE,
     key,

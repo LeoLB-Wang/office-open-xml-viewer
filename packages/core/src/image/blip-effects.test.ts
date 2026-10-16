@@ -380,6 +380,49 @@ describe('getCachedDuotoneBitmapByPath with CT_Blip effects', () => {
       .rejects.toMatchObject({ code: 'unsupported-image-effect' });
   });
 
+  it('keeps physical blur sizes 1.2 × 3 and 1 × 2.3 independent in the real cache', async () => {
+    const pixels = new Uint8ClampedArray(Array.from({ length: 9 }, () => [20, 40, 60, 255]).flat());
+    const factory = ((w: number, h: number) => {
+      const surface = { width: w, height: h, pixels: new Uint8ClampedArray(), getContext: () => ({
+        drawImage() {},
+        getImageData: () => ({ data: pixels.slice(), width: 3, height: 3 }),
+        createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+        putImageData: (data: ImageData) => { surface.pixels = data.data.slice(); },
+      }) };
+      return surface;
+    }) as unknown as OffscreenFactory;
+    vi.stubGlobal('createImageBitmap', vi.fn(async (src: { pixels?: Uint8ClampedArray }) => ({
+      width: 3, height: 3, pixels: src.pixels?.slice(), close() {},
+    })));
+    const effects: BlipPixelEffects = { effects: [{ type: 'blur', radius: 12700, grow: false }] };
+    const fetchImage = async () => new Blob();
+    const independentFetch = async () => new Blob();
+    const render = (owner: typeof fetchImage, widthPt: number, heightPt: number) =>
+      getCachedDuotoneBitmapByPath('blur.png', 'image/png', effects, owner,
+        { widthPt, heightPt, offscreenFactory: factory }) as Promise<ImageBitmap & { pixels: Uint8ClampedArray }>;
+    const first = await render(fetchImage, 1.2, 3);
+    const second = await render(fetchImage, 1, 2.3);
+    const independent = await render(independentFetch, 1, 2.3);
+    expect(second.pixels).toEqual(independent.pixels);
+    expect(second.pixels).not.toEqual(first.pixels);
+    expect(await render(fetchImage, 1, 2.3)).toBe(second);
+    dropBitmapCacheByPath(fetchImage);
+    dropBitmapCacheByPath(independentFetch);
+  });
+
+  it('distinguishes decimal numeric tuples in effect and EMU keys', () => {
+    for (const [a, b] of [
+      [{ effects: [{ type: 'hsl', hue: 1.2, sat: 3, lum: 0 }] },
+        { effects: [{ type: 'hsl', hue: 1, sat: 2.3, lum: 0 }] }],
+      [{ effects: [], emuPerPixelX: 1.2, emuPerPixelY: 3 },
+        { effects: [], emuPerPixelX: 1, emuPerPixelY: 2.3 }],
+      [{ effects: [{ type: 'luminance', bright: .1, contrast: 1 }] },
+        { effects: [{ type: 'luminance', bright: 0, contrast: 1.1 }] }],
+    ] satisfies [BlipPixelEffects, BlipPixelEffects][]) {
+      expect(blipPixelEffectsKey(a)).not.toBe(blipPixelEffectsKey(b));
+    }
+  });
+
   it('runs the ordered effects once through the shared decode cache, keyed apart from the duotone', async () => {
     const base = { width: 1, height: 1, close() {} } as unknown as ImageBitmap;
     const transformed = { width: 1, height: 1, close() {} } as unknown as ImageBitmap;
@@ -413,7 +456,7 @@ describe('getCachedDuotoneBitmapByPath with CT_Blip effects', () => {
     expect(second).toBe(transformed);
     expect(written).toHaveLength(1);
     expect([...written[0]]).toEqual([255, 255, 255, 255]);
-    expect(duotoneCacheKey(path, effects)).toBe(`${path}|fx:g,b0.5`);
+    expect(duotoneCacheKey(path, effects)).not.toBe(duotoneCacheKey(path, null));
     expect(duotoneCacheKey(path, { clr1: '000000', clr2: 'FFFFFF' })).toBe(`${path}|duo:000000:FFFFFF`);
     dropDuotoneBitmapCache(fetchImage);
     dropBitmapCacheByPath(fetchImage);
