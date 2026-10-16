@@ -35,11 +35,37 @@ pub fn parse_standalone_shape_part(
     max_part_bytes: u64,
     max_total_bytes: u64,
 ) -> Result<Option<StandaloneShape>, String> {
-    let mut zip = open_zip_with_limits(
-        package.to_vec(),
-        Some(max_part_bytes),
-        Some(max_total_bytes),
-    )?;
+    // PackageSession owns its source across operations. Retain that ownership
+    // contract, but make this secondary source copy fallible: OPC containers
+    // may have large inert prefixes despite very little inflated content.
+    // Source length is not an admission quota. On allocation failure, report
+    // the unavailable additional retention through the ordinary resource wire
+    // envelope (zero retained capacity, actual requested bytes), before opening
+    // a package session. Legacy alternative-shape callers preserve this marker.
+    let mut source = Vec::new();
+    source.try_reserve_exact(package.len()).map_err(|_| {
+        format!(
+            "OOXML_RESOURCE_LIMIT:{}",
+            serde_json::json!({
+                "code": "ooxml-resource-limit",
+                "details": {
+                    "stage": "parsing",
+                    "violation": {
+                        "format": "pptx",
+                        "operation": "standalone-shape",
+                        "resource": "package-source-allocation",
+                        "metric": "retained-bytes",
+                        "limit": source.capacity(),
+                        "observed": package.len(),
+                        "configurable": false,
+                        "usage": ResourceUsage::default(),
+                    }
+                }
+            })
+        )
+    })?;
+    source.extend_from_slice(package);
+    let mut zip = open_zip_with_limits(source, Some(max_part_bytes), Some(max_total_bytes))?;
     zip.run_operation("standalone-shape", |zip| {
         let xml = read_zip_str(zip, part).map_err(|e| e.to_string())?;
         standalone_xml_limits(zip, &xml, Some(part))?;
