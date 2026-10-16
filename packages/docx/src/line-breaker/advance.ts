@@ -1,3 +1,4 @@
+import { countSpacingCharacters } from '../character-spacing.js';
 import { sliceTextBreakWindow } from './text-break-window.js';
 import { graphemeClusterOffsets } from '@silurus/ooxml-core';
 import { EAST_ASIAN_RE, sliceTextShapeRequest, semanticSlotStartIndex } from '../layout/text.js';
@@ -392,7 +393,7 @@ export function charScaleFactor(seg: LayoutTextSeg): number {
 
 /** Canonical advance formula for a text string in a run: natural glyph width
  *  scaled by ECMA-376 §17.3.2.43 `<w:w>`, plus the §17.6.5 character-grid
- *  delta, plus one ECMA-376 §17.3.2.35 `<w:spacing>` pitch per code point. */
+ *  delta, plus one ECMA-376 §17.3.2.35 `<w:spacing>` pitch per character. */
 export function textAdvanceWidth(
   naturalWidthPx: number,
   text: string,
@@ -400,22 +401,28 @@ export function textAdvanceWidth(
   charScale: number,
   charSpacingPx: number,
 ): number {
+  const { scalars, pitchBearing } = countSpacingCharacters(text);
+  // Preserve main's left-to-right additions, separately from retained geometry's
+  // combined pitch. Regrouping these terms changes unaffected advances by ULPs.
   return naturalWidthPx * charScale
-    + [...text].length * characterGridDeltaPx
-    + [...text].length * charSpacingPx;
+    + scalars * characterGridDeltaPx
+    + pitchBearing * charSpacingPx;
 }
 
 
-/** Total per-code-point letter-spacing (px) a segment draws with: the docGrid
+
+/** Uniform native Canvas letter-spacing (px) a segment draws with: the docGrid
  *  cell delta (already scoped by {@link segmentCharacterGridDeltaPx}) PLUS the
- *  §17.3.2.35 character-spacing pitch (all code points). Because Canvas
+ *  §17.3.2.35 character-spacing pitch. Because Canvas
  *  `ctx.letterSpacing` inserts the SAME advance after every glyph, the two are
  *  additive only when the grid delta applies to every glyph — i.e. a pure-EA
  *  segment (or none, when grid is inactive). For a mixed / Latin segment the
  *  grid delta is 0 (Latin is never snapped, §17.6.5) so only char-spacing
- *  contributes, and the value is still uniform across the segment. This single
- *  value is used for BOTH the measured advance and the painted `ctx.letterSpacing`
- *  so measure==paint holds. */
+ *  contributes, and the value is still uniform across the segment. Measurement
+ *  counts their contributions separately via textAdvanceWidth.
+ *  Native engines may space standalone or spacing marks differently. Earlier
+ *  measurement counted every scalar; retain the established contextual paint
+ *  behavior instead of splitting shaped text to force measurement parity. */
 export function segLetterSpacingPx(
   seg: LayoutTextSeg,
   grid: DocGridCtx | undefined,
@@ -428,7 +435,7 @@ export function segLetterSpacingPx(
 
 /** A text segment's laid-out advance including the §17.3.2.43 horizontal scale
  *  and §17.3.2.35 character spacing on top of the docGrid delta. Scale natural
- *  glyph width first, then add the fixed character-spacing pitch per code point;
+ *  glyph width first, then add run pitch per rendered character;
  *  these are independent OOXML properties. */
 export function segAdvanceWidth(
   seg: LayoutTextSeg,

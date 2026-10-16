@@ -149,6 +149,7 @@ describe('worker error wire', () => {
   it.each([
     'image-dimension',
     'image-pixels',
+    'tiff-lzw-work',
     'active-decoded-bytes',
     'metafile-record-points',
     'metafile-record-polygons',

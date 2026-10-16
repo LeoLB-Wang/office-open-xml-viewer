@@ -252,8 +252,8 @@ export interface LayoutTextSeg extends LayoutSegSource {
   snapToCharacterGrid?: boolean;
   /** ECMA-376 §17.3.2.35 `<w:spacing>` — character-spacing pitch in POINTS
    *  (signed), added after every character of the run. Applied as a per-glyph
-   *  `ctx.letterSpacing` delta on BOTH measure and paint (measure==paint), on top
-   *  of any docGrid / justify delta. Absent ⇒ 0. */
+   *  layout pitch via textSpacingAdvance; paint uses native `ctx.letterSpacing`
+   *  to preserve contextual shaping, on top of docGrid / justify. Absent ⇒ 0. */
   charSpacing?: number;
   /** ECMA-376 §17.15.1.18 document-level full-width character compression.
    * Each entry belongs to one shaped grapheme and adjusts the advance after its
@@ -617,8 +617,8 @@ export interface DocGridCtx {
 export interface LineLayoutEnvironment {
   readonly pageIndex: number;
   readonly totalPages: number;
-  /** Effective §17.3.1.33 paragraph spacing. The Word-for-Mac OpenType
-   * projection has been established for automatic spacing only. */
+  /** Effective §17.3.1.33 paragraph spacing. The Word OpenType
+   * projection supplies the normal box for automatic/atLeast spacing. */
   readonly lineSpacing?: LineSpacing | null;
   readonly displayPageNumber?: number;
   readonly pageNumberFormat?: NumberFormat;

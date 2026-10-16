@@ -509,7 +509,7 @@ describe('native reference font vertical layout', () => {
     const segment = segments[0] as LayoutTextSeg;
 
     // Meiryo advertises a Far-East code page, so Word allocates 1.3 times
-    // its hhea box rather than using the signed hhea line gap.
+    // its usWin box rather than using the signed hhea line gap.
     expect(segment.resolvedEaFloorLineHeightRatio).toBeCloseTo(1.3 * 3072 / 2048, 12);
     expect(segmentEastAsiaFloorSingleLinePx(segment, 10, true)).toBeCloseTo(10 * 1.3 * 3072 / 2048, 8);
   });

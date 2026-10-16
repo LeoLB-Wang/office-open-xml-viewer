@@ -431,6 +431,7 @@ const DECODED_IMAGE_LIMIT_METRICS = {
   'active-decoded-bytes': true,
   'image-effect-count': true,
   'image-effect-work': true,
+  'tiff-lzw-work': true,
   'metafile-path-commands': true,
   'metafile-record-points': true,
   'metafile-record-polygons': true,

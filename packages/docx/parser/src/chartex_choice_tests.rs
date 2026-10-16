@@ -1,4 +1,5 @@
 //! Synthetic package tests exercise both production parsing paths.
+use crate::document_projector::STREAMED_XML_EVENT_BYTES;
 use crate::parser;
 use std::io::{Cursor, Write};
 
@@ -422,7 +423,7 @@ fn cases() -> Vec<Case> {
         "<w:smartTag>".repeat(253),
         "</w:smartTag>".repeat(253)
     );
-    let comment = format!("<!--{}-->", "x".repeat(1024 * 1024 + 1));
+    let comment = format!("<!--{}-->", "x".repeat(STREAMED_XML_EVENT_BYTES + 1));
     add(
         "15-depth-plain",
         package_with(&deep, "", None),
