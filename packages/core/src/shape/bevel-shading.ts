@@ -7,10 +7,10 @@
  * Control audit: 6,051 Windows PowerPoint front-view rectangle/ellipse controls,
  * all 12 profiles, 27 rigs and 15 material names (wireframe uses raster geometry),
  * eight directions, five fill colors and explicit single/combined light rotations.
- * Large Office residuals remain, particularly at profile rims and with Fresnel
- * materials. This reference model is not a complete Office pixel match.
- * Literal curve coordinates/visibility and Fresnel/compositing remain
- * unresolved; large residuals are not raster AA. The light rotation convention
+ * Office residuals remain, particularly with Fresnel materials. This reference
+ * model is not a complete Office pixel match. The profile axis assignment is
+ * settled against these controls (see bevel-profiles.ts); Fresnel/compositing
+ * remain unresolved; large residuals are not raster AA. The light rotation convention
  * is checked separately against single-axis and combined Office controls.
  * Arbitrary backgrounds, camera-rotated lighting and back/mesh visibility are
  * not established by these controls. No per-case fit or scalar gain is used.
