@@ -213,7 +213,7 @@ export type BodyLayoutSequenceEntryFor<TSection> =
 export type BodyLayoutSequenceEntry = BodyLayoutSequenceEntryFor<BodySectionLayoutInput>;
 
 export interface BodyLayoutInput {
-  /** Authored Word compatibility mode (§17.15.3.4). */
+  /** `w:compatSetting` compatibilityMode value from settings (§17.15.3.4). */
   readonly compatibilityMode?: number;
   readonly source: SourceRef;
   readonly initialSection: BodySectionLayoutInput;

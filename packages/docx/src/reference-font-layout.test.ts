@@ -309,6 +309,40 @@ describe('native reference font vertical layout', () => {
     expect(lines(10.4)).toHaveLength(2);
   });
 
+  // The Windows evidence covers mode 14 only. Other modes keep the earlier
+  // OpenType/kerning exclusion: the same line wraps instead of shrinking the
+  // space, while the switch-free case still fits.
+  it.each([
+    { compatibilityMode: 15, kerning: undefined, enableOpenTypeFeatures: true, fits: false },
+    { compatibilityMode: 15, kerning: 0, enableOpenTypeFeatures: false, fits: false },
+    { compatibilityMode: 12, kerning: 0, enableOpenTypeFeatures: true, fits: false },
+    { compatibilityMode: undefined, kerning: undefined, enableOpenTypeFeatures: true, fits: false },
+    { compatibilityMode: 15, kerning: undefined, enableOpenTypeFeatures: false, fits: true },
+  ])('keeps the switch exclusion outside mode 14 (mode=$compatibilityMode, kern=$kerning, OT=$enableOpenTypeFeatures)', (c) => {
+    const family = 'Synthetic Latin';
+    const layoutServices = verifiedReferenceServices([{ family }], {
+      selected: {
+        family, sourceIdentity: `office-local:local("${family}")`,
+        averageCharWidthRatio: 0.4, unicodeRanges: [[32, 32], [65, 66]],
+      },
+    });
+    const segments = buildSegments([{
+      type: 'text', text: 'A B', fontFamily: family, fontSize: 10,
+      bold: false, italic: false, underline: false, strikethrough: false,
+      color: null, isLink: false, background: null, vertAlign: null, hyperlink: null,
+      kerning: c.kerning,
+    }], {
+      pageIndex: 0, totalPages: 1, layoutServices,
+      ...(c.compatibilityMode === undefined ? {} : { compatibilityMode: c.compatibilityMode }),
+      characterSpacingControl: 'compressPunctuation',
+      balanceSingleByteDoubleByteWidth: true,
+      enableOpenTypeFeatures: c.enableOpenTypeFeatures,
+    });
+    const grid = { type: 'linesAndChars' as const, charSpacePt: -1, linePitchPt: 12 };
+    expect(layoutLines(context, segments, 10.5, 0, 1, [], undefined, {}, 0, undefined, grid))
+      .toHaveLength(c.fits ? 1 : 2);
+  });
+
   it('keeps an untabled East Asian grid count independent of the native Canvas box', () => {
     const nativeContext = {
       font: '10px serif', letterSpacing: '0px', fontKerning: 'auto',

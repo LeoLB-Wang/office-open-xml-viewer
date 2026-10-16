@@ -1500,7 +1500,13 @@ function emitResolvedTextSegment(
     !emissionState.reduced &&
     effectiveVertAlign == null &&
     (effectiveCharacterSpacing == null || effectiveCharacterSpacing === 0) &&
-    (effectiveCharacterScale == null || effectiveCharacterScale === 1);
+    (effectiveCharacterScale == null || effectiveCharacterScale === 1) &&
+    // The switch independence above is measured for compatibilityMode 14
+    // only. Other modes keep the earlier OpenType/kerning exclusion until
+    // Windows controls cover them (a mode-15 homogeneous control kept
+    // natural spaces; word-space-fit-controls.json).
+    (environment.compatibilityMode === 14 ||
+      (environment.enableOpenTypeFeatures !== true && effectiveKerningThreshold == null));
   const latinSpaceAverageWidthRatio = latinSpaceCompressionEligible
     ? selectedAverageWidth(resolvedSpan?.font, text)
     : undefined;
