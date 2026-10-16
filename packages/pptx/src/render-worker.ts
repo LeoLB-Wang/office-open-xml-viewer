@@ -14,6 +14,7 @@ import { loadPptxSlideFromCursor, readPptxSlideCursorUsage } from './slide-curso
 import { SlidePullWorker } from './slide-pull-worker';
 import {
   GoogleFontPreloadLease,
+  activeFontSet,
   loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
   unregisterEmbeddedFonts,
@@ -88,7 +89,8 @@ async function officeRoutesForRequests(
   requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
 ): Promise<AcquiredOfficeRoutes> {
   const uncovered = uncoveredOfficeFontRequests(requests, embeddedFontTuples);
-  return acquireOfficeRoutes(officeFontLoads, uncovered, (fresh) => loadOfficeFontFallbacks(fresh));
+  const fontSet = activeFontSet();
+  return acquireOfficeRoutes(officeFontLoads, uncovered, (fresh) => loadOfficeFontFallbacks(fresh, fontSet), fontSet);
 }
 
 function releaseOfficeFonts(): void {

@@ -510,24 +510,6 @@ describe('absent authored faces (layout follows the painting face)', () => {
     expect(absentBaselines('Yu Gothic')).not.toEqual(present);
   });
 
-  it('treats a family installed in another tuple as present', () => {
-    // Regular Yu Gothic is installed (routed); a bold run paints that family
-    // with synthesized weight, so its PowerPoint face metrics still apply.
-    const paragraphs = [paragraph([{ text: 'Ag', font: 'Yu Gothic', size: 100 }]),
-      paragraph([{ text: 'Ag', font: 'Yu Gothic', size: 100 }])];
-    for (const p of paragraphs) for (const run of p.runs) (run as { bold?: boolean }).bold = true;
-    const body = {
-      verticalAnchor: 't', paragraphs, defaultFontSize: 18, defaultBold: null, defaultItalic: null,
-      lIns: 0, rIns: 0, tIns: 0, bIns: 0, wrap: 'none', vert: 'horz', autoFit: 'none',
-    } as TextBody;
-    const { ctx, draws } = context();
-    renderTextBodyAsAuthored(ctx, body, 0, 0, 2000, 800, SCALE, null, 0, false, false, '#000000', undefined,
-      { themeMajorFont: null, themeMinorFont: null, dpr: 1, officeFontRoutes: { 'yu gothic': { family: 'Yu Gothic' } as never } });
-    const ys: number[] = [];
-    for (const d of draws) if (!ys.some((y) => Math.abs(y - d.y) < 1e-6)) ys.push(d.y);
-    expect(ys).not.toEqual(absentBaselines('sans-serif'));
-  });
-
   it('treats a family present by its presence probe as present on a bold-only slide', () => {
     // No styled tuple loaded (no bold cut installed), but the family presence
     // probe found the regular face: the installed family paints the bold run.
@@ -546,8 +528,9 @@ describe('absent authored faces (layout follows the painting face)', () => {
       return out;
     };
     const viaPresence = ys({ themeMajorFont: null, themeMinorFont: null, dpr: 1, officeInstalledFamilies: ['yu gothic'] });
+    // Same geometry as an exact bold route: the installed family paints it.
     const viaRoute = ys({ themeMajorFont: null, themeMinorFont: null, dpr: 1,
-      officeFontRoutes: { 'yu gothic': { family: 'Yu Gothic' } as never } });
+      officeFontRoutes: { 'yu gothic:700:normal': { family: 'Yu Gothic' } as never } });
     expect(viaPresence).toEqual(viaRoute);
     expect(viaPresence).not.toEqual(absentBaselines('sans-serif'));
   });

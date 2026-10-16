@@ -129,4 +129,24 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
     expect(fonts.every((font) => font.includes(alias))).toBe(true);
     expect(lines[0]!.segments[0]!.font).toContain(alias);
   });
+
+  it('derives family presence from a loaded route of any requested tuple', async () => {
+    const load = async () => ({ faces: [], routes: { 'yu gothic': { family: 'x' } as never } });
+    const acquired = await acquireOfficeRoutes(new Map(), [{ family: 'Yu Gothic' }, { family: 'Arial' }], load);
+    expect(acquired.installed).toEqual(['yu gothic']);
+  });
+
+  it('does not report a family shadowed by an application FontFace as installed', async () => {
+    // A declared FontFace owns the authored family name for every tuple, so the
+    // system face's presence or routes cannot describe what paints.
+    const declared = [{ family: '"Arial"', status: 'loaded' }] as unknown as FontFace[];
+    const set = { [Symbol.iterator]: () => declared[Symbol.iterator]() } as unknown as FontFaceSet;
+    const load = async () => ({ faces: [], routes: { 'arial:700:normal': { family: 'x' } as never }, installed: ['arial', 'georgia'] });
+    const acquired = await acquireOfficeRoutes(new Map(), [
+      { family: 'Arial', weight: 700, style: 'normal' }, { family: 'Arial', presenceOnly: true },
+      { family: 'Georgia', presenceOnly: true },
+    ], load, set);
+    expect(Object.keys(acquired.routes)).toEqual(['arial:700:normal']);
+    expect(acquired.installed).toEqual(['georgia']);
+  });
 });

@@ -1392,13 +1392,11 @@ function lineMetricFor(
   return powerPointFaceMetrics(family, bold, italic);
 }
 
-/** Whether any face of the family is installed (a family presence probe, or
- * a loaded route of another tuple): CSS font matching then paints that
+/** Whether an installed face of the family paints the authored name (see
+ * AcquiredOfficeRoutes.installed): CSS font matching then paints that
  * installed family, synthesizing weight/style. */
 function familyInstalled(family: string, rc: RenderContext): boolean {
-  const key = normalizeLocalFontMetricFamily(family);
-  return rc.officeInstalledFamilies?.includes(key) === true
-    || Object.keys(rc.officeFontRoutes ?? {}).some((route) => route === key || route.startsWith(`${key}:`));
+  return rc.officeInstalledFamilies?.includes(normalizeLocalFontMetricFamily(family)) === true;
 }
 
 /** The core office-fallback route key for an authored family tuple. */

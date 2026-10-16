@@ -1063,7 +1063,7 @@ export class PptxPresentation {
       this._officeFontLoads.set(fontSet, loads);
     }
     const acquired = await acquireOfficeRoutes(loads, uncovered,
-      (fresh) => loadOfficeFontFallbacks(fresh, fontSet));
+      (fresh) => loadOfficeFontFallbacks(fresh, fontSet), fontSet);
     if (this._destroyed) throw new Error('Presentation destroyed');
     return acquired;
   }

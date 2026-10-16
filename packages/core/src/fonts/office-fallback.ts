@@ -220,7 +220,20 @@ export function unloadOfficeFontFallbacks(faces: Iterable<FontFace>): void {
  * full/PostScript alias of every weight and style. Presence of the family is a
  * question separate from which styles a document uses. */
 function familyPresenceLocalNames(family: string): string[] {
-  return [...new Set([family, ...findReferenceFontMetrics(family).flatMap((profile) => profile.aliases)])];
+  // A named cut ("Arial Black") can resolve to profiles of a broader catalog
+  // family ("Arial" 900). Those profiles' aliases may name the broader family
+  // or its other cuts, which prove only that family installed, never the cut.
+  // As in tupleFor, keep a borrowed profile's aliases only when no other tuple
+  // of its catalog family shares them.
+  const requested = normalizeLocalFontMetricFamily(family);
+  const names = findReferenceFontMetrics(family).flatMap((profile) => {
+    if (normalizeLocalFontMetricFamily(profile.family) === requested) return profile.aliases;
+    const others = new Set(findReferenceFontMetrics(profile.family)
+      .filter((other) => other.weight !== profile.weight || other.style !== profile.style)
+      .flatMap((other) => other.aliases.map(normalizeLocalFontMetricFamily)));
+    return profile.aliases.filter((alias) => !others.has(normalizeLocalFontMetricFamily(alias)));
+  });
+  return [...new Set([family, ...names])];
 }
 
 /**

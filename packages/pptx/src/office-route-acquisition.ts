@@ -12,7 +12,11 @@ type LoadedOfficeFontFallbacks = {
 
 export interface AcquiredOfficeRoutes {
   routes: Record<string, OfficeFontFallbackRoute>;
-  /** Normalized requested families with any installed face (presence probes). */
+  /**
+   * Normalized requested families whose installed face paints the authored
+   * name: proven by a presence probe or a loaded route of any tuple, and not
+   * shadowed by an application FontFace declaring the same family name.
+   */
   installed: string[];
 }
 
@@ -34,6 +38,7 @@ export async function acquireOfficeRoutes(
   cache: OfficeRouteCache,
   requests: readonly OfficeFontFallbackRequest[],
   load: (requests: OfficeFontFallbackRequest[]) => Promise<LoadedOfficeFontFallbacks>,
+  fontSet: FontFaceSet | null = null,
 ): Promise<AcquiredOfficeRoutes> {
   const fresh = new Map<string, OfficeFontFallbackRequest>();
   for (const request of requests) {
@@ -53,15 +58,30 @@ export async function acquireOfficeRoutes(
   const routes: Record<string, OfficeFontFallbackRoute> = {};
   const installed = new Set<string>();
   for (const request of requests) {
+    const family = normalizeLocalFontMetricFamily(request.family);
     if (request.presenceOnly) {
-      const family = normalizeLocalFontMetricFamily(request.family);
       if (installedAnywhere.has(family)) installed.add(family);
       continue;
     }
     const key = routeKeyFor(request);
-    if (available[key]) routes[key] = available[key];
+    if (available[key]) {
+      routes[key] = available[key];
+      installed.add(family);
+    }
   }
+  // An application FontFace with the authored family name shadows the system
+  // family for every tuple (CSS font matching), so system presence cannot
+  // describe the face that paints. Checked per call: faces can be added later.
+  for (const family of declaredFamilies(fontSet)) installed.delete(family);
   return { routes, installed: [...installed].sort() };
+}
+
+/** Families named by FontFaces declared in the set. Office routes register
+ * under private aliases, so they never shadow an authored family here. */
+function declaredFamilies(fontSet: FontFaceSet | null): Set<string> {
+  if (!fontSet || typeof fontSet[Symbol.iterator] !== 'function') return new Set();
+  return new Set([...fontSet].map((face) =>
+    normalizeLocalFontMetricFamily(face.family.replace(/^(['"])(.*)\1$/u, '$2'))));
 }
 
 /** The core office-fallback route key (regular tuples key by family alone). */

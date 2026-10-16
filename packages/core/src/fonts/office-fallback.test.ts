@@ -119,6 +119,18 @@ describe('loadOfficeFontFallbacks', () => {
     unloadOfficeFontFallbacks(result.faces);
   });
 
+  it('never lets a broader catalog family prove a named cut present', async () => {
+    // Only regular Arial / Calibri are installed: their names must not prove
+    // the absent Arial Black / Calibri Light cuts present.
+    const { set } = fontSet(['Arial', 'Calibri']);
+    globals.fetch = async () => { throw new Error('unexpected fetch'); };
+    const result = await loadOfficeFontFallbacks([
+      { family: 'Arial Black', presenceOnly: true }, { family: 'Calibri Light', presenceOnly: true },
+      { family: 'Arial', presenceOnly: true },
+    ], set);
+    expect(result.installed).toEqual(['arial']);
+  });
+
   it('retains one local face across concurrent holders in the same font set', async () => {
     const { set, added, deleted } = fontSet(['Calibri']);
     const [first, second] = await Promise.all([
