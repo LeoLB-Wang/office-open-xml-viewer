@@ -359,12 +359,19 @@ function isUnsupportedBlipEffectError(error: unknown): boolean {
 /** The decode-time pixel transform of a blip: its ordered CT_Blip effects
  *  (with the duotone at its position) when it carries any, otherwise just the
  *  duotone, so a duotone-only or plain picture keeps its existing cache key. */
-function pixelTransform(blip: {
+type BlipHostOrientation = { readonly rotation?: number; readonly flipH?: boolean; readonly flipV?: boolean };
+
+function pixelTransform(blip: BlipHostOrientation & {
+  readonly rotWithShape?: boolean;
   readonly duotone?: import('@silurus/ooxml-core').Duotone | null;
   readonly blipEffects?: readonly import('@silurus/ooxml-core').BlipEffect[] | null;
-}): import('@silurus/ooxml-core').Duotone | BlipPixelEffects | undefined {
+}, host: BlipHostOrientation = blip): import('@silurus/ooxml-core').Duotone | BlipPixelEffects | undefined {
   return blip.blipEffects?.length
-    ? { effects: blip.blipEffects, duotone: blip.duotone ?? null }
+    ? { effects: blip.blipEffects, duotone: blip.duotone ?? null,
+        // §20.1.8.14: effects belong to the image-fill brush. If its
+        // painter counter-rotates the brush, its net host rotation is zero;
+        // using the containing shape's rotation here cancels it a second time.
+        hostRotation: blip.rotWithShape === false ? 0 : host.rotation, hostFlipH: host.flipH, hostFlipV: host.flipV }
     : blip.duotone ?? undefined;
 }
 
@@ -616,11 +623,11 @@ async function planSlideImages(
  * changing or predicting text-driven growth. If both are zero, preparation
  * uses a budget-checked native decode: text can still grow the painted row. */
 function* elementImageFillUsages(element: SlideElement): Generator<{
-  fill: ImageFill; width: number; height: number;
+  fill: ImageFill; width: number; height: number; host: BlipHostOrientation;
 }> {
   const usage = (fill: Fill | null | undefined, width: number, height: number) =>
     fill?.fillType === 'image' && shapeImageFillModeIsPaintable(fill)
-      ? { fill, width, height }
+      ? { fill, width, height, host: element }
       : null;
   if (element.type === 'shape') {
     if (element.fill?.fillType === 'image' && (![element.width, element.height].every(Number.isFinite) || element.width < 0 || element.height < 0)) throw new OoxmlError('unsupported-image-effect', 'Invalid image fill frame');
@@ -2536,10 +2543,10 @@ interface PreparedShapeFill {
  * that share a PNG but differ in grayscl/biLevel/clrChange/lum/duotone need
  * distinct prepared images. `imagePlanKey` is the same path + ordered-effect
  * key the decode cache uses. */
-function shapeFillKey(fill: ImageFill, widthEmu: number, heightEmu: number): string {
+function shapeFillKey(fill: ImageFill, widthEmu: number, heightEmu: number, host: BlipHostOrientation = {}): string {
   return JSON.stringify([
     fill.svgImagePath ?? null,
-    imagePlanKey(fill.imagePath, pixelTransform(fill)),
+    imagePlanKey(fill.imagePath, pixelTransform(fill, host)),
     // §20.1.8.15 rad uses physical coordinates. Prepared identity and paint
     // lookup must retain the same authored frame as the effect decoder.
     ...(fill.blipEffects?.length ? [widthEmu, heightEmu] : []),
@@ -4086,7 +4093,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     ? el.fill
     : null;
   const preparedImageFill = imageFill
-    ? rc.shapeFillImages?.get(shapeFillKey(imageFill, el.width, el.height))
+    ? rc.shapeFillImages?.get(shapeFillKey(imageFill, el.width, el.height, el))
     : undefined;
   const hasPreparedImageFill = Boolean(imageFill && preparedImageFill);
 
@@ -7779,7 +7786,7 @@ export function renderTable(
     if (fill?.fillType === 'image') {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
-      paintPreparedShapeImageFill(ctx, fill, rc.shapeFillImages?.get(shapeFillKey(fill, authoredWidth, authoredHeight)),
+      paintPreparedShapeImageFill(ctx, fill, rc.shapeFillImages?.get(shapeFillKey(fill, authoredWidth, authoredHeight, el)),
         { x, y, w, h }, scale, false, el);
     } else {
       const paint = resolveShapeFill(fill, ctx, x, y, w, h, el.rotation, scale * PT_TO_EMU);
@@ -8484,6 +8491,7 @@ async function renderSlideLeased(
     const fetchImage = opts.fetchImage;
     const shapeFills = new Map<string, {
       fill: ImageFill;
+      host: BlipHostOrientation;
       widthPt: number;
       heightPt: number;
       targetWidthPx?: number;
@@ -8491,9 +8499,9 @@ async function renderSlideLeased(
       preserveNaturalSize: boolean;
       hasSourceCrop: boolean;
     }>();
-    for (const { fill, width, height } of slideImageFillUsages(slide)) {
+    for (const { fill, width, height, host } of slideImageFillUsages(slide)) {
       if (!(width > 0) || !(height >= 0)) continue;
-      const key = shapeFillKey(fill, width, height);
+      const key = shapeFillKey(fill, width, height, host);
       const prior = shapeFills.get(key);
       const widthPt = width / PT_TO_EMU;
       const heightPt = height / PT_TO_EMU;
@@ -8506,7 +8514,7 @@ async function renderSlideLeased(
       );
       shapeFills.set(key, prior
         ? {
-            fill: prior.fill,
+            fill: prior.fill, host: prior.host,
             widthPt: Math.max(prior.widthPt, widthPt),
             heightPt: Math.max(prior.heightPt, heightPt),
             targetWidthPx: Math.max(prior.targetWidthPx ?? 0, target?.targetWidthPx ?? 0) || undefined,
@@ -8515,7 +8523,7 @@ async function renderSlideLeased(
             hasSourceCrop: prior.hasSourceCrop || fill.srcRect != null,
           }
         : {
-            fill, widthPt, heightPt,
+            fill, host, widthPt, heightPt,
             targetWidthPx: target?.targetWidthPx,
             targetHeightPx: target?.targetHeightPx,
             preserveNaturalSize: fill.tile != null,
@@ -8741,17 +8749,17 @@ async function renderSlideLeased(
       });
       const shapePromises: Promise<void>[] = [...shapeFills].map(async (
         [key, {
-          fill, widthPt, heightPt, targetWidthPx, targetHeightPx,
+          fill, host, widthPt, heightPt, targetWidthPx, targetHeightPx,
           preserveNaturalSize, hasSourceCrop,
         }],
       ) => {
-        const vector = fill.mimeType === 'image/svg+xml' || (!pixelTransform(fill)
+        const vector = fill.mimeType === 'image/svg+xml' || (!pixelTransform(fill, host)
           && preferVectorBlip({
             svgImagePath: fill.svgImagePath,
             srcRect: hasSourceCrop ? true : null,
           }));
-        const planned = !preserveNaturalSize && !pixelTransform(fill)
-          ? plannedRasterOptions(imagePlan, imagePlanKey(fill.imagePath, pixelTransform(fill)))
+        const planned = !preserveNaturalSize && !pixelTransform(fill, host)
+          ? plannedRasterOptions(imagePlan, imagePlanKey(fill.imagePath, pixelTransform(fill, host)))
           : undefined;
         const rawTarget = !preserveNaturalSize && targetWidthPx && targetHeightPx
           ? { targetWidthPx, targetHeightPx }
@@ -8763,13 +8771,13 @@ async function renderSlideLeased(
                 .dimensions ?? undefined
             : undefined;
           const fallback = () => fill.mimeType === 'image/svg+xml' && !fill.blipEffects?.length
-            ? pixelTransform(fill)
+            ? pixelTransform(fill, host)
               ? Promise.resolve(null)
               : getCachedSvgImageByPath(fill.imagePath, fetchImage, {
                   ...(target ?? {}), workerDecoder: svgDecoder,
                 })
             : getCachedDuotoneBitmapByPath(
-                fill.imagePath, fill.mimeType, pixelTransform(fill), fetchImage,
+                fill.imagePath, fill.mimeType, pixelTransform(fill, host), fetchImage,
                 {
                   widthPt,
                   heightPt,
@@ -8780,7 +8788,7 @@ async function renderSlideLeased(
                 },
               );
           let image: SvgImageSource | null;
-          if (!pixelTransform(fill) && preferVectorBlip({
+          if (!pixelTransform(fill, host) && preferVectorBlip({
             svgImagePath: fill.svgImagePath,
             srcRect: hasSourceCrop ? true : null,
           })) {

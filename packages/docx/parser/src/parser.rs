@@ -8691,6 +8691,9 @@ struct InlineBlip {
     alpha: Option<f64>,
     width_pt: f64,
     height_pt: f64,
+    rotation: f64,
+    flip_h: bool,
+    flip_v: bool,
 }
 
 /// Resolve a single picture drawing: the first `<a:blip>` of the container's
@@ -8727,6 +8730,29 @@ fn resolve_inline_blip(
     // §20.1.8.6 alphaModFix opacity (fraction, or None when opaque).
     let alpha = None; // Ordered blip effects bake alpha exactly once.
     let (width_pt, height_pt) = drawing_extent_points(container)?;
+    // ECMA-376 §20.2.2.6 pic:spPr / §20.1.7.6 a:xfrm supplies the
+    // picture's orientation. wp:extent owns layout size, while these facts
+    // own paint and rotWithShape=false inside the recursive blip evaluator.
+    // Restrict lookup to this blip's picture, never a nested text-box drawing.
+    let xfrm = blip_fill
+        .and_then(|fill| fill.parent())
+        .and_then(|picture| {
+            picture
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "spPr")
+        })
+        .and_then(|properties| {
+            properties
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "xfrm")
+        });
+    let rotation = xfrm
+        .and_then(|n| n.attribute("rot"))
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0) as f64
+        / 60000.0;
+    let flip_h = xfrm.is_some_and(|n| matches!(n.attribute("flipH"), Some("1" | "true")));
+    let flip_v = xfrm.is_some_and(|n| matches!(n.attribute("flipV"), Some("1" | "true")));
     Some(InlineBlip {
         image_path,
         mime_type,
@@ -8737,6 +8763,9 @@ fn resolve_inline_blip(
         alpha,
         width_pt,
         height_pt,
+        rotation,
+        flip_h,
+        flip_v,
     })
 }
 
@@ -9291,6 +9320,9 @@ fn parse_drawing_container(
             alpha,
             width_pt,
             height_pt,
+            rotation,
+            flip_h,
+            flip_v,
         } = match resolve_inline_blip(container, media_map, theme) {
             Some(b) => b,
             None => {
@@ -9306,9 +9338,9 @@ fn parse_drawing_container(
             src_rect,
             width_pt,
             height_pt,
-            rotation: 0.0,
-            flip_h: false,
-            flip_v: false,
+            rotation,
+            flip_h,
+            flip_v,
             anchor: false,
             anchor_x_pt: 0.0,
             anchor_y_pt: 0.0,
@@ -9544,6 +9576,9 @@ fn parse_drawing_container(
         alpha,
         width_pt,
         height_pt,
+        rotation,
+        flip_h,
+        flip_v,
     } = match resolve_inline_blip(container, media_map, theme) {
         Some(b) => b,
         None => {
@@ -9559,9 +9594,9 @@ fn parse_drawing_container(
         src_rect,
         width_pt,
         height_pt,
-        rotation: 0.0,
-        flip_h: false,
-        flip_v: false,
+        rotation,
+        flip_h,
+        flip_v,
         anchor: true,
         anchor_x_pt: pos_x,
         anchor_y_pt: pos_y,
@@ -22417,6 +22452,7 @@ mod svg_blip_tests {
                       <a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FFFFFF"/></a:duotone>
                       <a:lum bright="0" contrast="-50000"/>
                     </a:blip><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                    <pic:spPr><a:xfrm rot="5400000" flipH="1" flipV="true"/></pic:spPr>
                   </pic:pic>
                 </a:graphicData></a:graphic>
               </wp:{container}>
@@ -22424,6 +22460,12 @@ mod svg_blip_tests {
             );
             let doc = parse_from_bytes(&build_docx_with_media(&body)).expect("parse must succeed");
             let image = serde_json::to_value(only_image(&doc)).unwrap();
+            assert_eq!(
+                image["rotation"], 90.0,
+                "{container} must retain the host orientation for recursive effects"
+            );
+            assert_eq!(image["flipH"], true);
+            assert_eq!(image["flipV"], true);
             assert_eq!(
                 image["blipEffects"],
                 serde_json::json!([

@@ -44,9 +44,10 @@
 //   saved as a binary .ppt matches it too, with the stored contrast used
 //   directly as k. At c = 1 the result is a threshold at v + b/2 = ½.
 
+import { validateBlipEffect } from './blip-validation.js';
 import { fillPaintWorkspaceBytes } from '../shape/paint.js';
 import { affinePlan, affinePixels, unionEffectGrids, type Affine } from './blip-spatial.js';
-import { expandBlipEffect, blipMaskOperations } from './blip-compound.js';
+import { expandBlipEffect, blipMaskOperations, effectDirection } from './blip-compound.js';
 import type { SolidFill, NoFill, PatternFill, ImageFill, GradientFill, GradientStop, Shadow, Glow, Reflection } from '../types/common.js';
 import { blendRgba, effectFillPixels, effectFillWork, type BlendMode, type BlipEffectRuntime } from './blip-fill.js';
 import { blurPlan, blurPixels, type EffectBuffer } from './blip-blur.js';
@@ -122,6 +123,11 @@ export interface BlipPixelEffects {
   /** Physical sampling of this image; defaults to 96 dpi when absent. */
   readonly emuPerPixelX?: number;
   readonly emuPerPixelY?: number;
+  /** Host orientation in degrees, before its Canvas paint transform. These
+   * inputs also own nested fills/containers and participate in cache identity. */
+  readonly hostRotation?: number;
+  readonly hostFlipH?: boolean;
+  readonly hostFlipV?: boolean;
 }
 
 export function isBlipPixelEffects(value: unknown): value is BlipPixelEffects {
@@ -132,14 +138,44 @@ export function isBlipPixelEffects(value: unknown): value is BlipPixelEffects {
  * sequentially through the document's decoded owner, never Promise.all. */
 export function blipEffectImageFills(effects: readonly BlipEffect[]): BlipEffectImageFill[] {
   const result: BlipEffectImageFill[] = [];
-  const visit = (list: readonly BlipEffect[]) => {
-    for (const effect of list) {
-      if (effect.type === 'alphaMod' || effect.type === 'container' || effect.type === 'blend') visit(effect.container.effects);
-      if (effect.type === 'definitions') for (const container of effect.containers) visit(container.effects);
-      if ((effect.type === 'fillOverlay' || effect.type === 'fill') && effect.fill.fillType === 'image') result.push(effect.fill);
+  for (const effect of blipEffectNodes(effects, false)) {
+    if ((effect.type === 'fillOverlay' || effect.type === 'fill') && effect.fill.fillType === 'image') result.push(effect.fill);
+  }
+  return result;
+}
+
+/** Iterative ownership traversal. Image fills own independent decode recipes;
+ * container/DAG recipes share the current evaluator. Both consume the same
+ * finite projection envelope; active lists detect cycles without recursion. */
+function* blipEffectNodes(effects: readonly BlipEffect[], includeImageEffects = true): Generator<BlipEffect> {
+  const pending = [{ list: effects, index: 0 }];
+  const active = new Set<readonly BlipEffect[]>();
+  let count = 0;
+  while (pending.length) {
+    const frame = pending[pending.length - 1];
+    if (frame.index === 0) {
+      if (!Array.isArray(frame.list)) throw new OoxmlError('unsupported-image-effect', 'Invalid effect list');
+      if (active.has(frame.list)) throw new OoxmlError('unsupported-image-effect', 'Cyclic effect or image fill');
+      active.add(frame.list);
     }
-  };
-  visit(effects); return result;
+    if (frame.index === frame.list.length) { active.delete(frame.list); pending.pop(); continue; }
+    if (++count > MAX_IMAGE_EFFECT_PASSES) throw new OoxmlDecodedImageLimitError('image-effect-count', MAX_IMAGE_EFFECT_PASSES, count);
+    const effect = frame.list[frame.index++];
+    if (!effect || typeof effect !== 'object') throw new OoxmlError('unsupported-image-effect', 'Invalid effect node');
+    const containers = effect.type === 'definitions' ? effect.containers
+      : effect.type === 'alphaMod' || effect.type === 'container' || effect.type === 'blend' ? [effect.container] : [];
+    if (!Array.isArray(containers) || containers.length > MAX_IMAGE_EFFECT_PASSES) throw new OoxmlError('unsupported-image-effect', 'Invalid effect definitions');
+    for (let i = containers.length - 1; i >= 0; i--) {
+      const c = containers[i];
+      if (!c || !['tree', 'sib'].includes(c.kind)) throw new OoxmlError('unsupported-image-effect', 'Invalid effect container');
+      pending.push({ list: c.effects, index: 0 });
+    }
+    if (effect.type === 'fillOverlay' || effect.type === 'fill') {
+      if (!effect.fill) throw new OoxmlError('unsupported-image-effect', 'Invalid effect fill');
+      if (includeImageEffects && effect.fill.fillType === 'image' && effect.fill.blipEffects) pending.push({ list: effect.fill.blipEffects, index: 0 });
+    }
+    yield effect;
+  }
 }
 
 /** Stable cache-key suffix for a pixel transform. */
@@ -148,13 +184,17 @@ export function blipPixelEffectsKey(value: BlipPixelEffects): string {
   // Delimiters such as '.' also occur in decimal numbers; effect names and
   // references can contain punctuation too. Encode the full ordered recipe
   // and both physical axes structurally, including named-definition work.
-  return JSON.stringify([value.effects, value.duotone ?? null,
-    value.emuPerPixelX ?? null, value.emuPerPixelY ?? null], (_key, value: unknown) => {
+  try { return JSON.stringify([value.effects, value.duotone ?? null,
+    value.emuPerPixelX ?? null, value.emuPerPixelY ?? null,
+    value.hostRotation ?? 0, value.hostFlipH ?? false, value.hostFlipV ?? false], (_key, value: unknown) => {
     if (typeof value === 'number' && !Number.isFinite(value)) {
       throw new OoxmlError('unsupported-image-effect', 'Non-finite image effect parameter');
     }
     return value;
-  });
+  }); } catch (error) {
+    if (error instanceof OoxmlError) throw error;
+    throw new OoxmlError('unsupported-image-effect', 'Image effect recipe is not serializable');
+  }
 }
 
 /** Rec. 709 luma (0–1) of gamma-encoded sRGB bytes; see the evidence above. */
@@ -178,7 +218,8 @@ export function blipPixelEffectPasses(value: BlipPixelEffects): number {
 
 interface EffectPlan { count: number; work: number; pixels: number; peak: number; width: number; height: number; frame?: EffectBuffer['frame'] }
 function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width: number; height: number }, runtime?: BlipEffectRuntime): EffectPlan {
-  const names = effectContainers(value.effects);
+  if (value.duotone) validateBlipEffect({ type: 'duotone' }, value);
+  const names = effectContainers(value.effects, value);
   const active = new Set<BlipEffectContainer>();
   let count = 0, work = 0;
   const chargedDefinitions = new Set<BlipEffect>();
@@ -300,37 +341,38 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
   result.peak += pixels;
   return result;
 }
-function effectContainers(effects: readonly BlipEffect[]): Map<string, BlipEffectContainer> {
+function effectContainers(effects: readonly BlipEffect[], value: BlipPixelEffects): Map<string, BlipEffectContainer> {
+  for (const n of [value.emuPerPixelX ?? 9525, value.emuPerPixelY ?? 9525]) {
+    if (!Number.isFinite(n) || n <= 0) throw new OoxmlError('unsupported-image-effect', 'Invalid effect sampling');
+  }
+  if (!Number.isFinite(value.hostRotation ?? 0) ||
+    [value.hostFlipH, value.hostFlipV].some(v => v !== undefined && typeof v !== 'boolean')) {
+    throw new OoxmlError('unsupported-image-effect', 'Invalid host orientation');
+  }
   const result = new Map<string, BlipEffectContainer>();
-  const pending = [effects], visited = new Set<BlipEffectContainer>();
-  let count = 0;
-  while (pending.length) {
-    for (const effect of pending.pop() as readonly BlipEffect[]) {
-      if (effect.type === 'unsupported') throw new OoxmlError('unsupported-image-effect', `Malformed CT_Blip effect: ${effect.effect}`);
-      if (effect.type === 'effectCountLimit') {
-        if (Number.isSafeInteger(effect.observed) && effect.observed > MAX_IMAGE_EFFECT_PASSES) {
-          throw new OoxmlDecodedImageLimitError('image-effect-count', MAX_IMAGE_EFFECT_PASSES, effect.observed);
-        }
-        throw new OoxmlError('unsupported-image-effect', 'Invalid effect-count record');
-      }
-      if (++count > MAX_IMAGE_EFFECT_PASSES) throw new OoxmlDecodedImageLimitError('image-effect-count', MAX_IMAGE_EFFECT_PASSES, count);
-      if (effect.type === 'definitions') {
-        for (const container of effect.containers) {
-          if (visited.has(container)) continue;
-          visited.add(container);
-          if (container.name) result.set(container.name, container);
-          pending.push(container.effects);
-        }
-      } else if (effect.type === 'alphaMod' || effect.type === 'container' || effect.type === 'blend') {
-        const container = effect.container;
-        if (visited.has(container)) continue;
-        visited.add(container);
-        if (container.name) result.set(container.name, container);
-        pending.push(container.effects);
-      } else if ((effect.type === 'fillOverlay' || effect.type === 'fill') && effect.fill.fillType === 'image' && effect.fill.blipEffects) {
-        pending.push(effect.fill.blipEffects);
-      }
+  const container = (c: BlipEffectContainer) => {
+    if (c.name) {
+      const previous = result.get(c.name);
+      if (previous && previous !== c) throw new OoxmlError('unsupported-image-effect', 'Duplicate effect container name');
+      result.set(c.name, c);
     }
+  };
+  for (const effect of blipEffectNodes(effects)) {
+    validateBlipEffect(effect, value);
+    if (effect.type === 'unsupported') throw new OoxmlError('unsupported-image-effect', `Malformed CT_Blip effect: ${effect.effect}`);
+    if (effect.type === 'effectCountLimit') {
+      if (Number.isSafeInteger(effect.observed) && effect.observed > MAX_IMAGE_EFFECT_PASSES) {
+        throw new OoxmlDecodedImageLimitError('image-effect-count', MAX_IMAGE_EFFECT_PASSES, effect.observed);
+      }
+      throw new OoxmlError('unsupported-image-effect', 'Invalid effect-count record');
+    }
+  }
+  // Nested image fills own a separate evaluator/name table. Validate and
+  // count their recipes above, but do not leak their definitions into this
+  // image's namespace (a shared XML definition can be projected into both).
+  for (const effect of blipEffectNodes(effects, false)) {
+    if (effect.type === 'definitions') for (const c of effect.containers) container(c);
+    else if (effect.type === 'alphaMod' || effect.type === 'container' || effect.type === 'blend') container(effect.container);
   }
   return result;
 }
@@ -398,8 +440,12 @@ export function applyBlipPixelEffects(buf: EffectBuffer, value: BlipPixelEffects
     throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK,
       Number.isSafeInteger(work) ? work : Number.MAX_SAFE_INTEGER);
   }
-  const context = { names: effectContainers(value.effects), original: usesOriginalImage(value.effects) ? clonePixels(buf) : undefined };
-  return evaluateBlipPixels(buf, value, runtime, context);
+  const context = { names: effectContainers(value.effects, value), original: usesOriginalImage(value.effects) ? clonePixels(buf) : undefined };
+  try { return evaluateBlipPixels(buf, value, runtime, context); }
+  catch (error) {
+    if (error instanceof OoxmlError || error instanceof OoxmlDecodedImageLimitError) throw error;
+    throw new OoxmlError('unsupported-image-effect', 'Image effect evaluation unavailable');
+  }
 }
 function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime: BlipEffectRuntime,
   currentContext: { names: Map<string, BlipEffectContainer>; original?: EffectBuffer }): EffectBuffer {
@@ -429,13 +475,19 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
       case 'reflection': {
         const r = effect.reflection;
         const faded = clonePixels(buf);
-        const f = faded.frame ?? { x: 0, y: 0, width: faded.width, height: faded.height };
-        const angle = (r.fadeDir ?? 90) * Math.PI / 180;
-        const vx = Math.cos(angle), vy = Math.sin(angle);
-        const min = Math.min(0, vx) + Math.min(0, vy), extent = Math.abs(vx) + Math.abs(vy);
+        // The ramp spans the previous grid, including grown/transformed
+        // pixels, in physical axes (§20.1.8.50). Pull page-fixed directions
+        // back through the host just like the reflection's affine transform.
+        const [vx, vy] = effectDirection(r.fadeDir ?? 90, r.rotWithShape === false, value);
+        const wx = faded.width * (value.emuPerPixelX ?? 9525), hy = faded.height * (value.emuPerPixelY ?? 9525);
+        const min = Math.min(0, vx * wx) + Math.min(0, vy * hy), extent = Math.abs(vx * wx) + Math.abs(vy * hy);
         for (let y = 0; y < faded.height; y++) for (let x = 0; x < faded.width; x++) {
-          const position = (((x + .5 - f.x) / f.width) * vx + ((y + .5 - f.y) / f.height) * vy - min) / extent;
-          const t = Math.max(0, Math.min(1, (position - r.stPos) / (r.endPos - r.stPos || 1)));
+          const position = ((x + .5) / faded.width * wx * vx + (y + .5) / faded.height * hy * vy - min) / extent;
+          // §20.1.8.50 gives two positions on one ramp. Coincident
+          // stops form a hard transition; inventing a unit-width interval
+          // would retain opacity beyond the authored end position.
+          const t = r.endPos === r.stPos ? (position >= r.endPos ? 1 : 0)
+            : Math.max(0, Math.min(1, (position - r.stPos) / (r.endPos - r.stPos)));
           const i = (y * faded.width + x) * 4 + 3;
           faded.data[i] = Math.round(faded.data[i] * (r.stA + (r.endA - r.stA) * t));
         }
@@ -457,7 +509,7 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
       }
       case 'fill':
         buf = { ...effectFillPixels(effect.fill, buf, value.emuPerPixelX ?? 9525,
-          value.emuPerPixelY ?? 9525, runtime), frame: buf.frame }; d = buf.data; break;
+          value.emuPerPixelY ?? 9525, runtime, value.hostRotation), frame: buf.frame }; d = buf.data; break;
       case 'glow': case 'relativeOffset': case 'softEdge': case 'presetShadow': break; // expanded above
 
       case 'alphaMod': {
@@ -490,7 +542,7 @@ function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime:
       }
       case 'fillOverlay': {
         const overlay = effectFillPixels(effect.fill, buf, value.emuPerPixelX ?? 9525,
-          value.emuPerPixelY ?? 9525, runtime);
+          value.emuPerPixelY ?? 9525, runtime, value.hostRotation);
         for (let i = 0; i < d.length; i += 4) {
           blendRgba(d, i, overlay.data, i, d, i, effect.blend);
         }

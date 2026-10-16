@@ -10,15 +10,15 @@ const factory: NodeCanvasFactory = {
   loadImage: (bytes) => skia!.loadImage(Buffer.from(bytes as Uint8Array)),
 };
 
-async function render(effects: BlipEffect[], site: 'picture' | 'background' | 'shape-fill', color = '#000000', inset = 0, sample = { x: 16, y: 16 }) {
+async function render(effects: BlipEffect[], site: 'picture' | 'background' | 'shape-fill', color = '#000000', inset = 0, sample = { x: 16, y: 16 }, rotation = 0, fillRotates?: boolean) {
   const source = new skia!.Canvas(2, 2);
   const ctx = source.getContext('2d');
   ctx.fillStyle = color; ctx.fillRect(0, 0, 2, 2);
   const png = await source.toBuffer('png');
   const frame = { x: inset * 9525, y: inset * 9525, width: (32 - 2 * inset) * 9525, height: (32 - 2 * inset) * 9525,
-    rotation: 0, flipH: false, flipV: false };
+    rotation, flipH: false, flipV: false };
   const image = { imagePath: 'ppt/media/picture.png', mimeType: 'image/png', blipEffects: effects };
-  const fill = { fillType: 'image' as const, ...image, stretch: true };
+  const fill = { fillType: 'image' as const, ...image, stretch: true, rotWithShape: fillRotates };
   const slide = { index: 0, slideNumber: 1,
     background: site === 'background' ? fill : null,
     elements: site === 'background' ? [] : site === 'shape-fill'
@@ -48,6 +48,45 @@ describe.skipIf(!skia)('PPTX ordered blip paint', () => {
     [[{ type: 'duotone', clr1: 'FF000080', clr2: '0000FF80' }], '#000000', [255, 127, 127, 255]],
   ] satisfies [BlipEffect[], string, number[]][])('renders the previously ignored picture chain %j', async (effects, color, expected) => {
     expect(await render(effects, 'picture', color)).toEqual(expected);
+  });
+  it.each(['picture', 'shape-fill'] as const)('honors page-fixed recursive and preset shadows on a rotated %s', async site => {
+    const shadow = { color: '000000', alpha: 1, blur: 0, dist: 8 * 9525, dir: 0 };
+    const paint = (rotWithShape: boolean, preset = false) => render([{ type: 'container', container: { kind: 'tree', effects: [
+      preset ? { type: 'presetShadow', shadows: [{ ...shadow, rotWithShape }] }
+        : { type: 'shadow', inner: false, shadow: { ...shadow, rotWithShape } },
+    ] } }], site, '#FF0000', 8, { x: 20, y: 12 }, 90);
+    expect(await paint(true)).toEqual([255, 255, 255, 255]);
+    expect(await paint(false)).toEqual([0, 0, 0, 255]);
+    expect(await paint(true, true)).toEqual([0, 0, 0, 255]);
+  });
+  it('uses the orientation of a nonrotating image-fill brush for its recursive shadow', async () => {
+    const shadow = { color: '000000', alpha: 1, blur: 0, dist: 8 * 9525, dir: 0, rotWithShape: false };
+    expect(await render([{ type: 'container', container: { kind: 'tree', effects: [
+      { type: 'shadow', inner: false, shadow },
+    ] } }], 'shape-fill', '#FF0000', 8, { x: 20, y: 20 }, 90, false)).toEqual([0, 0, 0, 255]);
+  });
+  it('samples effects in a nested tiled image at the tile DPI rather than the outer picture size', async () => {
+    const pngs = await Promise.all([32, 2].map(async size => {
+      const source = new skia!.Canvas(size, size);
+      source.getContext('2d').fillStyle = '#FF0000';
+      source.getContext('2d').fillRect(0, 0, size, size);
+      return new Uint8Array(await source.toBuffer('png'));
+    }));
+    const effects: BlipEffect[] = [{ type: 'fill', fill: { fillType: 'image', imagePath: 'tile.png', mimeType: 'image/png',
+      dpi: 96, tile: {}, blipEffects: [{ type: 'blur', radius: 9525, grow: false }],
+    } }];
+    const presentation = { slideWidth: 32 * 9525, slideHeight: 32 * 9525,
+      slides: [{ index: 0, slideNumber: 1, background: null, elements: [{ type: 'picture',
+        x: 0, y: 0, width: 32 * 9525, height: 32 * 9525, rotation: 0, flipH: false, flipV: false,
+        imagePath: 'base.png', mimeType: 'image/png', blipEffects: effects,
+      }] }], defaultTextColor: null, majorFont: null, minorFont: null } as Presentation;
+    const canvas = new skia!.Canvas(32, 32);
+    await renderSlideNode(canvas as unknown as Parameters<typeof renderSlideNode>[0], presentation, 0, {
+      width: 32, dpr: 1, factory, fetchImage: async path => new Blob([pngs[path === 'tile.png' ? 1 : 0]]),
+    });
+    // A 2x2 constant-red tile blurred by one source pixel retains alpha 249
+    // with the documented separable kernel. Over white, its green/blue are 6.
+    expect([...canvas.getContext('2d').getImageData(16, 16, 1, 1).data]).toEqual([255, 6, 6, 255]);
   });
   it('prepares recursively nested blip fills without holding decoder slots', async () => {
     const inner = { fillType: 'image' as const, imagePath: 'ppt/media/inner.png', mimeType: 'image/png', stretch: true,

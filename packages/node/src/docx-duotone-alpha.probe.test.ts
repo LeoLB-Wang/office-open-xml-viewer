@@ -80,6 +80,7 @@ interface PictureOptions {
   bright?: string;
   contrast?: string;
   inHeader?: boolean;
+  rotation?: number;
 }
 
 function inlinePicXml(opts: PictureOptions): string {
@@ -98,7 +99,7 @@ function inlinePicXml(opts: PictureOptions): string {
     `<a:blip r:embed="rIdImg">${effects}</a:blip>` +
     '<a:stretch><a:fillRect/></a:stretch>' +
     '</pic:blipFill>' +
-    '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cx + '"/></a:xfrm>' +
+    '<pic:spPr><a:xfrm rot="' + (opts.rotation ?? 0) * 60000 + '"><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cx + '"/></a:xfrm>' +
     '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>' +
     '</a:graphicData></a:graphic></wp:inline>' +
     '</w:drawing></w:r></w:p>'
@@ -203,6 +204,21 @@ function sampleInside(r: Rendered): [number, number, number] {
 }
 
 describe.skipIf(!skia || !docxMod || !rendererMod)('docx duotone + alphaModFix picture render', () => {
+  it('preserves host orientation through DOCX body and header resource acquisition', async () => {
+    const png = await flatPngBytes(16, 16, '#FF0000');
+    const paint = async (rotWithShape: boolean, inHeader: boolean) => {
+      const effects = `<a:alphaMod><a:cont type="tree"><a:outerShdw dist="1270000" dir="0" rotWithShape="${rotWithShape}"><a:srgbClr val="000000"/></a:outerShdw></a:cont></a:alphaMod>`;
+      const bytes = buildDocx(png, { effects, rotation: 90, inHeader });
+      const result = await render(bytes, png);
+      // Inside the east-shifted mask, outside the south-shifted mask.
+      const i = ((48 + 40) * result.w + 48 + 160) * 4;
+      return [...result.data.slice(i, i + 3)];
+    };
+    for (const inHeader of [false, true]) {
+      expect(await paint(true, inHeader), `rotating shadow, header=${inHeader}`).toEqual([255, 255, 255]);
+      expect(await paint(false, inHeader), `page-fixed shadow, header=${inHeader}`).toEqual([255, 0, 0]);
+    }
+  });
   it('renders authored brightness and contrast through DOCX parsing and paint (§20.1.8.42)', async () => {
     const black = await flatPngBytes(16, 16, '#000000');
     expect(sampleInside(await render(buildDocx(black, {}), black))).toEqual([0, 0, 0]);

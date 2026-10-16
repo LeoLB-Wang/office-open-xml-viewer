@@ -440,12 +440,12 @@ describe('getCachedDuotoneBitmapByPath with CT_Blip effects', () => {
 
   it('distinguishes decimal numeric tuples in effect and EMU keys', () => {
     for (const [a, b] of [
-      [{ effects: [{ type: 'hsl', hue: 1.2, sat: 3, lum: 0 }] },
-        { effects: [{ type: 'hsl', hue: 1, sat: 2.3, lum: 0 }] }],
+      [{ effects: [{ type: 'hsl', hue: 1.2, sat: .3, lum: 0 }] },
+        { effects: [{ type: 'hsl', hue: 1, sat: .23, lum: 0 }] }],
       [{ effects: [], emuPerPixelX: 1.2, emuPerPixelY: 3 },
         { effects: [], emuPerPixelX: 1, emuPerPixelY: 2.3 }],
       [{ effects: [{ type: 'luminance', bright: .1, contrast: 1 }] },
-        { effects: [{ type: 'luminance', bright: 0, contrast: 1.1 }] }],
+        { effects: [{ type: 'luminance', bright: 0, contrast: .11 }] }],
     ] satisfies [BlipPixelEffects, BlipPixelEffects][]) {
       expect(blipPixelEffectsKey(a)).not.toBe(blipPixelEffectsKey(b));
     }
@@ -639,4 +639,82 @@ it.each([
     effects: [{ type: 'grayscale' }],
   }, async () => new Blob(), { offscreenFactory: factory }))
     .rejects.toMatchObject({ code: 'unsupported-image-effect' });
+});
+
+it.each([
+  { type: 'transform', sx: 2, sy: 1, kx: 0, ky: 0, tx: 0, ty: 0 },
+  { type: 'blur', radius: 9525, grow: true },
+] satisfies BlipEffect[])('relOff uses the previous grid after $type, also inside alphaMod', first => {
+  const source = () => buffer([255, 0, 0, 255], [0, 0, 255, 255]);
+  const prior = applyBlipPixelEffects(source(), { effects: [first] });
+  expect(prior.width).toBe(4);
+  const moved = applyBlipPixelEffects(source(), { effects: [first, { type: 'relativeOffset', tx: .5, ty: 0 }] });
+  expect(moved.frame?.x).toBe((prior.frame?.x ?? 0) - 2);
+  const parent = applyBlipPixelEffects(source(), { effects: [first] });
+  const masked = applyBlipPixelEffects(parent, { effects: [{ type: 'alphaMod', container: {
+    kind: 'tree', effects: [{ type: 'relativeOffset', tx: .5, ty: 0 }],
+  } }] });
+  expect(masked.data[3]).toBe(0);
+  expect(masked.data[7]).toBe(0);
+});
+
+it('counter-rotates recursive shadows and keys orientation, including forced preset shadows', () => {
+  const source = () => buffer([255, 0, 0, 255], [0, 0, 255, 255]);
+  const shadow = { color: '000000', alpha: 1, blur: 0, dist: 9525, dir: 0 };
+  const render = (rotWithShape: boolean, preset = false) => applyBlipPixelEffects(source(), {
+    hostRotation: 90, effects: [{ type: 'container', container: { kind: 'tree', effects: [
+      preset ? { type: 'presetShadow', shadows: [{ ...shadow, rotWithShape }] }
+        : { type: 'shadow', inner: false, shadow: { ...shadow, rotWithShape } },
+    ] } }],
+  });
+  expect(render(true).frame).toMatchObject({ x: -1, y: 0 });
+  expect(render(false).frame).toMatchObject({ x: 0, y: 1 });
+  expect(render(true, true).frame).toEqual(render(false).frame);
+  expect(render(true, true).data.slice(0, 8)).toEqual(render(false).data);
+  const effects: BlipEffect[] = [{ type: 'shadow', inner: false, shadow: { ...shadow, rotWithShape: false } }];
+  expect(blipPixelEffectsKey({ effects, hostRotation: 0 })).not.toBe(blipPixelEffectsKey({ effects, hostRotation: 90 }));
+});
+
+it('rejects cyclic fill recipes and malformed model-source effects before allocating pixels', () => {
+  const effects: BlipEffect[] = [];
+  effects.push({ type: 'fillOverlay', blend: 'over', fill: { fillType: 'image', imagePath: 'cycle.png', mimeType: 'image/png', stretch: true, blipEffects: effects } });
+  expect(() => blipPixelEffectsKey({ effects })).toThrowError(expect.objectContaining({ code: 'unsupported-image-effect' }));
+  for (const effect of [
+    { type: 'relativeOffset', tx: Infinity, ty: 0 },
+    { type: 'colorChange', from: 'invalid', to: '000000', fromAlpha: 1, toAlpha: 1, useAlpha: false },
+    { type: 'fillOverlay', blend: 'invalid', fill: { fillType: 'solid', color: 'FF0000' } },
+    { type: 'softEdge', radius: -1 },
+    { type: 'fill', fill: { fillType: 'image', imagePath: 'bad-crop.png', mimeType: 'image/png', stretch: true, srcRect: { l: NaN, t: 0, r: 0, b: 0 } } },
+  ] as unknown as BlipEffect[]) {
+    const buf = buffer([1, 2, 3, 255]);
+    expect(() => applyBlipPixelEffects(buf, { effects: [{ type: 'grayscale' }, effect] }))
+      .toThrowError(expect.objectContaining({ code: 'unsupported-image-effect' }));
+    expect([...buf.data]).toEqual([1, 2, 3, 255]);
+  }
+});
+
+it('keeps independent nested fill definitions scoped to their image evaluator', () => {
+  const fill = () => ({ fillType: 'image' as const, imagePath: 'fill.png', mimeType: 'image/png', stretch: true,
+    blipEffects: [{ type: 'definitions' as const, work: 1, containers: [{ kind: 'tree' as const, name: 'same', effects: [{ type: 'grayscale' as const }] }] }] });
+  expect(() => blipPixelEffectsKey({ effects: [
+    { type: 'fillOverlay', blend: 'over', fill: fill() }, { type: 'fillOverlay', blend: 'over', fill: fill() },
+  ] })).not.toThrow();
+});
+
+it('orients reflection transforms and fades in page axes inside a container', () => {
+  const render = (rotWithShape: boolean) => applyBlipPixelEffects({ width: 2, height: 2,
+    data: new Uint8ClampedArray(Array(4).fill([0, 0, 0, 255]).flat()) }, {
+    hostRotation: 90, effects: [{ type: 'container', container: { kind: 'tree', effects: [{ type: 'reflection', reflection: {
+      blur: 0, dist: 0, dir: 0, stA: 1, stPos: 0, endA: 0, endPos: 1, sx: 1, sy: 1, fadeDir: 0, rotWithShape,
+    } }] } }],
+  });
+  expect([...render(true).data].filter((_, i) => i % 4 === 3)).toEqual([191, 64, 191, 64]);
+  expect([...render(false).data].filter((_, i) => i % 4 === 3)).toEqual([64, 64, 191, 191]);
+});
+
+it('uses a hard reflection fade when start and end occupy the same position', () => {
+  const result = applyBlipPixelEffects(buffer([1, 2, 3, 255], [4, 5, 6, 255]), { effects: [{ type: 'reflection', reflection: {
+    blur: 0, dist: 0, dir: 0, stA: 1, stPos: .5, endA: 0, endPos: .5, sx: 1, sy: 1, fadeDir: 0,
+  } }] });
+  expect([result.data[3], result.data[7]]).toEqual([255, 0]);
 });

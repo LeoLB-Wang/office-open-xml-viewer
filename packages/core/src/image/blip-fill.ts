@@ -1,6 +1,7 @@
 import type { Fill } from '../types/common.js';
 import type { BlipEffectFill } from './blip-effects.js';
 import type { EffectBuffer } from './blip-blur.js';
+import { imageEffectFrame } from './image-effect-frame.js';
 import { resolveFill } from '../shape/paint.js';
 import { drawImageCropped, imageNaturalSize } from './crop.js';
 import { defaultOffscreenFactory, type OffscreenFactory } from './duotone.js';
@@ -52,11 +53,19 @@ function effectTilePlan(fill: Extract<BlipEffectFill, { fillType: 'image' }>, im
   // §20.1.8.58. Missing placement facts use the shared image painter's
   // top-left, unscaled grid. The source's nominal 96 dpi is the existing
   // decoder policy when embedded DPI is unavailable.
-  const tw = natural.w * 72 / (fill.dpi || 96) * (tile.sx ?? 1);
-  const th = natural.h * 72 / (fill.dpi || 96) * (tile.sy ?? 1);
+  const frame = imageEffectFrame(image) ?? { x: 0, y: 0, width: natural.w, height: natural.h };
+  // §20.1.8.58 repeats the authored image frame. Spatial-effect coverage
+  // does not change that period (the shared crop painter owns its outset).
+  const tw = frame.width * 72 / (fill.dpi || 96) * (tile.sx ?? 1);
+  const th = frame.height * 72 / (fill.dpi || 96) * (tile.sy ?? 1);
   finiteGeometry(tw, th);
   if (!(tw > 0 && th > 0)) rejectFillGeometry();
-  const cols = Math.ceil(w / tw) + 2, rows = Math.ceil(h / th) + 2;
+  // An off-frame tile can still paint into the fill through its effect
+  // outset. Reflected tiles swap the two edges, so bound both with the larger
+  // support. These exact support bounds also govern preflight draw work.
+  const padX = Math.ceil(Math.max(0, frame.x, natural.w - frame.x - frame.width) / frame.width);
+  const padY = Math.ceil(Math.max(0, frame.y, natural.h - frame.y - frame.height) / frame.height);
+  const cols = Math.ceil(w / tw) + 2 + 2 * padX, rows = Math.ceil(h / th) + 2 + 2 * padY;
   const work = cols * rows;
   if (!Number.isSafeInteger(work) || work > MAX_IMAGE_EFFECT_PIXEL_WORK) {
     throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK,
@@ -69,7 +78,7 @@ function effectTilePlan(fill: Extract<BlipEffectFill, { fillType: 'image' }>, im
     : ['l', 'ctr', 'r'].includes(alignment) ? (h - th) / 2 : 0;
   const ox = ax + (tile.tx ?? 0) / 12700, oy = ay + (tile.ty ?? 0) / 12700;
   finiteGeometry(ox, oy);
-  const x0 = Math.floor(-ox / tw), y0 = Math.floor(-oy / th);
+  const x0 = Math.floor(-ox / tw) - padX, y0 = Math.floor(-oy / th) - padY;
   if (![x0, y0].every(Number.isSafeInteger)) rejectFillGeometry();
   // §20.1.8.58: translation changes phase, not the number of tiles.
   // Reduce coordinates before painting; retain the original index parity
@@ -78,9 +87,13 @@ function effectTilePlan(fill: Extract<BlipEffectFill, { fillType: 'image' }>, im
     const r = offset % size;
     return r > 0 ? r - size : r;
   };
-  const px = phase(ox, tw), py = phase(oy, th);
+  const px = phase(ox, tw) - padX * tw, py = phase(oy, th) - padY * th;
   finiteGeometry(px + (cols - 1) * tw, py + (rows - 1) * th);
-  return { cols, rows, work, x0, y0, px, py, tw, th };
+  // Each output pixel can be covered by this many neighboring tile images.
+  // Include one boundary tile per axis for pixel footprints/antialiasing;
+  // counting draw calls alone undercharges grown sources with heavy overdraw.
+  const overlap = (Math.ceil(natural.w / frame.width) + 1) * (Math.ceil(natural.h / frame.height) + 1);
+  return { cols, rows, work, overlap, x0, y0, px, py, tw, th };
 }
 
 /** Additional fill generation/readback visits (the graph charges compositing
@@ -96,13 +109,14 @@ export function effectFillWork(fill: BlipEffectFill, input: Omit<EffectBuffer, '
     const image = runtime.images?.get(fill);
     if (!image) throw new OoxmlError('unsupported-image-effect', 'Image fill source unavailable for work planning');
     const f = input.frame ?? { x: 0, y: 0, width: input.width, height: input.height };
-    work += effectTilePlan(fill, image, f.width / (12700 / emuX), f.height / (12700 / emuY)).work;
+    const plan = effectTilePlan(fill, image, f.width / (12700 / emuX), f.height / (12700 / emuY));
+    work += plan.work + pixels * plan.overlap;
   }
   return work;
 }
 
 export function effectFillPixels(
-  fill: BlipEffectFill, input: EffectBuffer, emuX: number, emuY: number, runtime: BlipEffectRuntime,
+  fill: BlipEffectFill, input: EffectBuffer, emuX: number, emuY: number, runtime: BlipEffectRuntime, hostRotation = 0,
 ): EffectBuffer {
   if (fill.fillType === 'solid' || fill.fillType === 'none') {
     const data = new Uint8ClampedArray(input.width * input.height * 4);
@@ -136,6 +150,11 @@ export function effectFillPixels(
       const image = runtime.images?.get(fill);
       if (!image) throw new OoxmlError('unsupported-image-effect', 'Image fill source unavailable');
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
+      // CT_BlipFillProperties@rotWithShape has no schema default. An
+      // explicit false counter-rotates the brush inside the unchanged clip.
+      if (fill.rotWithShape === false && hostRotation !== 0) {
+        ctx.translate(w / 2, h / 2); ctx.rotate(-hostRotation * Math.PI / 180); ctx.translate(-w / 2, -h / 2);
+      }
       if (fill.alpha != null) ctx.globalAlpha *= fill.alpha;
       if (fill.tile) {
         const tile = fill.tile;
@@ -160,8 +179,10 @@ export function effectFillPixels(
       // Gradients (including path shades), patterns and solid colors use the
       // existing shared fill painter, preserving its palette/geometry policy.
       const recipe: Fill = fill.fillType === 'gradient' ? { ...fill, stops: [...fill.stops] } : fill;
-      const paint = resolveFill(recipe, ctx, 0, 0, w, h, 0, 1);
-      if (!paint) throw new OoxmlError('unsupported-image-effect', 'Malformed or unavailable image-effect fill brush');
+      const paint = resolveFill(recipe, ctx, 0, 0, w, h, hostRotation, 1);
+      // The ordinary pattern painter can fall back to a solid color when
+      // its preset/surface is unavailable. Recursive effects must fail closed.
+      if (!paint || (fill.fillType === 'pattern' && typeof paint === 'string')) throw new OoxmlError('unsupported-image-effect', 'Malformed or unavailable image-effect fill brush');
       ctx.fillStyle = paint; ctx.fillRect(0, 0, w, h);
     }
     return ctx.getImageData(0, 0, input.width, input.height);

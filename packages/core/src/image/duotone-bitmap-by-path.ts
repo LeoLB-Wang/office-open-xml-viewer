@@ -59,9 +59,30 @@ async function loadEffects(
         const vector = !fill.blipEffects?.length && preferVectorBlip(fill);
         const path = vector ? fill.svgImagePath as string : fill.imagePath;
         const mime = vector ? 'image/svg+xml' : fill.mimeType;
+        // A nested fill owns its own physical image frame. Tile sampling is
+        // set by DPI (§20.1.8.14/58), not by the containing picture's extent.
+        // Stretched sources map their crop to fillRect within that extent.
+        // Keep nested outputs native-sized; outer display resampling must not
+        // change a tile period or a later effect's pixel/physical conversion.
+        const nested = { ...effects, effects: fill.blipEffects ?? [], duotone: fill.duotone,
+          hostRotation: fill.rotWithShape === false ? 0 : effects.hostRotation };
+        const nestedOpts = { ...opts, targetWidthPx: undefined, targetHeightPx: undefined,
+          widthPt: 0, heightPt: 0 };
+        if (fill.tile) {
+          nested.emuPerPixelX = nested.emuPerPixelY = 914400 / (fill.dpi || 96);
+        } else {
+          const crop = fill.srcRect, rect = fill.fillRect;
+          const cw = 1 - (crop?.l ?? 0) - (crop?.r ?? 0), ch = 1 - (crop?.t ?? 0) - (crop?.b ?? 0);
+          // An empty crop paints no source. Keep finite sampling for its
+          // bounded decode; do not divide by a zero/negative visible extent.
+          nestedOpts.widthPt = base.width * (effects.emuPerPixelX ?? 9525) / 12700
+            * (1 - (rect?.l ?? 0) - (rect?.r ?? 0)) / (cw > 0 ? cw : 1);
+          nestedOpts.heightPt = base.height * (effects.emuPerPixelY ?? 9525) / 12700
+            * (1 - (rect?.t ?? 0) - (rect?.b ?? 0)) / (ch > 0 ? ch : 1);
+        }
         const image = fill.blipEffects?.length
-          ? await loadEffects(path, mime, { effects: fill.blipEffects, duotone: fill.duotone }, fetchImage, opts, ledger)
-          : await getCachedDuotoneOnlyBitmapByPath(path, mime, fill.duotone, fetchImage, opts);
+          ? await loadEffects(path, mime, nested, fetchImage, nestedOpts, ledger)
+          : await getCachedDuotoneOnlyBitmapByPath(path, mime, fill.duotone, fetchImage, nestedOpts);
         if (!image) throw new OoxmlError('unsupported-image-effect', 'Image fill decode unavailable');
         images.set(fill, image);
       }

@@ -71,7 +71,7 @@ describe('PPTX display-sized picture decode', () => {
       width: 96, dpr: 1, fetchImage: async () => new Blob(), svgDecoder,
     });
     expect(coreMocks.decode).toHaveBeenCalledWith('ppt/media/picture.svg', 'image/svg+xml',
-      { effects: blipEffects, duotone: null }, expect.any(Function),
+      expect.objectContaining({ effects: blipEffects, duotone: null }), expect.any(Function),
       expect.objectContaining({ svgDecoder, targetWidthPx: 96, targetHeightPx: 96 }));
   });
 

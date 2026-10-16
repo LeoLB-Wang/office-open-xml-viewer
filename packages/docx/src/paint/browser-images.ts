@@ -66,6 +66,7 @@ interface ImageDecodeRequest {
   duotone?: Duotone;
   vmlStrokePattern?: Duotone;
   blipEffects?: readonly BlipEffect[];
+  orientation?: { readonly hostRotation?: number; readonly hostFlipH?: boolean; readonly hostFlipV?: boolean };
   widthPt: number;
   heightPt: number;
   hasCrop: boolean;
@@ -169,6 +170,7 @@ export async function decodeRaster(
   svgDecoder?: import('@silurus/ooxml-core').SvgBlobDecoder,
   vmlStrokePattern?: Duotone,
   blipEffects?: readonly BlipEffect[],
+  orientation?: ImageDecodeRequest['orientation'],
 ): Promise<ImageBitmap | null> {
   if (blipEffects?.length) {
     // One shared CT_Blip interpreter/cache/resource policy for DOCX and PPTX.
@@ -178,7 +180,7 @@ export async function decodeRaster(
       ? [{ type: 'colorChange', from: colorReplaceFrom, fromAlpha: 1,
           to: colorReplaceFrom, toAlpha: 0, useAlpha: false }, ...blipEffects]
       : blipEffects;
-    return getCachedDuotoneBitmapByPath(imagePath, mimeType, { effects, duotone }, fetchImage, {
+    return getCachedDuotoneBitmapByPath(imagePath, mimeType, { effects, duotone, ...orientation }, fetchImage, {
       widthPt, heightPt, tiff, ...target,
       ...(plannedPixelLimit ? { maxRetainedPixels: plannedPixelLimit } : {}),
       svgDecoder: svgDecoder ?? (typeof Image !== 'undefined' ? decodeSvgBlobOnMainThread : undefined),
@@ -308,7 +310,8 @@ function imageDecodeRequests(
       ...(image.svgImagePath === undefined ? {} : { svgImagePath: image.svgImagePath }),
       ...(image.colorReplaceFrom === undefined ? {} : { colorReplaceFrom: image.colorReplaceFrom }),
       ...(image.duotone === undefined ? {} : { duotone: image.duotone as Duotone }),
-      ...(image.blipEffects?.length ? { blipEffects: image.blipEffects } : {}),
+      ...(image.blipEffects?.length ? { blipEffects: image.blipEffects,
+        orientation: { hostRotation: image.rotation, hostFlipH: image.flipH, hostFlipV: image.flipV } } : {}),
       ...(image.vmlStrokePattern === undefined ? {} : { vmlStrokePattern: image.vmlStrokePattern as Duotone }),
       widthPt: raster.widthPt,
       heightPt: raster.heightPt,
@@ -535,7 +538,7 @@ export async function preloadPaintImages(
                   ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
                   : undefined,
                 request.plannedPixelLimit,
-                svgDecoder, request.vmlStrokePattern, request.blipEffects,
+                svgDecoder, request.vmlStrokePattern, request.blipEffects, request.orientation,
               );
           if (!fallback) throw vectorError;
           image = fallback;
@@ -549,7 +552,7 @@ export async function preloadPaintImages(
           request.targetWidthPx && request.targetHeightPx
             ? { targetWidthPx: request.targetWidthPx, targetHeightPx: request.targetHeightPx }
             : undefined,
-          request.plannedPixelLimit, svgDecoder, request.vmlStrokePattern, request.blipEffects,
+          request.plannedPixelLimit, svgDecoder, request.vmlStrokePattern, request.blipEffects, request.orientation,
         );
         if (preferVectorBlip(blip)) {
           try { image = await decodeEffect(blip.svgImagePath, 'image/svg+xml'); }

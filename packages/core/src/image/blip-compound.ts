@@ -14,14 +14,30 @@ export function expandBlipEffect(effect: BlipEffect, input: Pick<EffectBuffer, '
     const align = s.algn ?? 'b';
     const ax = align.endsWith('r') || align === 'r' ? frame.width : ['t', 'ctr', 'b'].includes(align) ? frame.width / 2 : 0;
     const ay = align.startsWith('b') ? frame.height : ['l', 'ctr', 'r'].includes(align) ? frame.height / 2 : 0;
-    const sx = s.sx ?? 1, sy = s.sy ?? 1, kx = s.kx ?? 0, ky = s.ky ?? 0;
-    return transform(sx, sy, kx, ky,
-      s.dist * Math.cos(s.dir * Math.PI / 180) + ax * (1 - sx) * ex - Math.tan(kx * Math.PI / 180) * ay * ey,
-      s.dist * Math.sin(s.dir * Math.PI / 180) + ay * (1 - sy) * ey - Math.tan(ky * Math.PI / 180) * ax * ex);
+    let a = s.sx ?? 1, b = Math.tan((s.ky ?? 0) * Math.PI / 180);
+    let c = Math.tan((s.kx ?? 0) * Math.PI / 180), d = s.sy ?? 1;
+    let [dx, dy] = effectDirection(s.dir, false, value).map(v => v * s.dist);
+    if (s.rotWithShape === false) {
+      // §§20.1.8.45/50: page-space transform of the already-oriented
+      // silhouette, expressed in the unrotated bitmap: H^-1 A H. Offset
+      // direction is likewise pulled back through H. Preserve the host's
+      // alignment anchor; counter-rotating only dir loses scale/skew semantics.
+      const [co, si] = effectDirection(value.hostRotation ?? 0, false, { effects: [] });
+      const fx = value.hostFlipH ? -1 : 1, fy = value.hostFlipV ? -1 : 1;
+      const aa = co * (a * co + c * si) + si * (b * co + d * si);
+      const bb = fx * fy * (-si * (a * co + c * si) + co * (b * co + d * si));
+      const cc = fx * fy * (co * (-a * si + c * co) + si * (-b * si + d * co));
+      const dd = -si * (-a * si + c * co) + co * (-b * si + d * co);
+      [a, b, c, d] = [aa, bb, cc, dd];
+      [dx, dy] = [fx * (co * dx + si * dy), fy * (-si * dx + co * dy)];
+    }
+    return transform(a, d, Math.atan(c) * 180 / Math.PI, Math.atan(b) * 180 / Math.PI,
+      dx + ax * (1 - a) * ex - c * ay * ey,
+      dy + ay * (1 - d) * ey - b * ax * ex);
   };
   switch (effect.type) {
-    case 'relativeOffset': // §20.1.8.51, percentages of the authored frame.
-      return [transform(1, 1, 0, 0, effect.tx * frame.width * ex, effect.ty * frame.height * ey)];
+    case 'relativeOffset': // §20.1.8.51: percentages of the previous effect's grid.
+      return [transform(1, 1, 0, 0, effect.tx * input.width * ex, effect.ty * input.height * ey)];
     case 'glow': // §20.1.8.32: colored, blurred parent coverage.
       return [{ type: 'colorReplace', color: effect.glow.color }, { type: 'alphaModFix', amt: effect.glow.alpha },
         { type: 'blur', radius: effect.glow.radius, grow: true }];
@@ -32,7 +48,7 @@ export function expandBlipEffect(effect: BlipEffect, input: Pick<EffectBuffer, '
         aligned(effect.shadow), { type: 'blur', radius: effect.shadow.blur, grow: true }];
     case 'presetShadow': // §20.1.10.52 resolves these to ordinary shadows.
       return [{ type: 'container', container: { kind: 'sib', effects:
-        effect.shadows.map(shadow => ({ type: 'shadow', shadow, inner: false })) } }];
+        effect.shadows.map(shadow => ({ type: 'shadow', shadow: { ...shadow, rotWithShape: false }, inner: false })) } }];
     case 'softEdge':
       // §20.1.8.53 blurs edges while leaving the fill unaffected: radius zero
       // is exact identity, including on translucent pixels. Rasterization
@@ -55,21 +71,32 @@ export function blipMaskOperations(effect: BlipEffect,
     { type: 'alphaCeiling' }, { type: 'blur', radius: Math.abs(effect.radius), grow: effect.radius > 0 },
     { type: effect.radius >= 0 ? 'alphaCeiling' : 'alphaFloor' },
   ];
-  if (effect.type === 'shadow' && effect.inner) return [
-    { type: 'blur', radius: effect.shadow.blur, grow: true },
-    { type: 'transform', sx: 1, sy: 1, kx: 0, ky: 0,
-      tx: effect.shadow.dist * Math.cos(effect.shadow.dir * Math.PI / 180),
-      ty: effect.shadow.dist * Math.sin(effect.shadow.dir * Math.PI / 180) },
-  ];
+  if (effect.type === 'shadow' && effect.inner) {
+    // CT_InnerShadowEffect has no rotWithShape override (§A.4.1).
+    const [dx, dy] = effectDirection(effect.shadow.dir, false, value);
+    return [
+      { type: 'blur', radius: effect.shadow.blur, grow: true },
+      { type: 'transform', sx: 1, sy: 1, kx: 0, ky: 0,
+        tx: effect.shadow.dist * dx, ty: effect.shadow.dist * dy },
+    ];
+  }
   if (effect.type === 'reflection') {
-    const r = effect.reflection, f = input.frame ?? { width: input.width, height: input.height };
-    const ex = value.emuPerPixelX ?? 9525, ey = value.emuPerPixelY ?? 9525, align = r.algn ?? 'b';
-    const ax = align.endsWith('r') || align === 'r' ? f.width * ex : ['t', 'ctr', 'b'].includes(align) ? f.width * ex / 2 : 0;
-    const ay = align.startsWith('b') ? f.height * ey : ['l', 'ctr', 'r'].includes(align) ? f.height * ey / 2 : 0;
-    return [{ type: 'transform', sx: r.sx, sy: r.sy, kx: r.kx ?? 0, ky: r.ky ?? 0,
-      tx: r.dist * Math.cos(r.dir * Math.PI / 180) + ax * (1 - r.sx) - Math.tan((r.kx ?? 0) * Math.PI / 180) * ay,
-      ty: r.dist * Math.sin(r.dir * Math.PI / 180) + ay * (1 - r.sy) - Math.tan((r.ky ?? 0) * Math.PI / 180) * ax },
-      { type: 'blur', radius: r.blur, grow: true }];
+    const r = effect.reflection;
+    const expanded = expandBlipEffect({ type: 'shadow', inner: false,
+      shadow: { ...r, color: '000000', alpha: 1 } }, input, value) as readonly BlipEffect[];
+    return expanded.slice(2);
   }
   return undefined;
+}
+
+/** Unit direction in the bitmap's local physical axes. Cardinal directions
+ * stay exact, so floor/ceil grid bounds do not gain a spurious sample. */
+export function effectDirection(degrees: number, pageFixed: boolean, value: BlipPixelEffects): [number, number] {
+  const angle = pageFixed ? degrees - (value.hostRotation ?? 0) : degrees;
+  const quarter = ((angle / 90) % 4 + 4) % 4;
+  let [x, y] = Number.isInteger(quarter)
+    ? ([[1, 0], [0, 1], [-1, 0], [0, -1]][quarter])
+    : [Math.cos(angle * Math.PI / 180), Math.sin(angle * Math.PI / 180)];
+  if (pageFixed) { if (value.hostFlipH) x = -x; if (value.hostFlipV) y = -y; }
+  return [x, y];
 }

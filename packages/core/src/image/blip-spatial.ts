@@ -19,7 +19,7 @@ export function affinePlan(input: Pick<EffectBuffer, 'width' | 'height' | 'frame
     throw new OoxmlDecodedImageLimitError('image-dimension', MAX_RASTER_DIMENSION, Math.max(width, height));
   }
   if (pixels * 4 > MAX_RASTER_PIXELS) throw new OoxmlDecodedImageLimitError('image-pixels', MAX_RASTER_PIXELS, pixels * 4);
-  return { width, height, frame: { x: -left, y: -top, width: f.width, height: f.height } };
+  return { width, height, frame: { x: left === 0 ? 0 : -left, y: top === 0 ? 0 : -top, width: f.width, height: f.height } };
 }
 
 /** §20.1.8.61: [sx tan(kx) tx; tan(ky) sy ty]. Coordinates are local
