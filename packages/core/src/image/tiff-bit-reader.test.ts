@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TiffBitReader } from './tiff-bit-reader.js';
+import { TiffBitReader } from './tiff.js';
 import { TiffDecodeError } from './tiff-contract.js';
 
 describe('TIFF strip bit reader', () => {
