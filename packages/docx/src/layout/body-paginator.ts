@@ -2060,11 +2060,9 @@ function* paginateBodyPassSteps(
             || spacing.suppressBefore
             || (
               cursor.boundary === null
-              // Ordinary overflow suppresses top spacing only for ordinary
-              // text. Image-only and mixed-object paragraphs retain their
-              // authored spacing; `inkless` cannot distinguish these cases.
-              && block.inkless !== true
-              && block.onlyVisibleText === true
+              // Windows trr3 C: automatic overflow suppresses before for
+              // empty marks as well as text. Objects remain outside the controls.
+              && (block.inkless === true || block.onlyTextualContent === true)
               && !state.flow.pageHasContent
               && automaticPageStartEntryIndex === entryIndex
             )
@@ -2076,6 +2074,12 @@ function* paginateBodyPassSteps(
               && block.inkless !== true
               && !state.flow.pageHasContent
               && automaticPageStartEntryIndex === entryIndex
+            )
+            || (
+              cursor.boundary === null
+              && block.pageBreakBefore
+              && input.compatibilityMode === 15
+              && !state.flow.pageHasContent
             )
             || (
               cursor.boundary === null
@@ -2379,6 +2383,7 @@ function* paginateBodyPassSteps(
             markExtentPt: acquired.blockExtentPt,
             markBelowBaselinePt: acquired.markBelowBaselinePt ?? 0,
             markOnLineGrid: acquired.markOnLineGrid === true,
+            markGridAfterLeadingPt: acquired.markGridAfterLeadingPt,
           });
         // A proven anchor-line deferral ends this page just above that line.
         const anchorLineBreak = deferredAnchorLineIndex(acquired.layout);

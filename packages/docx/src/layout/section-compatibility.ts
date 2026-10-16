@@ -24,7 +24,7 @@ export const WORD_TRAILING_EMPTY_MARK_BASELINE_ADMISSION = defineCompatibilityRu
     kind: 'regression-test',
     reference: 'packages/docx/src/paginate-trailing-empty-mark-fit.test.ts#KEEPS an inkless empty paragraph on the page when ink-bearing content follows and only its below-baseline whitespace overflows',
   },
-  description: 'At the unreserved physical body edge, Word admits an undecorated non-terminal empty paragraph mark by its baseline when later ink follows in the same flow and the mark does not occupy a document-grid line cell. An observed 18pt line-grid mark with only 17.65pt remaining moves to the next page with its complete cell. Next-page section marks retain their separate blank-page suppression.',
+  description: 'At the unreserved physical body edge, Word admits an undecorated non-terminal empty paragraph mark by its baseline when later ink follows in the same flow and the mark does not occupy a document-grid line cell. Windows Word 16.0.20430 trr3 family D (272 controls: modes 14/15, lines/linesAndChars, 16.4pt pitch, 11pt MS Mincho, zero/one preceding empty mark) instead admits grid marks by their centered natural/authored content box: 15pt remaining moves, 15.5–16.35pt stays, and 16.4pt fully fits. The single-character counterexamples follow the existing plain-text content-box rule too. Grid-only trailing leading may overhang; the complete advance remains retained. Other fonts/pitches use the same resolved metrics, not a measured per-font allowance. Next-page section marks retain their separate blank-page suppression.',
 });
 
 export const WORD_SECTION_MARK_BLANK_PAGE_SUPPRESSION = defineCompatibilityRule({
@@ -75,6 +75,7 @@ export function wordTrailingEmptyMarkAdmissionAllowancePt(input: Readonly<{
   markExtentPt: number;
   markBelowBaselinePt: number;
   markOnLineGrid: boolean;
+  markGridAfterLeadingPt?: number;
 }>): number {
   const eligible = !input.hasContinuationBoundary
     && input.inkless
@@ -85,11 +86,13 @@ export function wordTrailingEmptyMarkAdmissionAllowancePt(input: Readonly<{
     && input.physicalRegionBottomIsActive;
   if (!eligible) return 0;
   if (input.followsNextPageSectionBoundary) return Math.max(0, input.markExtentPt);
-  // §17.6.5 gives a grid-aligned paragraph mark a whole line cell. Word moves
-  // an 18pt cell when 17.65pt remain; baseline-only admission would clip that
-  // cell and raise the first visible line on the next page by one grid pitch.
-  // This narrows the observed non-grid empty-mark compatibility rule (#981).
-  if (input.markOnLineGrid) return 0;
+  // Windows trr3 family D contradicts the earlier full-cell empty-mark
+  // inference. Keep the centered natural/authored content box inside the body,
+  // just as WORD_GRID_LINE_CONTENT_FIT_ADMISSION does for plain text. The full
+  // grid advance still positions successors; baseline-only admission is too lax.
+  if (input.markOnLineGrid) {
+    return input.hasFollowingInk ? input.markGridAfterLeadingPt ?? 0 : 0;
+  }
   return input.hasFollowingInk ? input.markBelowBaselinePt : 0;
 }
 

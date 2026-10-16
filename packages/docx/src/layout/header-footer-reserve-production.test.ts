@@ -235,17 +235,19 @@ describe('canonical header/footer reservation', () => {
   const header = storySource('header', 'default');
   const footer = storySource('footer', 'default');
 
-  it('does not reserve body space for an undecorated space-only header', () => {
+  // Windows Word 16.0.20430 controls: empty/space paragraphs reserve their
+  // acquired extent just like visible text, across header slots and styles.
+  it.each([' ', ''])('reserves body space for a blank header (%j)', (text) => {
     const sectionOwner = owner('section:space-header', section(), {
       headers: { default: header, first: null, even: null },
     });
     const layout = paginate({
       initialSection: sectionOwner,
       sequence: [bodyBlock(0)],
-      storyLayout: (source, pageIndex) => plainTextStoryLayout(source, 36, ' ', pageIndex),
+      storyLayout: (source, pageIndex) => plainTextStoryLayout(source, 36, text, pageIndex),
     });
 
-    expect(layout.pages[0]?.geometry.contentTopPt).toBe(10);
+    expect(layout.pages[0]?.geometry.contentTopPt).toBe(41);
   });
 
   it('reserves body space for a visible header glyph', () => {
@@ -261,7 +263,7 @@ describe('canonical header/footer reservation', () => {
     expect(layout.pages[0]?.geometry.contentTopPt).toBe(41);
   });
 
-  it('retains the established reserve for untested multiple blank header paragraphs', () => {
+  it('reserves the full extent of multiple blank header paragraphs', () => {
     const sectionOwner = owner('section:multi-space-header', section(), {
       headers: { default: header, first: null, even: null },
     });

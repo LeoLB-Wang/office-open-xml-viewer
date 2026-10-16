@@ -1655,6 +1655,10 @@ function measureBodyParagraphEntry(
       ? {
           markBelowBaselinePt: measured.lastLineBelowBaselinePt,
           markOnLineGrid,
+          // The page-margin observation grants no allowance through floats.
+          // A wrapped mark keeps its complete cell, as plain text does.
+          markGridAfterLeadingPt: layout.exclusions.length === 0
+            ? measured.markGridAfterLeadingPt ?? 0 : 0,
         }
       : {}),
     ...(measured.uniformRubyAdvancePt == null

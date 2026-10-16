@@ -1043,8 +1043,9 @@ function acquiredBodyParagraph(paragraph: DocParagraph, source: SourceRef) {
     contextualSpacing: paragraph.contextualSpacing === true,
     styleId: paragraph.styleId ?? null,
     inkless: !paragraphHasUnavailableDrawing(paragraph) && isInklessParagraph(paragraph),
-    onlyVisibleText: paragraph.runs.every((run) => run.type === 'text')
-      && paragraph.runs.some((run) => run.type === 'text' && /\S/u.test(run.text)),
+    onlyTextualContent: !paragraphHasUnavailableDrawing(paragraph)
+      && paragraph.runs.every((run) => run.type === 'text'
+        || (run.type === 'break' && run.breakType === 'line')),
     ...(pageOwnedAnchorOccurrenceIds.length === 0 ? {} : { pageOwnedAnchorOccurrenceIds }),
   });
 }
@@ -1401,6 +1402,7 @@ export function bodyLayoutAcquisitionInput(doc: DocxDocumentModel): BodyLayoutAc
   });
   return {
     sectionIndex,
+    compatibilityMode: doc.settings?.compatibilityMode,
     evenAndOddHeaders: doc.section.evenAndOddHeaders,
     endnoteIds: (doc.endnotes ?? []).map((note) => note.id),
     noteLayoutSettings: documentNoteLayoutSettingsInput(doc),

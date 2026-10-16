@@ -109,6 +109,8 @@ export interface AcquiredParagraphBlock {
   readonly markBelowBaselinePt?: number;
   /** True when this mark's line box occupies a §17.6.5 document-grid cell. */
   readonly markOnLineGrid?: boolean;
+  /** Grid-only leading below a mark's own natural/authored box. */
+  readonly markGridAfterLeadingPt?: number;
   readonly flowRegistryDelta?: BodyFlowRegistryDeltaPt;
   readonly placement?: Readonly<{
     coordinateSpace: 'logical-body';
