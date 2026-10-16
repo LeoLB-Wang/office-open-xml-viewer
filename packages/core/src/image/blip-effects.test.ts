@@ -3,6 +3,7 @@ import {
   applyBlipPixelEffects,
   assertBlipPixelEffectsBudget,
   blipGrayLevel,
+  blipPixelEffectsKey,
   blipLuminance,
   type BlipEffect,
   type BlipPixelEffects,
@@ -108,6 +109,34 @@ describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
 
 describe('getCachedDuotoneBitmapByPath with CT_Blip effects', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it('does not reuse a luminance bitmap for a colliding decimal parameter pair', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 1, height: 1, close() {} })));
+    const written: number[] = [];
+    const factory = ((width: number, height: number) => ({
+      width, height,
+      getContext: () => ({
+        drawImage() {},
+        getImageData: () => buffer([115, 115, 115, 255]),
+        putImageData: (image: ImageData) => written.push(image.data[0]),
+      }),
+    })) as unknown as OffscreenFactory;
+    const fetchImage = async () => new Blob([new Uint8Array([1])], { type: 'image/png' });
+    const get = (bright: number, contrast: number) => getCachedDuotoneBitmapByPath(
+      'lum.png', 'image/png', { effects: [{ type: 'luminance', bright, contrast }] },
+      fetchImage, { offscreenFactory: factory },
+    );
+    try {
+      // Both tuples previously produced l0.2.1, despite different clamped pixel results.
+      const first = await get(0.2, 1);
+      const second = await get(0, 2.1);
+      expect(first).not.toBe(second);
+      expect(written).toEqual([255, 0]);
+    } finally {
+      dropDuotoneBitmapCache(fetchImage);
+      dropBitmapCacheByPath(fetchImage);
+    }
+  });
 
   it('runs the ordered effects once through the shared decode cache, keyed apart from the duotone', async () => {
     const base = { width: 1, height: 1, close() {} } as unknown as ImageBitmap;
@@ -243,4 +272,12 @@ describe('getCachedDuotoneBitmapByPath effect budget', () => {
     dropDuotoneBitmapCache(fetchImage);
     dropBitmapCacheByPath(fetchImage);
   });
+});
+
+it('keeps numeric effect parameters distinct in cache keys', () => {
+  const key = (bright: number, contrast: number) => blipPixelEffectsKey({
+    effects: [{ type: 'luminance', bright, contrast }],
+  });
+  expect(key(1, 23)).not.toBe(key(12, 3));
+  expect(key(1.2, 3)).not.toBe(key(1, 2.3));
 });
