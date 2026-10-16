@@ -146,6 +146,44 @@ describe('DOCX host-face line geometry', () => {
     expect([...fonts]).toHaveLength(0);
   });
 
+  it('retains one coverage probe for aliases that share a paint face', async () => {
+    const fonts = new Set<FontFace>() as unknown as FontFaceSet;
+    class ProbeFace {
+      status = 'loaded';
+      weight: string;
+      style: string;
+      sizeAdjust: string;
+      constructor(readonly family: string, _source: string,
+        descriptors: FontFaceDescriptors & { sizeAdjust: string }) {
+        this.weight = descriptors.weight!;
+        this.style = descriptors.style!;
+        this.sizeAdjust = descriptors.sizeAdjust;
+      }
+      async load() { return this; }
+    }
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('FontFace', ProbeFace);
+    vi.stubGlobal('OffscreenCanvas', class { getContext() { return contractCanvas(); } });
+    const identity = 'office-local:local("exact-host-source")';
+    const loadedRoute = { ...route(), resourceIdentity: identity,
+      metric: { ...route().metric, sourceIdentity: identity } };
+    const face = { family: loadedRoute.family, weight: '400', style: 'normal', status: 'loaded' } as FontFace;
+    let result: Awaited<ReturnType<typeof prepareDocxHostFontMetrics>> | undefined;
+    try {
+      result = await prepareDocxHostFontMetrics({ faces: [face],
+        routes: { first: loadedRoute, alias: { ...loadedRoute, requestedFamily: 'Alias Spelling' } }, checked: [] },
+        fonts, [{ resourceIdentity: identity, weight: 400, style: 'normal', measured: host }]);
+      const probes = result.faces.filter((candidate) => candidate !== face);
+      expect(probes).toHaveLength(1);
+      expect(result.routes.first.metric.glyphCoverageProbeFamily).toBe(probes[0].family);
+      expect(result.routes.alias.metric.glyphCoverageProbeFamily).toBe(probes[0].family);
+    } finally {
+      if (result) unloadOfficeFontFallbacks(result.faces.filter((candidate) => candidate !== face));
+      vi.unstubAllGlobals();
+    }
+    expect([...fonts]).toHaveLength(0);
+  });
+
   it('keeps the catalog when the engine cannot prove glyph ownership', async () => {
     // An engine that zeroes every glyph under size-adjust 0% (owned or not)
     // cannot distinguish the paint face from fallback, so the measured

@@ -103,6 +103,9 @@ export async function prepareDocxHostFontMetrics(
     ? owner.createElement('canvas').getContext('2d') : null;
   // Measurements are synchronous; the coverage-face loads they need run in
   // parallel so preparation waits for the slowest load, not their sum.
+  // Authored aliases can resolve to one paint face: retain its coverage probe
+  // once per preparation, matching the single release on destroy.
+  const probes = new Map<FontFace, Promise<FontFace | null>>();
   const entries = await Promise.all(Object.entries(loaded.routes).map(async ([key, route]) => {
     const face = loaded.faces.find(candidate => candidate.family === route.family);
     const em = probeEm(route);
@@ -116,7 +119,14 @@ export async function prepareDocxHostFontMetrics(
     const source = localSource(route);
     let probe: FontFace | null = null;
     if (metric !== route.metric) {
-      probe = face && source ? await loadLocalFontCoverageProbe(face, source, fontSet) : null;
+      if (face && source) {
+        let pending = probes.get(face);
+        if (!pending) {
+          pending = loadLocalFontCoverageProbe(face, source, fontSet);
+          probes.set(face, pending);
+        }
+        probe = await pending;
+      }
       metric = probe
         ? Object.freeze({ ...metric, glyphCoverageProbeFamily: probe.family })
         // Without proof the new measured resource projection is unavailable.
@@ -125,9 +135,10 @@ export async function prepareDocxHostFontMetrics(
     return { key, route: { ...route, metric }, probe };
   }));
   const routes: typeof loaded.routes = {};
-  for (const entry of entries) {
-    if (entry.probe) loaded.faces.push(entry.probe);
-    routes[entry.key] = entry.route;
+  for (const entry of entries) routes[entry.key] = entry.route;
+  for (const pending of probes.values()) {
+    const probe = await pending;
+    if (probe) loaded.faces.push(probe);
   }
   return { ...loaded, routes };
 }
