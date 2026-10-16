@@ -33,8 +33,15 @@ export function expandBlipEffect(effect: BlipEffect, input: Pick<EffectBuffer, '
     case 'presetShadow': // §20.1.10.52 resolves these to ordinary shadows.
       return [{ type: 'container', container: { kind: 'sib', effects:
         effect.shadows.map(shadow => ({ type: 'shadow', shadow, inner: false })) } }];
-    case 'softEdge': // §20.1.8.53 leaves the feather kernel to the consumer.
-      return [{ type: 'alphaMod', container: { kind: 'tree', effects: [{ type: 'blur', radius: effect.radius, grow: false }] } }];
+    case 'softEdge':
+      // §20.1.8.53 blurs edges while leaving the fill unaffected: radius zero
+      // is exact identity, including on translucent pixels. Rasterization
+      // policy: feather the nonzero coverage silhouette with our shared blur
+      // kernel, then apply that mask once to the original alpha. Blurring the
+      // original opacity instead would square it, darkening the entire fill.
+      return effect.radius === 0 ? [] : [{ type: 'alphaMod', container: { kind: 'tree', effects: [
+        { type: 'alphaCeiling' }, { type: 'blur', radius: effect.radius, grow: false },
+      ] } }];
     default: return undefined;
   }
 }

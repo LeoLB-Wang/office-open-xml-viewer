@@ -108,6 +108,25 @@ describe('applyBlipPixelEffects (ECMA-376 §20.1.8.11/16/34)', () => {
     expect([clipped.width, clipped.height, ...clipped.data]).toEqual([1, 1, 255, 0, 0, 244]);
   });
 
+  it('zero-radius soft edges preserve pixels exactly, including inside alphaMod', () => {
+    const source = buffer([12, 34, 56, 128], [78, 90, 12, 0]);
+    expect(applyBlipPixelEffects(source, { effects: [{ type: 'softEdge', radius: 0 }] }).data)
+      .toEqual(new Uint8ClampedArray([12, 34, 56, 128, 78, 90, 12, 0]));
+    const nested = applyBlipPixelEffects(buffer([12, 34, 56, 128]), { effects: [
+      { type: 'alphaMod', container: { kind: 'tree', effects: [{ type: 'softEdge', radius: 0 }] } },
+    ] });
+    expect([...nested.data]).toEqual([12, 34, 56, 64]);
+  });
+
+  it('feathers coverage once independently of source opacity and retains fill colors', () => {
+    const render = (alpha: number) => applyBlipPixelEffects(buffer([12, 34, 56, alpha]),
+      { effects: [{ type: 'softEdge', radius: 9525 }] });
+    const opaque = render(255), translucent = render(128);
+    expect(opaque.data[3]).toBe(244);
+    expect([...translucent.data]).toEqual([12, 34, 56, Math.round(128 * 244 / 255)]);
+    expect(render(0).data[3]).toBe(0);
+  });
+
   it('preflights blur and nested effect work before touching source pixels', () => {
     const buf = buffer([10, 20, 30, 40]);
     expect(() => applyBlipPixelEffects(buf, { effects: [
