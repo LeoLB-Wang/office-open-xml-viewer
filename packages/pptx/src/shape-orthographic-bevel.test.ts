@@ -484,6 +484,42 @@ describe.skipIf(!existsSync(chromium.executablePath()))('shape bevel and camera 
     }
   }
 
+  for (const camera of ['orthographicFront', 'perspectiveRelaxed'] as const) {
+    it(`shades a picture's circle bevel as a convex rim (${camera})`, async () => {
+      // Office renders circle as a quarter round: steepest, hence darkest on a
+      // side edge under a top light, at the silhouette, brightening inward into
+      // the face. Reading the §2.1.1316 points as (height, inward) instead
+      // produced an unlit rim plus a dark crease at the inner band edge.
+      const band = 24;
+      const picture: PictureElement = {
+        type: 'picture', x: 48 * 9525, y: 48 * 9525, width: 288 * 9525, height: 288 * 9525,
+        rotation: 0, flipH: false, flipV: false, imagePath: `test/bevel-${camera}.png`,
+        mimeType: 'image/png', stroke: null, prstGeom: 'roundRect', prstAdjust: [16_667],
+        scene3d: {
+          camera: camera === 'orthographicFront' ? { prst: camera }
+            : { prst: camera, rot: { lat: 330, lon: 20, rev: 347 } },
+          lightRig: { rig: 'threePt', dir: 't' },
+        },
+        sp3d: { prstMaterial: 'matte', contourW: 6350, contourClr: '969696',
+          bevelT: { w: band * 9525, h: band * 9525, prst: 'circle' } },
+      };
+      const data = await render(picture);
+      const y = 192;
+      let edge = 399;
+      while (edge > 0 && pixel(data, edge, y).every(v => v >= 250)) edge--;
+      expect(edge).toBeGreaterThan(240);
+      // Skip the contour/antialiased silhouette pixels, then walk inward.
+      const lum = Array.from({ length: band + 8 }, (_, k) => {
+        const [r, g, b] = pixel(data, edge - 3 - k, y);
+        return 0.299 * r + 0.587 * g + 0.114 * b;
+      });
+      const darkest = lum.indexOf(Math.min(...lum));
+      expect(darkest).toBeLessThan(band / 4);
+      for (let k = 1; k < lum.length; k++) expect(lum[k]).toBeGreaterThanOrEqual(lum[k - 1] - 2);
+      expect(lum[lum.length - 1] - lum[0]).toBeGreaterThan(20);
+    });
+  }
+
   it('renders wireframe rims with a transparent interior', async () => {
     const shape = projectedBeveledShape();
     shape.sp3d!.prstMaterial = 'legacyWireframe';
