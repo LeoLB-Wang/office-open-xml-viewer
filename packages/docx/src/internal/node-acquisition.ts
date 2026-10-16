@@ -1,3 +1,4 @@
+import { normalizeDocxParserError } from './parser-errors.js';
 import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import {
   normalizeLoadResourceOptions,
@@ -165,7 +166,7 @@ export async function acquireDocxNodeDocument<TResult>(
     await pull?.reset().catch(() => undefined);
     transport?.terminate();
     try { handle?.close((archive: DocxNodeArchive) => archive.free()); } catch {}
-    const normalized = parseTypedParserError(error) ?? error;
+    const normalized = parseTypedParserError(error) ?? normalizeDocxParserError(error);
     metrics.fail(normalized);
     throw normalized;
   }

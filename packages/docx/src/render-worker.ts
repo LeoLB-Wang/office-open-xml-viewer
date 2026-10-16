@@ -1,3 +1,4 @@
+import { normalizeDocxParserError } from './internal/parser-errors.js';
 import type { LayoutDiagnostic } from './layout/types.js';
 import { readingDefaultOwners } from './internal/reading-default-owners.js';
 import { readingPaintHooks } from './paint/reading-hooks.js';
@@ -184,7 +185,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
         operationId: req.operationId,
         generation: req.generation,
         requestId: req.requestId,
-        error: serializeWorkerError(error),
+        error: serializeWorkerError(normalizeDocxParserError(error)),
       });
     }
     return;
@@ -585,7 +586,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
     post({
       type: 'error',
       id,
-      ...serializeWorkerError(error),
+      ...serializeWorkerError(normalizeDocxParserError(error)),
       ...(details.code !== undefined ? { code: details.code } : {}),
       ...(details.reason !== undefined ? { reason: details.reason } : {}),
       ...(details.outgoingColumnIndex !== undefined

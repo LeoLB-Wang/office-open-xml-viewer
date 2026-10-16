@@ -1,9 +1,9 @@
 import {
   acquireXlsxNodeSession,
+  normalizeXlsxWorksheetPolicy,
   type XlsxNodeAcquisition,
   type XlsxNodeArchive,
 } from '@silurus/ooxml-xlsx/internal/session';
-import { normalizeXlsxWorksheetPolicy } from '@silurus/ooxml-core/worker';
 import { WorksheetPullWorker as SourcePullWorker } from '@silurus/ooxml-xlsx/internal/source-pull-worker';
 import { GridGeometry } from '@silurus/ooxml-xlsx/internal/grid-geometry';
 import type { NodeCanvasFactory } from './render.ts';

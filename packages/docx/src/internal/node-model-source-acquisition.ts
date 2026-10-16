@@ -1,3 +1,4 @@
+import { normalizeDocxParserError } from './parser-errors.js';
 import { installNativeReadingRuntime } from './native-reading-runtime.js';
 import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import { normalizeLoadResourceOptions, OoxmlResourceMetricsSession, parseTypedParserError } from '@silurus/ooxml-core/worker';
@@ -60,7 +61,7 @@ export async function acquireDocxSessionFromArchive<TResult>(
     metrics.checkpoint('container ready');
   } catch (error) {
     try { closeArchive(); } catch {}
-    const normalized = parseTypedParserError(error) ?? error;
+    const normalized = parseTypedParserError(error) ?? normalizeDocxParserError(error);
     metrics?.fail(normalized);
     throw normalized;
   }
@@ -106,7 +107,7 @@ async function consumeDocxArchive<TResult>(
     await pull?.reset().catch(() => undefined);
     transport?.terminate();
     try { closeArchive(); } catch {}
-    const normalized = parseTypedParserError(error) ?? error;
+    const normalized = parseTypedParserError(error) ?? normalizeDocxParserError(error);
     metrics.fail(normalized);
     throw normalized;
   }

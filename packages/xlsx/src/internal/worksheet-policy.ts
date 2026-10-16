@@ -1,4 +1,4 @@
-import type { XlsxWorksheetLimits } from '../types/load-options.js';
+import type { XlsxWorksheetLimits } from '@silurus/ooxml-core';
 import {
   HARD_MAX_XLSX_RENDERER_COORDINATE_INDEX_ENTRIES,
   HARD_MAX_XLSX_WORKBOOK_CACHED_CELLS,
@@ -9,7 +9,7 @@ import {
   HARD_MAX_XLSX_WORKSHEET_CELL_CONTENT_UTF8_BYTES,
   HARD_MAX_XLSX_WORKSHEET_JSON_BYTES,
   HARD_MAX_XLSX_WORKSHEET_ROWS,
-} from './resource-policy.generated.js';
+} from '@silurus/ooxml-core/worker';
 
 /**
  * Resolved logical XLSX counters: rows, cell records, owned string UTF-8 bytes

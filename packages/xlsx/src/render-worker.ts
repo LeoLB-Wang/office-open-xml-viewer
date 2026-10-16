@@ -1,3 +1,9 @@
+import {
+  DEFAULT_XLSX_WORKSHEET_POLICY,
+  normalizeXlsxWorksheetPolicy,
+  xlsxWorksheetPolicyForWasm,
+  type NormalizedXlsxWorksheetPolicy,
+} from './internal/worksheet-policy.js';
 import { bindCellFontLanguage } from './internal/cell-font-language.js';
 import type { CjkLang } from '@silurus/ooxml-core';
 import { xlsxCjkFallback } from './google-fonts.js';
@@ -30,10 +36,6 @@ import {
   HARD_MAX_RAW_PART_CACHE_BYTES,
   HARD_MAX_RAW_PART_CACHE_ENTRIES,
   resourcePolicyForWasm,
-  DEFAULT_XLSX_WORKSHEET_POLICY,
-  normalizeXlsxWorksheetPolicy,
-  xlsxWorksheetPolicyForWasm,
-  type NormalizedXlsxWorksheetPolicy,
   serializeWorkerError,
   loadWorkerRenderers,
   isWorkerSvgDecodeResponse,

@@ -1,4 +1,7 @@
-import { DEFAULT_XLSX_WORKSHEET_POLICY, normalizeXlsxWorksheetPolicy } from '@silurus/ooxml-core/worker';
+import {
+  DEFAULT_XLSX_WORKSHEET_POLICY,
+  normalizeXlsxWorksheetPolicy,
+} from './internal/worksheet-policy.js';
 import { bindWorksheetPolicy, getWorksheetPolicy } from './worksheet-policy-context.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {

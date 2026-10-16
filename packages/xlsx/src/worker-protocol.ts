@@ -293,7 +293,7 @@ export function extractViewerRenderContext(opts: WireRenderViewportOptions): {
 // `init` arm is copied verbatim from `WorkerRequest`.
 export type RenderWorkerRequest =
   | { type: 'init'; wasmUrl: string }
-  | { type: 'parse'; id: number; data: ArrayBuffer; resourcePolicy: NormalizedOoxmlResourcePolicy; readonly worksheetPolicy?: import('@silurus/ooxml-core/worker').NormalizedXlsxWorksheetPolicy; useGoogleFonts?: boolean; japaneseCellFonts?: boolean; cjkFallback?: import('@silurus/ooxml-core').CjkLang; renderers?: import('@silurus/ooxml-core/worker').WorkerRendererDescriptors; source?: import('@silurus/ooxml-core').ModelSourceModuleDescriptor; sourceTransfer?: readonly Transferable[]; sourceOwnerUrl?: string }
+  | { type: 'parse'; id: number; data: ArrayBuffer; resourcePolicy: NormalizedOoxmlResourcePolicy; readonly worksheetPolicy?: import('./internal/worksheet-policy.js').NormalizedXlsxWorksheetPolicy; useGoogleFonts?: boolean; japaneseCellFonts?: boolean; cjkFallback?: import('@silurus/ooxml-core').CjkLang; renderers?: import('@silurus/ooxml-core/worker').WorkerRendererDescriptors; source?: import('@silurus/ooxml-core').ModelSourceModuleDescriptor; sourceTransfer?: readonly Transferable[]; sourceOwnerUrl?: string }
   | DelimitedTextParseRequest
   | ({ type: 'openSheetSession'; id: number; sheetIndex: number; sheetName: string } & PullSessionIdentity<number>)
   | {

@@ -1,3 +1,4 @@
+import { normalizeXlsxWorksheetPolicy } from './worksheet-policy.js';
 import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-asset-url';
 import {
   resolveCjkFallback,
@@ -8,7 +9,6 @@ import {
   disposeRejectedLoad,
   normalizeLoadResourceOptions,
   OoxmlResourceMetricsSession,
-  normalizeXlsxWorksheetPolicy,
   type NormalizedOoxmlResourcePolicy,
 } from '@silurus/ooxml-core/worker';
 import { beginModelSourceLoad, selectModelSource } from '@silurus/ooxml-core/internal/model-source';
@@ -45,7 +45,7 @@ export async function loadXlsxModelSource(
   const mode = opts.mode ?? 'main';
   const metrics = new OoxmlResourceMetricsSession({
     enabled: true, format: 'xlsx', mode, policy: resourceOptions.policy,
-    xlsxWorksheetPolicy: worksheetPolicy,
+    formatLimits: { xlsxWorksheetLimits: { ...worksheetPolicy.worksheet } },
     onMetrics: resourceOptions.onResourceMetrics, emitToConsole: resourceOptions.debug,
   });
   try {

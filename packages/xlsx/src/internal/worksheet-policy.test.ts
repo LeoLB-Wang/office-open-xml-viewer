@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_XLSX_WORKSHEET_POLICY,
   normalizeXlsxWorksheetPolicy,
-} from './xlsx-worksheet-policy.js';
+  xlsxWorksheetPolicyForWasm,
+} from './worksheet-policy.js';
 
 const FIELDS = ['maxRows', 'maxCells', 'maxOwnedUtf8Bytes', 'maxJsonBytes'] as const;
 const LARGEST_ACCEPTED = Number.MAX_SAFE_INTEGER - 1;
@@ -191,4 +192,9 @@ describe('normalizeXlsxWorksheetPolicy', () => {
     expect(DEFAULT_XLSX_WORKSHEET_POLICY).toEqual(defaultSnapshot);
     expect(normalizeXlsxWorksheetPolicy({})).toEqual(EXPECTED_DEFAULT);
   });
+});
+
+it('encodes worksheet limits in the unchanged XLSX WASM argument order', () => {
+  const policy = normalize({ maxRows: 7, maxCells: 11, maxOwnedUtf8Bytes: 13, maxJsonBytes: 17 });
+  expect(xlsxWorksheetPolicyForWasm(policy)).toEqual([7n, 11n, 13n, 17n]);
 });

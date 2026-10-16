@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Worksheet } from '@silurus/ooxml-xlsx';
 import type { ModelSource, ModelSourceConfig } from '@silurus/ooxml-core';
-import { DEFAULT_XLSX_WORKSHEET_POLICY } from '@silurus/ooxml-core/worker';
+import { DEFAULT_XLSX_WORKSHEET_POLICY } from '@silurus/ooxml-xlsx/internal/session';
 import { generateSyntheticXlsx } from '../scripts/generate-synthetic-xlsx.mjs';
 // Test-only internal Node seams (no public API is added by this file).
 import { loadSkiaForTests } from './test-imports.ts';
