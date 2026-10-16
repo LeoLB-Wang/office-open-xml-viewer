@@ -470,14 +470,11 @@ export function paintTextBoxLayout(node: TextBoxLayout, context: CanvasPaintCont
       );
     }
   });
-  const clipFrame = node.clipBounds ? canvasPaintFrame(context.ctx, () => {
+  const clipFrame = node.clipBounds || node.clipRects ? canvasPaintFrame(context.ctx, () => {
     context.ctx.beginPath();
-    context.ctx.rect(
-      node.clipBounds!.xPt,
-      node.clipBounds!.yPt,
-      node.clipBounds!.widthPt,
-      node.clipBounds!.heightPt,
-    );
+    for (const rect of node.clipRects ?? [node.clipBounds!]) {
+      context.ctx.rect(rect.xPt, rect.yPt, rect.widthPt, rect.heightPt);
+    }
     context.ctx.clip();
   }) : null;
   const documentDefaultTextColor = context.documentDefaultTextColor

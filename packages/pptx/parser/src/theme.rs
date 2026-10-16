@@ -42,6 +42,94 @@ impl PptxTheme {
     }
 }
 
+/// CT_BaseStylesOverride (§20.1.6.12) replaces each *present* scheme as a
+/// whole. Absent schemes inherit; in particular an empty authored font slot
+/// must not resurrect a face from the parent scheme.
+pub(crate) fn apply_theme_override(theme: &mut PptxTheme, xml: &str) {
+    if parse_preflighted_pptx_xml(xml).is_err() {
+        return;
+    }
+    let schemes = ooxml_common::theme::ThemeOverride::parse(xml);
+    let replacement = PptxTheme::from_xml(xml);
+    if schemes.colors.is_some() {
+        theme.values.retain(|key, _| {
+            !CLR_MAP_LOGICALS.iter().any(|(logical, slot)| {
+                key == logical || key == slot || key == &format!("{RAW_SCHEME_PREFIX}{slot}")
+            })
+        });
+        theme.values.extend(
+            replacement
+                .values
+                .iter()
+                .filter(|(key, _)| !key.starts_with('+') || key.starts_with(RAW_SCHEME_PREFIX))
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+    }
+    if schemes.fonts.is_some() {
+        theme
+            .values
+            .retain(|key, _| !key.starts_with("+mj") && !key.starts_with("+mn"));
+        theme.values.extend(
+            replacement
+                .values
+                .iter()
+                .filter(|(key, _)| key.starts_with("+mj") || key.starts_with("+mn"))
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+    }
+    if schemes.format.is_some() {
+        theme.values.retain(|key, _| {
+            !key.starts_with("+fillStyle-")
+                && !key.starts_with("+bgFillStyle-")
+                && !key.starts_with("+effectStyle-")
+        });
+        theme.values.extend(
+            replacement
+                .values
+                .iter()
+                .filter(|(key, _)| {
+                    key.starts_with("+fillStyle-")
+                        || key.starts_with("+bgFillStyle-")
+                        || key.starts_with("+effectStyle-")
+                })
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        // §14.2.8 forbids relationships owned by a Theme Override part.
+        // A replaced matrix must never resolve its rIds in the parent theme.
+        theme
+            .values
+            .retain(|key, _| !key.starts_with(THEME_REL_PREFIX));
+        theme.chart_images = Default::default();
+        theme.format_scheme = replacement.format_scheme;
+        theme.format_scheme_present = true;
+    }
+}
+
+/// Theme overrides are implicit, internal relationships (§14.2.8). Resolve by
+/// relationship type, never by a conventional file name or target directory.
+pub(crate) fn load_theme_override(part: &str, rels_xml: &str, zip: &mut PptxZip) -> Option<String> {
+    let relationships = ooxml_common::rels::parse_rels(rels_xml);
+    let target = relationships.values().find(|rel| {
+        rel.mode == ooxml_common::rels::TargetMode::Internal
+            && rel
+                .relationship_type
+                .as_deref()
+                .is_some_and(|kind| kind.ends_with("/themeOverride"))
+    })?;
+    read_zip_str(zip, &target.resolve_part(part)?).ok()
+}
+
+impl PptxTheme {
+    pub(crate) fn from_source(source: &(impl PptxThemeSource + ?Sized)) -> Self {
+        Self {
+            values: source.colors().clone(),
+            format_scheme: source.format_scheme().cloned().unwrap_or_default(),
+            format_scheme_present: source.format_scheme().is_some(),
+            chart_images: source.chart_images().cloned().unwrap_or_default(),
+        }
+    }
+}
+
 impl Deref for PptxTheme {
     type Target = HashMap<String, String>;
 

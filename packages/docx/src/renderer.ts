@@ -40,6 +40,7 @@ export async function prepareMathRuns(
 }
 
 export interface RenderDocumentOptions {
+  onDiagnostic?: (diagnostic: import('./layout/types.js').LayoutDiagnostic) => void;
   width?: number;
   dpr?: number;
   defaultTextColor?: string;
@@ -126,6 +127,7 @@ function normalizeRenderOptions(
   return {
     selection,
     paintOptions: {
+      onDiagnostic: options.onDiagnostic,
       width: options.width,
       dpr: options.dpr,
       defaultTextColor: options.defaultTextColor,
