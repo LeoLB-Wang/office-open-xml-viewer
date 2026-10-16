@@ -28,6 +28,7 @@
     "./wasm": "./src/wasm/docx_parser.js",
     "./wasm-binary": "./src/wasm/docx_parser_bg.wasm",
     "./internal/session": "./src/internal/session.ts",
+    "./internal/parser-errors": "./src/internal/parser-errors.ts",
     "./internal/model-source-session": "./src/internal/model-source-session.ts"
   },
   "files": [

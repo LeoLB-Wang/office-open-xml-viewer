@@ -6,7 +6,6 @@ use crate::{
 };
 use wasm_bindgen::prelude::*;
 
-const MAX_DIRECT_DOC_SOURCE_BYTES: usize = 256 * 1024 * 1024;
 /// Implementation heap-retention policy, not an MS-DOC format limit and not a
 /// serialized-JSON size promise.
 const MAX_DIRECT_DOC_MODEL_BYTES: usize = 256 * 1024 * 1024;
@@ -21,18 +20,14 @@ pub struct LegacyDocDocument {
 impl LegacyDocDocument {
     #[wasm_bindgen(constructor)]
     pub fn new(
-        data: Vec<u8>,
+        data: js_sys::Uint8Array,
         max_model_bytes: Option<u32>,
         reading_relocation: Option<bool>,
         word_breaking_reading: Option<bool>,
         stored_picture_bullets_for_reading: Option<bool>,
     ) -> Result<Self, JsValue> {
         console_error_panic_hook::set_once();
-        if data.len() > MAX_DIRECT_DOC_SOURCE_BYTES {
-            return Err(error(
-                "LEGACY_RESOURCE_LIMIT:DOC direct source byte budget exceeded",
-            ));
-        }
+        let data = crate::source_bytes::copy(data)?;
         let maximum = max_model_bytes
             .map(|n| n as usize)
             .unwrap_or(MAX_DIRECT_DOC_MODEL_BYTES);

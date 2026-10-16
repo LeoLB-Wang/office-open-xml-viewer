@@ -26,8 +26,6 @@ const RESOURCE_LIMIT_PREFIX = 'OOXML_RESOURCE_LIMIT:';
 /** Rust `ooxml_common::opc::NOT_OOXML_PREFIX`: the input is not a readable ZIP,
  * not an OPC package, or lacks the format's main part (ECMA-376 Part 2). */
 const NOT_OOXML_PREFIX = 'OOXML_NOT_OOXML:';
-/** DOCX Word-compatibility rejection emitted by its numbering parser. */
-const DOCX_ILVL_PREFIX = 'OOXML_DOCX_ILVL:';
 const MAX_IDENTIFIER_LENGTH = 128;
 const MAX_OPERATION_LENGTH = 256;
 const MAX_PART_LENGTH = 4_096;
@@ -279,22 +277,6 @@ function parseNotOoxmlError(error: unknown): OoxmlError | undefined {
   return new OoxmlError('not-ooxml', `This file is not an Office Open XML document: ${detail}`);
 }
 
-function parseDocxIlvlError(error: unknown): OoxmlError | undefined {
-  const text = error instanceof Error ? error.message : String(error);
-  if (!text.startsWith(DOCX_ILVL_PREFIX)) return undefined;
-  const reason = text.slice(DOCX_ILVL_PREFIX.length);
-  if (reason === 'repair-required:level-definition') {
-    return new OoxmlError(
-      'invalid-numbering',
-      'The DOCX defines a numbering level outside Word’s supported 0–8 range and requires repair.',
-    );
-  }
-  if (reason === 'cannot-open:whitespace' || reason === 'cannot-open:non-decimal') {
-    return new OoxmlError('invalid-numbering', `Word cannot open this DOCX numbering level (${reason.slice(12)}).`);
-  }
-  return undefined;
-}
-
 /** v2 model-source protocol signal. Deliberately canonicalize the message and
  * copy only validated fields: source modules may carry untrusted diagnostics. */
 function unsupportedContentDetails(value: unknown): OoxmlUnsupportedContentDetails | undefined {
@@ -328,7 +310,7 @@ export function parseTypedParserError(
   if (error === 'OOXML_SOURCE_UNSUPPORTED_ENCRYPTION' || error instanceof Error && error.message === 'OOXML_SOURCE_UNSUPPORTED_ENCRYPTION') {
     return new OoxmlError('unsupported-encryption', 'The configured source cannot decrypt this input.');
   }
-  return parseSourceRejection(error) ?? parseResourceLimitError(error) ?? parseNotOoxmlError(error) ?? parseDocxIlvlError(error);
+  return parseSourceRejection(error) ?? parseResourceLimitError(error) ?? parseNotOoxmlError(error);
 }
 
 function serializeWorkerErrorUnchecked(error: unknown): WorkerErrorPayload {

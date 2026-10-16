@@ -1483,6 +1483,13 @@ function emitResolvedTextSegment(
     resolvedSpan?.script ??
     authoritativeSpan?.script ??
     (cs ? 'complexScript' : EAST_ASIAN_RE.test(text) ? 'eastAsia' : 'ascii');
+  // WORD_LATIN_INTERWORD_XAVG_FLOOR is independent of glyph kerning
+  // (§17.3.2.19) and enableOpenTypeFeatures. Windows Word 16.0.20430
+  // mode-14 controls vary both switches, MS PMincho/Times New Roman,
+  // linesAndChars/lines/no grid and 100/105/110pt widths (72 cases).
+  // Retaining the existing half-xAvg space floor recovers the 105pt fits;
+  // the four Times New Roman linesAndChars 100pt fits remain unexplained
+  // and do not justify a broader percentage allowance or a lower floor.
   const latinSpaceCompressionEligible =
     environment.characterSpacingControl === 'compressPunctuation' &&
     // MS-OE376 §2.1.472 requires full advance for fit with this
@@ -1499,16 +1506,12 @@ function emitResolvedTextSegment(
     effectiveVertAlign == null &&
     (effectiveCharacterSpacing == null || effectiveCharacterSpacing === 0) &&
     (effectiveCharacterScale == null || effectiveCharacterScale === 1) &&
-    // WORD_LATIN_INTERWORD_XAVG_FLOOR retains its existing OpenType gate;
-    // threshold authority must not widen this separate fit policy's scope.
-    // Evidence gap: disabling implicit/zero kerning exposes justified fitting
-    // losses in mode-15 zero/absent-threshold controls, and mode-14 space fitting
-    // remains unresolved. Preserve this fit gate pending the separate justified
-    // compression correction; do not infer an allowance from pair advances or
-    // apply a font-specific scale. Positive-threshold fit contradictions likewise
-    // do not establish a different shaping-table or kerning-switch rule.
-    environment.enableOpenTypeFeatures !== true &&
-    effectiveKerningThreshold == null;
+    // The switch independence above is measured for compatibilityMode 14
+    // only. Other modes keep the earlier OpenType/kerning exclusion until
+    // Windows controls cover them (a mode-15 homogeneous control kept
+    // natural spaces; word-space-fit-controls.json).
+    (environment.compatibilityMode === 14 ||
+      (environment.enableOpenTypeFeatures !== true && effectiveKerningThreshold == null));
   const latinSpaceAverageWidthRatio = latinSpaceCompressionEligible
     ? selectedAverageWidth(resolvedSpan?.font, text)
     : undefined;

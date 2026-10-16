@@ -3,15 +3,12 @@
 //! This API projects the supported passive BIFF8 subset directly into the
 //! existing XLSX renderer wire models. It does not create an OOXML package or
 //! invoke the XLSX parser. The caller retains its original JavaScript bytes;
-//! this constructor bounds and releases its temporary CFB copy after the owned
-//! direct session has retained the admitted neutral data.
+//! this constructor fallibly copies and releases its temporary CFB bytes once
+//! the direct session has retained the admitted neutral data.
 
 use crate::cfb::CompoundFile;
 use crate::xls::{direct::DirectSession, direct_wire::DirectWire};
 use wasm_bindgen::prelude::*;
-
-/// Implementation resource policy, not an MS-XLS format limit.
-const MAX_DIRECT_XLS_SOURCE_BYTES: usize = 256 * 1024 * 1024;
 
 #[wasm_bindgen]
 pub struct LegacyXlsWorkbook {
@@ -23,18 +20,7 @@ impl LegacyXlsWorkbook {
     #[wasm_bindgen(constructor)]
     pub fn new(data: js_sys::Uint8Array) -> Result<LegacyXlsWorkbook, JsValue> {
         console_error_panic_hook::set_once();
-        let source_len = data.length() as usize;
-        if source_len > MAX_DIRECT_XLS_SOURCE_BYTES {
-            return Err(js_error(
-                "LEGACY_RESOURCE_LIMIT:XLS direct source byte budget exceeded",
-            ));
-        }
-        let mut source = Vec::new();
-        source
-            .try_reserve_exact(source_len)
-            .map_err(|_| js_error("LEGACY_RESOURCE_LIMIT:XLS direct source allocation failed"))?;
-        source.resize(source_len, 0);
-        data.copy_to(&mut source);
+        let source = crate::source_bytes::copy(data)?;
         let cfb = CompoundFile::open(&source)
             .map_err(|error| js_error(&crate::rejection::unsupported(error)))?;
         let session = DirectSession::new(&cfb).map_err(string_error)?;

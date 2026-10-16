@@ -7,6 +7,14 @@ the corresponding minor release.
 
 ## Unreleased
 
+- **Tiled chart picture fills:** a tiled picture fill whose tile offset is so
+  large that the renderer stopped making progress no longer hangs. Such
+  offsets are reduced to their tile phase and painted. When floating-point
+  rounding would misplace the tiles by more than a sixteenth of a pixel, the
+  render fails with the typed `OoxmlDecodedImageLimitError` (metric
+  `image-effect-work`). Pictures that differ only in their luminance
+  corrections are no longer served from one cache entry. No migration is
+  required.
 - **LZW-compressed TIFF images:** the optional TIFF codec now decodes
   LZW-compressed strips, including the horizontal differencing predictor used
   with 8-bit grayscale, RGB, RGBA and CMYK images. Such pictures previously

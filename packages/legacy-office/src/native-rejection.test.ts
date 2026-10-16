@@ -6,7 +6,7 @@ import { nativeRejection } from './native-rejection.js';
 it('maps native constructor and lazy failures, never initialization/network errors', async () => {
   const format = 'xls';
   const create = (construct: () => { free(): void; read(): void }, initialize = async () => {}) => createDirectSourceRuntime({
-    label: 'test', format, maximumSourceBytes: 100, loadGlue: async () => ({ default: initialize }),
+    label: 'test', format, loadGlue: async () => ({ default: initialize }),
     resolveWasm: async () => new Uint8Array(), construct, closeNative: () => {},
   });
   const check = (error: unknown) => expect(parseTypedParserError(error)).toMatchObject({ code: 'unsupported-content',

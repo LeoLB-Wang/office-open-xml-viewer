@@ -3370,7 +3370,7 @@ pub struct ShapeText {
 
 /// ECMA-376 §20.1.8.55 `<a:srcRect>` source-image crop, shared across the docx,
 /// pptx and xlsx parsers (see `ooxml_common::blip`).
-pub use ooxml_common::blip::{Duotone, SrcRect};
+pub use ooxml_common::blip::{BlipEffect, Duotone, SrcRect};
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -3426,6 +3426,9 @@ pub struct ImageRun {
     /// matching Word's picture recolour.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duotone: Option<Duotone>,
+    /// Ordered CT_Blip pixel effects, including §20.1.8.42 picture corrections.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blip_effects: Vec<BlipEffect>,
     /// ECMA-376 §20.1.8.6 `<a:blip><a:alphaModFix@amt>` opacity as a fraction
     /// (0.0–1.0). `None` = fully opaque (the common case). When set, the renderer
     /// multiplies the picture's `globalAlpha` by this fraction, exactly as the

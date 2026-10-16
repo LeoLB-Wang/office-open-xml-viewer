@@ -1,6 +1,6 @@
+import { normalizeXlsxWorksheetPolicy } from './internal/worksheet-policy.js';
 import { describe, expect, it } from 'vitest';
 import { OoxmlResourceLimitError } from '@silurus/ooxml-core';
-import { normalizeXlsxWorksheetPolicy } from '@silurus/ooxml-core/worker';
 import { utf8Bytes } from '@silurus/ooxml-core/internal/resource-measurement';
 import type { Row, Worksheet } from './types.js';
 import {

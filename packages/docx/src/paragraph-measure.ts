@@ -10,8 +10,6 @@ import {
   layoutLines,
   lineBelowBaselinePx,
   lineBoxHeight,
-  paragraphMarkBelowBaselinePt,
-  paragraphMarkLineHeight,
   paragraphMarkLineMetrics,
   type DocGridCtx,
   type LineBoundary,
@@ -75,6 +73,8 @@ export interface MeasuredLine {
 export interface MeasuredParagraph {
   readonly lines: readonly MeasuredLine[];
   readonly markOnly: boolean;
+  /** Grid-only leading below the empty mark's own font/spacing box. */
+  readonly markGridAfterLeadingPt?: number;
   /** Selected empty-mark wrap gap, retained for measurement-free shading. */
   readonly markWrapBounds?: { readonly xPt: number; readonly yPt: number; readonly widthPt: number; readonly heightPt: number };
   readonly requestedSpaceBeforePt: number;
@@ -186,7 +186,7 @@ export function measureParagraph(
 
   const measureMarkOnly = (): MeasuredParagraph => {
     let markTopPt = cursorPt;
-    const markAdvancePt = paragraphMarkLineHeight(
+    const markMetrics = paragraphMarkLineMetrics(
       paragraph,
       1,
       grid,
@@ -200,6 +200,7 @@ export function measureParagraph(
       environment.paragraphMarkShapeInput,
       environment.useFeLayout === true,
     );
+    const markAdvancePt = markMetrics.advancePx;
     let markWrapBounds: MeasuredParagraph['markWrapBounds'];
     if (placement.wrap) {
       const window = placement.wrap.lineWindow({
@@ -232,19 +233,10 @@ export function measureParagraph(
       uniformRubyAdvancePt: 0,
       contentStartYPt: markTopPt,
       contentEndYPt: markTopPt + markAdvancePt,
-      lastLineBelowBaselinePt: paragraphMarkBelowBaselinePt(
-        paragraph,
-        grid,
-        context.hasRuby,
-        markUsesEastAsianGrid,
-        measurer.context,
-        fontFamilyClasses,
-        context.lineSpacing,
-        environment.resolvedLocalFonts,
-        environment.layoutServices?.text,
-        environment.paragraphMarkShapeInput,
-        environment.useFeLayout === true,
+      lastLineBelowBaselinePt: lineBelowBaselinePx(
+        markAdvancePt, markMetrics.ascentPx, markMetrics.descentPx,
       ),
+      markGridAfterLeadingPt: markMetrics.gridAfterLeadingPx,
       placement: recordedPlacement,
     };
   };

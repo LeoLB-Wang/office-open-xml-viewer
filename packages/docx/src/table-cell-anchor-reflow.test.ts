@@ -1007,8 +1007,9 @@ describe('body parser-owned anchor collision carry', () => {
   });
 });
 
-// Issue #1805: convergence is required independently of the still-unsettled
-// Word policy for exempting an anchor line from its own wrap padding.
+// Issue #1805 / WORD_LINE_ANCHOR_HOST_LINE_WRAPS: retain the pre-wrap reference
+// while applying the object's exclusion to its host, including padding-only
+// overlap. Office evidence and its scope live in layout/anchor-compatibility.ts.
 describe('line-relative anchor reference acquisition', () => {
   it.each([
     { name: 'unpadded overlap', verticalOffsetPt: 5, wrapTopPt: 0 },

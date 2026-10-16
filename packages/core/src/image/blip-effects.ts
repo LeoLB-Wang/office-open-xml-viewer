@@ -89,7 +89,8 @@ export function blipPixelEffectsKey(value: BlipPixelEffects): string {
       case 'colorChange':
         return `c${effect.from}.${effect.fromAlpha}>${effect.to}.${effect.toAlpha}${effect.useAlpha ? 'a' : ''}`;
       case 'luminance':
-        return `l${effect.bright}.${effect.contrast}`;
+        // A dot is part of a decimal number; use a nonnumeric separator.
+        return `l${effect.bright}:${effect.contrast}`;
       case 'duotone':
         return value.duotone ? `d${value.duotone.clr1}.${value.duotone.clr2}` : 'd';
     }

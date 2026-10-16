@@ -29,6 +29,7 @@ export async function resolveNodeSessionInput<TArchive>(
     signal?: AbortSignal;
   }>,
   validateArchive: (archive: unknown) => TArchive,
+  normalizeError: (error: unknown) => unknown = error => parseTypedParserError(error) ?? error,
 ): Promise<NodeSessionInput<TArchive>> {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   const selected = options.modelSources === undefined
@@ -56,15 +57,15 @@ export async function resolveNodeSessionInput<TArchive>(
       kind: 'model-source',
       opened: {
         ...opened,
-        archive: normalizeSourceArchive(opened.archive),
+        archive: normalizeSourceArchive(opened.archive, normalizeError),
         close() {
-          try { opened.close(); } catch (error) { throw parseTypedParserError(error) ?? error; }
+          try { opened.close(); } catch (error) { throw normalizeError(error); }
         },
       },
       sourceByteLength: bytes.byteLength,
     };
   } catch (error) {
-    throw parseTypedParserError(error) ?? error;
+    throw normalizeError(error);
   } finally {
     load.release();
   }
@@ -72,8 +73,10 @@ export async function resolveNodeSessionInput<TArchive>(
 
 /** Browser workers normalize declared failures when serializing their responses.
  * Node has no wire boundary, so guard lazy source calls here, once for every
- * format. Native receivers and immutable archive methods remain supported. */
-function normalizeSourceArchive<T>(raw: T): T {
+ * format. A format may supply its parser-private decoder without teaching this
+ * transport those reasons. Native receivers and immutable archive methods
+ * remain supported. */
+function normalizeSourceArchive<T>(raw: T, normalizeError: (error: unknown) => unknown): T {
   const target = raw as object;
   return new Proxy(Object.create(target) as object, {
     get(_facade, key) {
@@ -82,9 +85,9 @@ function normalizeSourceArchive<T>(raw: T): T {
         if (typeof value !== 'function') return value;
         return (...args: unknown[]) => {
           try { return Reflect.apply(value, target, args); }
-          catch (error) { throw parseTypedParserError(error) ?? error; }
+          catch (error) { throw normalizeError(error); }
         };
-      } catch (error) { throw parseTypedParserError(error) ?? error; }
+      } catch (error) { throw normalizeError(error); }
     },
   }) as T;
 }

@@ -12,9 +12,8 @@ import { readNativeDocReadingPolicies, type NativeDocReadingPolicies } from './s
  * Clone-safe source descriptors pass independent policies together. */
 type LegacyDocReadingRequest = NativeDocReadingPolicies | NativeWordBreakingPolicy | 'relocateForReading';
 
-import { MAX_LEGACY_SOURCE_BYTES as MAX_LEGACY_DOC_SOURCE_BYTES } from './legacy-source-limits.js';
-
-export { MAX_LEGACY_DOC_SOURCE_BYTES };
+/** Retained DOC model policy, independent of source file size. */
+export const MAX_LEGACY_DOC_MODEL_BYTES = 256 * 1024 * 1024;
 
 export interface LegacyDocNativeDocument {
   free(): void;
@@ -62,14 +61,13 @@ export function createLegacyDocSourceEngine(
   const picturePolicy = readNativePictureBulletPolicy(pictureBulletPolicy);
   if (modelBudget !== undefined && (
     !Number.isSafeInteger(modelBudget) || modelBudget <= 0
-    || modelBudget > MAX_LEGACY_DOC_SOURCE_BYTES
+    || modelBudget > MAX_LEGACY_DOC_MODEL_BYTES
   )) {
     throw new RangeError('legacy DOC model budget is invalid');
   }
   return createDirectSourceRuntime<LegacyDocGlue, LegacyDocNativeDocument, LegacyDocReadingRequest>({
     label: 'legacy DOC',
     format: 'doc',
-    maximumSourceBytes: MAX_LEGACY_DOC_SOURCE_BYTES,
     loadGlue,
     resolveWasm,
     construct: (glue, bytes, request) => {

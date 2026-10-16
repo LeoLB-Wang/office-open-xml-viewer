@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createLegacyDocSourceEngine,
   legacyDocViewDefaults,
-  MAX_LEGACY_DOC_SOURCE_BYTES,
+  MAX_LEGACY_DOC_MODEL_BYTES,
   type LegacyDocGlue,
   type LegacyDocNativeDocument,
 } from './direct-doc-engine.js';
@@ -74,17 +74,16 @@ describe('direct DOC source engine', () => {
     expect(documents.map(document => [document.close.mock.calls.length, document.released.mock.calls.length])).toEqual([[1, 1], [1, 1]]);
   });
 
-  it('rejects an invalid URL, the byte budget, and pre-abort before loading', async () => {
+  it('rejects an invalid URL and pre-abort before loading', async () => {
     const load = vi.fn();
     const engine = createLegacyDocSourceEngine(load, vi.fn());
     await expect(engine.open(new Uint8Array(), 'direct-doc.wasm')).rejects.toThrow(TypeError);
-    await expect(engine.open({ byteLength: MAX_LEGACY_DOC_SOURCE_BYTES + 1 } as Uint8Array, wasmUrl)).rejects.toThrow('byte budget');
     const abort = new AbortController(); abort.abort();
     await expect(engine.open(new Uint8Array(), wasmUrl, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(load).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1.5, Number.NaN, MAX_LEGACY_DOC_SOURCE_BYTES + 1])('rejects invalid model budget %s before loading glue', budget => {
+  it.each([0, 1.5, Number.NaN, MAX_LEGACY_DOC_MODEL_BYTES + 1])('rejects invalid model budget %s before loading glue', budget => {
     const load = vi.fn();
     expect(() => createLegacyDocSourceEngine(load, vi.fn(), budget)).toThrow(RangeError);
     expect(load).not.toHaveBeenCalled();

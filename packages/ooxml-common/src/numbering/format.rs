@@ -528,36 +528,6 @@ fn to_hebrew2(n: u32) -> String {
     )
 }
 
-/// Word 16.113's display of a counter reset by an ilvl byte in 16..255.
-/// Forty-three supported number formats were measured with level-8 `%9` and
-/// `ilvl=16`; multi-placeholder controls checked zero formatting on `%1`..`%8`.
-/// The ordinary format_counter(0) intentionally keeps its existing library
-/// semantics for unrelated start=0 documents.
-pub fn format_word_synthetic_zero(format: &str) -> String {
-    match format {
-        "lowerRoman" | "upperRoman" | "lowerLetter" | "upperLetter" | "arabicAlpha"
-        | "arabicAbjad" | "russianLower" | "russianUpper" | "thaiLetters" | "hindiVowels"
-        | "hindiConsonants" | "hebrew1" | "hebrew2" | "none" | "bullet" => String::new(),
-        "decimalZero" => "00".to_string(),
-        "numberInDash" => "- 0 -".to_string(),
-        "decimalFullWidth" => "０".to_string(),
-        "thaiNumbers" => "๐".to_string(),
-        "hindiNumbers" => "०".to_string(),
-        "ideographDigital"
-        | "japaneseDigitalTenThousand"
-        | "japaneseCounting"
-        | "chineseCountingThousand"
-        | "japaneseLegal" => "〇".to_string(),
-        "koreanDigital" | "koreanCounting" => "영".to_string(),
-        "koreanDigital2" => "零".to_string(),
-        "taiwaneseDigital" | "chineseCounting" | "taiwaneseCounting" => "○".to_string(),
-        "taiwaneseCountingThousand" | "chineseLegalSimplified" | "ideographLegalTraditional" => {
-            "零".to_string()
-        }
-        _ => format_counter(0, format),
-    }
-}
-
 #[cfg(test)]
 mod budget_tests {
     use super::*;

@@ -883,6 +883,11 @@ impl InheritedBodyPr {
                 attr_i64(&body_pr, "bIns"),
             ],
             wrap: attr(&body_pr, "wrap"),
+            // Preserve the raw model direction here and in parse_text_body below.
+            // DrawingML dml-main.xsd defines ST_TextVerticalType as xsd:token,
+            // but collapsing it would expand the existing orientation dispatch
+            // for shapes and tables. Only table horizontal clip admission has
+            // historically tolerated XML padding; keep that policy at its consumer.
             vert: attr(&body_pr, "vert"),
             num_col: attr(&body_pr, "numCol")
                 .and_then(|v| v.parse::<u32>().ok())

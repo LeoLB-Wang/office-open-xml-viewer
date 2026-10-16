@@ -1,7 +1,11 @@
 use super::super::Record;
 use super::checksum;
 use super::project::{project, Palette};
-use super::reader::{read, Cached};
+use super::reader::Cached;
+
+fn read(records: &[Record<'_>]) -> Result<super::reader::RawChart, String> {
+    super::reader::read(records, &std::cell::Cell::new(usize::MAX))
+}
 
 fn record(kind: u16, data: Vec<u8>) -> (u16, Vec<u8>) {
     (kind, data)
@@ -717,4 +721,93 @@ fn chart_cache_index_ceilings_keep_resource_classification() {
             .unwrap()
             .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
+}
+
+#[test]
+fn first_over_limit_reference_without_cache_rejects_the_chart() {
+    let mut owned = bar_chart(false, None);
+    for (kind, data) in &mut owned {
+        if *kind == 0x1051 && data.first() == Some(&1) {
+            *data = brai(
+                1,
+                Some(area3d(0, (0, super::MAX_REFERENCED_CELLS as u16), 0)),
+            );
+        }
+    }
+    let sheets = vec![("Sheet".into(), super::super::SheetData::default())];
+    let budget = std::cell::Cell::new(usize::MAX);
+    let cells = super::Cells {
+        sheets_by_xti: vec![Some(0)],
+        sheets: &sheets,
+        shared: &[],
+        budget: &budget,
+        budget_exceeded: std::cell::Cell::new(false),
+    };
+    // The last admissible reference succeeds; the next one must not become
+    // unresolved content (empty values or generated category labels).
+    assert_eq!(
+        cells
+            .resolve(&area3d(0, (0, super::MAX_REFERENCED_CELLS as u16 - 1), 0))
+            .unwrap()
+            .unwrap()
+            .len(),
+        super::MAX_REFERENCED_CELLS
+    );
+    let error = super::parse(
+        &as_records(&owned),
+        &palette(),
+        &|rgce| cells.resolve(rgce),
+        &budget,
+    )
+    .unwrap_err();
+    assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
+    assert!(error.contains("XLS chart reference retention budget exceeded"));
+    assert!(cells.resolve(&area3d(0, (0, 0), 0)).is_err());
+}
+
+#[test]
+fn chart_fonts_beyond_512_are_retained_in_authored_order() {
+    let mut owned = bar_chart(true, None);
+    let font = |size: u16| {
+        let mut data = vec![0; 16];
+        data[..2].copy_from_slice(&size.to_le_bytes());
+        data[6..8].copy_from_slice(&400u16.to_le_bytes());
+        data[14] = 1;
+        data.push(b'F');
+        record(0x0031, data)
+    };
+    owned.splice(
+        1..1,
+        (0..513).map(|i| font(if i == 512 { 360 } else { 200 })),
+    );
+    // MS-XLS FontX addresses the 513th local font for the chart title.
+    owned.splice(
+        516..516,
+        [
+            record(0x1025, vec![]),
+            record(0x1033, vec![]),
+            record(0x1026, u16s(&[513])),
+            record(0x1027, u16s(&[1])),
+            record(0x1034, vec![]),
+        ],
+    );
+    let styles = super::super::styles::Styles::parse(&[]).unwrap();
+    let decode = |bytes: &[u8]| styles.chart_font(bytes);
+    let mut colors = palette();
+    colors.decode_font = &decode;
+    let model = project(&read(&as_records(&owned)).unwrap(), &colors, &|_| None).unwrap();
+    assert_eq!(model.title_font_size_hpt, Some(1800)); // 360 twips = 18 pt
+    assert_eq!(model.title_font_face.as_deref(), Some("F"));
+}
+
+#[test]
+fn font_retention_exhaustion_rejects_instead_of_dropping_the_font() {
+    let mut owned = bar_chart(true, None);
+    owned.splice(1..1, (0..513).map(|_| record(0x0031, vec![0; 20])));
+    let budget = std::cell::Cell::new(512 * (20 + std::mem::size_of::<Vec<u8>>()));
+    let error = super::reader::read(&as_records(&owned), &budget).unwrap_err();
+    assert_eq!(
+        error,
+        "LEGACY_RESOURCE_LIMIT:XLS chart font retention budget exceeded"
+    );
 }

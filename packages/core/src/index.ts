@@ -427,6 +427,7 @@ export {
   applyBlipPixelEffects,
   assertBlipPixelEffectsBudget,
   blipLuminance,
+  blipPixelEffectsKey,
   type BlipEffect,
   type BlipPixelEffects,
 } from './image/blip-effects';

@@ -62,6 +62,7 @@ import {
 import { effectiveLegendFrameFill } from './legend-frame.js';
 import { applyPlotVisibleOnly } from './source-visibility.js';
 import { withActiveChartImageFillPainter } from './image-fill-context.js';
+import { chartImageTilePhase } from './image-fill-geometry.js';
 import {
   visitChartExHierarchyBodySites,
   visitChartExHierarchyLabelSites,
@@ -248,7 +249,10 @@ export function chartImageTileOrigin(
     metrics.tileW,
     metrics.tileH,
   );
-  return { x: anchor.x + metrics.offsetX, y: anchor.y + metrics.offsetY };
+  return {
+    x: chartImageTilePhase(anchor.x + metrics.offsetX, metrics.tileW, width, metrics.flipX),
+    y: chartImageTilePhase(anchor.y + metrics.offsetY, metrics.tileH, height, metrics.flipY),
+  };
 }
 
 function imageTileGeometry(
