@@ -57,13 +57,18 @@ describe('documented DrawingML bevel model', () => {
       expect(materialClass(name)).toBe(name);
     }
   });
-  it('uses the documented circle coordinates (height x, inward distance y)', () => {
+  it('reads documented points as (inward distance, height), as Office renders them', () => {
     const circle = bevelHeightProfile('circle', 10);
-    // Cubic midpoint: x=.29139875, y=.70860125, rather than the old quarter-circle stand-in.
-    expect(circle(7.0860125)).toBeCloseTo(0.29139875, 3);
+    // Cubic midpoint (.29139875, .70860125): a convex quarter round that is
+    // already at 71% height 29% of the way in, not a cove that is still at 29%.
+    expect(circle(2.9139875)).toBeCloseTo(0.70860125, 3);
     expect(bevelHeightProfile('angle', 10)(5)).toBeCloseTo(0.5, 5);
-    // cross ends at height .6, which Office stretches to full height.
-    expect(bevelHeightProfile('cross', 10)(5)).toBeCloseTo(5 / 6, 3);
+    // cross: flat step at height .1 from inward .1 to .4; its face starts at
+    // inward .6 (the inward axis is not stretched).
+    expect(bevelHeightProfile('cross', 10)(2.5)).toBeCloseTo(0.1, 3);
+    expect(bevelHeightProfile('cross', 10)(7)).toBe(1);
+    // softRound ends at height 1/3: the remainder of the band is that face.
+    expect(bevelHeightProfile('softRound', 10)(10)).toBeCloseTo(1 / 3, 4);
   });
   it('keeps all documented profile envelopes finite and selects visible overhangs', () => {
     for (const name of [
@@ -87,10 +92,11 @@ describe('documented DrawingML bevel model', () => {
         expect(profile(i / 100)).toBeLessThanOrEqual(1);
       }
     }
-    // Divot has multiple intersections at y=.5; the later raised surface hides
-    // the first low branch. relaxedInset's raised face starts at y=.64.
-    expect(bevelHeightProfile('divot', 1)(0.5)).toBeGreaterThan(0.9);
-    expect(bevelHeightProfile('relaxedInset', 1)(0.75)).toBe(1);
+    // Divot folds back over inward .54–.56; the raised branch hides the low
+    // one. relaxedInset peaks at inward .508 and settles to its .64 face.
+    expect(bevelHeightProfile('divot', 1)(0.55)).toBeGreaterThan(0.9);
+    expect(bevelHeightProfile('relaxedInset', 1)(0.508)).toBeCloseTo(1, 3);
+    expect(bevelHeightProfile('relaxedInset', 1)(1)).toBeCloseTo(0.64, 5);
   });
   it('explicit rotation replaces direction, including latitude and longitude', () => {
     const rot = { lat: 25, lon: 35, rev: 15 };

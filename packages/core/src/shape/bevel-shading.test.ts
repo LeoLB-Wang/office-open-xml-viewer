@@ -43,9 +43,11 @@ describe('bevelHeightProfile', () => {
     expect(bevelHeightProfile('circle',0)(0)).toBe(1);
   });
   it('retains the documented hardEdge line rather than a fitted rim shelf', () => {
-    // MS-OI29500 §2.1.1316: line from (.042353,.305322) to (.170124,.947558).
-    const expected=.042353+(.5-.305322)*(.170124-.042353)/(.947558-.305322);
-    expect(bevelHeightProfile('hardEdge',8)(4)).toBeCloseTo(expected,5);
+    // MS-OI29500 §2.1.1316: line from (.042353,.305322) to (.170124,.947558),
+    // each point (inward distance, height), normalized to the ~.9986 curve peak.
+    const t=.1;
+    const expected=(.305322+(t-.042353)*(.947558-.305322)/(.170124-.042353))/.998599;
+    expect(bevelHeightProfile('hardEdge',8)(8*t)).toBeCloseTo(expected,3);
   });
 });
 
@@ -289,11 +291,11 @@ describe('computeBevelNormals — scale-invariant azimuth (issue #410→#413→#
     const cy = H / 2;
     const rx = W / 2 - 1;
     const ry = H / 2 - 1;
-    // Sample WITHIN the active lip. `hardEdge` concentrates its turn-down in the
-    // outer rim shelf (HARD_EDGE_SHELF_FRACTION of the band) and goes flat inward,
-    // so the lit/shadow terminator and the steepest tilt live near the rim, not at
-    // the geometric midline. 0.25·band sits inside the shelf at every devScale.
-    const inset = band * 0.25;
+    // Sample WITHIN the active lip. `hardEdge` rises along its documented straight
+    // flank between inward 0.042 and 0.170 of the band and is nearly flat from
+    // 0.27 to 0.61, where the azimuth of a near-zero tilt is undefined. 0.1·band
+    // sits on that constant-slope flank at every devScale.
+    const inset = band * 0.1;
     const az: number[] = [];
     const lum: number[] = [];
     // 0.1° steps so a chord spanning several degrees registers as a run of equal
@@ -447,8 +449,8 @@ describe('bevel lip azimuth tracks the analytic silhouette normal', () => {
         let rimY = -1;
         for (let y = 0; y < H; y++) if (a[y * W + x] >= 128) { rimY = y; break; }
         if (rimY < 0) continue;
-        // a band pixel a quarter-band inside the rim (inside the lit shelf).
-        const y = rimY + Math.max(1, Math.round(band * 0.25));
+        // a band pixel on hardEdge's straight rim flank (inward 0.042–0.170).
+        const y = rimY + Math.max(1, Math.round(band * 0.1));
         const i = y * W + x;
         if (!bandMask[i]) continue;
         const nx = normals[i * 3], ny = normals[i * 3 + 1];
