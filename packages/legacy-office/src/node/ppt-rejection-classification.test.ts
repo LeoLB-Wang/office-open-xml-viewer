@@ -13,9 +13,9 @@ const theme = (xml = themeXml) => buildStoredZip({
   '_rels/manager.xml.rels': relationships('theme', 'theme.xml'), 'theme.xml': xml,
 });
 const blob = (xml = shapeXml) => buildStoredZip({ '_rels/.rels': relationships('shapeXml', 'shape.xml'), 'shape.xml': xml });
-const input = (alternative: Uint8Array, masterTheme = theme()) => buildPptFixture(
+const input = (alternative?: Uint8Array, masterTheme = theme()) => buildPptFixture(
   concat(slideAtom(100, 0), drawing(spContainer(shapeAtom(1, 1, 0x200), anchor(0, 0, 1000, 500),
-    record(0x13, 0xf122, concat(little16(0x83a9), little32(alternative.length), alternative))))), undefined,
+    ...(alternative ? [record(0x13, 0xf122, concat(little16(0x83a9), little32(alternative.length), alternative))] : [])))), undefined,
   concat(slideAtom(0, 0), record(0, 0x040e, masterTheme)),
 );
 
@@ -33,23 +33,19 @@ function encrypted(bytes: Uint8Array) {
 }
 
 it.each([
-  { name: 'shape complexity', xml: shapeXml.replace('</p:sp>', `${'<x/>'.repeat(200_000)}</p:sp>`),
-    resource: 'xml-dom', metric: 'complexity-units', limit: 200_000, observed: 200_001 },
-  { name: 'shape depth', xml: '<x>'.repeat(257) + '</x>'.repeat(257),
-    resource: 'xml-tree', metric: 'depth', limit: 256, observed: 257 },
-])('preserves the measured $name envelope through Node', async ({ xml, resource, metric, limit, observed }) => {
-  await expect(materialize(input(blob(xml)))).rejects.toMatchObject({
-    code: 'ooxml-resource-limit', details: { stage: 'parsing', violation: { resource, metric, limit, observed } },
-  });
+  { name: 'shape complexity', xml: shapeXml.replace('</p:sp>', `${'<x/>'.repeat(200_000)}</p:sp>`) },
+  { name: 'actual inflated part bytes', xml: 'x'.repeat(1024 * 1024 + 1) },
+])('keeps the binary shape when optional $name exhausts verification', async ({ xml }) => {
+  const baseline = await materialize(input());
+  const fallback = await materialize(input(blob(xml)));
+  expect(fallback.slides).toEqual(baseline.slides);
 });
 
-it('keeps supplied theme complexity from degrading to a parser fallback', async () => {
+it('keeps the binary shape when optional round-trip theme verification exhausts its budget', async () => {
   const xml = `<a:theme xmlns:a="${A}">${'<x/>'.repeat(200_000)}</a:theme>`;
-  await expect(materialize(input(blob(), theme(xml)))).rejects.toMatchObject({
-    code: 'ooxml-resource-limit', details: { stage: 'parsing', violation: {
-      resource: 'xml-dom', metric: 'complexity-units', limit: 200_000, observed: 200_001,
-    } },
-  });
+  const baseline = await materialize(input());
+  const fallback = await materialize(input(blob(), theme(xml)));
+  expect(fallback.slides).toEqual(baseline.slides);
 });
 
 it.each(['alternative', 'theme'])('keeps embedded %s encryption typed through Node', async kind => {

@@ -333,6 +333,20 @@ impl SpanStore {
         self.used.clear();
     }
 
+    /// Alternative verification may retain bullet images before a later quota
+    /// rejects the shape. Roll back only those new assets and their byte charge;
+    /// binary image state and earlier successful alternatives remain owned.
+    pub fn blob_checkpoint(&self) -> (usize, usize) {
+        (self.blob_images.len(), self.remaining)
+    }
+
+    pub fn rollback_blobs(&mut self, (count, remaining): (usize, usize)) {
+        while self.blob_images.len() > count {
+            self.blob_images.pop_last();
+        }
+        self.remaining = remaining;
+    }
+
     /// Retain an image from a verified metroBlob OPC relationship. Resource
     /// keys share the direct session's image namespace but cannot collide with
     /// 1-based OfficeArt BSE indices. The session budget bounds total bytes.

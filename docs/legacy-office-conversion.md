@@ -537,7 +537,13 @@ Modern Office can retain DrawingML in an OfficeArt `metroBlob`
 ([MS-ODRAW] §2.3.4.41). The source uses three outcomes: a package with no
 alternative or a verified disagreement uses the binary projection; a verified
 consistent alternative is adopted; an unreadable or unverifiable alternative
-rejects the load. A checksum-only package does not require a theme.
+rejects the load. Exhausting an optional alternative's verification budgets
+keeps that shape's binary projection and does not poison the document. Input
+work uses the standard OOXML package allowance (256 MiB of actual consumed
+input per alternative, including rereads); inflated output remains bounded to
+1 MiB per part and 4 MiB per alternative package. Round-trip theme verification
+also has its own input-work allowance. Failed attempts retain no model, text,
+or image charges. A checksum-only package does not require a theme.
 
 Adopted alternatives retain their formatting and resource references, while
 characters, identifiers and transforms come from the binary. Theme style

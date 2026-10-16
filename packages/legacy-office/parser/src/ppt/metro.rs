@@ -31,7 +31,8 @@
 //!   alternative, with the binary's transform, identifier and characters;
 //!   a binary freeform keeps its outline, and a placeholder inherits locally
 //!   omitted shape properties from the binary projection;
-//! - resource and encryption failures keep their own classifications;
+//! - alternative resource exhaustion keeps the binary projection;
+//! - encryption failures keep their own classification;
 //! - representational failures reject as unsupported: an ambiguous or
 //!   unreadable package or theme, a part that is not a shape or
 //!   connector, unverified relationship references, and a compared attribute that the
@@ -61,6 +62,17 @@ use pptx_model::{ShapeElement, TextRun};
 const MAX_PART_BYTES: u64 = 1024 * 1024;
 #[cfg(feature = "direct-ppt")]
 const MAX_PACKAGE_BYTES: u64 = 4 * 1024 * 1024;
+/// Optional verification gets the existing standard OPC package byte allowance
+/// for actual decoder input (including legacy projection rereads) and index
+/// work. The ordinary OOXML policy has no input/output ratio limit, so use its
+/// package ceiling rather than inventing one or reusing a binary record count.
+/// Calibration: all 34 local PPTs (357 slides) completed without verification
+/// fallback; maxima were 48,012 consumed input bytes and 48,049 total
+/// work units per alternative. These measurements validate headroom, not the
+/// policy's derivation. Preflight and legacy rereads are metered; modern parser
+/// replay is bounded by the same immutable preflighted package.
+/// This does not admit/reject by blob length or compressed-size declarations.
+const MAX_INPUT_WORK: usize = ooxml_common::resource::STANDARD_MAX_TOTAL_INFLATED_BYTES as usize;
 const MAX_THEME_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_THEME_ENTRIES: usize = 64;
 /// One master unit is 1/576 inch.
@@ -91,6 +103,9 @@ pub(in crate::ppt) enum Theme {
     /// Malformed or ambiguous: no alternative XML on this
     /// master's slides can be resolved.
     Unreadable,
+    /// Optional theme verification ran out of resources. Shapes using it keep
+    /// their binary projections; this is not a malformed-theme rejection.
+    BudgetLimited,
 }
 
 impl Theme {
@@ -129,6 +144,25 @@ impl Theme {
 pub(in crate::ppt) fn master_theme(
     records: &[Record<'_>],
     decoded_budget: &mut usize,
+) -> Result<Option<Theme>, String> {
+    // Round-trip themes serve optional alternative verification. Input work
+    // cannot consume the binary record ledger. Retained theme output is still
+    // shared across masters, but a failed attempt commits none of its charges.
+    let mut decoded = *decoded_budget;
+    let mut work = MAX_INPUT_WORK;
+    match read_master_theme(records, &mut decoded, &mut work) {
+        Ok(theme) => {
+            *decoded_budget = decoded;
+            Ok(theme)
+        }
+        Err(error) if resource_rejection(&error) => Ok(Some(Theme::BudgetLimited)),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_master_theme(
+    records: &[Record<'_>],
+    decoded_budget: &mut usize,
     work_budget: &mut usize,
 ) -> Result<Option<Theme>, String> {
     let mut themes = records.iter().filter(|r| r.kind == 0x040e);
@@ -159,8 +193,9 @@ pub(in crate::ppt) fn master_theme(
             format_scheme: std::cell::OnceCell::new(),
         })
     };
-    // Only representational failures can be deferred to the shape's theme
-    // agreement gate. Never erase a resource or encryption failure here.
+    // Keep the measured failure distinct for the owner: optional resource
+    // exhaustion becomes BudgetLimited, while encryption stays fatal. Ordinary
+    // unreadability still reaches the shape's existing theme agreement gate.
     match readable() {
         Ok(theme) => Ok(Some(theme)),
         Err(error) if error.starts_with("UNSUPPORTED:") => Ok(Some(Theme::Unreadable)),
@@ -952,14 +987,63 @@ fn same_binary_pattern(
     ))
 }
 
-/// Resolve the alternative shape XML of a binary shape: `Ok(Some)` adopts
-/// it; `Ok(None)` keeps the binary projection, because the package carries
-/// no alternative part or the alternative verifiably disagrees with the
-/// binary; an error means agreement cannot be established (oversized, over
-/// budget, unreadable, or not comparable), and the shape fails closed. The
-/// adopted shape is charged to `model_budget` at its serialized size.
+/// MS-ODRAW §2.3.4.41 permits ignoring this optional XML alternative. Library
+/// policy: a verification quota rejects only this alternative, keeping the
+/// already projected binary shape. Scratch inflation/text/model and input work
+/// belong to one attempt, never to the binary record/text session ledgers.
+/// Commit adopted-model charges only on success; rejection must leave enough
+/// session budget to retain the binary content. Encryption and representational
+/// failures retain their existing classifications.
 #[cfg(feature = "direct-ppt")]
 pub(in crate::ppt) fn adopt(
+    binary: &BinaryShape<'_>,
+    blob: &[u8],
+    theme: &Theme,
+    media: &mut super::media::SpanStore,
+    model_budget: &mut usize,
+) -> Result<Option<ShapeElement>, String> {
+    adopt_with_work(binary, blob, theme, media, model_budget, MAX_INPUT_WORK)
+}
+
+#[cfg(feature = "direct-ppt")]
+fn adopt_with_work(
+    binary: &BinaryShape<'_>,
+    blob: &[u8],
+    theme: &Theme,
+    media: &mut super::media::SpanStore,
+    model_budget: &mut usize,
+    mut work: usize,
+) -> Result<Option<ShapeElement>, String> {
+    if matches!(theme, Theme::BudgetLimited) {
+        return Ok(None);
+    }
+    let mut text = MAX_PACKAGE_BYTES as usize;
+    let mut model = *model_budget;
+    let checkpoint = media.blob_checkpoint();
+    let result = verify(binary, blob, theme, media, &mut work, &mut text, &mut model);
+    if !matches!(result, Ok(Some(_))) {
+        media.rollback_blobs(checkpoint);
+    }
+    match result {
+        Ok(Some(shape)) => {
+            *model_budget = model;
+            Ok(Some(shape))
+        }
+        Ok(None) => Ok(None),
+        Err(error) if resource_rejection(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn resource_rejection(error: &str) -> bool {
+    error.starts_with("LEGACY_RESOURCE_LIMIT:") || error.starts_with("OOXML_RESOURCE_LIMIT:")
+}
+
+/// Verify one alternative using attempt-local ledgers. The metered preflight
+/// covers actual input/output, including unselected entries; legacy projection
+/// rereads spend input work without double-charging inflated text.
+#[cfg(feature = "direct-ppt")]
+fn verify(
     binary: &BinaryShape<'_>,
     blob: &[u8],
     theme: &Theme,
@@ -1360,8 +1444,6 @@ pub(in crate::ppt) fn adopt(
     _blob: &[u8],
     _theme: &Theme,
     _media: &mut super::media::SpanStore,
-    _work_budget: &mut usize,
-    _text_budget: &mut usize,
     _model_budget: &mut usize,
 ) -> Result<Option<ShapeElement>, String> {
     Err(unverifiable("part"))
@@ -1374,7 +1456,7 @@ mod zip_index;
 /// Drain with a fixed buffer so a crossing fails before retaining an oversized
 /// part. The text ledger covers each entry once per adoption attempt. The
 /// input-work ledger charges decoder consumption, including zero-output blocks,
-/// and is shared by later legacy projection reads and repeated adoptions.
+/// and is shared by later legacy projection reads within this attempt.
 /// The modern parser replays this same immutable, fully measured package under
 /// its own output limits; preflight bounds that replay's zero-output work too.
 /// Validate size consistency only after inflation: forged declarations are
@@ -3046,7 +3128,7 @@ mod tests {
             element
         }
 
-        fn run_adopt(
+        fn run_verification(
             element: &ShapeElement,
             blob: &[u8],
             theme: &Theme,
@@ -3059,7 +3141,7 @@ mod tests {
             };
             let shape = binary(element, &leaf);
             let (mut work, mut text, mut model) = budgets;
-            let result = adopt(
+            let result = verify(
                 &shape,
                 blob,
                 theme,
@@ -3102,11 +3184,11 @@ mod tests {
         }
 
         #[test]
-        fn standalone_resource_envelope_survives_adoption() {
+        fn standalone_resource_envelope_reaches_verification_owner() {
             // 200,001 DOM units, below the embedded byte ceilings.
             let xml = SHAPE_XML.replace("</p:sp>", &format!("{}</p:sp>", "<x/>".repeat(200_000)));
             error(
-                run_adopt(&element("FF0000"), &blob(&xml), &theme(), AMPLE).0,
+                run_verification(&element("FF0000"), &blob(&xml), &theme(), AMPLE).0,
                 "OOXML_RESOURCE_LIMIT:",
             );
         }
@@ -3115,7 +3197,7 @@ mod tests {
         fn standalone_depth_and_context_complexity_remain_resource_failures() {
             let deep = format!("{}{}", "<x>".repeat(257), "</x>".repeat(257));
             error(
-                run_adopt(&element("FF0000"), &blob(&deep), &theme(), AMPLE).0,
+                run_verification(&element("FF0000"), &blob(&deep), &theme(), AMPLE).0,
                 "OOXML_RESOURCE_LIMIT:",
             );
             for color_map in [false, true] {
@@ -3135,7 +3217,7 @@ mod tests {
                     );
                 }
                 error(
-                    run_adopt(&element("FF0000"), &blob(SHAPE_XML), &context, AMPLE).0,
+                    run_verification(&element("FF0000"), &blob(SHAPE_XML), &context, AMPLE).0,
                     "OOXML_RESOURCE_LIMIT:",
                 );
             }
@@ -3154,7 +3236,7 @@ mod tests {
             let mut binary = binary(&binary_element, &leaf);
             binary.text = Some("A");
             error(
-                adopt(
+                verify(
                     &binary,
                     &blob(&xml),
                     &theme(),
@@ -3172,7 +3254,7 @@ mod tests {
             for name in ["_rels/.rels", "drs/shapexml.xml", "drs/downrev.xml"] {
                 let bytes = encrypted_entry(blob(SHAPE_XML), name);
                 error(
-                    run_adopt(&element("FF0000"), &bytes, &theme(), AMPLE).0,
+                    run_verification(&element("FF0000"), &bytes, &theme(), AMPLE).0,
                     "LEGACY_UNSUPPORTED_ENCRYPTION:",
                 );
             }
@@ -3227,7 +3309,7 @@ mod tests {
             };
             let read = |bytes: &[u8]| {
                 let mut budget = usize::MAX;
-                master_theme(
+                read_master_theme(
                     &[Record {
                         version: 0,
                         instance: 0,
@@ -3259,7 +3341,7 @@ mod tests {
         }
 
         #[test]
-        fn master_theme_input_work_rejection_is_not_an_unreadable_verdict() {
+        fn theme_decoder_reports_input_work_quota_to_optional_owner() {
             let package = crate::opc_part::test_empty_deflate("_rels/.rels", 1000, b"");
             let record = Record {
                 version: 0,
@@ -3269,7 +3351,7 @@ mod tests {
             };
             let mut work = 100;
             error(
-                master_theme(&[record], &mut 0, &mut work),
+                read_master_theme(&[record], &mut 0, &mut work),
                 "LEGACY_RESOURCE_LIMIT:",
             );
             assert_eq!(work, 0);
@@ -3279,7 +3361,7 @@ mod tests {
         fn ordinary_alternative_requires_readable_and_resolved_theme_styles() {
             let styled = SHAPE_XML.replace("</p:sp>", r#"<p:style><a:lnRef idx="999"><a:srgbClr val="FF0000"/></a:lnRef></p:style></p:sp>"#);
             assert!(
-                run_adopt(&element("FF0000"), &blob(&styled), &theme(), AMPLE)
+                run_verification(&element("FF0000"), &blob(&styled), &theme(), AMPLE)
                     .0
                     .is_err()
             );
@@ -3289,7 +3371,7 @@ mod tests {
                 format_scheme: std::cell::OnceCell::new(),
             };
             assert!(
-                run_adopt(&element("FF0000"), &blob(SHAPE_XML), &unreadable, AMPLE)
+                run_verification(&element("FF0000"), &blob(SHAPE_XML), &unreadable, AMPLE)
                     .0
                     .is_err()
             );
@@ -3325,7 +3407,7 @@ mod tests {
                 }
             }
             assert!(matches!(
-                master_theme(&[record(&blob)], &mut 100_000, &mut usize::MAX.clone()).unwrap(),
+                read_master_theme(&[record(&blob)], &mut 100_000, &mut usize::MAX.clone()).unwrap(),
                 Some(Theme::Readable { .. })
             ));
             // Central-directory uncompressed size, with real deflate data and
@@ -3341,7 +3423,7 @@ mod tests {
                 .unwrap();
             blob[offset + 24..offset + 28].copy_from_slice(&0u32.to_le_bytes());
             assert!(matches!(
-                master_theme(&[record(&blob)], &mut 100_000, &mut usize::MAX.clone()).unwrap(),
+                read_master_theme(&[record(&blob)], &mut 100_000, &mut usize::MAX.clone()).unwrap(),
                 Some(Theme::Unreadable)
             ));
         }
@@ -3365,25 +3447,185 @@ mod tests {
             };
             let mut budget = 4096;
             assert!(matches!(
-                master_theme(&[record], &mut budget, &mut usize::MAX.clone()).unwrap(),
+                read_master_theme(&[record], &mut budget, &mut usize::MAX.clone()).unwrap(),
                 Some(Theme::Readable { .. })
             ));
             let decoded_bytes = 4096 - budget;
             assert!(decoded_bytes > 0);
             let mut budget = decoded_bytes;
             assert!(matches!(
-                master_theme(&[record], &mut budget, &mut usize::MAX.clone()).unwrap(),
+                read_master_theme(&[record], &mut budget, &mut usize::MAX.clone()).unwrap(),
                 Some(Theme::Readable { .. })
             ));
             error(
-                master_theme(&[record], &mut budget, &mut usize::MAX.clone()),
+                read_master_theme(&[record], &mut budget, &mut usize::MAX.clone()),
                 "LEGACY_RESOURCE_LIMIT:",
             );
+            let mut remaining = 1;
+            let limited = master_theme(&[record], &mut remaining).unwrap().unwrap();
+            assert!(matches!(limited, Theme::BudgetLimited));
+            assert_eq!(remaining, 1);
+            let element = element("FF0000");
+            let leaf = pptx_model::Transform::default();
+            assert!(adopt(
+                &binary(&element, &leaf),
+                &blob,
+                &limited,
+                &mut super::media::SpanStore::new(Vec::new()),
+                &mut usize::MAX.clone()
+            )
+            .unwrap()
+            .is_none());
+        }
+
+        #[test]
+        fn alternative_quotas_fall_back_without_spending_session_model() {
+            let element = element("FF0000");
+            let leaf = pptx_model::Transform {
+                cx: element.width,
+                cy: element.height,
+                ..Default::default()
+            };
+            let binary = binary(&element, &leaf);
+            let theme = theme();
+            let mut media = super::media::SpanStore::new(Vec::new());
+            let valid = blob(SHAPE_XML);
+            // Input (including zero-output blocks), metadata/index, inflated
+            // output, modern DOM complexity, and model/substitution quotas all
+            // reject only the optional alternative. Later attempts stay usable.
+            let cases = [
+                (
+                    crate::opc_part::test_empty_deflate("unused", 1000, b""),
+                    100,
+                    usize::MAX,
+                ),
+                (empty_package(70_000), MAX_INPUT_WORK, usize::MAX),
+                (
+                    blob(&"x".repeat(MAX_PART_BYTES as usize + 1)),
+                    MAX_INPUT_WORK,
+                    usize::MAX,
+                ),
+                (
+                    blob(
+                        &SHAPE_XML
+                            .replace("</p:sp>", &format!("{}</p:sp>", "<x/>".repeat(200_000))),
+                    ),
+                    MAX_INPUT_WORK,
+                    usize::MAX,
+                ),
+                (valid.clone(), MAX_INPUT_WORK, 0),
+            ];
+            for (package, work, mut model) in cases {
+                let before = model;
+                assert!(
+                    adopt_with_work(&binary, &package, &theme, &mut media, &mut model, work)
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(model, before);
+                assert!(
+                    adopt(&binary, &valid, &theme, &mut media, &mut usize::MAX.clone())
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+
+        #[test]
+        fn model_fallback_releases_new_bullet_assets_and_keeps_prior_media() {
+            let mut element = element("FF0000");
+            element.text_body = body(&[&[run("A")]]);
+            element.text_body.as_mut().unwrap().paragraphs[0].bullet = pptx_model::Bullet::Char {
+                ch: "•".into(),
+                color: None,
+                size_pct: None,
+                size_pts: None,
+                font_family: None,
+            };
+            let leaf = pptx_model::Transform {
+                cx: element.width,
+                cy: element.height,
+                ..Default::default()
+            };
+            let mut binary = binary(&element, &leaf);
+            binary.text = Some("A");
+            let xml = SHAPE_XML.replace("</p:sp>", r#"<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:buBlip><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="image"/></a:buBlip></a:pPr><a:r><a:t>_</a:t></a:r></a:p></p:txBody></p:sp>"#);
+            let package = package(
+                &[
+                    ("drs/shapexml.xml", &xml),
+                    (
+                        "drs/_rels/shapexml.xml.rels",
+                        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="image" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.gif"/></Relationships>"#,
+                    ),
+                    ("drs/media/bullet.gif", "GIF89a"),
+                ],
+                &[("shapeXml", "drs/shapexml.xml")],
+            );
+            let theme = theme();
+            let make_media = || {
+                let mut media = super::media::SpanStore::new(Vec::new());
+                media.admit_blob_image("png", b"prior".to_vec()).unwrap();
+                media
+            };
+            let mut ample = usize::MAX;
+            assert!(
+                adopt(&binary, &package, &theme, &mut make_media(), &mut ample)
+                    .unwrap()
+                    .is_some()
+            );
+            // Enough for substitution and image admission, one byte short of
+            // retaining the final adopted shape. Partial image retention must
+            // be undone so later shapes can use the same resource allowance.
+            let mut model = usize::MAX - ample - 1;
+            let before = model;
+            let mut media = make_media();
+            for _ in 0..2 {
+                assert!(adopt(&binary, &package, &theme, &mut media, &mut model)
+                    .unwrap()
+                    .is_none());
+                assert_eq!(model, before);
+            }
+            assert_eq!(media.image(1, &[], None).unwrap().unwrap().1, b"prior");
+            assert_eq!(media.admit_blob_image("png", b"next".to_vec()).unwrap(), 2);
+        }
+
+        #[test]
+        fn repeated_alternatives_do_not_share_binary_record_or_text_work() {
+            let element = element("FF0000");
+            let leaf = pptx_model::Transform {
+                cx: element.width,
+                cy: element.height,
+                ..Default::default()
+            };
+            let binary = binary(&element, &leaf);
+            let theme = theme();
+            let mut media = super::media::SpanStore::new(Vec::new());
+            // One alternative alone exceeds the former 2M binary-record work
+            // allowance but fits the existing OPC package input-work policy.
+            let empty = empty_deflate_package(500_000);
+            let mut source = zip::ZipArchive::new(std::io::Cursor::new(&empty)).unwrap();
+            let valid = blob(SHAPE_XML);
+            let mut shapes = zip::ZipArchive::new(std::io::Cursor::new(&valid)).unwrap();
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            writer.raw_copy_file(source.by_index(0).unwrap()).unwrap();
+            for index in 0..shapes.len() {
+                writer
+                    .raw_copy_file(shapes.by_index(index).unwrap())
+                    .unwrap();
+            }
+            let package = writer.finish().unwrap().into_inner();
+            let mut model = usize::MAX;
+            for _ in 0..2 {
+                assert!(adopt(&binary, &package, &theme, &mut media, &mut model)
+                    .unwrap()
+                    .is_some());
+            }
         }
 
         #[test]
         fn a_consistent_alternative_is_adopted_and_charged() {
-            let (result, model) = run_adopt(&element("FF0000"), &blob(SHAPE_XML), &theme(), AMPLE);
+            let (result, model) =
+                run_verification(&element("FF0000"), &blob(SHAPE_XML), &theme(), AMPLE);
             let adopted = result.unwrap().expect("consistent alternative");
             assert_eq!(adopted.id.as_deref(), Some("3"));
             let charged = ooxml_common::json_measurement::measure_json(&adopted).unwrap();
@@ -3391,7 +3633,7 @@ mod tests {
             // A model budget below the adopted shape fails closed.
             let short = (usize::MAX, usize::MAX, charged.json_bytes as usize - 1);
             assert!(
-                run_adopt(&element("FF0000"), &blob(SHAPE_XML), &theme(), short)
+                run_verification(&element("FF0000"), &blob(SHAPE_XML), &theme(), short)
                     .0
                     .is_err()
             );
@@ -3404,11 +3646,11 @@ mod tests {
                 &[("downRev", "drs/downrev.xml")],
             );
             assert!(matches!(
-                run_adopt(&element("FF0000"), &downrev_only, &theme(), AMPLE).0,
+                run_verification(&element("FF0000"), &downrev_only, &theme(), AMPLE).0,
                 Ok(None)
             ));
             assert!(matches!(
-                run_adopt(&element("00FF00"), &blob(SHAPE_XML), &theme(), AMPLE).0,
+                run_verification(&element("00FF00"), &blob(SHAPE_XML), &theme(), AMPLE).0,
                 Ok(None)
             ));
         }
@@ -3421,10 +3663,11 @@ mod tests {
                     r#"<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1587500" cy="793750"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></p:spPr>"#,
                     "<p:spPr/>",
                 );
-            let adopted = run_adopt(&element("FF0000"), &blob(&placeholder), &theme(), AMPLE)
-                .0
-                .unwrap()
-                .expect("placeholder alternative");
+            let adopted =
+                run_verification(&element("FF0000"), &blob(&placeholder), &theme(), AMPLE)
+                    .0
+                    .unwrap()
+                    .expect("placeholder alternative");
             assert_eq!(adopted.geometry, "rect");
             assert!(matches!(adopted.fill, Some(Fill::Solid { color }) if color == "FF0000"));
             assert_eq!((adopted.width, adopted.height), (1587500, 793750));
@@ -3435,10 +3678,11 @@ mod tests {
             let placeholder = SHAPE_XML
                 .replace("<p:nvPr/>", r#"<p:nvPr><p:ph type="body"/></p:nvPr>"#)
                 .replace(r#"<a:off x="0" y="0"/>"#, r#"<a:off x="635000" y="0"/>"#);
-            let adopted = run_adopt(&element("FF0000"), &blob(&placeholder), &theme(), AMPLE)
-                .0
-                .unwrap()
-                .expect("binary anchor wins");
+            let adopted =
+                run_verification(&element("FF0000"), &blob(&placeholder), &theme(), AMPLE)
+                    .0
+                    .unwrap()
+                    .expect("binary anchor wins");
             assert_eq!(adopted.x, 0);
             assert!(matches!(adopted.fill, Some(Fill::Solid { color }) if color == "FF0000"));
         }
@@ -3453,7 +3697,7 @@ mod tests {
                 (geometry.as_str(), "placeholder geometry precedence"),
                 (fill.as_str(), "placeholder fill precedence"),
             ] {
-                let error = run_adopt(&element("FF0000"), &blob(xml), &theme(), AMPLE)
+                let error = run_verification(&element("FF0000"), &blob(xml), &theme(), AMPLE)
                     .0
                     .unwrap_err();
                 assert!(error.starts_with("UNSUPPORTED:") && error.contains(attribute));
@@ -3478,7 +3722,7 @@ mod tests {
             let mut binary = binary(&element, &leaf);
             binary.text = Some("HELLO");
             let (mut work, mut text, mut model) = AMPLE;
-            let adopted = adopt(
+            let adopted = verify(
                 &binary,
                 &blob(&xml),
                 &theme(),
@@ -3505,7 +3749,7 @@ mod tests {
                 pptx_model::PathCmd::LineTo { x: 1.0, y: 1.0 },
                 pptx_model::PathCmd::Close,
             ]]);
-            let adopted = run_adopt(&element, &blob(SHAPE_XML), &theme(), AMPLE)
+            let adopted = run_verification(&element, &blob(SHAPE_XML), &theme(), AMPLE)
                 .0
                 .unwrap()
                 .expect("alternative formatting with binary outline");
@@ -3577,7 +3821,7 @@ mod tests {
         }
 
         #[test]
-        fn zero_output_input_rejections_survive_adoption_and_session_reuse() {
+        fn zero_output_input_is_metered_across_verification_rereads() {
             fn with_empty_entry(blocks: usize) -> Vec<u8> {
                 let bytes = empty_deflate_package(blocks);
                 let mut empty = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
@@ -3602,10 +3846,10 @@ mod tests {
             let theme = theme();
             let mut media = super::media::SpanStore::new(Vec::new());
             let (mut text, mut model) = (usize::MAX, usize::MAX);
-            let large = with_empty_entry(500_000); // input exceeds the real session work policy
+            let large = with_empty_entry(500_000); // input exceeds this attempt's supplied work allowance
             let mut work = MAX_RECORDS;
             error(
-                adopt(
+                verify(
                     &binary, &large, &theme, &mut media, &mut work, &mut text, &mut model,
                 ),
                 "LEGACY_RESOURCE_LIMIT:",
@@ -3615,19 +3859,19 @@ mod tests {
             let small = with_empty_entry(10);
             let mut work = MAX_RECORDS;
             assert!(
-                adopt(&binary, &small, &theme, &mut media, &mut work, &mut text, &mut model)
+                verify(&binary, &small, &theme, &mut media, &mut work, &mut text, &mut model)
                     .unwrap()
                     .is_some()
             );
             let used = MAX_RECORDS - work;
             let mut work = 2 * used - 1;
             assert!(
-                adopt(&binary, &small, &theme, &mut media, &mut work, &mut text, &mut model)
+                verify(&binary, &small, &theme, &mut media, &mut work, &mut text, &mut model)
                     .unwrap()
                     .is_some()
             );
             error(
-                adopt(
+                verify(
                     &binary, &small, &theme, &mut media, &mut work, &mut text, &mut model,
                 ),
                 "LEGACY_RESOURCE_LIMIT:",
@@ -3643,7 +3887,7 @@ mod tests {
                 "LEGACY_RESOURCE_LIMIT:",
             );
             error(
-                run_adopt(&element("FF0000"), &package, &theme(), AMPLE).0,
+                run_verification(&element("FF0000"), &package, &theme(), AMPLE).0,
                 "LEGACY_RESOURCE_LIMIT:",
             );
         }
@@ -3843,14 +4087,16 @@ mod tests {
             // no inflation and must not consume the alternative's budget.
             let mut bytes = vec![0; 4 * 1024 * 1024];
             bytes.extend(blob(SHAPE_XML));
-            assert!(run_adopt(&element("FF0000"), &bytes, &theme(), AMPLE)
-                .0
-                .unwrap()
-                .is_some());
+            assert!(
+                run_verification(&element("FF0000"), &bytes, &theme(), AMPLE)
+                    .0
+                    .unwrap()
+                    .is_some()
+            );
         }
 
         #[test]
-        fn unverifiable_alternatives_fail_closed() {
+        fn verification_preserves_rejection_classifications() {
             let element = element("FF0000");
             let unsupported = |result: (Result<Option<ShapeElement>, String>, usize)| {
                 let error = result.0.expect_err("must fail closed");
@@ -3861,27 +4107,32 @@ mod tests {
                 assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
             };
             // Oversized actual output and exhausted budgets are resource policy.
-            resource_limited(run_adopt(
+            resource_limited(run_verification(
                 &element,
                 &blob(&"x".repeat(MAX_PART_BYTES as usize + 1)),
                 &theme(),
                 AMPLE,
             ));
-            resource_limited(run_adopt(
+            resource_limited(run_verification(
                 &element,
                 &blob(SHAPE_XML),
                 &theme(),
                 (0, usize::MAX, usize::MAX),
             ));
-            resource_limited(run_adopt(
+            resource_limited(run_verification(
                 &element,
                 &blob(SHAPE_XML),
                 &theme(),
                 (usize::MAX, 10, usize::MAX),
             ));
-            unsupported(run_adopt(&element, b"not a package", &theme(), AMPLE));
-            unsupported(run_adopt(&element, &blob("<p:sp"), &theme(), AMPLE));
-            unsupported(run_adopt(
+            unsupported(run_verification(
+                &element,
+                b"not a package",
+                &theme(),
+                AMPLE,
+            ));
+            unsupported(run_verification(&element, &blob("<p:sp"), &theme(), AMPLE));
+            unsupported(run_verification(
                 &element,
                 &blob(SHAPE_XML),
                 &Theme::Unreadable,
@@ -3895,7 +4146,7 @@ mod tests {
                     ("groupShapeXml", "drs/groupshapexml.xml"),
                 ],
             );
-            unsupported(run_adopt(&element, &group, &theme(), AMPLE));
+            unsupported(run_verification(&element, &group, &theme(), AMPLE));
             let two = package(
                 &[("drs/shapexml.xml", SHAPE_XML)],
                 &[
@@ -3903,7 +4154,7 @@ mod tests {
                     ("connectorXml", "drs/shapexml.xml"),
                 ],
             );
-            unsupported(run_adopt(&element, &two, &theme(), AMPLE));
+            unsupported(run_verification(&element, &two, &theme(), AMPLE));
             // A common attribute that cannot be compared.
             let gradient = SHAPE_XML.replace(
                 r#"<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>"#,
@@ -3915,7 +4166,12 @@ mod tests {
                 bg: "0000FF".into(),
                 preset: "pct5".into(),
             });
-            unsupported(run_adopt(&patterned, &blob(&gradient), &theme(), AMPLE));
+            unsupported(run_verification(
+                &patterned,
+                &blob(&gradient),
+                &theme(),
+                AMPLE,
+            ));
         }
 
         #[test]
@@ -3928,7 +4184,7 @@ mod tests {
                 ),
                 SHAPE_XML.replace("p:sp", "sp"),
             ] {
-                let error = run_adopt(&element, &blob(&root), &theme(), AMPLE)
+                let error = run_verification(&element, &blob(&root), &theme(), AMPLE)
                     .0
                     .expect_err("foreign root cannot be adopted");
                 assert!(error.starts_with("UNSUPPORTED:"), "{error}");
@@ -3948,7 +4204,7 @@ mod tests {
                     clr_map: None,
                     format_scheme: std::cell::OnceCell::new(),
                 };
-                let error = run_adopt(&element, &blob(&xml), &theme, AMPLE)
+                let error = run_verification(&element, &blob(&xml), &theme, AMPLE)
                     .0
                     .expect_err("theme image relationship cannot be verified");
                 assert!(
