@@ -1,8 +1,8 @@
 /**
  * Office-observed automatic single-line allocation from one static OpenType
- * face. Word for Mac synthetic controls isolated OS/2 code-page bits 17–20
- * and found 1.3× hhea for that class. Windows Word 16.0.20430 instead matches
- * 1.3× usWin: Yu Gothic/Mincho have identical vertical tables across the tested
+ * face. Historical Word for Mac synthetic controls isolated OS/2 code-page
+ * bits 17–20 and found 1.3× hhea for that class. Windows Word 16.0.20430 instead
+ * matches 1.3× usWin: Yu Gothic/Mincho have identical vertical tables across the tested
  * Mac/Windows faces but different hhea/usWin boxes; MS Mincho, MS Gothic and
  * Meiryo are equal-box counterexamples. Controls cover 8/12/20pt grid/snap-off
  * and 10/30pt atLeast lines. Library policy selects that Windows result from

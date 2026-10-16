@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildSegments, rubyAscentReservePx } from './line-layout.js';
+import { layoutDocument } from './document-layout.js';
+import { createLayoutServices } from './layout-runtime.js';
 import { renderDocumentToCanvas } from './renderer.js';
 import type {
   BodyElement,
@@ -107,6 +109,29 @@ async function bodyRubyBaselineDistance(hpsRaisePt?: number, scale = 2): Promise
 }
 
 describe('§17.3.3.12 w:hpsRaise ruby geometry', () => {
+  it('keeps the non-ruby grid cell count when the annotation fits below the design minimum', () => {
+    const advances = [false, true].map((hasRuby) => {
+      const model = documentWithRuby(2);
+      model.section.docGridType = 'lines';
+      model.section.docGridLinePitch = 18;
+      const paragraph = model.body[0] as Extract<BodyElement, { type: 'paragraph' }>;
+      paragraph.defaultFontFamily = 'Yu Mincho';
+      const run = paragraph.runs[0] as DocxTextRun;
+      run.fontFamily = 'Yu Mincho';
+      run.ruby = hasRuby ? { text: 'かん', fontSizePt: 6, hpsRaisePt: 2 } : undefined;
+      const { canvas } = makeRecordingCanvas();
+      const layout = layoutDocument(model, createLayoutServices(model, {
+        measureContext: canvas.getContext('2d'),
+      }));
+      const retained = layout.pages[0].layers.body[0];
+      if (retained.kind !== 'paragraph') throw new Error('expected ruby test paragraph');
+      return retained.lines[0].advancePt;
+    });
+    // 12pt Yu Mincho: 1.3 × usWin = 20.08pt, requiring two 18pt cells.
+    // The measured base + guide is smaller; adding ruby cannot remove a cell.
+    expect(advances).toEqual([36, 36]);
+  });
+
   it('draws horizontal body ruby hpsRaise above the base baseline', async () => {
     expect(await bodyRubyBaselineDistance(14)).toBeCloseTo(14, 8);
   });

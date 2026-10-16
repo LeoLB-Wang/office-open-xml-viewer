@@ -221,14 +221,12 @@ describe('lineBoxHeight — docGrid line-cell rounding (East Asian vs Latin)', (
     // Face hinting alone never changes an empty/Latin mark's grid class.
     expect(lineBoxHeight(inherited, 14, 2, 1, grid18, false, 0, false)).toBe(18);
   });
-  it('a RUBY EA line reserves its measured furigana height, NOT the design cell count', () => {
-    // sample-5: a 13.5pt ruby base + 8pt rt on an 18pt pitch reserves the base +
-    // annotation glyph box (~41px = asc 33 + desc 8), which Word spreads over
-    // whole cells (ceil(41/18) = 3 cells = 54px). The base design height (13.5pt
-    // → 19.3px → 2 cells) would clip the furigana, so the natural-height rule
-    // must NOT apply to ruby lines — hasRuby (arg 6) keeps them on the measured
-    // glyph box.
-    expect(lineBoxHeight(null, 33, 8, 1, grid18, true, 0, true)).toBe(54);
+  it('a RUBY EA line can grow beyond its design cell count to contain furigana', () => {
+    // At scale 1, a 13.5pt Yu Mincho base has a usWin single-line height of
+    // 22.59px → 2 cells on an 18pt pitch. A measured base + annotation glyph
+    // box of 41px (asc 33 + desc 8) needs 3 cells = 54px instead, so the
+    // annotation can grow the allocation beyond that design minimum.
+    expect(lineBoxHeight(null, 33, 8, 1, grid18, true, 13.5 * YU, true)).toBe(54);
   });
   it('does not cell-round when no docGrid is active (East Asian, off grid)', () => {
     expect(lineBoxHeight(null, 17.6, 4.4, 1, undefined, false, 0, true)).toBe(22);

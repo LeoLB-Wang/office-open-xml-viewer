@@ -129,10 +129,6 @@ export function lineBoxHeight(
       // Canvas boxes and Far-East reference faces keep the existing floor.
       return wordLatinDesignGridSingleHeight(natural, pitchPx, latinGridCountSinglePx);
     }
-    // Ruby lines reserve real furigana height (base + rt); honor the measured
-    // glyph box so the annotation is not clipped. Plain EA lines snap their
-    // design single-line height to whole cells.
-    if (hasRuby) return Math.max(pitchPx, Math.ceil(glyphNatural / pitchPx) * pitchPx);
     // `word-east-asian-grid-line-allocation`: count cells from the source face's
     // design single-line height, not a substituted Canvas glyph box. Prefer the
     // per-line design-grid height; direct unresolved callers may supply the run em.
@@ -143,7 +139,13 @@ export function lineBoxHeight(
         : untabledEastAsianEmPx === undefined
           ? pitchPx
           : eastAsianGridCountSinglePx(0, untabledEastAsianEmPx));
-    return docGridLineCells(cellCountHeight, pitchPx) * pitchPx;
+    // ECMA-376 §17.3.3.25 places the ruby guide above the normal base text;
+    // §17.6.5 defines the single-spaced grid pitch. Within the compatibility
+    // whole-cell allocation, reserve the measured base + rt extent without
+    // dropping the admitted design minimum: ruby may add cells, never remove
+    // cells that the same line without its annotation would occupy.
+    const requiredHeight = hasRuby ? Math.max(glyphNatural, cellCountHeight) : cellCountHeight;
+    return docGridLineCells(requiredHeight, pitchPx) * pitchPx;
   };
   const inheritedOnly = ls !== null && ls.explicit !== true;
   if (!ls) {

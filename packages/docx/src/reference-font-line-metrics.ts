@@ -98,10 +98,10 @@ function identicalProjection(
  * ECMA-376 Part 1 §17.3.1.33 defines automatic spacing as a multiple of the
  * normal single line but does not select an OpenType metric table. DOCX applies
  * a Windows-adjudicated projection: ordinary faces use signed hhea leading;
- * OS/2 code-page bits 17–20 select a centered 1.3× usWin box. Mac synthetic
- * TrueType controls with Latin text, 8–48pt, isolated bits 16–21 and varied
- * hhea/UPM established the class but used hhea. Windows 16.0.20430 grid and
- * atLeast controls distinguish the boxes for Yu Gothic/Mincho, with equal-box
+ * OS/2 code-page bits 17–20 select a centered 1.3× usWin box. Historical Mac
+ * synthetic TrueType controls with Latin text, 8–48pt, isolated bits 16–21
+ * and varied hhea/UPM established the class but used hhea. Windows 16.0.20430
+ * grid and atLeast controls distinguish the boxes for Yu Gothic/Mincho, with equal-box
  * MS Mincho/MS Gothic/Meiryo counterexamples. Both platforms' tested faces
  * have identical vertical tables; policy chooses Windows without an OS branch.
  * Missing usWin declines FE projection rather than substituting hhea. A
