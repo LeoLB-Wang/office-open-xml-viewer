@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { type OfficeFontFallbackRoute, type LocalFontNormalLine, canvasFontString } from '@silurus/ooxml-core';
 import { loadDocxOfficeFontFallbacks, hostFontLineMetric, prepareDocxHostFontMetrics } from './host-font-line-metrics.js';
 import { selectedFontLineMetric } from './line-breaker/font-metrics.js';
+import { paragraphMarkLineMetrics } from './line-layout.js';
+import { createTextLayoutService } from './layout/text.js';
+import type { DocParagraph } from './types.js';
 import { createFontResolver } from './layout/font-service.js';
 import { unloadOfficeFontFallbacks } from '@silurus/ooxml-core';
 import { wordOpenTypeAutoLineRatios } from './layout/line-compatibility.js';
@@ -267,5 +270,44 @@ describe('DOCX host-face line geometry', () => {
     const fallback = hostFontLineMetric(loaded, host);
     expect(selectedFontLineMetric(select(loaded), fallback, true).lineMetric?.lineHeightRatio)
       .toBeCloseTo(1.3 * 2636 / 2048, 12);
+  });
+
+  it('sizes an East Asian-probed empty mark from its Latin host face; the unpainted probe needs no glyph', () => {
+    // §17.3.1.29: an empty paragraph's mark line is its own font's line box.
+    // Japanese-language paragraphs probe the mark with an East Asian glyph,
+    // which a Latin face authored in the East Asian slot does not own. The mark
+    // paints nothing, so that missing glyph must not discard the measured host
+    // geometry (nor fall through to the fallback face that would paint it).
+    vi.stubGlobal('OffscreenCanvas', class { getContext() { return contractCanvas(); } });
+    try {
+      const loaded = route();
+      const metric = Object.freeze({
+        ...hostFontLineMetric(loaded, host), requiresGlyphCoverage: true,
+        glyphCoverageProbeFamily: 'exact-host-face_coverage',
+      });
+      const text = createTextLayoutService({
+        fonts: createFontResolver([{
+          requestedFamily: loaded.requestedFamily, resolvedFamily: loaded.family,
+          source: loaded.source, resourceIdentity: loaded.resourceIdentity,
+        }]),
+        measurer: {
+          fingerprint: 'east-asian-mark-probe',
+          // A fallback face would paint the probe with a different box.
+          measure: () => ({ advancePt: 10, ascentPt: 12, descentPt: 3 }),
+        },
+        fontMetrics: { host: metric },
+      });
+      const paragraph = {
+        runs: [], defaultFontFamily: 'Times New Roman',
+        defaultFontFamilyEastAsia: 'Times New Roman', defaultFontSize: 14, lineSpacing: null,
+      } as unknown as DocParagraph;
+      const mark = paragraphMarkLineMetrics(
+        paragraph, 1, undefined, false, true, undefined, {}, null, {}, text,
+      );
+      expect(mark.advancePx).toBeCloseTo(14 * 2355 / 2048, 8);
+      expect(mark.ascentPx).toBeCloseTo(14 * 1912 / 2048, 8);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

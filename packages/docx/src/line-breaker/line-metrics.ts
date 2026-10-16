@@ -388,10 +388,12 @@ export function paragraphMarkLineMetrics(
     // The paragraph mark has no visible run, but Canvas selects its probe
     // through the same CSS face tuple as text. Resolve against the complete
     // resource set: an authored alias cannot disambiguate overlapping faces.
+    // The probe selects the mark's face but is never painted, so painted-glyph
+    // ownership does not apply (see metricCoversText).
     resolvedLocalFont = selectedFont
       ? selectResourceMetric(indexedFontMetrics(
           textLayoutService.fontMetrics ?? textLayoutService.localMetrics,
-        ), selectedFont, markProbe)
+        ), selectedFont, markProbe, false)
       : undefined;
     if (!naturalMetricAllowed && resolvedLocalFont?.designAscentRatio != null) {
       resolvedLocalFont = undefined;

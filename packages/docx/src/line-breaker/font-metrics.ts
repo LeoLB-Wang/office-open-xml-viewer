@@ -24,11 +24,20 @@ export function selectedFontLineMetric(
 
 /** A subset face lends design metrics only to spans whose every scalar it owns.
  * A FontFace tuple can win CSS selection while Canvas silently paints missing
- * glyphs from another face. Ranges are normalized once at the service boundary. */
+ * glyphs from another face. Ranges are normalized once at the service boundary.
+ *
+ * `paintsGlyphs` is false only for a probe that selects a face without painting
+ * it: the paragraph mark (§17.3.1.29). Painted-glyph ownership exists to keep a
+ * span from borrowing the geometry of a face Canvas did not draw it with; a
+ * mark draws nothing, so its box is the selected resource's own line box even
+ * when that face lacks the script-matched probe glyph (for example an
+ * East Asian slot authored with a Latin face). Unicode-range subsets still
+ * gate the match, because they decide which registered resource is selected. */
 export function metricCoversText(
-  metric: ResolvedFontMetric, text: string, route?: CanvasFontRoute,
+  metric: ResolvedFontMetric, text: string, route?: CanvasFontRoute, paintsGlyphs = true,
 ): boolean {
-  if (metric.requiresGlyphCoverage && !localFontMetricCoversText(metric, text, route)) return false;
+  if (paintsGlyphs && metric.requiresGlyphCoverage
+    && !localFontMetricCoversText(metric, text, route)) return false;
   const ranges = metric.unicodeRanges;
   if (ranges === undefined || text.length === 0) return true;
   for (const scalar of text) {
@@ -53,9 +62,10 @@ export function metricMatchesSelectedFont(
   metric: ResolvedFontMetric,
   selected: FontResolution,
   text: string,
+  paintsGlyphs = true,
 ): boolean {
   if (resourceMetricKey(metric) !== resolutionMetricKey(selected)
-    || !metricCoversText(metric, text, selected.route)) return false;
+    || !metricCoversText(metric, text, selected.route, paintsGlyphs)) return false;
   const identity = metric.sourceIdentity;
   if (selected.source === 'embedded') {
     // The production loader routes Canvas to a resource-derived private family.
@@ -158,13 +168,14 @@ export function selectResourceMetric(
   index: MetricTupleIndex,
   selected: FontResolution,
   probeText: string,
+  paintsGlyphs = true,
 ): ResolvedFontMetric | undefined {
   if (selected.source !== 'embedded' && selected.source !== 'local'
     && selected.source !== 'substitute') return undefined;
   const candidates = index.get(resolutionMetricKey(selected)) ?? [];
   let first: ResolvedFontMetric | undefined;
   for (const metric of candidates) {
-    if (!metricMatchesSelectedFont(metric, selected, probeText)) continue;
+    if (!metricMatchesSelectedFont(metric, selected, probeText, paintsGlyphs)) continue;
     first ??= metric;
   }
   if (!first) return undefined;
@@ -172,7 +183,7 @@ export function selectResourceMetric(
   // overlapping CSS faces Canvas actually paints. Compare every covering
   // resource in the tuple, including resources acquired from other sources.
   for (const metric of candidates) {
-    if (metricCoversText(metric, probeText, selected.route)
+    if (metricCoversText(metric, probeText, selected.route, paintsGlyphs)
       && !sameResourceGeometry(first, metric)) return undefined;
   }
   return first;
