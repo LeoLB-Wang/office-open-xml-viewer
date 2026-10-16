@@ -131,14 +131,15 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['dropCachedDerivedBitmapNamespace', 'value'],
     ['decodedBitmapTargetResizeOptions', 'value'],
     ['duotoneImageData', 'value'],
+    ['applyImageDataTransform', 'value'],
+    ['decodeSvgBlobOnMainThread', 'value'],
+    ['OoxmlDecodedImageLimitError', 'value'],
     ['getCachedBitmapByPath', 'value'],
     // Shared CT_Blip decoding/effects own bounded image resources only; the
     // interpreter never acquires text, layout, or parser-model geometry.
     ['getCachedDuotoneBitmapByPath', 'value'],
     ['getCachedDerivedBitmap', 'value'],
     ['getCachedSvgImageByPath', 'value'],
-    // Bounded SVG rasterization is a resource primitive, with no layout access.
-    ['decodeSvgBlobOnMainThread', 'value'],
     // Header inspection reuses the document-owned byte profile to decide
     // whether browser target-resize is available. Both predicates remain
     // paint-resource admission and cannot affect acquired layout geometry.
@@ -148,6 +149,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['isOoxmlDecodedImageLimitError', 'value'],
     // Lazy archive admission errors remain terminal at paint-resource catches.
     ['OoxmlResourceLimitError', 'value'],
+    // An invalid authored CT_Blip chain cannot be replaced by a raw fallback.
+    ['OoxmlError', 'value'],
     ['isTiffDecodeError', 'value'],
     // Missing optional image codecs are contained at paint-resource acquisition;
     // the placeholder consumes only the already-retained authored bounds.
@@ -172,6 +175,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['normalizeImageResourceOptions', 'value'],
     ['planDecodedImageTargets', 'value'],
     ['paintDrawingMLShape', 'value'],
+    // Bounded VML mask/concentric compositing allocates temporary paint-only surfaces.
+    ['createAuxCanvas', 'value'],
     ['withVertFeature', 'value'],
     ['preferVectorBlip', 'value'],
     ['releaseOwnedBitmap', 'value'],

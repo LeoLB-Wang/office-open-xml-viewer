@@ -55,8 +55,8 @@ it('closes an over-budget SVG base before allocating any effect surfaces', async
   const surface = vi.fn();
   vi.stubGlobal('OffscreenCanvas', surface);
   await expect(decodeRaster('word/media/too-large.svg', 'image/svg+xml', undefined,
-    async () => new Blob(['<svg/>']), 1, 1, undefined, false, undefined,
-    undefined, undefined, [{ type: 'luminance', bright: .9, contrast: 0 }], svgDecoder,
+    async () => new Blob(['<svg/>']), 1, 1, undefined, undefined,
+    undefined, undefined, svgDecoder, undefined, [{ type: 'luminance', bright: .9, contrast: 0 }],
   )).rejects.toMatchObject({ code: 'ooxml-decoded-image-limit' });
   expect(close).toHaveBeenCalledOnce();
   expect(surface).not.toHaveBeenCalled();

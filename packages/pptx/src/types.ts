@@ -73,6 +73,11 @@ export type Bullet = CoreBullet | BlipBullet;
  * variant narrow `bullet` with {@link asBullet} / a `type === 'blip'` check.
  */
 export interface Paragraph extends CoreParagraph {
+  /** Inline MCE alternatives for complete selected run ranges [start, end).
+   * Part 3 §§9.3–9.4 selects a whole branch. Library recovery substitutes its
+   * authored plain-text preview once if any equation in that range fails.
+   * Nested alternatives are ordered inner first, including equal ranges. */
+  mathFallbacks?: { start: number; end: number; text: string }[];
   /**
    * `<a:pPr eaLnBrk>` (ECMA-376 §21.1.2.2.7, xsd:boolean, default true). When
    * true, East Asian text may break at character boundaries (kinsoku rules);
@@ -179,6 +184,9 @@ export interface Presentation {
 }
 
 export interface Slide {
+  /** Effective part-local defaults after layout/slide theme overrides. */
+  theme?: { defaultTextColor: string | null; majorFont: string | null;
+    minorFont: string | null; hlinkColor: string | null };
   index: number;
   /** 1-based slide number (index + 1); used to render slidenum fields */
   slideNumber: number;
@@ -328,7 +336,17 @@ export interface MediaElement {
   mimeType: string;
 }
 
+/** Parsed MCE alternative and complete selected-branch range for equation recovery.
+ * Counts are relative to the shape or table anchor in the flattened element stream. */
+export interface EquationBranchFallback {
+  elements: SlideElement[];
+  before: number;
+  after: number;
+}
+
 export interface ShapeElement {
+  /** Equation Choice preview retained for runtime conversion failures (MCE §9.3). */
+  mathFallback?: EquationBranchFallback;
   type: 'shape';
   x: number;
   y: number;
@@ -517,6 +535,8 @@ export interface Sp3d {
 }
 
 export interface TableElement {
+  /** Whole MCE branch recovery, including equations in table cells (Part 3 §9.3). */
+  mathFallback?: EquationBranchFallback;
   /** Optional `a:tblBg` fill across the entire table beneath cell fills.
    * Resolved from the active theme matrix; omitted means no background paint.
    * Existing model producers may omit it. */

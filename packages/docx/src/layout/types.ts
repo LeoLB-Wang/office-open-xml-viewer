@@ -1,5 +1,5 @@
 import type { SectionLayoutContext } from '../layout-context.js';
-import type { DocxStorySource, FramePr } from '../types.js';
+import type { DocxDiagnostic, DocxDiagnosticCode, DocxStorySource, FramePr } from '../types.js';
 import type {
   GlyphInkBounds,
   TextFontSlotPresence,
@@ -116,13 +116,29 @@ export type DrawingPaintCommand =
     }>
   | Readonly<{
       kind: 'drawingml-shape';
+      insetStroke?: boolean;
+      shadowPass?: boolean;
+      concentricFill?: Readonly<{
+        bounds?: LayoutRect;
+        focus: Readonly<{ l: number; t: number; width: number; height: number }>;
+        rings: readonly Readonly<{ outside: number; inside: number; color: string }>[];
+        centerColor: string;
+      }>;
+      /** Retained VML fill/shadow pass opacity, independent of other passes. */
+      opacity?: number;
       plan: DeepReadonly<DrawingMLShapePaintPlan & { readonly resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> }>;
     }>
   | Readonly<{
       /** A retained image resource clipped to the authored DrawingML shape. */
       kind: 'drawingml-image-fill';
+      strokeMask?: boolean;
+      maskBounds?: LayoutRect;
+      insetStroke?: boolean;
       plan: DeepReadonly<DrawingMLShapePaintPlan & { readonly resolvedGeometry: NonNullable<DrawingMLShapePaintPlan['resolvedGeometry']> }>;
       resourceKey: string;
+      imageRotationDeg?: number;
+      imageFlipH?: boolean;
+      imageFlipV?: boolean;
       fillRect?: Readonly<{ l: number; t: number; r: number; b: number }>;
     }>
   | Readonly<{
@@ -156,6 +172,16 @@ export type DrawingPaintCommand =
       fill: DeepReadonly<Fill> | null;
       opacity: number;
       rotationDeg: number;
+      flipH?: boolean;
+      flipV?: boolean;
+      glyphTransform?: Matrix2DData;
+      imageResourceKey?: string;
+      maskBounds?: LayoutRect;
+      imageRotationDeg?: number;
+      imageFlipH?: boolean;
+      imageFlipV?: boolean;
+      /** Acquired glyph placements for §19.1.2.23 path fitting. */
+      pathSlices?: readonly Readonly<{ sourceX: number; sourceWidth: number; xPt: number; yPt: number; a: number; b: number; c: number; d: number }>[];
       /** True applies §19.1.2.23 fitshape; false preserves authored font size. */
       fitShape: boolean;
       fontSizePt: number;
@@ -502,6 +528,9 @@ export type ImagePaintResourceDescriptor = Readonly<{
   colorReplaceFrom?: string;
   duotone?: DeepReadonly<Duotone>;
   blipEffects?: DeepReadonly<import('@silurus/ooxml-core').BlipEffect[]>;
+  /** Part 4 §19.1.2.21: clr1 replaces black, clr2 replaces coloured pixels. */
+  vmlStrokePattern?: DeepReadonly<Duotone>;
+  vmlFill?: DeepReadonly<Extract<import('../types.js').ShapeFill, { fillType: 'image' }>['vml']>;
 }>;
 
 /** Exact accepted source facts, including decode-order/intrinsic ownership.
@@ -974,6 +1003,7 @@ export interface ResolvedFloatingTablePlacementLayout {
 
 export interface TextBoxLayout extends LayoutNodeBase {
   readonly kind: 'textbox';
+  readonly clipRects?: readonly LayoutRect[];
   readonly story: StoryLayout;
   /** DrawingML fontRef color inherited by runs without an explicit w:color. */
   readonly defaultTextColor?: string;
@@ -1209,23 +1239,10 @@ export interface LayoutPage {
   readonly changeBars?: readonly ChangeBarLayout[];
 }
 
-export type LayoutDiagnosticCode =
-  | 'FLOW_OVERLAP'
-  | 'BOTTOM_MARGIN_INVASION'
-  | 'FLOW_DOMAIN_INVASION'
-  | 'INVALID_REFERENCE'
-  | 'INVALID_GEOMETRY'
-  | 'INVALID_VALUE'
-  | 'MISSING_RESOURCE'
-  | 'NON_CONVERGENCE'
-  | 'UNSUPPORTED_FEATURE';
-
-export interface LayoutDiagnostic {
-  readonly code: LayoutDiagnosticCode;
-  readonly severity: 'warning' | 'error';
-  readonly source?: SourceRef;
-  readonly message: string;
-}
+// Layout and resource acquisition share the public diagnostic value contract.
+// Keeping aliases here does not expose the retained layout implementation.
+export type LayoutDiagnosticCode = DocxDiagnosticCode;
+export type LayoutDiagnostic = DocxDiagnostic;
 
 export interface DocumentLayout {
   readonly pages: readonly LayoutPage[];
@@ -1628,4 +1645,33 @@ export interface BlockLayoutAlgorithms {
     placement: FlowBlockPlacement,
     services: LayoutServices,
   ): BlockLayoutResult<TableLayout>;
+}
+
+/** Effective private VML parser facts, projected before layout acquisition. */
+export interface VmlShapeAcquisitionFacts {
+  /** Cumulative group vector effect in points relative to the leaf origin. */
+  readonly vmlGroupTransform?: readonly [number, number, number, number, number, number];
+  readonly vmlSkew?: Readonly<{
+    offset: NonNullable<import('../types.js').ShapeRun['vmlShadow']>['offset'];
+    origin: readonly [number, number];
+    matrix: readonly [number, number, number, number, number, number];
+    absolutePerspective: boolean;
+  }>;
+  readonly vmlEdgeStrokes?: readonly Readonly<{
+    edge: 'left' | 'top' | 'right' | 'bottom' | 'column';
+    color: string;
+    widthPt: number;
+    dash?: string | null;
+    cap?: 'butt' | 'square' | 'round' | null;
+    join: 'miter' | 'bevel' | 'round';
+    miterLimit: number;
+    compound?: string | null;
+    image?: Extract<import('../types.js').ShapeFill, { fillType: 'image' }> | null;
+    pattern?: import('@silurus/ooxml-core').Duotone | null;
+  }>[];
+  readonly vmlStrokeFill?: Extract<import('../types.js').ShapeFill, { fillType: 'image' }>;
+  readonly vmlStrokePattern?: import('@silurus/ooxml-core').Duotone;
+  readonly vmlInsetPen?: boolean;
+  readonly vmlConcentricGradient?: boolean;
+  readonly vmlTextRects?: Array<[number, number, number, number]>;
 }

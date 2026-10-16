@@ -5,6 +5,16 @@ import type { StoryLayout } from './types.js';
 export interface HeaderFooterReserve {
   readonly top: number;
   readonly bottom: number;
+  /** Previous-pass provenance. A physical index can change section or slot when
+   * content moves; that observation cannot reserve a different destination. */
+  readonly observedPage?: Readonly<{
+    owner: string;
+    firstPageOfSection: boolean;
+    parityBlank: boolean;
+    /** Final retained-content anchor; it can lie after an authored empty page. */
+    firstContentPageIndex?: number;
+    pageNumber: Readonly<{ displayNumber: number; format: import('@silurus/ooxml-core').NumberFormat }>;
+  }>;
   /**
    * Page-final flow top of each footnote, by note id, whose story is band
    * dependent (StoryLayout.bandDependent: it holds §17.4.57 positioned

@@ -1346,7 +1346,15 @@ export interface DocxCommentsOptions extends ViewerCommentsOptions {
     readonly markers?: boolean;
     readonly connectors?: ViewerCommentConnectorOptions;
 }
+export interface DocxDiagnostic {
+    readonly code: DocxDiagnosticCode;
+    readonly severity: 'warning' | 'error';
+    readonly source?: Readonly<DocxStorySource>;
+    readonly message: string;
+}
+export type DocxDiagnosticCode = 'FLOW_OVERLAP' | 'BOTTOM_MARGIN_INVASION' | 'FLOW_DOMAIN_INVASION' | 'INVALID_REFERENCE' | 'INVALID_GEOMETRY' | 'INVALID_VALUE' | 'MISSING_RESOURCE' | 'NON_CONVERGENCE' | 'UNSUPPORTED_FEATURE';
 export class DocxDocument {
+    get diagnostics(): readonly DocxDiagnostic[];
     static load(source: string | ArrayBuffer, opts?: LoadOptions): Promise<DocxDocument>;
     destroy(): void;
     getImage(imagePath: string, mimeType: string): Promise<Blob>;
@@ -2055,7 +2063,7 @@ export class OoxmlDecodedImageLimitError extends RangeError {
     readonly code: 'ooxml-decoded-image-limit';
     constructor(metric: OoxmlDecodedImageLimitMetric, limit: number, observed: number);
 }
-export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work' | 'metafile-path-commands' | 'metafile-record-points' | 'metafile-record-polygons' | 'metafile-record-rectangles' | 'metafile-record-text-units';
+export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work' | 'tiff-lzw-work' | 'metafile-path-commands' | 'metafile-record-points' | 'metafile-record-polygons' | 'metafile-record-rectangles' | 'metafile-record-text-units';
 export class OoxmlError extends Error {
     readonly code: OoxmlErrorCode;
     readonly details?: OoxmlUnsupportedContentDetails;
@@ -2411,6 +2419,29 @@ export type ShapeFill = {
     preset: string;
 } | {
     fillType: 'image';
+    vml?: {
+        repeat: boolean;
+        size: [
+            {
+                value: number;
+                fraction: boolean;
+            },
+            {
+                value: number;
+                fraction: boolean;
+            }
+        ] | null;
+        origin: [
+            number,
+            number
+        ];
+        position: [
+            number,
+            number
+        ];
+        aspect: string;
+        alignShape: boolean;
+    };
     imagePath: string;
     mimeType: string;
     svgImagePath?: string;
@@ -2447,13 +2478,47 @@ export interface ShapeRun {
     groupHeightPt?: number | null;
     behindDoc?: boolean;
     zOrder: number;
+    vmlShadow?: {
+        kind: 'single' | 'double' | 'emboss' | 'perspective';
+        color: string;
+        color2: string;
+        offset: {
+            xPt: number;
+            yPt: number;
+            xFraction: number;
+            yFraction: number;
+        };
+        offset2: {
+            xPt: number;
+            yPt: number;
+            xFraction: number;
+            yFraction: number;
+        };
+        opacity: number;
+        obscured: boolean;
+        origin: [
+            number,
+            number
+        ];
+        matrix: [
+            number,
+            number,
+            number,
+            number,
+            number,
+            number
+        ];
+        absolutePerspective: boolean;
+    };
     subpaths: PathCmd[][];
     subpathPaint?: Array<{
+        fillRule?: 'nonzero' | 'evenodd';
         fill?: 'none' | 'lighten' | 'lightenLess' | 'darken' | 'darkenLess';
         stroke?: false;
     }>;
     presetGeometry?: string | null;
     adjValues?: Array<number | null>;
+    vmlPicture?: Pick<ImageRun, 'imagePath' | 'mimeType' | 'srcRect' | 'colorReplaceFrom' | 'duotone'>;
     fill: ShapeFill | null;
     stroke: string | null;
     strokeWidth?: number;

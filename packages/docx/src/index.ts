@@ -1,3 +1,4 @@
+export type { DocxDiagnostic, DocxDiagnosticCode } from './types.js';
 export {
   DocxDocument,
   type CollectPageRunsOptions,

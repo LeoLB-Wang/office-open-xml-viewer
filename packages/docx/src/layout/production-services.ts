@@ -1,3 +1,4 @@
+import { acquireCanvasGlyphContours } from '../native-glyph-contours.js';
 import { type CjkLang } from '@silurus/ooxml-core';
 import {
   activeFontSet,
@@ -238,6 +239,7 @@ export function createProductionLayoutServices(
     }
   }
   const text = createTextLayoutService({
+    ...(context ? { glyphContours: acquireCanvasGlyphContours, glyphContourFingerprint: 'canvas-half-coverage-contours-v1' } : {}),
     fonts: createFontResolver(inventory, {
       regionalFamilyLists: Object.fromEntries((['sc', 'tc', 'hk', 'jp', 'kr'] as const).map(region => [
         region,

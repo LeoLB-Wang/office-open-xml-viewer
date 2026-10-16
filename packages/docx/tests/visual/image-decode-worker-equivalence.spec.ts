@@ -13,6 +13,7 @@ type Rgba = readonly [number, number, number, number];
 interface SyntheticImageCase {
   readonly id: string;
   readonly filename: string;
+  readonly duotone?: true;
   readonly bytes: Uint8Array;
   readonly effects?: string;
   /** Expected pixel after the image is composited onto the white DOCX page. */
@@ -182,6 +183,11 @@ function syntheticImageCases(): readonly SyntheticImageCase[] {
   const smallWidth = 8;
   const smallHeight = 8;
   return [
+    // A viewBox-only SVG requires explicit host rasterization in Chromium.
+    // Its white authored pixels must pass through duotone in both realms.
+    { id: 'svg-duotone', filename: 'duotone.svg', duotone: true,
+      bytes: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="white"/></svg>'),
+      expected: [255, 0, 0, 255] },
     {
       id: 'bilevel-tiff',
       filename: 'bilevel.tif',
@@ -326,7 +332,7 @@ function syntheticImageDocx(images: readonly SyntheticImageCase[]): Uint8Array {
     `<Relationship Id="rIdImage${index + 1}" Type="${REL_IMAGE}" Target="media/${image.filename}"/>`,
   ).join('');
   const body = images.map((image, index) =>
-    `${inlinePicture(`rIdImage${index + 1}`, index, image.id, image.effects)}${index === images.length - 1
+    `${inlinePicture(`rIdImage${index + 1}`, index, image.id, (image.effects ?? '') + (image.duotone ? '<a:duotone><a:srgbClr val="000000"/><a:srgbClr val="FF0000"/></a:duotone>' : ''))}${index === images.length - 1
       ? ''
       : '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'}`,
   ).join('');
@@ -361,7 +367,7 @@ function syntheticImageDocx(images: readonly SyntheticImageCase[]): Uint8Array {
   return storeZip(parts);
 }
 
-test('synthetic TIFF, corrected SVG, and aggregate-large rasters survive DocxScrollViewer main/worker traversal', async ({ page }) => {
+test('synthetic image codecs, corrected SVG effects and aggregate-large rasters survive DocxScrollViewer main/worker traversal', async ({ page }) => {
   test.setTimeout(180_000);
   const images = syntheticImageCases();
   const docx = syntheticImageDocx(images);

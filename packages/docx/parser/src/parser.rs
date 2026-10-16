@@ -51,6 +51,14 @@ mod relationship_target_tests;
 #[path = "parser/word_ilvl_integration_tests.rs"]
 mod word_ilvl_integration_tests;
 
+mod vml_fill;
+#[path = "parser/vml_geometry.rs"]
+mod vml_geometry;
+#[path = "parser/vml_group.rs"]
+mod vml_group;
+mod vml_image;
+mod vml_text_style;
+
 const DEFAULT_FONT_SIZE: f64 = 10.0; // pt fallback
 
 /// DOCX-local adapter over one owned, validated package session. Every public
@@ -1140,6 +1148,7 @@ struct DocumentBodyPreflight {
     final_body_block_ordinal: Option<usize>,
     section: SectionProps,
     ref_leading_breaks: HashMap<String, String>,
+    ref_budget_exceeded: bool,
 }
 
 /// First pass over `word/document.xml`. Only cross-block facts survive this
@@ -1241,6 +1250,7 @@ fn preflight_document_body(
     // requested bookmark names, not document runs or whole-block XML; this pass
     // projects one block at a time and retains at most 1 MiB of matching text.
     let mut ref_leading_breaks = HashMap::new();
+    let mut ref_budget_exceeded = ref_instructions.budget_exceeded;
     if !ref_instructions.targets.is_empty() {
         drop(projector);
         let mut projector =
@@ -1261,6 +1271,7 @@ fn preflight_document_body(
         if projector.plan()? != plan {
             return Err("document body changed between bounded passes".to_string());
         }
+        ref_budget_exceeded |= collector.budget_exceeded;
         ref_leading_breaks = collector.finish();
     }
 
@@ -1271,6 +1282,7 @@ fn preflight_document_body(
         final_body_block_ordinal,
         section,
         ref_leading_breaks,
+        ref_budget_exceeded,
     })
 }
 
@@ -1365,6 +1377,7 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
     let mut section_hf: HashMap<roxmltree::NodeId, ResolvedSectionHf> = HashMap::new();
     let mut body_headers = HeadersFooters::default();
     let mut body_footers = HeadersFooters::default();
+    let mut story_diagnostics = Vec::new();
     for (node_id, refs, title_page) in &section_snapshots {
         let headers = load_header_footer_set(
             zip,
@@ -1374,6 +1387,7 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
             style_map,
             num_map,
             theme,
+            &mut story_diagnostics,
         );
         let footers = load_header_footer_set(
             zip,
@@ -1383,6 +1397,7 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
             style_map,
             num_map,
             theme,
+            &mut story_diagnostics,
         );
         if Some(*node_id) == body_level_sect_id {
             body_headers = headers;
@@ -1414,6 +1429,10 @@ pub fn parse(zip: &mut Zip) -> Result<Document, String> {
             .and_then(|settings| settings.split_pg_break_and_para_mark)
             == Some(true),
     );
+    // Match the cursor's acquisition order: section stories precede body
+    // facts; notes are acquired in finish_document after both.
+    story_diagnostics.extend(diagnostics);
+    let diagnostics = story_diagnostics;
     let final_section_ordinal = body
         .iter()
         .filter(|element| matches!(element, BodyElement::SectionBreak { .. }))
@@ -1517,6 +1536,7 @@ impl DocxBodyCursor {
         let mut resolved_sections = Vec::with_capacity(preflight.sections.len());
         let mut body_headers = HeadersFooters::default();
         let mut body_footers = HeadersFooters::default();
+        let mut story_diagnostics = Vec::new();
         for (index, fact) in preflight.sections.iter().enumerate() {
             let headers = load_header_footer_set(
                 zip,
@@ -1526,6 +1546,7 @@ impl DocxBodyCursor {
                 &environment.style_map,
                 &mut environment.num_map,
                 &environment.theme,
+                &mut story_diagnostics,
             );
             let footers = load_header_footer_set(
                 zip,
@@ -1535,6 +1556,7 @@ impl DocxBodyCursor {
                 &environment.style_map,
                 &mut environment.num_map,
                 &environment.theme,
+                &mut story_diagnostics,
             );
             if Some(index) == final_section_fact {
                 body_headers = headers;
@@ -1575,7 +1597,17 @@ impl DocxBodyCursor {
                 ref_leading_breaks: preflight.ref_leading_breaks,
                 ..BodyParseCursor::default()
             },
-            diagnostics: Vec::new(),
+            diagnostics: {
+                if preflight.ref_budget_exceeded {
+                    story_diagnostics.push(ParseDiagnostic {
+                        code: PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT.to_string(),
+                        severity: PARSE_DIAGNOSTIC_SEVERITY_REF_BOOKMARK_RESOURCE_LIMIT,
+                        part: DOCUMENT_PART.to_string(),
+                        path: Vec::new(),
+                    });
+                }
+                story_diagnostics
+            },
             revisions: Vec::new(),
             section_cursor: 0,
             emitted_body_len: 0,
@@ -1790,7 +1822,7 @@ fn finish_document(
     headers: HeadersFooters,
     footers: HeadersFooters,
     revisions: Vec<crate::types::DocxRevision>,
-    diagnostics: Vec<ParseDiagnostic>,
+    mut diagnostics: Vec<ParseDiagnostic>,
 ) -> Result<Document, String> {
     let major_font = environment.theme.theme_font("major", "latin");
     let minor_font = environment.theme.theme_font("minor", "latin");
@@ -1869,6 +1901,7 @@ fn finish_document(
                 &mut environment.num_map,
                 &environment.theme,
                 &environment.special_note_references.footnotes,
+                &mut diagnostics,
             )
         })
         .unwrap_or_default();
@@ -1885,6 +1918,7 @@ fn finish_document(
                 &mut environment.num_map,
                 &environment.theme,
                 &environment.special_note_references.endnotes,
+                &mut diagnostics,
             )
         })
         .unwrap_or_default();
@@ -2202,6 +2236,7 @@ fn parse_comments_with_extended(
 /// Note content is parsed with the document's styles + numbering so the
 /// FootnoteText/EndnoteText style and the `<w:footnoteRef/>` auto-number marker
 /// resolve correctly; the note part's own relationships supply media.
+#[allow(clippy::too_many_arguments)]
 fn parse_notes(
     zip: &mut Zip,
     path: &str,
@@ -2210,6 +2245,7 @@ fn parse_notes(
     num_map: &mut NumberingMap,
     theme: &ThemeColors,
     special_references: &HashSet<String>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> (Vec<crate::types::DocxNote>, SelectedNoteSeparators) {
     let Ok(xml) = read_zip_string(zip, path) else {
         return Default::default();
@@ -2287,6 +2323,7 @@ fn parse_notes(
             continue;
         }
         // Footnote/endnote bodies carry no nested sections; pass an empty map.
+        let mut local_diagnostics = Vec::new();
         let content = parse_body_elements_in_story(
             n,
             style_map,
@@ -2297,9 +2334,10 @@ fn parse_notes(
             theme,
             &HashMap::new(),
             TablePositioningContext::IgnoredStory,
-            None,
+            Some(&mut local_diagnostics),
             false,
         );
+        commit_story_diagnostics(local_diagnostics, diagnostics);
         out.push(crate::types::DocxNote { id, content });
     }
     (out, selected_stories)
@@ -3932,6 +3970,7 @@ fn body_children_with_cover_breaks<'a, 'input>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn parse_body_elements(
     body_node: roxmltree::Node,
     style_map: &StyleMap,
@@ -3955,6 +3994,18 @@ fn parse_body_elements(
         None,
         false,
     )
+}
+
+// Preserve every header/footer/note acquisition diagnostic, including failures
+// before a retained node exists (e.g. unacquired VML root groups). The current
+// wire contract uses DOCUMENT_PART for these document-level facts; story-local
+// block indices cannot name main-body blocks. Clear the path rather than
+// falsely attributing an omission or resource limit to a body paragraph.
+fn commit_story_diagnostics(local: Vec<ParseDiagnostic>, document: &mut Vec<ParseDiagnostic>) {
+    document.extend(local.into_iter().map(|mut diagnostic| {
+        diagnostic.path.clear();
+        diagnostic
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4366,12 +4417,24 @@ fn parse_body_elements_in_story(
     for (child, _) in &body_children {
         ref_instructions.observe(*child);
     }
+    let mut ref_budget_exceeded = ref_instructions.budget_exceeded;
     if !ref_instructions.targets.is_empty() {
         let mut collector = LeadingBreakCollector::new(&ref_instructions.targets);
         for (child, _) in &body_children {
             collector.observe(*child);
         }
+        ref_budget_exceeded |= collector.budget_exceeded;
         cursor.ref_leading_breaks = collector.finish();
+    }
+    if ref_budget_exceeded {
+        if let Some(diagnostics) = diagnostics.as_deref_mut() {
+            push_parse_diagnostic(
+                diagnostics,
+                PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT,
+                PARSE_DIAGNOSTIC_SEVERITY_REF_BOOKMARK_RESOURCE_LIMIT,
+                &[],
+            );
+        }
     }
 
     let logical_table_sequences =
@@ -5267,6 +5330,10 @@ fn load_media_map(
     source_part: &str,
 ) -> HashMap<String, String> {
     let mut media_map: HashMap<String, String> = HashMap::new();
+    // Private acquisition context for VML src URIs, which are relative to the
+    // owning story part (Part 4 §19.1.2.10/.11), not necessarily document.xml.
+    // NUL cannot occur in an XML relationship ID. No media bytes are acquired.
+    media_map.insert("\0vml-source-part".into(), source_part.into());
     for (rid, relationship) in relationships {
         // The media filter compares the Target's part-name equivalence key, so
         // `Media/Image1.png` and `%6Dedia/...` spell the same kind of target.
@@ -5288,6 +5355,13 @@ fn load_media_map(
             // part share one model path. `entry_name` consults only the
             // central directory — no inflate.
             if let Some(stored) = zip.entry_name(&path) {
+                media_map.insert(
+                    format!(
+                        "\0vml-part:{}",
+                        ooxml_common::rels::part_name_equivalence_key(&stored)
+                    ),
+                    stored.clone(),
+                );
                 media_map.insert(rid.clone(), stored);
             }
         }
@@ -5303,19 +5377,17 @@ fn load_media_map(
 /// references — so the drawing parse resolves its chart with a single map
 /// lookup, exactly like `media_map` does for blips. Relationships that don't
 /// resolve to a readable, parseable chart part are dropped (the drawing then
-/// renders nothing, matching the "drop unresolvable blip" behaviour).
+/// retains the authored extent and emits the existing unavailable-resource
+/// diagnostic through the drawing dispatcher).
 fn load_chart_map(
     zip: &mut Zip,
     relationships: &BTreeMap<String, RelTarget>,
     source_part: &str,
     theme: &ThemeColors,
 ) -> ChartMap {
-    // Resolve the rId's Type via the raw rels: `rel_map` only carries Targets,
-    // but a chart Target is distinguishable by the part it lands on. Match on the
-    // resolved zip path living under `word/charts/` and ending in `.xml` — the
-    // canonical location for a DrawingML chart part. `parse_chart_part` returns
-    // `None` for a colors/style sidecar, so a stray non-chart `.xml` there is
-    // harmless.
+    // ECMA-376 Part 1 §14.2.1 and [MS-ODRAWXML] §2.1.5 identify
+    // chart parts by relationship type. OPC targets may name any valid part;
+    // neither a charts directory nor an .xml suffix is required.
     let limit_reporter = zip
         .operation()
         .and_then(|operation| operation.limit_reporter())
@@ -5326,6 +5398,16 @@ fn load_chart_map(
         ..ChartMap::default()
     };
     for (rid, relationship) in relationships {
+        if !matches!(
+            relationship.relationship_type.as_deref(),
+            Some(
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+                    | "http://purl.oclc.org/ooxml/officeDocument/relationships/chart"
+            )
+        ) && relationship.relationship_type.as_deref() != Some(CHARTEX_REL)
+        {
+            continue;
+        }
         // Use the stored ZIP item name (§6.2.2.3 equivalence); an absent part
         // is dropped exactly like an unreadable one.
         let Some(path) = relationship
@@ -5334,10 +5416,6 @@ fn load_chart_map(
         else {
             continue;
         };
-        let key = ooxml_common::rels::part_name_equivalence_key(&path);
-        if !(key.contains("charts/") && key.ends_with(".xml")) {
-            continue;
-        }
         let Ok(xml) = read_zip_string(zip, &path) else {
             continue;
         };
@@ -5347,6 +5425,28 @@ fn load_chart_map(
         // Office 2011 / MS-ODRAWXML 2012 `chartStyle`). Resolve+read it best-effort;
         // legacy `<c:>` charts ignore it (their title size is inline).
         let related_parts = load_chart_related_parts(zip, &path);
+        // CT_BaseStylesOverride replaces present schemes for this chart only;
+        // preserve the document's theme and the other charts' inherited values.
+        let local_theme = related_parts.theme_override_xml.as_deref().map(|xml| {
+            let mut local_theme = theme.clone();
+            let schemes = ooxml_common::theme::ThemeOverride::parse(xml);
+            let replacement = ThemeColors::parse(xml);
+            if schemes.colors.is_some() {
+                local_theme.map = replacement.map;
+            }
+            if schemes.fonts.is_some() {
+                local_theme.fonts = replacement.fonts;
+                local_theme.script_fonts = replacement.script_fonts;
+            }
+            if let Some(format) = schemes.format {
+                // Override matrices cannot borrow parent-theme rIds (§14.2.8).
+                local_theme.chart_images = Default::default();
+                local_theme.format_scheme = format;
+                local_theme.format_scheme_present = true;
+            }
+            local_theme
+        });
+        let theme = local_theme.as_ref().unwrap_or(theme);
         let image_resolver = ooxml_common::chart::ChartImageResolverChain::new(
             &related_parts.image_relationships,
             &theme.chart_images,
@@ -5405,6 +5505,7 @@ fn load_chart_map(
 /// has no chartStyle relationship or the part cannot be read (the chartEx
 /// title then falls back to its inline size, or the renderer's default).
 struct ChartRelatedParts {
+    theme_override_xml: Option<String>,
     style_xml: Option<String>,
     color_style_xml: Option<String>,
     image_relationships: ooxml_common::chart::ChartImageRelationships,
@@ -5412,6 +5513,7 @@ struct ChartRelatedParts {
 
 fn load_chart_related_parts(zip: &mut Zip, chart_path: &str) -> ChartRelatedParts {
     let mut result = ChartRelatedParts {
+        theme_override_xml: None,
         style_xml: None,
         color_style_xml: None,
         image_relationships: Default::default(),
@@ -5435,6 +5537,11 @@ fn load_chart_related_parts(zip: &mut Zip, chart_path: &str) -> ChartRelatedPart
                     .is_some_and(|kind| kind.ends_with(suffix))
         })
     };
+    if let Some(relationship) = internal_target("/themeOverride") {
+        if let Some(path) = relationship.resolve_part(chart_path) {
+            result.theme_override_xml = read_zip_string(zip, &path).ok();
+        }
+    }
     let style_relationship = relationships.values().find(|relationship| {
         relationship.mode == ooxml_common::rels::TargetMode::Internal
             && relationship
@@ -5498,6 +5605,7 @@ fn load_header_footer_set(
     style_map: &StyleMap,
     num_map: &mut NumberingMap,
     theme: &ThemeColors,
+    diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> HeadersFooters {
     let mut out = HeadersFooters::default();
     for (kind, rid) in type_to_rid {
@@ -5539,7 +5647,7 @@ fn load_header_footer_set(
         // Header/footer bodies carry no nested sections, so pass an empty
         // section-resolution map (any stray sectPr would only produce an empty
         // resolved set, never recursing into header loading).
-        let body = parse_body_elements(
+        let (body, local_diagnostics) = parse_body_elements_with_diagnostics(
             root,
             style_map,
             num_map,
@@ -5548,7 +5656,9 @@ fn load_header_footer_set(
             &local_rel_map,
             theme,
             &HashMap::new(),
+            false,
         );
+        commit_story_diagnostics(local_diagnostics, diagnostics);
         let hf = HeaderFooter { body };
         match kind.as_str() {
             "first" => out.first = Some(hf),
@@ -8413,7 +8523,20 @@ fn parse_run_inner(
                             && inner.tag_name().name() == "pict"
                         {
                             // Same VML dispatch and host metrics as the pict arm.
-                            if let Some(img) = parse_vml_pict_image(inner, media_map) {
+                            if let Some(mut group_runs) = vml_group::parse_groups(
+                                style_map,
+                                num_map,
+                                inner,
+                                theme,
+                                media_map,
+                                chart_map,
+                                rel_map,
+                                depth,
+                                diagnostics,
+                            ) {
+                                attach_anchor_host_metrics(&mut group_runs);
+                                runs.extend(group_runs);
+                            } else if let Some(img) = parse_vml_pict_image(inner, media_map) {
                                 let mut pict_runs = vec![DocRun::Image(Box::new(img))];
                                 attach_anchor_host_metrics(&mut pict_runs);
                                 runs.extend(pict_runs);
@@ -8444,7 +8567,20 @@ fn parse_run_inner(
                 //      a `ShapeRun` (the existing text-box path).
                 // The imagedata form is tried first so a picture pict is not
                 // mistaken for an (empty) text-box panel.
-                if let Some(img) = parse_vml_pict_image(child, media_map) {
+                if let Some(mut group_runs) = vml_group::parse_groups(
+                    style_map,
+                    num_map,
+                    child,
+                    theme,
+                    media_map,
+                    chart_map,
+                    rel_map,
+                    depth,
+                    diagnostics,
+                ) {
+                    attach_anchor_host_metrics(&mut group_runs);
+                    runs.extend(group_runs);
+                } else if let Some(img) = parse_vml_pict_image(child, media_map) {
                     let mut pict_runs = vec![DocRun::Image(Box::new(img))];
                     attach_anchor_host_metrics(&mut pict_runs);
                     runs.extend(pict_runs);
@@ -12075,17 +12211,13 @@ fn parse_vml_pict(
         n.is_element()
             && matches!(
                 n.tag_name().name(),
-                "shape" | "rect" | "roundrect" | "oval" | "line"
+                "shape" | "rect" | "roundrect" | "oval" | "line" | "arc" | "curve" | "polyline"
             )
             && !n
                 .children()
                 .any(|c| c.is_element() && c.tag_name().name() == "imagedata")
     })?;
 
-    // CSS-like `style`: "position:relative;width:300pt;height:60pt;…".
-    // A referenced shapetype carries the legacy conceptual shape id (`o:spt`);
-    // map the interoperable subset onto the shared DrawingML preset engine.
-    let style = shape.attribute("style").unwrap_or("");
     let shape_type = shape
         .attribute("type")
         .map(|value| value.trim_start_matches('#'))
@@ -12096,44 +12228,91 @@ fn parse_vml_pict(
                     && node.attribute("id") == Some(id)
             })
         });
+    parse_vml_shape(
+        style_map,
+        num_map,
+        shape,
+        shape_type,
+        theme,
+        media_map,
+        chart_map,
+        rel_map,
+        (1.0, 1.0),
+        depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_vml_shape(
+    style_map: &StyleMap,
+    num_map: &mut NumberingMap,
+    shape: roxmltree::Node,
+    shape_type: Option<roxmltree::Node>,
+    theme: &ThemeColors,
+    media_map: &HashMap<String, String>,
+    chart_map: &ChartMap,
+    rel_map: &HashMap<String, String>,
+    physical_scale: (f64, f64),
+    depth: DepthGuard,
+) -> Option<ShapeRun> {
+    // CSS-like `style`: "position:relative;width:300pt;height:60pt;…".
+    // A referenced shapetype carries the legacy conceptual shape id (`o:spt`);
+    // map the interoperable subset onto the shared DrawingML preset engine.
+    let style = shape.attribute("style").unwrap_or("");
+    let coordinates = VmlStyleCoordinates::for_node(shape);
     let spt = shape
         .attributes()
         .find(|attr| attr.name() == "spt")
         .or_else(|| shape_type.and_then(|node| node.attributes().find(|attr| attr.name() == "spt")))
         .and_then(|attr| attr.value().parse::<u16>().ok());
-    let preset_geometry = match shape.tag_name().name() {
-        "line" => Some("line".to_string()),
-        "rect" => Some("rect".to_string()),
-        "roundrect" => Some("roundRect".to_string()),
-        "oval" => Some("ellipse".to_string()),
-        _ => Some(
-            spt.and_then(vml_shape_type_preset)
-                .unwrap_or("rect")
-                .to_string(),
-        ),
-    };
-    let is_line_geometry = preset_geometry.as_deref().is_some_and(|preset| {
-        let preset = preset.to_ascii_lowercase();
-        preset == "line" || preset.contains("connector")
-    });
-
-    let line_points = if shape.tag_name().name() == "line" {
-        match (
-            shape.attribute("from").and_then(parse_vml_point_pt),
-            shape.attribute("to").and_then(parse_vml_point_pt),
-        ) {
-            (Some(from), Some(to)) => Some((from, to)),
-            _ => return None,
+    // Part 4 §§19.1.2.10/.11: picture decorations use the implied
+    // rectangle, independent of an unavailable or custom host path.
+    let is_picture = vml_image::present(shape, shape_type);
+    let mut preset_geometry = if is_picture {
+        Some("rect".into())
+    } else {
+        match shape.tag_name().name() {
+            "line" => Some("line".to_string()),
+            "rect" => Some("rect".to_string()),
+            "roundrect" => Some("roundRect".to_string()),
+            "oval" => Some("ellipse".to_string()),
+            _ => spt
+                .and_then(vml_shape_type_preset)
+                .map(str::to_string)
+                .or_else(|| spt.is_none().then(|| "rect".into())),
         }
+    };
+    let primitive = if !is_picture && matches!(shape.tag_name().name(), "curve" | "polyline") {
+        Some(vml_geometry::primitive(shape)?)
     } else {
         None
     };
-    let (width_pt, height_pt) = if let Some((from, to)) = line_points {
+    let is_line_geometry = primitive.is_some()
+        || preset_geometry.as_deref().is_some_and(|preset| {
+            let preset = preset.to_ascii_lowercase();
+            preset == "line" || preset.contains("connector")
+        });
+
+    let line_points = if !is_picture && shape.tag_name().name() == "line" {
+        // Part 4 §19.1.2.12: absent endpoints are (0,0) and (10,10).
+        // MS-OI29500 §2.1.1801(a) documents Office's different to default
+        // (50pt,50pt); use the normative coordinates, without inferring an
+        // Office compatibility rule from the presence of a VML group.
+        Some((
+            parse_vml_point_pt(shape.attribute("from").unwrap_or("0,0"))?,
+            parse_vml_point_pt(shape.attribute("to").unwrap_or("10,10"))?,
+        ))
+    } else {
+        None
+    };
+    let (width_pt, height_pt) = if let Some((_, (_, _, w, h))) = &primitive {
+        (*w, *h)
+    } else if let Some((from, to)) = line_points {
         ((to.0 - from.0).abs(), (to.1 - from.1).abs())
     } else {
         (
-            vml_css_length_pt(style, "width").unwrap_or(0.0),
-            vml_css_length_pt(style, "height").unwrap_or(0.0),
+            coordinates.css_length(style, "width").unwrap_or(0.0),
+            coordinates.css_length(style, "height").unwrap_or(0.0),
         )
     };
     if width_pt < 0.0
@@ -12144,8 +12323,63 @@ fn parse_vml_pict(
         return None;
     }
 
-    let resolved_fill = resolve_vml_fill(shape, shape_type);
-    let resolved_stroke = resolve_vml_stroke(shape, shape_type);
+    let mut resolved_fill = vml_fill::resolve(shape, shape_type, media_map);
+    let mut resolved_stroke = resolve_vml_stroke(shape, shape_type);
+    let mut geometry_unavailable = preset_geometry.is_none()
+        && primitive.is_none()
+        && shape.tag_name().name() != "arc"
+        && vml_geometry::path_source(shape, shape_type).is_none();
+    let geometry = if let Some((geometry, _)) = &primitive {
+        Some(vml_geometry::Geometry {
+            paths: geometry.paths.clone(),
+            paint: geometry.paint.clone(),
+        })
+    } else if !is_picture && shape.tag_name().name() == "arc" {
+        let acquired = vml_geometry::arc(shape);
+        geometry_unavailable = acquired.is_none();
+        acquired
+    } else if !is_picture && vml_geometry::path_source(shape, shape_type).is_some() {
+        let acquired = vml_geometry::acquire(
+            shape,
+            shape_type,
+            width_pt * physical_scale.0,
+            height_pt * physical_scale.1,
+        );
+        geometry_unavailable = acquired.is_none();
+        acquired
+    } else {
+        None
+    };
+    let (subpaths, subpath_paint) = if let Some(geometry) = geometry {
+        preset_geometry = None;
+        (geometry.paths, geometry.paint)
+    } else {
+        if geometry_unavailable {
+            preset_geometry = None;
+        }
+        (Vec::new(), Vec::new())
+    };
+    // CT_Path controls override shape and decoration properties (§19.1.2.14).
+    if vml_geometry::path_attr(shape, shape_type, "fillok").and_then(parse_vml_true_false)
+        == Some(false)
+    {
+        resolved_fill.fill = None;
+        resolved_fill.incomplete = false;
+    }
+    if vml_geometry::path_attr(shape, shape_type, "strokeok").and_then(parse_vml_true_false)
+        == Some(false)
+    {
+        resolved_stroke.color = None;
+    }
+
+    // Part 4 §19.1.2.14: an authored/custom path permits arrows only
+    // when effective arrowok is true (default false), independently of the
+    // stroke's start/end arrow settings. Primitive lines without a CT_Path
+    // retain their native stroke arrows; no path override exists there.
+    if !vml_geometry::arrows_enabled(shape, shape_type) {
+        resolved_stroke.head_end = None;
+        resolved_stroke.tail_end = None;
+    }
 
     // ECMA-376 Part 4 §19.1.2.5 `<v:fill opacity>` — fill alpha (default opaque).
     let fill_opacity = resolved_fill.opacity;
@@ -12175,6 +12409,7 @@ fn parse_vml_pict(
                 .and_then(parse_vml_true_false)
         });
     let text_path = text_path_node
+        .or(inherited_text_path_node)
         .and_then(|node| parse_vml_textpath(node, inherited_text_path_node, text_path_ok));
 
     // §19.1.2.19 style `rotation` — degrees clockwise (default 0).
@@ -12205,7 +12440,7 @@ fn parse_vml_pict(
             .descendants()
             .find(|n| n.is_element() && n.tag_name().name() == "txbxContent")
     });
-    let (text_box_content, parsed_legacy_blocks) = match text_box_content_node {
+    let (mut text_box_content, parsed_legacy_blocks) = match text_box_content_node {
         Some(content) if text_path.is_some() => {
             // Before B2, a VML textPath suppressed txbxContent before parsing,
             // so its paragraphs did not advance document numbering. Preserve
@@ -12227,42 +12462,96 @@ fn parse_vml_pict(
         ),
         None => (Vec::new(), Vec::new()),
     };
+    let stroke_image = resolved_stroke
+        .color
+        .as_ref()
+        .and_then(|_| vml_fill::stroke_image(shape, shape_type, media_map));
+    // Formula names such as emuwidth/pixelwidth use the same physical child
+    // frame for text rectangles and visible paths, including scaled groups.
+    let text_rects = vml_geometry::text_rects(
+        shape,
+        shape_type,
+        width_pt * physical_scale.0,
+        height_pt * physical_scale.1,
+    );
+    let edge_strokes = vml_geometry::edge_strokes(shape, shape_type, media_map);
+    let missing_edge_pen = edge_strokes.iter().any(|edge| {
+        let attr = |host| {
+            vml_direct_child(host, "stroke")
+                .and_then(|n| vml_direct_child(n, &edge.edge))
+                .and_then(|n| n.attribute("filltype"))
+        };
+        matches!(
+            attr(shape).or_else(|| shape_type.and_then(attr)),
+            Some("tile" | "pattern" | "frame")
+        ) && edge.image.is_none()
+    });
+    let missing_pen = resolved_stroke.color.is_some()
+        && matches!(
+            vml_decoration_attr(shape, shape_type, "stroke", "filltype"),
+            Some("tile" | "pattern" | "frame")
+        )
+        && stroke_image.is_none();
+    let malformed_text_rects =
+        vml_geometry::path_attr(shape, shape_type, "textboxrect").is_some() && text_rects.is_none();
+    if geometry_unavailable
+        || missing_pen
+        || missing_edge_pen
+        || malformed_text_rects
+        || resolved_fill.incomplete
+        || vml_geometry::incomplete_leaf(shape, shape_type)
+    {
+        // Malformed path/formula input must not erase otherwise available text
+        // or paint a substitute rectangle. Retain the story and disclose only
+        // the unavailable geometry/decoration through its established marker.
+        text_box_content.push(TextBoxBlockWire::Unsupported {
+            kind: "unsupportedTextBoxBlock".into(),
+            q_name: "v:shape".into(),
+            source_path: vec![text_box_content.len()],
+        });
+    }
     let text_blocks = if text_path.is_some() {
         Vec::new()
     } else {
         parsed_legacy_blocks
     };
 
-    // §19.1.2.19: Word's absolute VML text boxes encode their numeric
-    // position in margin-left / margin-top even when `left:0` is also present.
-    // Preserve those authored offsets instead of collapsing every box to the
-    // anchor paragraph's leading corner.
-    let anchor_x_pt = line_points
-        .map(|(from, to)| from.0.min(to.0))
-        .unwrap_or_else(|| {
-            vml_css_length_pt(style, "margin-left")
-                .or_else(|| vml_css_length_pt(style, "left"))
-                .unwrap_or(0.0)
-        });
-    let anchor_y_pt = line_points
-        .map(|(from, to)| from.1.min(to.1))
-        .unwrap_or_else(|| {
-            vml_css_length_pt(style, "margin-top")
-                .or_else(|| vml_css_length_pt(style, "top"))
-                .unwrap_or(0.0)
-        });
+    // Primitive endpoints own their bounds; other numeric boxes use the same
+    // combined offsets as retained Word anchors and nested VML groups.
+    let anchor_x_pt = primitive
+        .as_ref()
+        .map(|(_, (x, _, _, _))| *x)
+        .or_else(|| line_points.map(|(from, to)| from.0.min(to.0)))
+        .unwrap_or_else(|| coordinates.offset(style, "left", "margin-left"));
+    let anchor_y_pt = primitive
+        .as_ref()
+        .map(|(_, (_, y, _, _))| *y)
+        .or_else(|| line_points.map(|(from, to)| from.1.min(to.1)))
+        .unwrap_or_else(|| coordinates.offset(style, "top", "margin-top"));
     let style_flip = vml_css_str(style, "flip").unwrap_or_default();
-    let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0)
-        ^ style_flip.split_whitespace().any(|axis| axis == "x");
-    let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1)
-        ^ style_flip.split_whitespace().any(|axis| axis == "y");
-    let adj_values = shape
-        .attribute("adj")
-        .or_else(|| shape_type.and_then(|node| node.attribute("adj")))
-        .and_then(|value| value.split(',').next())
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .map(|value| vec![Some(value * 100000.0 / 21600.0)])
-        .unwrap_or_default();
+    let flip_h = line_points.is_some_and(|(from, to)| from.0 > to.0) ^ style_flip.contains('x');
+    let flip_v = line_points.is_some_and(|(from, to)| from.1 > to.1) ^ style_flip.contains('y');
+    let adj_values = if shape.tag_name().name() == "roundrect" {
+        // Part 4 §19.1.2.17: VML arcsize defaults to 20% of half the
+        // smaller extent. DrawingML roundRect's adj is a fraction of that
+        // extent, so the conversion is exactly one half of the VML fraction.
+        let raw = shape.attribute("arcsize").unwrap_or("20%");
+        let fraction = raw
+            .strip_suffix('%')
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|n| n / 100.0)
+            .or_else(|| parse_vml_opacity(raw))
+            .unwrap_or(0.2);
+        vec![Some(fraction * 50000.0)]
+    } else {
+        shape
+            .attribute("adj")
+            .or_else(|| shape_type.and_then(|node| node.attribute("adj")))
+            .and_then(|value| value.split(',').next())
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(|value| vec![Some(value * 100000.0 / 21600.0)])
+            .unwrap_or_default()
+    };
     let anchor = vml_css_str(style, "position")
         .is_some_and(|value| value.eq_ignore_ascii_case("absolute"))
         && vml_word_has_complete_anchor_reference(shape, style);
@@ -12285,16 +12574,84 @@ fn parse_vml_pict(
         anchor_y_relative_from,
         behind_doc,
         z_order: 0,
-        subpaths: Vec::new(),
-        subpath_paint: Vec::new(),
+        subpaths,
+        subpath_paint,
         preset_geometry,
+        vml_shadow: vml_geometry::shadow(shape, shape_type),
+        vml_skew: vml_geometry::skew(shape, shape_type),
+        vml_edge_strokes: if vml_geometry::path_attr(shape, shape_type, "strokeok")
+            .and_then(parse_vml_true_false)
+            == Some(false)
+        {
+            Vec::new()
+        } else {
+            edge_strokes
+        },
         adj_values,
+        vml_concentric_gradient: vml_geometry::path_attr(shape, shape_type, "gradientshapeok")
+            .and_then(parse_vml_true_false)
+            == Some(true)
+            && vml_fill::property(shape, shape_type, "type") == Some("gradientradial"),
+        // Part 4 §19.1.2.21 color2: black source pixels use the alternate
+        // colour; every coloured pixel uses the effective primary stroke colour.
+        vml_stroke_pattern: (stroke_image.is_some()
+            && vml_decoration_attr(shape, shape_type, "stroke", "filltype") == Some("pattern"))
+        .then(|| Duotone {
+            clr1: vml_decoration_attr(shape, shape_type, "stroke", "color2")
+                .and_then(vml_color_hex6)
+                .unwrap_or_else(|| "000000".into()),
+            clr2: resolved_stroke.color.as_deref().unwrap_or("000000")[..6].to_string(),
+        }),
+        vml_stroke_fill: stroke_image,
+        vml_text_rects: text_rects.unwrap_or_default(),
+        // Part 4 §§19.1.2.19/.21/.14: the path veto wins over both
+        // host and decoration requests; omission uses the centered pen.
+        vml_inset_pen: {
+            let layer = |host| {
+                vml_direct_child(host, "stroke")
+                    .and_then(|n| n.attribute("insetpen"))
+                    .or_else(|| host.attribute("insetpen"))
+                    .and_then(parse_vml_true_false)
+            };
+            layer(shape)
+                .or_else(|| shape_type.and_then(layer))
+                .unwrap_or(false)
+                && vml_geometry::path_attr(shape, shape_type, "insetpenok")
+                    .and_then(parse_vml_true_false)
+                    != Some(false)
+        },
         fill: resolved_fill.fill,
         fill_opacity,
         stroke: resolved_stroke.color,
         stroke_width: resolved_stroke.width_pt,
         stroke_dash: resolved_stroke.dash,
         stroke_cap: resolved_stroke.cap,
+        // ECMA-376 Part 4 §19.1.2.21 specifies round when joinstyle is
+        // omitted. Library policy: retain the pre-existing miter paint fallback
+        // for omission; applying round regresses rectangle outlines against
+        // Word-exported PDF paths. MS-OE376 §§2.1.1707/.1708/.1712 and the
+        // corresponding MS-OI29500 Part 4 rect/roundrect/stroke notes do not
+        // document a join-default deviation, so this is not a general Office
+        // compatibility rule. Explicit instance/shapetype joins still win;
+        // standalone and grouped leaves share this acquisition path.
+        stroke_join: vml_decoration_attr(shape, shape_type, "stroke", "joinstyle")
+            .map(str::to_string),
+        // Part 4 §19.1.2.21: VML's miter limit defaults to eight.
+        stroke_miter_limit: Some(
+            vml_decoration_attr(shape, shape_type, "stroke", "miterlimit")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(8.0),
+        ),
+        stroke_compound: vml_decoration_attr(shape, shape_type, "stroke", "linestyle")
+            .and_then(|s| match s {
+                "single" => Some("sng"),
+                "thinThin" => Some("dbl"),
+                "thinThick" => Some("thinThick"),
+                "thickThin" => Some("thickThin"),
+                "thickBetweenThin" => Some("tri"),
+                _ => None,
+            })
+            .map(str::to_string),
         head_end: resolved_stroke.head_end,
         tail_end: resolved_stroke.tail_end,
         rotation,
@@ -12342,6 +12699,21 @@ fn vml_direct_child<'a, 'input>(
         .find(|child| child.is_element() && child.tag_name().name() == local_name)
 }
 
+fn vml_decoration_attr<'a>(
+    shape: roxmltree::Node<'a, '_>,
+    definition: Option<roxmltree::Node<'a, '_>>,
+    element: &str,
+    name: &str,
+) -> Option<&'a str> {
+    vml_direct_child(shape, element)
+        .and_then(|n| n.attributes().find(|a| a.name() == name).map(|a| a.value()))
+        .or_else(|| {
+            definition
+                .and_then(|n| vml_direct_child(n, element))
+                .and_then(|n| n.attributes().find(|a| a.name() == name).map(|a| a.value()))
+        })
+}
+
 struct ResolvedVmlStroke {
     color: Option<String>,
     width_pt: f64,
@@ -12354,62 +12726,7 @@ struct ResolvedVmlStroke {
 struct ResolvedVmlFill {
     fill: Option<ShapeFill>,
     opacity: Option<f64>,
-}
-
-/// Resolve the Part 4 §19.1.2.5/§19.1.2.19 fill cascade. Instance properties
-/// override the referenced shapetype; within either layer `<v:fill>` overrides
-/// the element attributes. An enabled fill defaults to white. Word's PDF of a
-/// rotated VML textpath watermark with `v:fill type="pattern"` and a valid image
-/// relationship paints the textpath in `color` alone, without an image tile.
-/// That observation supports the solid projection for textpath watermarks; it
-/// does not establish image-pattern behaviour for other VML shape hosts.
-fn resolve_vml_fill(
-    shape: roxmltree::Node,
-    shape_type: Option<roxmltree::Node>,
-) -> ResolvedVmlFill {
-    let shape_fill = vml_direct_child(shape, "fill");
-    let type_fill = shape_type.and_then(|node| vml_direct_child(node, "fill"));
-    let type_enabled = type_fill
-        .and_then(|node| node.attribute("on"))
-        .and_then(parse_vml_true_false)
-        .or_else(|| {
-            shape_type
-                .and_then(|node| node.attribute("filled"))
-                .and_then(parse_vml_true_false)
-        })
-        .unwrap_or(true);
-    let enabled = shape_fill
-        .and_then(|node| node.attribute("on"))
-        .and_then(parse_vml_true_false)
-        .or_else(|| shape.attribute("filled").and_then(parse_vml_true_false))
-        .unwrap_or(type_enabled);
-    let fill = enabled.then(|| {
-        let color = shape_fill
-            .and_then(|node| node.attribute("color"))
-            .and_then(vml_color_hex6)
-            .or_else(|| shape.attribute("fillcolor").and_then(vml_color_hex6))
-            .or_else(|| {
-                type_fill
-                    .and_then(|node| node.attribute("color"))
-                    .and_then(vml_color_hex6)
-            })
-            .or_else(|| {
-                shape_type
-                    .and_then(|node| node.attribute("fillcolor"))
-                    .and_then(vml_color_hex6)
-            })
-            .unwrap_or_else(|| "FFFFFF".to_string());
-        ShapeFill::Solid { color }
-    });
-    let opacity = enabled
-        .then(|| {
-            shape_fill
-                .and_then(|node| node.attribute("opacity"))
-                .or_else(|| type_fill.and_then(|node| node.attribute("opacity")))
-                .and_then(parse_vml_opacity)
-        })
-        .flatten();
-    ResolvedVmlFill { fill, opacity }
+    incomplete: bool,
 }
 
 /// Resolve the Part 4 §19.1.2.19/§19.1.2.21 stroke cascade as one cohesive
@@ -12497,17 +12814,28 @@ fn resolve_vml_stroke(
                 })
         })
         .flatten();
-    let head_end = shape_stroke
-        .filter(|node| node.attribute("startarrow").is_some())
-        .or_else(|| type_stroke.filter(|node| node.attribute("startarrow").is_some()))
-        .and_then(|node| {
-            parse_vml_line_end(node, "startarrow", "startarrowwidth", "startarrowlength")
-        });
-    let tail_end = shape_stroke
-        .filter(|node| node.attribute("endarrow").is_some())
-        .or_else(|| type_stroke.filter(|node| node.attribute("endarrow").is_some()))
-        .and_then(|node| parse_vml_line_end(node, "endarrow", "endarrowwidth", "endarrowlength"));
+    let head_end = parse_vml_line_end(
+        shape,
+        shape_type,
+        "startarrow",
+        "startarrowwidth",
+        "startarrowlength",
+    );
+    let tail_end = parse_vml_line_end(
+        shape,
+        shape_type,
+        "endarrow",
+        "endarrowwidth",
+        "endarrowlength",
+    );
 
+    // Part 4 §19.1.2.21: opacity is independent of fill opacity. Retain
+    // RRGGBBAA, the shared color contract used by layout, strokes and arrows.
+    let opacity = shape_stroke
+        .and_then(|n| n.attribute("opacity"))
+        .or_else(|| type_stroke.and_then(|n| n.attribute("opacity")))
+        .and_then(parse_vml_opacity);
+    let color = color.map(|color| vml_color_alpha(color, opacity));
     ResolvedVmlStroke {
         color,
         width_pt,
@@ -12515,6 +12843,13 @@ fn resolve_vml_stroke(
         cap,
         head_end,
         tail_end,
+    }
+}
+
+fn vml_color_alpha(color: String, opacity: Option<f64>) -> String {
+    match opacity.filter(|a| a.is_finite() && *a < 1.0) {
+        Some(a) => format!("{color}{:02x}", (a.clamp(0.0, 1.0) * 255.0).round() as u8),
+        None => color,
     }
 }
 
@@ -12571,23 +12906,75 @@ fn normalize_vml_dashstyle(raw: &str) -> Option<String> {
 /// inches in the same document (`from="…pt"`, `to="6in"`), while a bare number
 /// in a WordprocessingML `<w:pict>` is interpreted as points.
 fn parse_vml_length_pt(value: &str) -> Option<f64> {
-    let value = value.trim().to_ascii_lowercase();
-    let (number, scale) = if let Some(number) = value.strip_suffix("pt") {
-        (number, 1.0)
-    } else if let Some(number) = value.strip_suffix("in") {
-        (number, 72.0)
-    } else if let Some(number) = value.strip_suffix("cm") {
-        (number, 72.0 / 2.54)
-    } else if let Some(number) = value.strip_suffix("mm") {
-        (number, 72.0 / 25.4)
-    } else if let Some(number) = value.strip_suffix("pc") {
-        (number, 12.0)
-    } else if let Some(number) = value.strip_suffix("px") {
-        (number, 72.0 / 96.0)
-    } else {
-        (value.as_str(), 1.0)
-    };
-    number.trim().parse::<f64>().ok().map(|n| n * scale)
+    VmlStyleCoordinates::Points.length(value)
+}
+
+// ECMA-376 Part 4 §§19.1.2.7/.19 define the parent coordinate space.
+// Documented Office behavior, MS-OE376 §2.1.1692(fff), incorporated by
+// §§2.1.1698/.1707/.1710: ignore unit suffixes on grouped left/top,
+// margin-left/margin-top and width/height. Only these six CSS properties use
+// this context; root/standalone boxes and physical decoration lengths retain
+// point conversion. Combine offsets before the parent transform scales them.
+#[derive(Clone, Copy)]
+enum VmlStyleCoordinates {
+    Points,
+    Parent,
+}
+
+impl VmlStyleCoordinates {
+    fn for_node(node: roxmltree::Node) -> Self {
+        if node
+            .parent()
+            .is_some_and(|parent| parent.has_tag_name(("urn:schemas-microsoft-com:vml", "group")))
+        {
+            Self::Parent
+        } else {
+            Self::Points
+        }
+    }
+
+    fn css_length(self, style: &str, property: &str) -> Option<f64> {
+        vml_css_str(style, property).and_then(|value| self.length(value))
+    }
+
+    fn offset(self, style: &str, leading_property: &str, margin_property: &str) -> f64 {
+        self.css_length(style, leading_property).unwrap_or(0.0)
+            + self.css_length(style, margin_property).unwrap_or(0.0)
+    }
+
+    fn length(self, value: &str) -> Option<f64> {
+        let value = value.trim().to_ascii_lowercase();
+        let (number, scale) = if let Some(number) = value.strip_suffix("pt") {
+            (number, 1.0)
+        } else if let Some(number) = value.strip_suffix("in") {
+            (number, 72.0)
+        } else if let Some(number) = value.strip_suffix("cm") {
+            (number, 72.0 / 2.54)
+        } else if let Some(number) = value.strip_suffix("mm") {
+            (number, 72.0 / 25.4)
+        } else if let Some(number) = value.strip_suffix("pc") {
+            (number, 12.0)
+        } else if let Some(number) = value.strip_suffix("px") {
+            (number, 72.0 / 96.0)
+        } else if matches!(self, Self::Parent) {
+            // CSS relative length units are also ignored inside a group;
+            // resolving em/ex against a font would invent a physical scale.
+            (
+                value
+                    .strip_suffix("em")
+                    .or_else(|| value.strip_suffix("ex"))
+                    .unwrap_or(&value),
+                1.0,
+            )
+        } else {
+            (value.as_str(), 1.0)
+        };
+        let scale = match self {
+            Self::Points => scale,
+            Self::Parent => 1.0,
+        };
+        number.trim().parse::<f64>().ok().map(|n| n * scale)
+    }
 }
 
 fn parse_vml_textbox_inset(raw: &str, defaults: [f64; 4]) -> Option<[f64; 4]> {
@@ -12679,17 +13066,16 @@ fn parse_vml_point_pt(value: &str) -> Option<(f64, f64)> {
 /// Convert VML `<v:stroke startarrow/endarrow>` to the DrawingML-compatible
 /// line-end contract used by the shared renderer.
 fn parse_vml_line_end(
-    stroke: roxmltree::Node,
+    shape: roxmltree::Node,
+    definition: Option<roxmltree::Node>,
     type_attr: &str,
     width_attr: &str,
     length_attr: &str,
 ) -> Option<LineEnd> {
-    let r#type = match stroke
-        .attribute(type_attr)?
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    // All three arrow properties cascade independently, including a local
+    // width/length override when the arrow type belongs to the shapetype.
+    let property = |name| vml_decoration_attr(shape, definition, "stroke", name);
+    let r#type = match property(type_attr)?.trim().to_ascii_lowercase().as_str() {
         "none" => return None,
         "block" => "triangle",
         "classic" => "stealth",
@@ -12698,12 +13084,12 @@ fn parse_vml_line_end(
         "open" => "arrow",
         _ => return None,
     };
-    let w = match stroke.attribute(width_attr).unwrap_or("medium").trim() {
+    let w = match property(width_attr).unwrap_or("medium").trim() {
         "narrow" | "sm" => "sm",
         "wide" | "lg" => "lg",
         _ => "med",
     };
-    let len = match stroke.attribute(length_attr).unwrap_or("medium").trim() {
+    let len = match property(length_attr).unwrap_or("medium").trim() {
         "short" | "sm" => "sm",
         "long" | "lg" => "lg",
         _ => "med",
@@ -12837,6 +13223,14 @@ fn vml_word_has_complete_anchor_reference(shape: roxmltree::Node, style: &str) -
         && has_axis("mso-position-vertical-relative", "anchory")
 }
 
+// MS-OE376 §2.1.1692(ee-ff) documents Office combining
+// left + margin-left and top + margin-top. Resolve both components before a
+// group transform or page-anchor choice consumes them; zero does not cancel
+// the other component. Primitive endpoint bounds are acquired separately.
+fn vml_numeric_offset_pt(style: &str, leading_property: &str, margin_property: &str) -> f64 {
+    VmlStyleCoordinates::Points.offset(style, leading_property, margin_property)
+}
+
 fn vml_word_anchor_choice(style: &str, axis: &str) -> AnchorAxisChoiceWire {
     let (position_property, percent_property, leading_property, margin_property) =
         if axis == "horizontal" {
@@ -12855,16 +13249,12 @@ fn vml_word_anchor_choice(style: &str, axis: &str) -> AnchorAxisChoiceWire {
             )
         };
     let authored_offset = || {
-        // Part 4 §19.1.2.19 defines the two authored numeric components;
-        // MS-OE376 §2.1.1692(ee-ff) says Office combines each pair. Its note
-        // (r) is in tension with current Word output for the exact
+        // MS-OE376 §2.1.1692(r) is in tension with current Word output for the exact
         // `mso-position-*:absolute` token: Word retains the combined value as
         // the page/margin offset rather than moving the object to the relative
         // frame origin. Keep that compatibility interpretation restricted to
         // this numeric offset branch; align and percent values never enter it.
-        let leading = vml_css_length_pt(style, leading_property).unwrap_or(0.0);
-        let margin = vml_css_length_pt(style, margin_property).unwrap_or(0.0);
-        leading + margin
+        vml_numeric_offset_pt(style, leading_property, margin_property)
     };
     if let Some(raw) = vml_css_str(style, position_property) {
         let aligned = match raw {
@@ -13079,74 +13469,39 @@ fn vml_color_hex6(c: &str) -> Option<String> {
 /// fraction, or `None` when unparseable.
 fn parse_vml_opacity(raw: &str) -> Option<f64> {
     let raw = raw.trim();
+    if let Some(num) = raw.strip_suffix('%') {
+        return num.trim().parse::<f64>().ok().map(|n| n / 100.0);
+    }
     if let Some(num) = raw.strip_suffix('f') {
         return num.trim().parse::<f64>().ok().map(|n| n / 65536.0);
     }
     raw.parse::<f64>().ok()
 }
 
-/// Parse a `<v:textpath>` (§19.1.2.23) into a `TextPath`: its `string` (the
-/// WordArt text) plus the font family / weight / style extracted from the
-/// element's CSS `style` (`font-family`, `font-weight`, `font-style`, and the
-/// `bold`/`italic` keywords of the `font` shorthand). Quotes around the family
-/// are stripped. Returns `None` when the element carries no `string`.
+/// Resolve `<v:textpath>` text and controls (Part 4 §19.1.2.23), including
+/// effective CSS font declarations from the instance and its shapetype.
 fn parse_vml_textpath(
     textpath: roxmltree::Node,
     inherited: Option<roxmltree::Node>,
     text_path_ok: Option<bool>,
 ) -> Option<TextPath> {
-    let string = textpath.attribute("string")?.to_string();
+    let string = textpath
+        .attribute("string")
+        .or_else(|| inherited.and_then(|n| n.attribute("string")))
+        .unwrap_or("")
+        .to_string();
     let style = textpath.attribute("style").unwrap_or("");
     let inherited_style = inherited
         .and_then(|node| node.attribute("style"))
         .unwrap_or("");
 
-    // font-family: prefer the explicit property, else the last token of the
-    // `font` shorthand (`style variant weight size/line family`). Strip quotes.
-    let strip_quotes = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
-    let font_family = vml_css_str(style, "font-family")
-        .map(strip_quotes)
-        .or_else(|| {
-            vml_css_str(style, "font").and_then(|shorthand| {
-                // The family is everything after the size token; a simple,
-                // robust take is the substring after the last size-like token.
-                // Fall back to the last whitespace-delimited token.
-                shorthand
-                    .rsplit(|c: char| c.is_whitespace())
-                    .find(|t| !t.is_empty())
-                    .map(strip_quotes)
-            })
-        })
-        .or_else(|| vml_css_str(inherited_style, "font-family").map(strip_quotes))
-        .or_else(|| {
-            vml_css_str(inherited_style, "font").and_then(|shorthand| {
-                shorthand
-                    .rsplit(|c: char| c.is_whitespace())
-                    .find(|t| !t.is_empty())
-                    .map(strip_quotes)
-            })
-        })
-        .filter(|f| !f.is_empty());
-
-    let font_lc = vml_css_str(style, "font")
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let bold = vml_css_str(style, "font-weight")
-        .map(|w| w.eq_ignore_ascii_case("bold") || w.trim().parse::<u32>().is_ok_and(|n| n >= 600))
-        .unwrap_or(false)
-        || font_lc.split_whitespace().any(|t| t == "bold");
-    let italic = vml_css_str(style, "font-style")
-        .map(|s| s.eq_ignore_ascii_case("italic") || s.eq_ignore_ascii_case("oblique"))
-        .unwrap_or(false)
-        || font_lc
-            .split_whitespace()
-            .any(|t| t == "italic" || t == "oblique");
+    let font = vml_text_style::resolve(style, inherited_style);
 
     Some(TextPath {
         string,
-        font_family,
-        bold,
-        italic,
+        font_family: font.family.map(str::to_string),
+        bold: font.bold.unwrap_or(false),
+        italic: font.italic.unwrap_or(false),
         vml: VmlTextPathFacts {
             text_path_ok: Some(text_path_ok.unwrap_or(false)),
             on: Some(resolved_vml_textpath_bool(textpath, inherited, "on").unwrap_or(false)),
@@ -13160,8 +13515,7 @@ fn parse_vml_textpath(
             x_scale: Some(
                 resolved_vml_textpath_bool(textpath, inherited, "xscale").unwrap_or(false),
             ),
-            font_size_pt: vml_css_length_pt(style, "font-size")
-                .or_else(|| vml_css_length_pt(inherited_style, "font-size")),
+            font_size_pt: font.size_pt,
         },
     })
 }
@@ -13181,29 +13535,77 @@ fn resolved_vml_textpath_bool(
         })
 }
 
-/// Parse a bare legacy VML `<w:pict>` picture — a `<v:shape>` (or
-/// `<v:rect>`/`<v:roundrect>`/`<v:oval>`) carrying a `<v:imagedata r:id>`
-/// (ECMA-376 Part 4 §19.1.2.11 imagedata) with NO surrounding `<w:object>`. This
-/// is the non-OLE inline VML image form (e.g. a header picture Word emits as VML
-/// rather than DrawingML). The rId maps to an embedded part via the media map,
-/// and the draw size comes from the shape's CSS `style` width/height in pt
-/// (§19.1.2.19). The result is an inline `ImageRun`, feeding the same image
-/// pipeline as a DrawingML `<a:blip>` picture.
-///
-/// Returns `None` (leaving the pict to the text-box path) when:
-///   - no shape carries a `<v:imagedata r:id>` (it is a filled/text panel), or
-///   - the relevant shape is inside a `<v:group>` — a grouped shape's
-///     width/height are expressed in the GROUP's coordinate system
-///     (`coordsize`), not points, so treating them as pt would badly mis-size
-///     the image. Resolving the group transform (child offset × group scale) is
-///     a separate VML-group feature; until then a grouped imagedata is skipped
-///     rather than mis-rendered, matching the prior behaviour, or
-///   - the rId does not resolve, or the shape has no positive pt dimensions.
+// Part 4 §19.1.2.11: crop insets are fractions, percentages, or signed
+// 16.16 fixed-point values. Preserve negative insets for the existing srcRect
+// pipeline; clamping here would discard authored outsets.
+fn vml_image_crop(node: roxmltree::Node) -> Option<SrcRect> {
+    let fraction = |name| {
+        node.attribute(name)
+            .and_then(|s| {
+                s.trim()
+                    .strip_suffix('%')
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|n| n / 100.0)
+                    .or_else(|| parse_vml_opacity(s))
+            })
+            .filter(|n| n.is_finite())
+            .unwrap_or(0.0)
+    };
+    let crop = SrcRect {
+        l: fraction("cropleft"),
+        t: fraction("croptop"),
+        r: fraction("cropright"),
+        b: fraction("cropbottom"),
+    };
+    (crop.l != 0.0 || crop.t != 0.0 || crop.r != 0.0 || crop.b != 0.0).then_some(crop)
+}
+
+/// VML `id` is an object identifier. Only relationship-namespace id/pict
+/// (or Office relid) reference an image; the generic namespace fallback would
+/// let editor metadata shadow an inherited resource (Part 4 §19.1.2.5/.11).
+fn vml_image_relationship<'a>(node: roxmltree::Node<'a, '_>) -> Option<&'a str> {
+    node.attribute((relationships::TRANSITIONAL, "id"))
+        .or_else(|| node.attribute((relationships::STRICT, "id")))
+        .or_else(|| node.attribute((relationships::TRANSITIONAL, "pict")))
+        .or_else(|| node.attribute((relationships::STRICT, "pict")))
+        .or_else(|| node.attribute((relationships::TRANSITIONAL, "href")))
+        .or_else(|| node.attribute((relationships::STRICT, "href")))
+        .or_else(|| {
+            node.attributes()
+                .find(|a| a.name() == "relid")
+                .map(|a| a.value())
+        })
+}
+
+fn vml_image_source(node: roxmltree::Node, media_map: &HashMap<String, String>) -> Option<String> {
+    if let Some(rid) = vml_image_relationship(node) {
+        return media_map.get(rid).cloned();
+    }
+    // VML src is a URI rather than a relationship ID. Resolve package-relative
+    // sources against this story's base; missing bytes use normal lazy resource
+    // diagnostics. External URIs have no package part and remain unavailable.
+    let path = ooxml_common::rels::resolve_part_name(
+        media_map
+            .get("\0vml-source-part")
+            .map(String::as_str)
+            .unwrap_or("word/document.xml"),
+        node.attribute("src")?,
+    )?;
+    let key = ooxml_common::rels::part_name_equivalence_key(&path);
+    Some(
+        media_map
+            .get(&format!("\0vml-part:{key}"))
+            .cloned()
+            .unwrap_or(path),
+    )
+}
+
 fn vml_image_run(
     shape: roxmltree::Node,
     image_path: String,
     width_pt: f64,
     height_pt: f64,
+    imagedata: roxmltree::Node,
 ) -> ImageRun {
     let style = shape.attribute("style").unwrap_or("");
     // ECMA-376 Part 4 §19.1.2.19: an absolute VML image has its own
@@ -13211,16 +13613,12 @@ fn vml_image_run(
     let anchor =
         vml_css_str(style, "position").is_some_and(|value| value.eq_ignore_ascii_case("absolute"));
     let anchor_x_pt = if anchor {
-        vml_css_length_pt(style, "margin-left")
-            .or_else(|| vml_css_length_pt(style, "left"))
-            .unwrap_or(0.0)
+        vml_numeric_offset_pt(style, "left", "margin-left")
     } else {
         0.0
     };
     let anchor_y_pt = if anchor {
-        vml_css_length_pt(style, "margin-top")
-            .or_else(|| vml_css_length_pt(style, "top"))
-            .unwrap_or(0.0)
+        vml_numeric_offset_pt(style, "top", "margin-top")
     } else {
         0.0
     };
@@ -13245,12 +13643,12 @@ fn vml_image_run(
         mime_type: mime_from_ext(&image_path).to_string(),
         image_path,
         svg_image_path: None,
-        src_rect: None,
+        src_rect: vml_image_crop(imagedata),
         width_pt,
         height_pt,
-        rotation: 0.0,
-        flip_h: false,
-        flip_v: false,
+        rotation: vml_css_length_pt(style, "rotation").unwrap_or(0.0),
+        flip_h: vml_css_str(style, "flip").is_some_and(|value| value.contains('x')),
+        flip_v: vml_css_str(style, "flip").is_some_and(|value| value.contains('y')),
         anchor,
         anchor_x_pt,
         anchor_y_pt,
@@ -13275,6 +13673,23 @@ fn vml_image_run(
     }
 }
 
+/// Parse a bare legacy VML `<w:pict>` picture — a `<v:shape>` (or
+/// `<v:rect>`/`<v:roundrect>`/`<v:oval>`) carrying a `<v:imagedata r:id>`
+/// (ECMA-376 Part 4 §19.1.2.11 imagedata) with NO surrounding `<w:object>`. This
+/// is the non-OLE inline VML image form (e.g. a header picture Word emits as VML
+/// rather than DrawingML). The rId maps to an embedded part via the media map,
+/// and the draw size comes from the shape's CSS `style` width/height in pt
+/// (§19.1.2.19). The result is an inline `ImageRun`, feeding the same image
+/// pipeline as a DrawingML `<a:blip>` picture.
+///
+/// Returns `None` (leaving the pict to the text-box path) when:
+///   - no shape carries a `<v:imagedata r:id>` (it is a filled/text panel), or
+///   - the relevant shape is inside a `<v:group>` — a grouped shape's
+///     width/height are expressed in the GROUP's coordinate system
+///     (`coordsize`), not points, so treating them as pt would badly mis-size
+///     the image. Resolving the group transform (child offset × group scale) is
+///     handled by `vml_group` before this ungrouped-picture reader, or
+///   - the rId does not resolve, or the shape has no positive pt dimensions.
 fn parse_vml_pict_image(
     pict: roxmltree::Node,
     media_map: &HashMap<String, String>,
@@ -13296,13 +13711,7 @@ fn parse_vml_pict_image(
     let imagedata = shape
         .children()
         .find(|c| c.is_element() && c.tag_name().name() == "imagedata")?;
-    let rid = attr_ns(
-        &imagedata,
-        relationships::TRANSITIONAL,
-        relationships::STRICT,
-        "id",
-    )?;
-    let image_path = media_map.get(rid)?.clone();
+    let image_path = vml_image_source(imagedata, media_map)?;
 
     let style = shape.attribute("style").unwrap_or("");
     let width_pt = vml_css_length_pt(style, "width").unwrap_or(0.0);
@@ -13311,7 +13720,9 @@ fn parse_vml_pict_image(
         return None;
     }
 
-    Some(vml_image_run(shape, image_path, width_pt, height_pt))
+    Some(vml_image_run(
+        shape, image_path, width_pt, height_pt, imagedata,
+    ))
 }
 
 /// Extract the preview image from an embedded OLE object (`<w:object>`,
@@ -13372,7 +13783,9 @@ fn parse_object_ole_image(
         return None;
     }
 
-    Some(vml_image_run(shape, image_path, width_pt, height_pt))
+    Some(vml_image_run(
+        shape, image_path, width_pt, height_pt, imagedata,
+    ))
 }
 
 /// Result of inspecting a shape's spPr for a direct fill.
@@ -13456,6 +13869,7 @@ fn parse_shape_fill(
                     None
                 };
                 return FillSpec::Explicit(Box::new(ShapeFill::Image {
+                    vml: None,
                     image_path,
                     mime_type,
                     svg_image_path,
@@ -13768,6 +14182,7 @@ fn parse_custom_geometry_with_paint(
         .into_iter()
         .filter_map(|path| {
             let paint = PathPaint {
+                fill_rule: None,
                 fill: path.fill.clone(),
                 stroke: path.stroke,
             };
@@ -21316,6 +21731,172 @@ mod svg_blip_tests {
     /// while a text-only range does not add a break. The cached text must still
     /// match the range; an unrelated/stale result cannot safely borrow its flow.
     #[test]
+    fn ref_bookmark_limits_publish_a_diagnostic_in_both_parser_entry_points() {
+        let instruction = " ".repeat(256) + "REF Anchor";
+        let body = format!(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText>{instruction}</w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Cached result</w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#
+        );
+        let data = build_docx_with_media(&body);
+        for streamed in [false, true] {
+            let doc = if streamed {
+                parse_from_bytes_streamed_with_limits(&data, None, None, "ref-budget-test")
+            } else {
+                parse_from_bytes(&data)
+            }
+            .unwrap();
+            assert!(doc
+                .diagnostics
+                .iter()
+                .any(|d| d.code == PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT));
+            assert!(doc.body.iter().any(|b| matches!(b, BodyElement::Paragraph(p)
+                if p.runs.iter().any(|r| matches!(r, DocRun::Text(t) if t.text == "Cached result")))));
+        }
+    }
+
+    #[test]
+    fn ref_bookmark_limits_in_header_and_note_stories_reach_both_document_entry_points() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let instruction = " ".repeat(256) + "REF Anchor";
+        let field = format!(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText>{instruction}</w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Cached</w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#
+        );
+        let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let document = format!(
+            r#"<w:document xmlns:w="{w}" xmlns:r="{r}"><w:body>
+          <w:p><w:r><w:footnoteReference w:id="1"/></w:r>
+          <w:r><w:rPr><w:effect w:val="shimmer"/></w:rPr><w:t>Body</w:t></w:r></w:p>
+          <w:sectPr><w:headerReference w:type="default" r:id="hdr"/></w:sectPr>
+        </w:body></w:document>"#
+        );
+        let rels = format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="hdr" Type="{r}/header" Target="header.xml"/>
+          <Relationship Id="notes" Type="{r}/footnotes" Target="footnotes.xml"/>
+        </Relationships>"#
+        );
+        let header = format!(r#"<w:hdr xmlns:w="{w}">{field}</w:hdr>"#);
+        let notes = format!(
+            r#"<w:footnotes xmlns:w="{w}"><w:footnote w:id="1">{field}</w:footnote></w:footnotes>"#
+        );
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            write_test_content_types(&mut writer);
+            for (path, xml) in [
+                ("word/document.xml", document),
+                ("word/_rels/document.xml.rels", rels),
+                ("word/header.xml", header),
+                ("word/footnotes.xml", notes),
+            ] {
+                writer
+                    .start_file(path, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(xml.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let mut previous_diagnostics = None;
+        for streamed in [false, true] {
+            let doc = if streamed {
+                parse_from_bytes_streamed_with_limits(&bytes, None, None, "story-ref-budget-test")
+            } else {
+                parse_from_bytes(&bytes)
+            }
+            .unwrap();
+            let diagnostics: Vec<_> = doc
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT)
+                .collect();
+            assert_eq!(diagnostics.len(), 2, "header and note, streamed={streamed}");
+            assert!(diagnostics.iter().all(|d| d.path.is_empty()));
+            let wire = serde_json::to_value(&doc.diagnostics).unwrap();
+            if let Some(previous) = previous_diagnostics {
+                assert_eq!(previous, wire);
+            }
+            previous_diagnostics = Some(wire);
+        }
+    }
+
+    #[test]
+    fn unacquired_vml_groups_in_stories_reach_both_document_entry_points() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let namespaces = format!(r#"xmlns:w="{w}" xmlns:v="urn:schemas-microsoft-com:vml""#);
+        let group = r#"<w:p><w:r><w:pict><v:group style="width:auto;height:20pt"><v:rect style="width:100;height:100"/></v:group></w:pict></w:r></w:p>"#;
+        let document = format!(
+            r#"<w:document xmlns:w="{w}" xmlns:r="{r}"><w:body>
+            <w:p><w:r><w:t>Body</w:t><w:footnoteReference w:id="1"/><w:endnoteReference w:id="1"/></w:r></w:p>
+            <w:sectPr><w:headerReference w:type="default" r:id="header"/><w:footerReference w:type="default" r:id="footer"/></w:sectPr>
+            </w:body></w:document>"#
+        );
+        let mut parts = vec![("word/document.xml".to_string(), document)];
+        let mut rels = String::new();
+        for (part, root, content) in [
+            ("header", "hdr", group.to_string()),
+            ("footer", "ftr", group.to_string()),
+            (
+                "footnotes",
+                "footnotes",
+                format!(r#"<w:footnote w:id="1">{group}</w:footnote>"#),
+            ),
+            (
+                "endnotes",
+                "endnotes",
+                format!(r#"<w:endnote w:id="1">{group}</w:endnote>"#),
+            ),
+        ] {
+            rels.push_str(&format!(
+                r#"<Relationship Id="{part}" Type="{r}/{part}" Target="{part}.xml"/>"#
+            ));
+            parts.push((
+                format!("word/{part}.xml"),
+                format!("<w:{root} {namespaces}>{content}</w:{root}>"),
+            ));
+        }
+        parts.push(("word/_rels/document.xml.rels".to_string(), format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>"#)));
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            write_test_content_types(&mut writer);
+            for (path, xml) in parts {
+                writer
+                    .start_file(path, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(xml.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        for streamed in [false, true] {
+            let doc = if streamed {
+                parse_from_bytes_streamed_with_limits(&bytes, None, None, "story-vml-test")
+            } else {
+                parse_from_bytes(&bytes)
+            }
+            .unwrap();
+            assert_eq!(
+                doc.diagnostics.len(),
+                4,
+                "one per story, streamed={streamed}"
+            );
+            assert!(doc.diagnostics.iter().all(|diagnostic| diagnostic.code
+                == PARSE_DIAGNOSTIC_CODE_UNSUPPORTED_VML_CONTENT
+                && diagnostic.part == DOCUMENT_PART
+                && diagnostic.path.is_empty()));
+        }
+    }
+
+    #[test]
     fn ref_cached_result_preserves_a_matching_bookmark_leading_page_break() {
         fn body(target: &str, cached: &str) -> String {
             format!(
@@ -23273,11 +23854,11 @@ mod anchor_image_relative_from_tests {
         use zip::write::SimpleFileOptions;
 
         let document_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="4000000" cy="3000000"/><wp:docPr id="1" name="Chart 1"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#;
-        let document_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="charts/chartEx1.xml"/><Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>"#;
+        let document_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="figures/chartEx.data"/><Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>"#;
         let chart_xml = r#"<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"><cx:chartData><cx:data id="0"><cx:strDim type="cat"><cx:lvl ptCount="1"><cx:pt idx="0">A</cx:pt></cx:lvl></cx:strDim><cx:numDim type="val"><cx:lvl ptCount="1"><cx:pt idx="0">1</cx:pt></cx:lvl></cx:numDim></cx:data></cx:chartData><cx:chart><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="boxWhisker"/></cx:plotAreaRegion></cx:plotArea></cx:chart></cx:chartSpace>"#;
-        let chart_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdExternalStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="https://example.invalid/style.xml" TargetMode="External"/><Relationship Id="rIdStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/><Relationship Id="rIdColors" Type="http://schemas.microsoft.com/office/2011/relationships/chartColorStyle" Target="colors1.xml"/></Relationships>"#;
+        let chart_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdExternalStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="https://example.invalid/style.xml" TargetMode="External"/><Relationship Id="rIdStyle" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/><Relationship Id="rIdColors" Type="http://schemas.microsoft.com/office/2011/relationships/chartColorStyle" Target="colors1.xml"/><Relationship Id="override" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride" Target="../theme/chartOverride.xml"/></Relationships>"#;
         let style_xml = r#"<cs:chartStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><cs:dataPoint><cs:fillRef idx="1"><cs:styleClr val="auto"/></cs:fillRef><cs:spPr><a:pattFill prst="diagCross"><a:fgClr><a:schemeClr val="phClr"/></a:fgClr><a:bgClr><a:srgbClr val="FFFFFF"/></a:bgClr></a:pattFill></cs:spPr></cs:dataPoint><cs:dataPointMarker><cs:fillRef idx="1"><cs:styleClr val="auto"/></cs:fillRef></cs:dataPointMarker><cs:dataLabelCallout><cs:defRPr><a:noFill/></cs:defRPr><cs:bodyPr/></cs:dataLabelCallout><cs:trendlineLabel><cs:defRPr><a:solidFill><a:srgbClr val="112233"/></a:solidFill></cs:defRPr></cs:trendlineLabel></cs:chartStyle>"#;
-        let colors_xml = r#"<cs:colorStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" meth="cycle"><a:srgbClr val="336699"/></cs:colorStyle>"#;
+        let colors_xml = r#"<cs:colorStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" meth="cycle"><a:schemeClr val="accent1"/></cs:colorStyle>"#;
         let theme_xml = r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="Theme"><a:themeElements><a:fmtScheme name="Theme"><a:fillStyleLst><a:blipFill><a:blip r:embed="rIdThemeMarker"/><a:stretch/></a:blipFill></a:fillStyleLst><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#;
 
         let mut bytes = Vec::new();
@@ -23288,15 +23869,19 @@ mod anchor_image_relative_from_tests {
             for (path, xml) in [
                 ("word/document.xml", document_xml),
                 ("word/_rels/document.xml.rels", document_rels),
-                ("word/charts/chartEx1.xml", chart_xml),
-                ("word/charts/_rels/chartEx1.xml.rels", chart_rels),
-                ("word/charts/style1.xml", style_xml),
+                ("word/figures/chartEx.data", chart_xml),
+                ("word/figures/_rels/chartEx.data.rels", chart_rels),
+                ("word/figures/style1.xml", style_xml),
                 (
-                    "word/charts/_rels/style1.xml.rels",
+                    "word/figures/_rels/style1.xml.rels",
                     r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdMarker" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/style-marker.png"/></Relationships>"#,
                 ),
-                ("word/charts/colors1.xml", colors_xml),
+                ("word/figures/colors1.xml", colors_xml),
                 ("word/theme/theme1.xml", theme_xml),
+                (
+                    "word/theme/chartOverride.xml",
+                    r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:clrScheme name="Chart"><a:accent1><a:srgbClr val="336699"/></a:accent1></a:clrScheme></a:themeOverride>"#,
+                ),
                 (
                     "word/theme/_rels/theme1.xml.rels",
                     r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdThemeMarker" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/theme-marker.png"/></Relationships>"#,
@@ -30950,6 +31535,8 @@ mod vml_pict_tests {
 
         assert_eq!(shapes[2].stroke.as_deref(), Some("000000"));
         assert!((shapes[2].stroke_width - 1.0).abs() < 1e-6);
+        assert_eq!(shapes[2].stroke_join, None);
+        assert_eq!(shapes[2].stroke_miter_limit, Some(8.0));
     }
 
     #[test]
@@ -31350,7 +31937,7 @@ mod vml_pict_tests {
     }
 
     #[test]
-    fn image_pattern_on_vml_textpath_uses_word_pdf_solid_ink() {
+    fn image_pattern_on_vml_textpath_retains_the_image_brush() {
         let body = format!(
             r##"<w:document{ns}><w:body><w:p><w:r><w:pict>
               <v:shape id="PowerPlusWaterMarkObject1"
@@ -31372,8 +31959,11 @@ mod vml_pict_tests {
         assert_eq!(shapes.len(), 1);
         assert!(shapes[0].text_path.is_some());
         match &shapes[0].fill {
-            Some(ShapeFill::Solid { color }) => assert_eq!(color, "d21d54"),
-            other => panic!("expected solid textpath ink, got {other:?}"),
+            Some(ShapeFill::Image {
+                duotone: Some(colors),
+                ..
+            }) => assert_eq!(colors.clr1, "d21d54"),
+            other => panic!("expected patterned textpath ink, got {other:?}"),
         }
     }
 
@@ -31453,6 +32043,58 @@ mod vml_pict_tests {
             assert_eq!(wire[key], false, "{key} must materialize its false default");
         }
         assert_eq!(wire["fontSizePt"], 14.0, "font size is authored input");
+    }
+
+    #[test]
+    fn textpath_font_declarations_expand_before_template_cascade() {
+        let parse = |template: &str, instance: &str| {
+            let xml = format!(
+                r#"<root><textpath style="{template}"/><textpath style="{instance}" string="Fjp"/></root>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let mut children = doc.root_element().children().filter(|n| n.is_element());
+            let inherited = children.next().unwrap();
+            parse_vml_textpath(children.next().unwrap(), Some(inherited), Some(true)).unwrap()
+        };
+        let inherited = "font-family:Arial;font-size:12pt;font-weight:bold;font-style:italic";
+        for style in [
+            "font:normal normal normal 24pt 'Times New Roman'",
+            "font:24pt &quot;Times New Roman&quot;",
+            "font-weight:bold;font-style:italic;font-size:8pt;font:24pt/1.2 'Times New Roman'",
+            "font:italic bold 8pt Arial;font:24pt / 28pt Times New Roman",
+        ] {
+            let text = parse(inherited, style);
+            assert_eq!(
+                text.font_family.as_deref(),
+                Some("Times New Roman"),
+                "{style}"
+            );
+            assert_eq!(text.vml.font_size_pt, Some(24.0), "{style}");
+            assert!(!text.bold && !text.italic, "shorthand resets both: {style}");
+        }
+        let text = parse(
+            "font:italic bold 24pt 'Times New Roman'",
+            "font-weight:normal",
+        );
+        assert_eq!(text.font_family.as_deref(), Some("Times New Roman"));
+        assert_eq!(text.vml.font_size_pt, Some(24.0));
+        assert!(
+            !text.bold && text.italic,
+            "only the authored longhand overrides"
+        );
+        let text = parse(inherited, "font:24pt Arial;font-family:'Times New Roman';font-size:18pt;font-weight:bold;font-style:oblique");
+        assert_eq!(text.font_family.as_deref(), Some("Times New Roman"));
+        assert_eq!(text.vml.font_size_pt, Some(18.0));
+        assert!(
+            text.bold && text.italic,
+            "later longhands win over shorthand"
+        );
+        let text = parse("", "font:italic bold medium Arial");
+        assert_eq!(text.font_family.as_deref(), Some("Arial"));
+        assert!(
+            text.bold && text.italic,
+            "keep existing fitted-font facts even without a point metric"
+        );
     }
 
     /// §19.1.2.5 opacity — the "52429f" form (1/65536-ths, trailing `f`) decodes
