@@ -1788,8 +1788,12 @@ function appendRunsToSegments(
             segment.text = '';
             segment.metricOnly = true;
             // Without a selected-face line metric (an absent authored face),
-            // the host's vertical box still comes from its painting face.
-            segment.metricProbeText = 'x';
+            // the host's vertical box still comes from its painting face. A
+            // present face keeps its established metric-only behaviour.
+            if (segment.resolvedLineHeightRatio == null && segment.resolvedDesignAscentRatio == null
+              && segment.referenceFontVerticalMetric !== true && segment.resolvedResourceVerticalMetric !== true) {
+              segment.metricProbeText = 'x';
+            }
             segment.sourceRunIndex = runIndex;
             if (segment.textShapeRequest) {
               segment.textShapeRequest = Object.freeze(independentTextShapeRequest(segment.textShapeRequest, ''));

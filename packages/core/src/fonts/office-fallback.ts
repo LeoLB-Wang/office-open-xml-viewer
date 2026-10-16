@@ -25,7 +25,7 @@ export interface OfficeFontFallbackRoute {
    * now emits only positively loaded local faces. */
   source: 'local' | 'substitute';
   resourceIdentity: string;
-  weight: 400 | 700;
+  weight: number;
   style: 'normal' | 'italic';
   metric: ResolvedFontMetric;
 }
@@ -46,7 +46,7 @@ export interface LoadedOfficeFontFallbacks {
 
 type Tuple = Readonly<{
   family: string;
-  weight: 400 | 700;
+  weight: number;
   style: 'normal' | 'italic';
   localNames: readonly string[];
 }>;
@@ -62,7 +62,10 @@ function tupleFor(request: OfficeFontFallbackRequest): Tuple | undefined {
   if (!family) return undefined;
   const weight = request.weight ?? 400;
   const style = request.style ?? 'normal';
-  if ((weight !== 400 && weight !== 700) || (style !== 'normal' && style !== 'italic')) return undefined;
+  // Any OpenType usWeightClass value; the catalog lookup below admits only
+  // tuples with a catalogued face (named cuts such as a 300 Light face too).
+  if (!Number.isInteger(weight) || weight < 1 || weight > 1000
+    || (style !== 'normal' && style !== 'italic')) return undefined;
   const profiles = findReferenceFontMetrics(family, { weight, style });
   if (profiles.length === 0) return undefined;
   // An alias shared by regular and bold is a family name, not proof of a

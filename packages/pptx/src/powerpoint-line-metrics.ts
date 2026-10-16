@@ -68,6 +68,24 @@ export function powerPointAscentShare(
   return share;
 }
 
+/**
+ * The catalogued face weight a run selects: the requested regular/bold weight
+ * when the catalog has it, else the single cut a family name selects ("Calibri
+ * Light" is weight 300; a bold run synthesizes bold on that face). Acquisition,
+ * presence keys and metric lookup share this tuple so an installed named cut is
+ * probed and recognized under the same weight. Uncatalogued names keep the
+ * requested weight (they have no catalog geometry either way).
+ */
+export function officeFaceWeight(family: string, bold: boolean, italic: boolean): number {
+  const requested = bold ? 700 : 400;
+  const name = OBSERVED_SUBSTITUTES[family.trim().toLocaleLowerCase('en-US')] ?? family.trim();
+  if (!name) return requested;
+  const style = italic ? 'italic' : 'normal';
+  if (findReferenceFontMetrics(name, { weight: requested, style }).length > 0) return requested;
+  const named = findReferenceFontMetrics(name, { style });
+  return named.length > 0 && named.every((p) => p.weight === named[0].weight) ? named[0].weight : requested;
+}
+
 type Profile = ReturnType<typeof findReferenceFontMetrics>[number];
 
 /** The profiles of the copy PowerPoint lays the face out with (see above). */

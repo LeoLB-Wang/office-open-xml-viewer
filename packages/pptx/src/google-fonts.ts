@@ -10,6 +10,7 @@ import {
 } from '@silurus/ooxml-core';
 import { ScriptPreloadAccumulator } from '@silurus/ooxml-core/internal/script-preload-accumulator';
 import type { Presentation, Slide, SlideElement, TextBody } from './types';
+import { officeFaceWeight } from './powerpoint-line-metrics.js';
 
 /** Theme-referenced typefaces commonly used by PPTX templates. Keys are
  *  lower-cased family names.
@@ -207,13 +208,21 @@ export function pptxSlideOfficeFontRequests(
     // only for faces proven present (no family-name gate).
     const name = resolved(family);
     if (!name || CSS_GENERIC_FAMILY_NAMES.has(name.toLowerCase())) return;
-    const weight = bold ? 700 : 400;
+    const weight = officeFaceWeight(name, bold, italic);
     const style = italic ? 'italic' : 'normal';
     requests.set(`${name.toLowerCase()}:${weight}:${style}`, { family: name, weight, style });
   };
   const body = (textBody: TextBody | null | undefined) => {
     for (const paragraph of textBody?.paragraphs ?? []) {
       for (const run of paragraph.runs) {
+        if (run.type === 'break') {
+          // a:br carries its own character properties (CT_TextLineBreak); the
+          // renderer sizes the break's line with that face.
+          add(run.fontFamily ?? paragraph.defFontFamily,
+            run.bold ?? paragraph.defBold ?? textBody?.defaultBold ?? false,
+            run.italic ?? paragraph.defItalic ?? textBody?.defaultItalic ?? false);
+          continue;
+        }
         if (run.type !== 'text') continue;
         const bold = run.bold ?? paragraph.defBold ?? textBody?.defaultBold ?? false;
         const italic = run.italic ?? paragraph.defItalic ?? textBody?.defaultItalic ?? false;
@@ -221,6 +230,13 @@ export function pptxSlideOfficeFontRequests(
         if (run.fontFamilyEa) add(run.fontFamilyEa, bold, italic);
         if (run.fontFamilyCs) add(run.fontFamilyCs, bold, italic);
         if (run.fontFamilySym) add(run.fontFamilySym, bold, italic);
+      }
+      // a:endParaRPr: the end mark contributes its face to the last line.
+      const end = paragraph.endRunProperties;
+      if (end) {
+        add(end.fontFamily ?? paragraph.defFontFamily,
+          end.bold ?? paragraph.defBold ?? textBody?.defaultBold ?? false,
+          end.italic ?? paragraph.defItalic ?? textBody?.defaultItalic ?? false);
       }
       if (paragraph.bullet.type === 'char' || paragraph.bullet.type === 'autoNum') {
         // The marker renderer uses normal weight/style for both bullet kinds.

@@ -13,6 +13,7 @@ import {
   resolveInternalSlideTarget,
   type SlidePartNames,
 } from './slide-nav';
+import { acquireOfficeRoutes, distinctOfficeRouteLoads } from './office-route-acquisition.js';
 import {
   GoogleFontPreloadLease,
   type FontPreloadDemand,
@@ -1061,17 +1062,10 @@ export class PptxPresentation {
       loads = new Map();
       this._officeFontLoads.set(fontSet, loads);
     }
-    const loaded = await Promise.all(uncovered.map((request) => {
-      const key = `calibri:${request.weight}:${request.style}`;
-      let pending = loads.get(key);
-      if (!pending) {
-        pending = loadOfficeFontFallbacks([request], fontSet);
-        loads.set(key, pending);
-      }
-      return pending;
-    }));
+    const routes = await acquireOfficeRoutes(loads, uncovered,
+      (fresh) => loadOfficeFontFallbacks(fresh, fontSet));
     if (this._destroyed) throw new Error('Presentation destroyed');
-    return Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
+    return routes;
   }
 
   /** Render a slide onto the given canvas. */
@@ -1518,7 +1512,7 @@ export class PptxPresentation {
     this._googleFonts?.release();
     this._googleFonts = null;
     for (const loads of this._officeFontLoads.values()) {
-      for (const pending of loads.values()) {
+      for (const pending of distinctOfficeRouteLoads(loads)) {
         void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces));
       }
     }

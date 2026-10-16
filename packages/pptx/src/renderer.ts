@@ -175,7 +175,7 @@ import { resolveTableBorderConflict } from './table-border-conflict.js';
 import { isSmartArtFallbackShape, smartArtFallbackTextColor } from './smartart-fallback-contrast';
 import { resolveTabWidths, type TabItem, type TabStopPx } from './tab-layout.js';
 import {
-  powerPointCompatOffNaturalLine, powerPointExactLinePoints, powerPointFaceMetrics,
+  powerPointCompatOffNaturalLine, powerPointExactLinePoints, powerPointFaceMetrics, officeFaceWeight,
   powerPointNaturalLine, type PowerPointFaceMetrics,
   POWERPOINT_FONT_ALGN_UNIT_PT, powerPointFontAlgnOffset, powerPointFontAlgnReference,
 } from './powerpoint-line-metrics.js';
@@ -1334,9 +1334,8 @@ export function buildFont(
   const authoredFamily = rc.embeddedFontAuthoredFamilies?.get(normalized) ?? normalized;
   const inferredWeight = namedFaceWeight(authoredFamily);
   const weight = bold ? 'bold ' : inferredWeight ? `${inferredWeight} ` : '';
-  const tupleWeight = bold || inferredWeight === 700 ? 700 : 400;
-  const routeKey = officeRouteKey(authoredFamily, tupleWeight, italic);
-  const embeddedTuple = `${authoredFamily.toLowerCase()}:${tupleWeight}:${italic ? 'italic' : 'normal'}`;
+  const routeKey = officeRouteKey(authoredFamily, officeFaceWeight(authoredFamily, bold, italic), italic);
+  const embeddedTuple = `${authoredFamily.toLowerCase()}:${bold || inferredWeight === 700 ? 700 : 400}:${italic ? 'italic' : 'normal'}`;
   // ECMA-376 §19.3.1.52: master txStyles is an optional source of text style.
   // The theme-minor CSS fallback when every font slot is absent is renderer
   // policy, not evidence that an exact resource was selected. Preserve that
@@ -1386,8 +1385,7 @@ function lineMetricFor(
   // absent authored face paints with a browser fallback, so the run keeps
   // the ordinary line model instead of the absent face's ascent share.
   const authored = normalizeFontFamily(family, rc);
-  const weight = bold || namedFaceWeight(authored) === 700 ? 700 : 400;
-  if (!rc.officeFontRoutes?.[officeRouteKey(authored, weight, italic)]) return undefined;
+  if (!rc.officeFontRoutes?.[officeRouteKey(authored, officeFaceWeight(authored, bold, italic), italic)]) return undefined;
   return powerPointFaceMetrics(family, bold, italic);
 }
 

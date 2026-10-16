@@ -3,6 +3,7 @@ import type { CjkLang } from '@silurus/ooxml-core';
 import init, { PptxArchive, reinit } from './wasm/pptx_parser.js';
 import type { PptxTextRunInfo } from './renderer';
 import { PPTX_GOOGLE_FONTS, pptxSlideOfficeFontRequests } from './google-fonts';
+import { acquireOfficeRoutes, distinctOfficeRouteLoads } from './office-route-acquisition.js';
 import {
   findPreflightMimeType,
   PresentationPreflightBuilder,
@@ -87,20 +88,11 @@ async function officeRoutesForRequests(
   requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
 ): Promise<Record<string, OfficeFontFallbackRoute>> {
   const uncovered = uncoveredOfficeFontRequests(requests, embeddedFontTuples);
-  const loaded = await Promise.all(uncovered.map((request) => {
-    const key = `calibri:${request.weight}:${request.style}`;
-    let pending = officeFontLoads.get(key);
-    if (!pending) {
-      pending = loadOfficeFontFallbacks([request]);
-      officeFontLoads.set(key, pending);
-    }
-    return pending;
-  }));
-  return Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
+  return acquireOfficeRoutes(officeFontLoads, uncovered, (fresh) => loadOfficeFontFallbacks(fresh));
 }
 
 function releaseOfficeFonts(): void {
-  for (const pending of officeFontLoads.values()) {
+  for (const pending of distinctOfficeRouteLoads(officeFontLoads)) {
     void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces), () => undefined);
   }
   officeFontLoads.clear();
