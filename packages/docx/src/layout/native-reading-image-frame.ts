@@ -12,7 +12,7 @@ export function acquireNativeReadingImagePlan(
 ): NativeReadingImagePlan {
   if (!nativeReadingOwners.isDeepFrozenPlainDataRoot(descriptor)) throw new Error('Native image plan requires an internally sealed descriptor');
   if (descriptor.kind !== 'image' || descriptor.svgImagePath !== undefined
-    || descriptor.colorReplaceFrom !== undefined || descriptor.duotone !== undefined) {
+    || descriptor.colorReplaceFrom !== undefined || descriptor.duotone !== undefined || descriptor.blipEffects !== undefined) {
     throw new Error('Native image substitution/color effects require their decoded-owner proof');
   }
   const source = {

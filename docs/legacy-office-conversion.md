@@ -60,7 +60,7 @@ Each factory accepts the same optional settings:
 interface LegacySourceOptions {
   wasmUrl?: string; // absolute URL of the reader's WASM
   moduleUrl?: string; // absolute URL of the reader's source module
-  maxInputBytes?: number; // defaults to, and may not exceed, 256 MiB
+  maxInputBytes?: number; // optional caller limit; omitted means no whole-file gate
 }
 ```
 
@@ -106,9 +106,15 @@ source does not claim takes the unchanged OOXML path, so:
 - encrypted OOXML packages keep their existing encryption errors;
 - configuring `legacyDocSource()` does not enable XLS or PPT input.
 
-Claimed input larger than `maxInputBytes` throws a `RangeError`. The limit is
-resource policy, not an Office format limit. After a source claims a file, a
-reader failure rejects the load: there is no fallback to another source or to
+When the caller sets `maxInputBytes`, claimed input larger than that positive
+safe integer throws a `RangeError`. There is no default or library-imposed
+whole-file size ceiling. Applications that require the former 256 MiB input
+limit must pass `maxInputBytes: 256 * 1024 * 1024` explicitly. Source copies remain
+fallible: allocation failure is a classified resource error. Internal budgets
+apply to actual inflated or retained work, rather than compressed or declared
+sizes. These budgets are library policy, not Office format limits.
+
+After a source claims a file, a reader failure rejects the load: there is no fallback to another source or to
 the OOXML path. Password-protected legacy binaries, pre-CFB Office formats and
 unsupported binary structures are rejected by the readers. These checks are
 structural, never filename-based.
@@ -407,8 +413,9 @@ fail inspection rather than being silently repaired. Unsupported encodings,
 unreferenced slots and unresolved delayed entries are not exposed. No external
 resource, macro, OLE object or drawing action is evaluated.
 
-Inspection caps the source at 256 MiB, assembled drawing data and retained media
-at 128 MiB each, and the drawing/decoding walk at two million records. Shared
+Native inspection examples read the complete source with fallible allocation and
+no default input-length ceiling. Inspection caps assembled drawing data and retained
+media at 128 MiB each, and the drawing/decoding walk at two million records. Shared
 image limits also apply. These are independent resource ceilings, not a combined
 process-memory guarantee: source, workbook, assembled data and extracted images
 can coexist. The helper is excluded from production WASM even when its Cargo
@@ -530,7 +537,13 @@ Modern Office can retain DrawingML in an OfficeArt `metroBlob`
 ([MS-ODRAW] §2.3.4.41). The source uses three outcomes: a package with no
 alternative or a verified disagreement uses the binary projection; a verified
 consistent alternative is adopted; an unreadable or unverifiable alternative
-rejects the load. A checksum-only package does not require a theme.
+rejects the load. Exhausting an optional alternative's verification budgets
+keeps that shape's binary projection and does not poison the document. Input
+work uses the standard OOXML package allowance (256 MiB of actual consumed
+input per alternative, including rereads); inflated output remains bounded to
+1 MiB per part and 4 MiB per alternative package. Round-trip theme verification
+also has its own input-work allowance. Failed attempts retain no model, text,
+or image charges. A checksum-only package does not require a theme.
 
 Adopted alternatives retain their formatting and resource references, while
 characters, identifiers and transforms come from the binary. Theme style

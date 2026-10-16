@@ -4350,6 +4350,68 @@ mod style_ref_tests {
     }
 
     #[test]
+    fn table_cell_vertical_tokens_preserve_raw_direction() {
+        for (raw, expected) in [
+            ("horz", "horz"),
+            ("&#x20;&#x9;horz&#xA;&#xD;", " \thorz\n\r"),
+            ("&#xA0;horz&#xA0;", "\u{a0}horz\u{a0}"),
+            ("ho&#x9;rz", "ho\trz"),
+            (" vert270 ", " vert270 "),
+            (" vert ", " vert "),
+            (" wordArtVert ", " wordArtVert "),
+        ] {
+            // Keep the direction unchanged for orientation dispatch; only the
+            // renderer's horizontal clip admission tolerates XML token padding.
+            // bodyPr serves table and shape text; tcPr overrides it for cells.
+            for on_cell in [false, true] {
+                let (body_attr, cell_attr) = if on_cell {
+                    (r#"vert="vert""#.to_owned(), format!(r#"vert="{raw}""#))
+                } else {
+                    (format!(r#"vert="{raw}""#), String::new())
+                };
+                let xml = format!(
+                    r#"<a:tc xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                      <a:txBody><a:bodyPr {body_attr}/><a:p/></a:txBody>
+                      <a:tcPr {cell_attr}/>
+                    </a:tc>"#
+                );
+                let doc = roxmltree::Document::parse(&xml).unwrap();
+                let mut zip = empty_zip();
+                let cell = parse_table_cell(
+                    doc.root_element(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    "ppt/slides/slide1.xml",
+                    &crate::master::TableTextLevels::default(),
+                    &mut zip,
+                );
+                assert_eq!(
+                    cell.text_body.unwrap().vert,
+                    expected,
+                    "{raw}, tcPr={on_cell}"
+                );
+                if !on_cell {
+                    let body_pr = doc
+                        .descendants()
+                        .find(|n| {
+                            n.has_tag_name((
+                                "http://schemas.openxmlformats.org/drawingml/2006/main",
+                                "bodyPr",
+                            ))
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        crate::text::InheritedBodyPr::from_body_pr(body_pr)
+                            .vert
+                            .as_deref(),
+                        Some(expected)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn table_cell_projects_tcpr_vertical_text_and_margins_into_the_text_body() {
         let doc = roxmltree::Document::parse(
             r#"<a:tc xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">

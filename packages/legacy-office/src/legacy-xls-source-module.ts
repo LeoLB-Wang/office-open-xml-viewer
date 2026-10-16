@@ -24,7 +24,7 @@ export async function openModelSource(
   signal?: AbortSignal,
 ): Promise<Readonly<{ archive: LegacyXlsNativeArchive; close(): void }>> {
   const { wasmUrl, maxInputBytes } = readLegacySourceModuleConfig(config, 'legacy XLS');
-  if (bytes.byteLength > maxInputBytes) {
+  if (maxInputBytes !== undefined && bytes.byteLength > maxInputBytes) {
     throw new RangeError('legacy XLS input exceeds the configured size limit');
   }
   const owned = await engine.open(bytes, wasmUrl, signal);

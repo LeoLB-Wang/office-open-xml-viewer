@@ -182,7 +182,7 @@ function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
       let kind: Measured<T>['kind'] = 'upright';
       let advance = cell;
       if (!upright && stackedSidewaysCharacter(cp)) {
-        if (stackedVerticalGlyph(family, cp)) {
+        if (stackedVerticalGlyph(family, cp, /\bbold\b/.test(style.font), /\bitalic\b/.test(style.font))) {
           kind = 'verticalGlyph';
           advance = style.sizePx;
         } else {

@@ -1,8 +1,9 @@
 //! Export the native PPT renderer model and only its admitted passive resources.
+mod support;
 use pptx_model::{Fill, Slide, SlideElement};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
+use std::io::Write;
 
 fn fill_key(fill: &Fill, output: &mut BTreeSet<String>) {
     if let Fill::Image { image_path, .. } = fill {
@@ -44,13 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.next().is_some() {
         return Err("too many arguments".into());
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(source)?
-        .take(256 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 256 * 1024 * 1024 {
-        return Err("PPT inspection source byte budget exceeded".into());
-    }
+    let bytes = support::read_source(std::fs::File::open(source)?)?;
     std::fs::create_dir(&output)?;
 
     let mut session = legacy_office_parser::inspect_ppt_direct(&bytes)?;

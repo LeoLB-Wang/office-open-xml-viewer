@@ -368,14 +368,12 @@ pub(crate) fn fuzz_alternative(data: &[u8]) {
         }
     }
     for blob in [data, package.get_ref().as_slice()] {
-        let (mut work, mut text, mut model) = (64, 16 * 1024 * 1024, 64 * 1024 * 1024);
+        let mut model = 64 * 1024 * 1024;
         let _ = metro::adopt(
             &binary,
             blob,
             &theme,
             &mut media::SpanStore::new(Vec::new()),
-            &mut work,
-            &mut text,
             &mut model,
         );
     }

@@ -28,7 +28,7 @@ export async function openModelSource(
   close(): void;
 }>> {
   const { wasmUrl, maxInputBytes, ...policies } = readLegacyDocSourceModuleConfig(config);
-  if (bytes.byteLength > maxInputBytes) {
+  if (maxInputBytes !== undefined && bytes.byteLength > maxInputBytes) {
     throw new RangeError('legacy DOC input exceeds the configured size limit');
   }
   const owned = await engine.open(bytes, wasmUrl, signal, policies);

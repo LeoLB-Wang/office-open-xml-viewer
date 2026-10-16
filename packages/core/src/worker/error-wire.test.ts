@@ -27,20 +27,11 @@ const USAGE = {
 };
 
 describe('worker error wire', () => {
-  it('preserves DOCX numbering rejection as a typed error across the worker', () => {
-    for (const reason of ['cannot-open:whitespace', 'cannot-open:non-decimal',
-      'repair-required:level-definition']) {
-      const input = new Error(`OOXML_DOCX_ILVL:${reason}`);
-      const result = deserializeWorkerError(structuredClone(serializeWorkerError(input)));
-      expect(result).toBeInstanceOf(OoxmlError);
-      expect((result as OoxmlError).code).toBe('invalid-numbering');
-    }
-    for (const reason of ['unexpected', 'cannot-open:empty']) {
-      const unrelated = deserializeWorkerError(serializeWorkerError(
-        new Error(`OOXML_DOCX_ILVL:${reason}`),
-      ));
-      expect(unrelated).not.toBeInstanceOf(OoxmlError);
-    }
+  it('preserves a format-normalized typed error and its exact message', () => {
+    const input = new OoxmlError('invalid-numbering', 'Format-owned parser rejection.');
+    const result = deserializeWorkerError(structuredClone(serializeWorkerError(input)));
+    expect(result).toBeInstanceOf(OoxmlError);
+    expect(result).toMatchObject({ code: input.code, message: input.message });
   });
 
   const rustError =
@@ -158,6 +149,7 @@ describe('worker error wire', () => {
   it.each([
     'image-dimension',
     'image-pixels',
+    'tiff-lzw-work',
     'active-decoded-bytes',
     'metafile-record-points',
     'metafile-record-polygons',

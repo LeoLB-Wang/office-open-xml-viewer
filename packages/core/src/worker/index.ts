@@ -6,6 +6,8 @@ export {
   type WorkerRequestOptions,
 } from './bridge.js';
 export { decodeDataUrl } from './decode-data-url.js';
+// Parser adapters share the wire error class without loading the rendering barrel.
+export { OoxmlError } from '../errors/ooxml-error.js';
 export {
   WasmParserHost,
   WasmTrapError,
@@ -61,13 +63,6 @@ export {
   type NormalizedOoxmlResourceOptions,
   type NormalizedOoxmlResourcePolicy,
 } from './resource-policy.js';
-export {
-  DEFAULT_XLSX_WORKSHEET_POLICY,
-  normalizeXlsxWorksheetPolicy,
-  xlsxWorksheetPolicyForWasm,
-  type NormalizedXlsxWorksheetPolicy,
-  type ResolvedXlsxWorksheetLimits,
-} from './xlsx-worksheet-policy.js';
 export {
   OOXML_RESOURCE_METRICS_PROBE_TIMEOUT_MS,
   OoxmlResourceMetricsSession,

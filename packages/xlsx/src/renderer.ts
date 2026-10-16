@@ -1,3 +1,7 @@
+import {
+  wrapSpreadsheetCellParagraph, layoutSpreadsheetCellRichLines,
+  type SpreadsheetCellRichSeg, type SpreadsheetCellRichLine,
+} from './spreadsheet-cell.js';
 import { inheritCellFontLanguage, usesJapaneseCellFonts } from './internal/cell-font-language.js';
 import { drawShapeStackedText } from './shape-stacked-text.js';
 import type { CjkLang } from '@silurus/ooxml-core';
@@ -5,8 +9,6 @@ import { quoteCssFontFamily } from '@silurus/ooxml-core/internal/css-font-family
 import {
   breakDrawingMlText, drawingMlTextRect, drawingMlLineHeight,
   drawingMlSpacedLineBox, drawingMlParagraphSpacing, drawingMlBlockTop, drawingMlLineX, paintDrawingMlLine,
-  wrapSpreadsheetCellParagraph, layoutSpreadsheetCellRichLines,
-  type SpreadsheetCellRichSeg, type SpreadsheetCellRichLine,
   type DrawingMlInputRun,
 } from '@silurus/ooxml-core/internal/drawingml-text';
 import { containsHanScript } from '@silurus/ooxml-core/internal/script-preload-accumulator';

@@ -21,7 +21,7 @@ vi.mock('./legacy-ppt-source-module.ts', () => { loaded.push('ppt module'); retu
 
 import { legacyDocSource } from './legacy-doc.js';
 import { legacyPptSource } from './legacy-ppt.js';
-import { MAX_LEGACY_SOURCE_BYTES, createLegacySource, type LegacyFamily } from './legacy-source.js';
+import { createLegacySource, type LegacyFamily } from './legacy-source.js';
 import { legacyXlsSource } from './legacy-xls.js';
 import { buildStoredZip } from './zip-fixture.js';
 
@@ -53,7 +53,7 @@ describe.each(factories)('legacy $family source factory', ({ family, target, cre
       protocol: MODEL_SOURCE_MODULE_PROTOCOL,
       target,
       moduleUrl: expect.any(String),
-      config: { wasmUrl: expect.any(String), maxInputBytes: MAX_LEGACY_SOURCE_BYTES },
+      config: { wasmUrl: expect.any(String) },
     });
     expect(new URL(module.moduleUrl).pathname).toContain(`legacy-${family}-source-module`);
     expect(new URL(String(module.config.wasmUrl)).pathname)
@@ -133,13 +133,14 @@ describe('createLegacySource option validation', () => {
     }
   });
 
-  it('bounds maxInputBytes to a positive safe integer up to the 256 MiB policy', () => {
-    for (const maxInputBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, MAX_LEGACY_SOURCE_BYTES + 1]) {
+  it('accepts an optional positive safe integer without a library size ceiling', () => {
+    for (const maxInputBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => make({ maxInputBytes })).toThrow(RangeError);
     }
+    expect(make({}).beginLoad().module.config).not.toHaveProperty('maxInputBytes');
     expect(make({ maxInputBytes: 1 }).beginLoad().module.config.maxInputBytes).toBe(1);
-    expect(make({ maxInputBytes: MAX_LEGACY_SOURCE_BYTES }).beginLoad().module.config.maxInputBytes)
-      .toBe(MAX_LEGACY_SOURCE_BYTES);
+    expect(make({ maxInputBytes: Number.MAX_SAFE_INTEGER }).beginLoad().module.config.maxInputBytes)
+      .toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it('never loaded a glue or source module while sources were created and used', () => {

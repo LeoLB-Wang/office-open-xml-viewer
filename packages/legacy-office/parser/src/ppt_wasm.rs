@@ -2,15 +2,12 @@
 //!
 //! This API does not create an OOXML package. It owns a bounded native cursor that projects the supported passive PPT
 //! subset directly into the existing PPTX renderer models. The caller retains
-//! ownership of the original JavaScript bytes; the bounded constructor copy is
+//! ownership of the original JavaScript bytes; the fallible constructor copy is
 //! released after construction once the session owns its admitted streams.
 
 use crate::cfb::CompoundFile;
 use crate::ppt::{direct_cursor::DirectCursor, direct_session::DirectSession};
 use wasm_bindgen::prelude::*;
-
-/// Implementation resource policy, not an MS-PPT format limit.
-const MAX_DIRECT_PPT_SOURCE_BYTES: usize = 256 * 1024 * 1024;
 
 #[wasm_bindgen]
 pub struct LegacyPptPresentation {
@@ -22,18 +19,7 @@ impl LegacyPptPresentation {
     #[wasm_bindgen(constructor)]
     pub fn new(data: js_sys::Uint8Array) -> Result<LegacyPptPresentation, JsValue> {
         console_error_panic_hook::set_once();
-        let source_len = data.length() as usize;
-        if source_len > MAX_DIRECT_PPT_SOURCE_BYTES {
-            return Err(js_error(
-                "LEGACY_RESOURCE_LIMIT:PPT direct source byte budget exceeded",
-            ));
-        }
-        let mut source = Vec::new();
-        source
-            .try_reserve_exact(source_len)
-            .map_err(|_| js_error("LEGACY_RESOURCE_LIMIT:PPT direct source allocation failed"))?;
-        source.resize(source_len, 0);
-        data.copy_to(&mut source);
+        let source = crate::source_bytes::copy(data)?;
         let cfb = CompoundFile::open(&source)
             .map_err(|error| js_error(&crate::rejection::unsupported(error)))?;
         let session = DirectSession::new(&cfb).map_err(|error| js_error(&error))?;

@@ -373,7 +373,10 @@ fn f64_at(bytes: &[u8], offset: usize) -> Result<f64, String> {
 
 /// Read one chart substream: `records` starts at its BOF (dt 0x0020) and ends
 /// at the matching EOF.
-pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
+pub(crate) fn read(
+    records: &[Record<'_>],
+    budget: &std::cell::Cell<usize>,
+) -> Result<RawChart, String> {
     let first = records
         .first()
         .ok_or_else(|| unsupported("empty chart substream"))?;
@@ -478,9 +481,21 @@ pub(crate) fn read(records: &[Record<'_>]) -> Result<RawChart, String> {
             id::TEXT => pending = Some(Owner::Text),
             id::DEFAULT_TEXT => default_text = true,
             id::FONT => {
-                if chart.local_fonts.len() < 512 {
-                    chart.local_fonts.push(record.data.to_vec());
-                }
+                // MS-XLS 2.4.123 FontX indexes chart-local FONT records in
+                // authored order. Charge actual retained bytes to the shared
+                // workbook model budget; dropping a FONT changes that index.
+                let bytes = record.data.len() + std::mem::size_of::<Vec<u8>>();
+                let left = budget.get().checked_sub(bytes).ok_or_else(|| {
+                    crate::rejection::resource("XLS chart font retention budget exceeded")
+                })?;
+                let allocation = || crate::rejection::resource("XLS chart font allocation failed");
+                chart.local_fonts.try_reserve(1).map_err(|_| allocation())?;
+                let mut font = Vec::new();
+                font.try_reserve_exact(record.data.len())
+                    .map_err(|_| allocation())?;
+                font.extend_from_slice(record.data);
+                budget.set(left);
+                chart.local_fonts.push(font);
             }
             id::FONT_X => {
                 let font = u16_at(record.data, 0)?;

@@ -1,5 +1,6 @@
 //! Native-only evidence for XLS drawing integration; not a worksheet renderer.
-use std::io::{Read, Write};
+mod support;
+use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -16,10 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.next().is_some() {
         return Err("too many arguments".into());
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(source)?
-        .take(256 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
+    let bytes = support::read_source(std::fs::File::open(source)?)?;
     let images = if used_only {
         let result = legacy_office_parser::inspect_xls_pictures(&bytes)?;
         eprintln!("passive-picture-anchors:{}", result.anchors.len());

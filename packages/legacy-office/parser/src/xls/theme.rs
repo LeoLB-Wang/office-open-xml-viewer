@@ -1,7 +1,7 @@
 //! Passive color projection of MS-XLS Theme (2.4.326).
 use super::{u16_at, u32_at, unsupported, Record};
 use std::collections::BTreeSet;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 mod xml;
 
 const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -121,6 +121,8 @@ impl Colors {
 
     fn package(bytes: &[u8]) -> Result<Self, String> {
         let entries = preflight(bytes)?;
+        // Share actual decoder-input work across the entire relationship chain.
+        let mut work_budget = super::MAX_RECORDS;
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
             .map_err(|_| unsupported("invalid BIFF theme ZIP"))?;
         let mut names = BTreeSet::new();
@@ -161,9 +163,9 @@ impl Colors {
         }
         // Resolve the explicit package relationship chain. Filenames and ZIP
         // enumeration order do not identify the active theme.
-        let root = xml::parse(&part(&mut archive, "_rels/.rels")?)?;
+        let root = xml::parse(&part(&mut archive, "_rels/.rels", &mut work_budget)?)?;
         let manager = relationship(&root, "", "officeDocument")?;
-        let manager_xml = xml::parse(&part(&mut archive, &manager)?)?;
+        let manager_xml = xml::parse(&part(&mut archive, &manager, &mut work_budget)?)?;
         if !matches!(manager_xml.ns.as_str(), A | STRICT_A) || manager_xml.name != "themeManager" {
             return Err(unsupported("invalid BIFF theme manager root"));
         }
@@ -173,9 +175,13 @@ impl Colors {
         } else {
             format!("{dir}/_rels/{name}.rels")
         };
-        let relationships = xml::parse(&part(&mut archive, &rels)?)?;
+        let relationships = xml::parse(&part(&mut archive, &rels, &mut work_budget)?)?;
         let target = relationship(&relationships, &manager, "theme")?;
-        Self::document(&xml::parse(&part(&mut archive, &target)?)?)
+        Self::document(&xml::parse(&part(
+            &mut archive,
+            &target,
+            &mut work_budget,
+        )?)?)
     }
 
     fn document(root: &xml::Node) -> Result<Self, String> {
@@ -232,27 +238,25 @@ impl Colors {
     }
 }
 
-fn part(archive: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Vec<u8>, String> {
+fn part(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+    work_budget: &mut usize,
+) -> Result<Vec<u8>, String> {
     let index = if name == "[Content_Types].xml" {
         archive.index_for_name(name)
     } else {
         crate::opc_part::entry_index(archive, name)
     }
     .ok_or_else(|| unsupported("missing BIFF theme part"))?;
-    let entry = archive
-        .by_index(index)
-        .map_err(|_| unsupported("missing BIFF theme part"))?;
+    let mut entry = crate::opc_part::Entry::open(archive, index)?;
     let declared = entry.size();
     if declared > MAX_PART_BYTES as u64 {
         return Err(crate::rejection::resource(
             "BIFF theme part byte budget exceeded",
         ));
     }
-    let mut bytes = Vec::with_capacity(declared as usize);
-    entry
-        .take(declared + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| unsupported("invalid BIFF theme part data"))?;
+    let bytes = entry.read_to_end(work_budget, declared)?;
     if bytes.len() as u64 != declared {
         return Err(unsupported("BIFF theme inflated size mismatch"));
     }
@@ -376,6 +380,15 @@ mod tests {
         data[..2].copy_from_slice(&0x0896u16.to_le_bytes());
         data.extend_from_slice(package);
         data
+    }
+
+    #[test]
+    fn embedded_theme_relationships_meter_zero_output_input_work() {
+        // Below the retained-package ceiling: only actual inflation work can
+        // reject this valid entry before the XML parser sees its empty output.
+        let bytes = crate::opc_part::test_empty_deflate("_rels/.rels", 500_000, b"");
+        let error = Colors::package(&bytes).err().expect("work limit");
+        assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
     }
 
     #[test]

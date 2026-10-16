@@ -376,6 +376,7 @@ pub(super) fn project(
                                     anchor_y_from_para: false,
                                     color_replace_from: None,
                                     duotone: None,
+                                    blip_effects: Vec::new(),
                                     alpha: None,
                                     wrap_mode: None,
                                     dist_top: 0.0,

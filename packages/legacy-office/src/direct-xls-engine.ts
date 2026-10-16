@@ -4,10 +4,6 @@ import {
   type OwnedDirectSource,
 } from './direct-source-runtime.js';
 
-import { MAX_LEGACY_SOURCE_BYTES as MAX_LEGACY_XLS_SOURCE_BYTES } from './legacy-source-limits.js';
-
-export { MAX_LEGACY_XLS_SOURCE_BYTES };
-
 /**
  * The direct XLS workbook archive. `host_layout_request` / `configure_host_layout`
  * are the XLSX host-layout capability: BIFF drawing anchors are stored in the
@@ -45,7 +41,6 @@ export function createLegacyXlsSourceEngine(
   return createDirectSourceRuntime({
     label: 'legacy XLS',
     format: 'xls',
-    maximumSourceBytes: MAX_LEGACY_XLS_SOURCE_BYTES,
     loadGlue,
     resolveWasm,
     construct: (glue, bytes) => new glue.LegacyXlsWorkbook(bytes),

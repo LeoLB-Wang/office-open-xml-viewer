@@ -4,6 +4,7 @@ import type {
   MathNode,
   ChartModel,
   Duotone,
+  BlipEffect,
   FillRect,
   HyperlinkTarget,
   TileInfo,
@@ -1489,6 +1490,8 @@ export interface ImageRun {
    * luminance ramp, and caches the recoloured bitmap under a colour-suffixed key.
    */
   duotone?: Duotone;
+  /** Ordered CT_Blip pixel effects, including §20.1.8.42 picture corrections. */
+  blipEffects?: BlipEffect[];
   /**
    * ECMA-376 §20.1.8.6 `<a:alphaModFix@amt>` opacity as 0..1. Absent ⇒ fully
    * opaque. When present the renderer multiplies the picture's `globalAlpha` by
@@ -1800,7 +1803,7 @@ export interface DocxTextRunInfo {
   fontSize: number;
   /** CSS `font` shorthand used for canvas drawing. */
   font: string;
-  /** Uniform per-code-point pitch in CSS px for horizontal text. */
+  /** Native Canvas tracking pitch in CSS px for horizontal text. */
   letterSpacingPx?: number;
   /** CSS transform used by the overlay for vertical-page text. */
   transform?: string;

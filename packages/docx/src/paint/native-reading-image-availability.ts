@@ -13,7 +13,7 @@ export function assertNativeReadingImageBinding(
   if (d.kind !== 'image' || d.resourceKey !== s.resourceKey || d.partPath !== s.partPath || d.mimeType !== s.mimeType
     || (d.documentOrder ?? null) !== s.documentOrder
     || d.intrinsicSize.widthPt !== s.intrinsicSize.widthPt || d.intrinsicSize.heightPt !== s.intrinsicSize.heightPt
-    || d.svgImagePath !== undefined || d.colorReplaceFrom !== undefined || d.duotone !== undefined
+    || d.svgImagePath !== undefined || d.colorReplaceFrom !== undefined || d.duotone !== undefined || d.blipEffects !== undefined
     || (d.rotation ?? null) !== s.rotation || (d.flipH ?? null) !== s.flipH
     || (d.flipV ?? null) !== s.flipV || (d.alpha ?? null) !== s.alpha
     || (d.srcRect === undefined) !== (s.srcRect === null)) {

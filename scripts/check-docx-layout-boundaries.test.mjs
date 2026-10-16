@@ -964,6 +964,9 @@ test('paint reaches layout affine algebra only through the exact reviewed facade
 
 test('every reviewed atomic core paint binding remains explicitly allowed', () => {
   const valueBindings = [
+    'applyBlipPixelEffects',
+    'assertBlipPixelEffectsBudget',
+    'blipPixelEffectsKey',
     'autoContrastColor',
     'canvasFontString',
     'captureDecodedBitmapCacheEpoch',

@@ -7,7 +7,7 @@ describe('explicit DOC picture-bullet reading policy', () => {
   it('defaults to strict and transports the closed reading value', () => {
     expect(readNativePictureBulletPolicy(undefined)).toBe('strict');
     expect(readLegacyDocSourceModuleConfig({ wasmUrl, nativePictureBulletPolicy: 'storedSizeForReading' }))
-      .toEqual({ wasmUrl, maxInputBytes: 256 * 1024 * 1024, nativeContourPolicy: 'strict',
+      .toEqual({ wasmUrl, nativeContourPolicy: 'strict',
         nativeWordBreakingPolicy: 'strict', nativePictureBulletPolicy: 'storedSizeForReading' });
   });
   it.each([null, true, 1, '', 'auto', 'storedSize', {}, ['strict']])('rejects an unknown policy %j', value => {

@@ -2,10 +2,7 @@ import type { ParsedWorkbook, Row, Worksheet } from '@silurus/ooxml-xlsx';
 import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import {
   decodeOoxmlResourceUsage,
-  DEFAULT_XLSX_WORKSHEET_POLICY,
-  normalizeXlsxWorksheetPolicy,
   parseResourceLimitError,
-  type NormalizedXlsxWorksheetPolicy,
   type OoxmlResourceMetricsSession,
   type PullSessionCommand,
   type PullSessionResponse,
@@ -13,6 +10,9 @@ import {
 // The Node facade consumes the format-owned coordinator through its explicit
 // internal entry point rather than reconstructing XLSX orchestration here.
 import {
+  DEFAULT_XLSX_WORKSHEET_POLICY,
+  normalizeXlsxWorksheetPolicy,
+  type NormalizedXlsxWorksheetPolicy,
   acquireXlsxNodeSession,
   addWorksheetCacheUsage,
   addWorksheetUsage,
