@@ -64,8 +64,10 @@ describe('PPTX exact Office face requests', () => {
     // admit catalog geometry only for faces proven present.
     expect(pptxSlideOfficeFontRequests(slide, 'Cambria', 'Calibri')).toEqual([
       { family: 'Calibri', weight: 400, style: 'normal' },
+      { family: 'Calibri', presenceOnly: true },
       { family: 'Calibri', weight: 700, style: 'normal' },
       { family: 'Arial', weight: 700, style: 'italic' },
+      { family: 'Arial', presenceOnly: true },
     ]);
   });
 
@@ -253,7 +255,7 @@ it.each(['shape', 'table'])('preloads override defaults and %s equation preview 
   accumulator.addSlide(slide);
   expect(accumulator.names()).toEqual(expect.arrayContaining(['Override Heading', 'Override Body', 'Calibri']));
   expect(pptxSlideOfficeFontRequests(slide, 'Parent Heading', 'Parent Body'))
-    .toEqual([{ family: 'Calibri', weight: 700, style: 'normal' }]);
+    .toEqual([{ family: 'Calibri', weight: 700, style: 'normal' }, { family: 'Calibri', presenceOnly: true }]);
 });
 
 it('preloads script fonts present only in an inline equation branch preview', () => {

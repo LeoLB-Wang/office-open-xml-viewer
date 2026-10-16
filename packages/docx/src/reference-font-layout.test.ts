@@ -483,6 +483,7 @@ describe('native reference font vertical layout', () => {
     // present and its catalog line box applies, unlike a fully absent face.
     const layoutServices = services({ 'biz udmincho': {
       requestedFamily: 'BIZ UDMincho', family: 'BIZ UDMincho', weight: 400, style: 'normal',
+      sourceIdentity: 'office-local:local("BIZ UDMincho")',
     } });
     const resolution = layoutServices.text.resolve({
       fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
@@ -495,6 +496,18 @@ describe('native reference font vertical layout', () => {
     }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices })[0] as LayoutTextSeg;
     expect(segment.referenceFontVerticalMetric).toBe(true);
     expect(segment.resolvedLineHeightRatio).toBeCloseTo(1.3, 8);
+  });
+
+  it('does not treat an application resource under a private alias as an installed family', () => {
+    const layoutServices = services({ 'biz udmincho': {
+      requestedFamily: 'BIZ UDMincho', family: 'BIZ UDMincho', weight: 400, style: 'normal',
+      sourceIdentity: 'provided-sfnt:app',
+    } });
+    const resolution = layoutServices.text.resolve({
+      fonts: { ascii: 'BIZ UDMincho' }, slot: 'ascii', weight: 700, style: 'normal',
+    });
+    expect(resolution.source).toBe('native');
+    expect(resolution.installedFamily).toBeUndefined();
   });
 
   it('keeps absent BIZ UD faces on their painting fallback, whatever the family spelling', () => {

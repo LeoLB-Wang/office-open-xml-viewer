@@ -27,7 +27,7 @@ function fakeHost() {
 function owner() {
   const value = Object.create(PptxPresentation.prototype) as {
     _destroyed: boolean; _embeddedFontTuples: Set<string>; _officeFontLoads: Map<unknown, unknown>;
-    _officeRoutesForRequests(requests: OfficeFontFallbackRequest[], set: FontFaceSet): Promise<Record<string, unknown>>;
+    _officeRoutesForRequests(requests: OfficeFontFallbackRequest[], set: FontFaceSet): Promise<{ routes: Record<string, unknown>; installed: string[] }>;
   };
   value._destroyed = false;
   value._embeddedFontTuples = new Set();
@@ -54,7 +54,7 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
     const routes = await owner()._officeRoutesForRequests([
       { family: 'Arial', weight: 400, style: 'normal' },
       { family: 'Calibri', weight: 400, style: 'normal' }], set);
-    expect(Object.keys(routes).sort()).toEqual(['arial', 'calibri']);
+    expect(Object.keys(routes.routes).sort()).toEqual(['arial', 'calibri']);
   });
 
   it('does not let an earlier failed tuple poison a later family', async () => {
@@ -63,7 +63,7 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
     // No catalog 400 profile exists for Calibri Light: no route, but no poisoning.
     await value._officeRoutesForRequests([{ family: 'Calibri Light', weight: 400, style: 'normal' }], set);
     const routes = await value._officeRoutesForRequests([{ family: 'Arial', weight: 400, style: 'normal' }], set);
-    expect(routes.arial).toBeDefined();
+    expect(routes.routes.arial).toBeDefined();
   });
 
   it('loads each slide\'s new tuples in one bounded loader call', async () => {
@@ -73,6 +73,10 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
     await acquireOfficeRoutes(cache, [{ family: 'Arial' }, { family: 'Calibri' }, { family: 'Arial' }], load);
     await acquireOfficeRoutes(cache, [{ family: 'Arial' }, { family: 'Georgia', weight: 700 }], load);
     expect(calls.map((batch) => batch.map((request) => request.family))).toEqual([['Arial', 'Calibri'], ['Georgia']]);
+    // Family presence is a separate cached probe, independent of styled tuples.
+    const presence = await acquireOfficeRoutes(cache, [{ family: 'Arial', presenceOnly: true }],
+      async (requests) => { calls.push(requests); return { faces: [], routes: {}, installed: ['arial'] }; });
+    expect(presence.installed).toEqual(['arial']);
   });
 
   it('returns only the routes this call requested, independent of earlier slides', async () => {
@@ -81,7 +85,7 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
     const load = async () => ({ faces: [], routes: { arial: route('arial'), 'yu gothic': route('yu gothic') } });
     await acquireOfficeRoutes(cache, [{ family: 'Arial' }, { family: 'Yu Gothic' }], load);
     const later = await acquireOfficeRoutes(cache, [{ family: 'Arial' }], load);
-    expect(Object.keys(later)).toEqual(['arial']);
+    expect(Object.keys(later.routes)).toEqual(['arial']);
   });
 
   it('probes an installed named cut under its catalogued weight', async () => {
@@ -94,7 +98,8 @@ describe('PPTX exact local() routes for absent-face line metrics', () => {
       endRunProperties: undefined,
     }] } }] } as unknown as Slide;
     const requests = pptxSlideOfficeFontRequests(slide, null, null);
-    expect(requests).toEqual([{ family: 'Calibri Light', weight: 300, style: 'normal' }]);
+    expect(requests).toEqual([{ family: 'Calibri Light', weight: 300, style: 'normal' },
+      { family: 'Calibri Light', presenceOnly: true }]);
     const { set } = fakeHost();
     const loaded = await loadOfficeFontFallbacks(requests, set);
     try {

@@ -7,12 +7,20 @@ import {
 type LoadedOfficeFontFallbacks = {
   faces: FontFace[];
   routes: Record<string, OfficeFontFallbackRoute>;
+  installed?: string[];
 };
+
+export interface AcquiredOfficeRoutes {
+  routes: Record<string, OfficeFontFallbackRoute>;
+  /** Normalized requested families with any installed face (presence probes). */
+  installed: string[];
+}
 
 export type OfficeRouteCache = Map<string, Promise<LoadedOfficeFontFallbacks>>;
 
 function requestKey(request: OfficeFontFallbackRequest): string {
-  return `${normalizeLocalFontMetricFamily(request.family)}:${request.weight ?? 400}:${request.style ?? 'normal'}`;
+  const family = normalizeLocalFontMetricFamily(request.family);
+  return request.presenceOnly ? `presence:${family}` : `${family}:${request.weight ?? 400}:${request.style ?? 'normal'}`;
 }
 
 /**
@@ -26,7 +34,7 @@ export async function acquireOfficeRoutes(
   cache: OfficeRouteCache,
   requests: readonly OfficeFontFallbackRequest[],
   load: (requests: OfficeFontFallbackRequest[]) => Promise<LoadedOfficeFontFallbacks>,
-): Promise<Record<string, OfficeFontFallbackRoute>> {
+): Promise<AcquiredOfficeRoutes> {
   const fresh = new Map<string, OfficeFontFallbackRequest>();
   for (const request of requests) {
     const key = requestKey(request);
@@ -41,12 +49,19 @@ export async function acquireOfficeRoutes(
   const available = Object.assign({}, ...loaded.map((entry) => entry.routes)) as Record<string, OfficeFontFallbackRoute>;
   // A batch may hold routes for tuples another slide requested; return only
   // this call's tuples so what the renderer knows never depends on history.
+  const installedAnywhere = new Set(loaded.flatMap((entry) => entry.installed ?? []));
   const routes: Record<string, OfficeFontFallbackRoute> = {};
+  const installed = new Set<string>();
   for (const request of requests) {
+    if (request.presenceOnly) {
+      const family = normalizeLocalFontMetricFamily(request.family);
+      if (installedAnywhere.has(family)) installed.add(family);
+      continue;
+    }
     const key = routeKeyFor(request);
     if (available[key]) routes[key] = available[key];
   }
-  return routes;
+  return { routes, installed: [...installed].sort() };
 }
 
 /** The core office-fallback route key (regular tuples key by family alone). */

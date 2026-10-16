@@ -13,7 +13,7 @@ import {
   resolveInternalSlideTarget,
   type SlidePartNames,
 } from './slide-nav';
-import { acquireOfficeRoutes, distinctOfficeRouteLoads } from './office-route-acquisition.js';
+import { acquireOfficeRoutes, distinctOfficeRouteLoads, type AcquiredOfficeRoutes } from './office-route-acquisition.js';
 import {
   GoogleFontPreloadLease,
   type FontPreloadDemand,
@@ -1053,19 +1053,19 @@ export class PptxPresentation {
   private async _officeRoutesForRequests(
     requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
     fontSet: FontFaceSet | null,
-  ): Promise<Record<string, OfficeFontFallbackRoute>> {
+  ): Promise<AcquiredOfficeRoutes> {
     if (this._destroyed) throw new Error('Presentation destroyed');
-    if (!fontSet) return {};
+    if (!fontSet) return { routes: {}, installed: [] };
     const uncovered = uncoveredOfficeFontRequests(requests, this._embeddedFontTuples);
     let loads = this._officeFontLoads.get(fontSet);
     if (!loads) {
       loads = new Map();
       this._officeFontLoads.set(fontSet, loads);
     }
-    const routes = await acquireOfficeRoutes(loads, uncovered,
+    const acquired = await acquireOfficeRoutes(loads, uncovered,
       (fresh) => loadOfficeFontFallbacks(fresh, fontSet));
     if (this._destroyed) throw new Error('Presentation destroyed');
-    return routes;
+    return acquired;
   }
 
   /** Render a slide onto the given canvas. */
@@ -1095,7 +1095,7 @@ export class PptxPresentation {
       const fontSet = isHTMLCanvas(canvas)
         ? canvas.ownerDocument.fonts
         : (typeof document !== 'undefined' ? document.fonts : null);
-      const officeFontRoutes = await this._officeRoutesForRequests(requests, fontSet);
+      const { routes: officeFontRoutes, installed: officeInstalledFamilies } = await this._officeRoutesForRequests(requests, fontSet);
       await repository.withSlide(slideIndex, (slide) => {
         // A render may have waited behind another consumer after its public
         // entrance check. Re-check the presentation poison at the ownership
@@ -1119,6 +1119,7 @@ export class PptxPresentation {
             embeddedFontAuthoredFamilies: this._embeddedFontAuthoredFamilies,
             embeddedFontTuples: this._embeddedFontTuples,
             officeFontRoutes,
+            officeInstalledFamilies,
             googleSubstitutes: this._googleSubstitutes,
             fetchMedia: this._fetchMedia,
             fetchImage: this._fetchImage,

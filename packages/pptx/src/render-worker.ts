@@ -3,7 +3,7 @@ import type { CjkLang } from '@silurus/ooxml-core';
 import init, { PptxArchive, reinit } from './wasm/pptx_parser.js';
 import type { PptxTextRunInfo } from './renderer';
 import { PPTX_GOOGLE_FONTS, pptxSlideOfficeFontRequests } from './google-fonts';
-import { acquireOfficeRoutes, distinctOfficeRouteLoads } from './office-route-acquisition.js';
+import { acquireOfficeRoutes, distinctOfficeRouteLoads, type AcquiredOfficeRoutes } from './office-route-acquisition.js';
 import {
   findPreflightMimeType,
   PresentationPreflightBuilder,
@@ -86,7 +86,7 @@ const officeFontLoads = new Map<string, Promise<LoadedOfficeFontFallbacks>>();
 
 async function officeRoutesForRequests(
   requests: readonly import('@silurus/ooxml-core').OfficeFontFallbackRequest[],
-): Promise<Record<string, OfficeFontFallbackRoute>> {
+): Promise<AcquiredOfficeRoutes> {
   const uncovered = uncoveredOfficeFontRequests(requests, embeddedFontTuples);
   return acquireOfficeRoutes(officeFontLoads, uncovered, (fresh) => loadOfficeFontFallbacks(fresh));
 }
@@ -366,7 +366,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
       const officeRequests = await requireSlides().withSlide(request.slideIndex, (slide) =>
         pptxSlideOfficeFontRequests(slide, compact.majorFont, compact.minorFont));
       await fontsLoaded;
-      const officeFontRoutes = await officeRoutesForRequests(officeRequests);
+      const { routes: officeFontRoutes, installed: officeInstalledFamilies } = await officeRoutesForRequests(officeRequests);
       const { bitmap, runs } = await requireSlides().withSlide(request.slideIndex, async (slide) => {
         await slidePull.run(() => executeArchive((archive) => archive.assert_healthy()));
         const { renderSlideWithEmbeddedFonts } = await rendererModule;
@@ -387,6 +387,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
           embeddedFontAuthoredFamilies,
           embeddedFontTuples,
           officeFontRoutes,
+          officeInstalledFamilies,
           googleSubstitutes,
           fetchMedia: getMedia,
           fetchImage: getImage,
@@ -409,7 +410,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
       const officeRequests = await requireSlides().withSlide(request.slideIndex, (slide) =>
         pptxSlideOfficeFontRequests(slide, compact.majorFont, compact.minorFont));
       await fontsLoaded;
-      const officeFontRoutes = await officeRoutesForRequests(officeRequests);
+      const { routes: officeFontRoutes, installed: officeInstalledFamilies } = await officeRoutesForRequests(officeRequests);
       const runs = await requireSlides().withSlide(request.slideIndex, async (slide) => {
         await slidePull.run(() => executeArchive((archive) => archive.assert_healthy()));
         const { renderSlideWithEmbeddedFonts } = await rendererModule;
@@ -426,6 +427,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
           embeddedFontAuthoredFamilies,
           embeddedFontTuples,
           officeFontRoutes,
+          officeInstalledFamilies,
           googleSubstitutes,
           fetchMedia: getMedia,
           fetchImage: getImage,

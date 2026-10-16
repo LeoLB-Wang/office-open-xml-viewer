@@ -202,6 +202,8 @@ import {
 export interface RenderContext {
   cjkFallback?: CjkLang;
   officeFontRoutes?: Readonly<Record<string, import('@silurus/ooxml-core').OfficeFontFallbackRoute>>;
+  /** Normalized authored families with any installed face (presence probes). */
+  officeInstalledFamilies?: readonly string[];
   /** Presentation load explicitly enabled Google Fonts substitutions. */
   googleSubstitutes?: boolean;
   themeMajorFont: string | null;
@@ -1390,11 +1392,13 @@ function lineMetricFor(
   return powerPointFaceMetrics(family, bold, italic);
 }
 
-/** Whether another tuple of the family is installed (a loaded route): CSS font
- * matching then paints that installed family, synthesizing weight/style. */
+/** Whether any face of the family is installed (a family presence probe, or
+ * a loaded route of another tuple): CSS font matching then paints that
+ * installed family, synthesizing weight/style. */
 function familyInstalled(family: string, rc: RenderContext): boolean {
   const key = normalizeLocalFontMetricFamily(family);
-  return Object.keys(rc.officeFontRoutes ?? {}).some((route) => route === key || route.startsWith(`${key}:`));
+  return rc.officeInstalledFamilies?.includes(key) === true
+    || Object.keys(rc.officeFontRoutes ?? {}).some((route) => route === key || route.startsWith(`${key}:`));
 }
 
 /** The core office-fallback route key for an authored family tuple. */
@@ -8076,6 +8080,8 @@ export type SlideRenderOptions = RenderOptions & {
 type InternalSlideRenderOptions = SlideRenderOptions & {
   cjkFallback?: CjkLang;
   officeFontRoutes?: Readonly<Record<string, import('@silurus/ooxml-core').OfficeFontFallbackRoute>>;
+  /** Normalized authored families with any installed face (presence probes). */
+  officeInstalledFamilies?: readonly string[];
   googleSubstitutes?: boolean;
   embeddedFontAliases?: ReadonlyMap<string, string>;
   embeddedFontAuthoredFamilies?: ReadonlyMap<string, string>;
@@ -8380,6 +8386,7 @@ async function renderSlideLeased(
     embeddedFontAuthoredFamilies: opts.embeddedFontAuthoredFamilies,
     embeddedFontTuples: opts.embeddedFontTuples,
     officeFontRoutes: opts.officeFontRoutes,
+    officeInstalledFamilies: opts.officeInstalledFamilies,
     googleSubstitutes: opts.googleSubstitutes,
     // The backing store may have been clamped below `canvasSize × dpr`; downstream
     // crisp-offset math must use the SAME effective dpr the ctx was scaled by.

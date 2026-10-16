@@ -245,8 +245,12 @@ export function createFontResolver(
     if (authored) {
       const familyList = familyListFor(authored, request.language, request.cjkFallback)
         ?? cssFamilyList(authored, generic);
+      // Only a system-installed face found by the office local() loader shows
+      // that CSS matching paints this family; an application resource under a
+      // private alias does not.
       const installedFamily = (byFamily.get(normalizeFamily(authored)) ?? [])
-        .some((candidate) => candidate.source === 'local');
+        .some((candidate) => candidate.source === 'local'
+          && candidate.resourceIdentity?.startsWith('office-local:') === true);
       return freezeResolution({
         ...(installedFamily ? { installedFamily: true as const } : {}),
         requestedFamily,

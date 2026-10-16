@@ -211,6 +211,9 @@ export function pptxSlideOfficeFontRequests(
     const weight = officeFaceWeight(name, bold, italic);
     const style = italic ? 'italic' : 'normal';
     requests.set(`${name.toLowerCase()}:${weight}:${style}`, { family: name, weight, style });
+    // Family presence is probed independently of the styled tuples a slide
+    // uses, so an installed regular-only family stays present for bold runs.
+    requests.set(`presence:${name.toLowerCase()}`, { family: name, presenceOnly: true });
   };
   const body = (textBody: TextBody | null | undefined) => {
     for (const paragraph of textBody?.paragraphs ?? []) {
