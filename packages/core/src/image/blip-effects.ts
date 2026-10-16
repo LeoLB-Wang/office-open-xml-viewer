@@ -44,6 +44,7 @@
 //   saved as a binary .ppt matches it too, with the stored contrast used
 //   directly as k. At c = 1 the result is a threshold at v + b/2 = ½.
 
+import { imageEffectError } from './image-effect-error.js';
 import { ImageEffectWorkLedger } from './image-effect-work.js';
 import { validateBlipEffect } from './blip-validation.js';
 import { fillPaintWorkspaceBytes } from '../shape/paint.js';
@@ -435,8 +436,10 @@ export function assertBlipPixelEffectsBudget(value: BlipPixelEffects, pixels: nu
 /** Apply the effects in order. Point effects mutate the input; spatial effects
  * may return a new grid, which the caller must retain. Alpha effects mutate alpha at their
  *  authored position; clrChange replaces a matched pixel's color and alpha. Throws
- *  `OoxmlDecodedImageLimitError` before touching the buffer when the transform
- *  exceeds the effect budget (see {@link assertBlipPixelEffectsBudget}). */
+ *  `OoxmlDecodedImageLimitError` before touching the buffer when the plan
+ *  exceeds the effect budget (see {@link assertBlipPixelEffectsBudget}). Live
+ *  execution also charges each operation before it runs; a planner mismatch
+ *  aborts with a typed quota before executing unadmitted work. */
 export function applyBlipPixelEffects(buf: EffectBuffer, value: BlipPixelEffects, runtime: BlipEffectRuntime = {}): EffectBuffer {
   const d = buf.data;
   let additional = 0;
@@ -460,8 +463,7 @@ export function applyBlipPixelEffects(buf: EffectBuffer, value: BlipPixelEffects
     if (usesOriginalImage(value.effects)) context.original = clonePixels(buf, context);
     return evaluateBlipPixels(buf, value, runtime, context);
   } catch (error) {
-    if (error instanceof OoxmlError || error instanceof OoxmlDecodedImageLimitError) throw error;
-    throw new OoxmlError('unsupported-image-effect', 'Image effect evaluation unavailable');
+    throw imageEffectError(error);
   }
 }
 function evaluateBlipPixels(buf: EffectBuffer, value: BlipPixelEffects, runtime: BlipEffectRuntime,

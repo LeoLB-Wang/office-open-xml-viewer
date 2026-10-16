@@ -156,6 +156,8 @@ export interface ImageTransformOptions {
    * authored pixel grid; resizing occurs only while baking the result. */
   targetWidthPx?: number;
   targetHeightPx?: number;
+  /** Preserve readback failures for the strict chain error boundary. */
+  strict?: boolean;
   /** Release readback backing before a spatial/container effect allocates scratch. */
   releaseReadbackSurface?: boolean;
 }
@@ -182,7 +184,8 @@ export async function applyImageDataTransform(
     let data: ImageData;
     try {
       data = ctx.getImageData(0, 0, width, height);
-    } catch {
+    } catch (error) {
+      if (opts.strict) throw error;
       // Tainted canvas / unsupported readback — leave the picture unrecoloured.
       return img;
     }

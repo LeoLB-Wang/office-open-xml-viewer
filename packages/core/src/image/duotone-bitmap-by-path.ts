@@ -1,3 +1,4 @@
+import { imageEffectError } from './image-effect-error.js';
 import { ImageEffectWorkLedger } from './image-effect-work.js';
 import { preferVectorBlip } from './blip-gate.js';
 import { acquireCurrentBitmapCacheLease } from './bitmap-image-by-path.js';
@@ -21,9 +22,13 @@ export async function getCachedDuotoneBitmapByPath(
   opts: Parameters<typeof getCachedPixelTransformBitmapByPath>[4] = {},
 ): Promise<ImageBitmap | null> {
   if (!isBlipPixelEffects(value)) return getCachedDuotoneOnlyBitmapByPath(imagePath, mimeType, value, fetchImage, opts);
-  assertBlipPixelEffectsBudget(value, 0);
-  const release = blipEffectImageFills(value.effects).length ? acquireCurrentBitmapCacheLease(fetchImage) : undefined;
-  return loadEffects(imagePath, mimeType, value, fetchImage, opts, { work: 0, execution: new ImageEffectWorkLedger() }).finally(() => release?.());
+  try {
+    assertBlipPixelEffectsBudget(value, 0);
+    const release = blipEffectImageFills(value.effects).length ? acquireCurrentBitmapCacheLease(fetchImage) : undefined;
+    return await loadEffects(imagePath, mimeType, value, fetchImage, opts, { work: 0, execution: new ImageEffectWorkLedger() }).finally(() => release?.());
+  } catch (error) {
+    throw imageEffectError(error);
+  }
 }
 // Validation failures must reject the promise so the outer source lease is released.
 async function loadEffects(
@@ -81,7 +86,9 @@ async function loadEffects(
           nestedOpts.heightPt = base.height * (effects.emuPerPixelY ?? 9525) / 12700
             * (1 - (rect?.t ?? 0) - (rect?.b ?? 0)) / (ch > 0 ? ch : 1);
         }
-        const image = fill.blipEffects?.length
+        // A nested authored duotone belongs to this strict chain too; its
+        // readback/bake failure cannot use the standalone compatibility fallback.
+        const image = fill.blipEffects?.length || fill.duotone
           ? await loadEffects(path, mime, nested, fetchImage, nestedOpts, ledger)
           : await getCachedDuotoneOnlyBitmapByPath(path, mime, fill.duotone, fetchImage, nestedOpts);
         if (!image) throw new OoxmlError('unsupported-image-effect', 'Image fill decode unavailable');
