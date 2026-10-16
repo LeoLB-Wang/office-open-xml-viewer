@@ -263,6 +263,9 @@ export {
   lineEndPaintExtent,
   lineEndRetract,
   retractLineEndpoint,
+  traceTrimmedPath,
+  tracePresetLeader,
+  trimGeometryPathEnds,
 } from './shape/arrow';
 // Shared embedded-SVG decoder (Microsoft asvg:svgBlip extension) — used by all
 // three renderers to prefer the vector original over the raster fallback.

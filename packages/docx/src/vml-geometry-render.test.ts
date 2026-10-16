@@ -447,11 +447,21 @@ it('inherits VML visibility through groups while preserving the root flow extent
 });
 
 it('lets effective VML path arrowok override both arrowheads, including its false default', async () => {
-  const wrap = (definition: string, path: string) => `<v:group style="width:100pt;height:100pt" coordsize="100,100">${definition}<v:shape type="#pen" style="position:absolute;left:20;top:20;width:60;height:60" coordsize="100,100" filled="f" strokecolor="red" strokeweight="6pt"><v:stroke startarrow="block" endarrow="block"/>${path}</v:shape></v:group>`;
+  const wrap = (definition: string, path: string) => `<v:group style="width:100pt;height:100pt" coordsize="100,100">${definition}<v:shape type="#pen" style="position:absolute;left:20;top:20;width:60;height:60" coordsize="100,100" filled="f" strokecolor="red" strokeweight="6pt"><v:stroke startarrow="block" startarrowwidth="wide" startarrowlength="long" endarrow="block" endarrowwidth="wide" endarrowlength="long"/>${path}</v:shape></v:group>`;
   const path = (flag: string) => `<v:path ${flag} v="m0,0l100,100e"/>`;
   const none = await renderVml(wrap('', path('arrowok="f"')));
   const arrows = await renderVml(wrap('', path('arrowok="t"')));
-  expect(counter(arrows.pixels)(255, 0, 0)).toBeGreaterThan(counter(none.pixels)(255, 0, 0) + 100);
+  // Both ends carry a wide/long (lg/lg) triangle on a 6 pt pen: 30 pt long
+  // and 30 pt wide (5 × line width, core arrow-geometry.ts). The line stops
+  // 27 pt behind each tip. At 1 px/pt the tail tip is (80, 80), pointing along
+  // (1, 1)/√2. Pixel (58, 68) lies 23.3 behind it and 7.1 off the axis: inside
+  // the head (half-width 11.7) and outside the 3 pt shaft half-width, with
+  // more than a pixel's margin either way. (41, 31) mirrors it at the head.
+  const at = (pixels: Uint8ClampedArray, x: number, y: number) => [...pixels.slice((y * 200 + x) * 4, (y * 200 + x) * 4 + 3)];
+  for (const [x, y] of [[58, 68], [41, 31]]) {
+    expect(at(arrows.pixels, x, y)).toEqual([255, 0, 0]);
+    expect(at(none.pixels, x, y)).toEqual([255, 255, 255]);
+  }
   for (const [definition, flag, expected] of [
     ['', '', none],
     ['<v:shapetype id="pen"><v:path arrowok="f"/></v:shapetype>', '', none],
@@ -772,7 +782,7 @@ it('preserves image host transforms with identity skew and renders affine text s
 });
 
 it('transforms acquired arrow contours with their shafts without retracting twice', async () => {
-  const draw = (matrix?: string) => renderVml(`<v:group style="width:150pt;height:100pt" coordsize="150,100"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block"/>${matrix ? `<o:skew on="t" offset="0,0" matrix="${matrix}"/>` : ''}</v:line></v:group>`);
+  const draw = (matrix?: string) => renderVml(`<v:group style="width:150pt;height:100pt" coordsize="150,100"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="6pt" endarrow="block" endarrowwidth="wide" endarrowlength="long"/>${matrix ? `<o:skew on="t" offset="0,0" matrix="${matrix}"/>` : ''}</v:line></v:group>`);
   const plain = await draw(), identity = await draw('1,0,0,1,0,0');
   expect(identity.pixels).toEqual(plain.pixels);
   expect(identity.diagnostics).toEqual([]);
@@ -780,9 +790,13 @@ it('transforms acquired arrow contours with their shafts without retracting twic
   expect(skewed.diagnostics).toEqual([]);
   expect(skewed.pixels).not.toEqual(plain.pixels);
   expect(counter(skewed.pixels)(0, 0, 255)).toBeGreaterThan(200);
-  // The transformed triangle contains this point; an ordinary regenerated
-  // head on the diagonal shaft does not, nor does the shaft itself.
-  expect([...skewed.pixels.slice((53*200+104)*4,(53*200+104)*4+3)]).toEqual([0,0,255]);
+  // The wide/long head on a 6 pt pen is 30 pt long and 30 pt wide (5 × line
+  // width, core arrow-geometry.ts). Skew maps (x, y) to (x, y + x/2 − 34) at
+  // 1 px/pt, so the head becomes (120,66) (90,36) (90,66). A head regenerated
+  // on the skewed shaft would be (120,66) (99.9,39.2) (86.5,66). Pixel (92, 41)
+  // is ~2.1 px inside the first (≥1.4 px across the pixel) and ~7 px outside the second. The shaft
+  // (y 48.6–55.4 there) misses it.
+  expect([...skewed.pixels.slice((41*200+92)*4,(41*200+92)*4+3)]).toEqual([0,0,255]);
 });
 
 it('keeps page-aligned image-text brushes independent of reflected glyph masks', async () => {
@@ -861,7 +875,7 @@ it('applies group skew after root rotation while picture data keeps its host fra
 
 
 it('preserves skewed textured arrow contours and their independent single shadow', async () => {
-  const {pixels, diagnostics} = await renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block" filltype="tile" r:id="pic" color2="blue"/><o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0"/><v:shadow on="t" color="lime" offset="0,70pt" obscured="t"/></v:line></v:group>`);
+  const {pixels, diagnostics} = await renderVml(`<v:group style="width:180pt;height:180pt" coordsize="180,180"><v:line from="20,40" to="120,40" filled="f"><v:stroke color="blue" weight="3pt" endarrow="block" endarrowwidth="wide" endarrowlength="long" filltype="tile" r:id="pic" color2="blue"/><o:skew on="t" matrix="1,.5,0,1,0,0" offset="0,0"/><v:shadow on="t" color="lime" offset="0,70pt" obscured="t"/></v:line></v:group>`);
   expect(diagnostics).toEqual([]);
   let brushInk = 0;
   for (let i=0; i<pixels.length; i+=4) brushInk += (255-pixels[i+1]!)/255;

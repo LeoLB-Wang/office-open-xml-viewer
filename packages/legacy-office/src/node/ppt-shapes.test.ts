@@ -38,7 +38,7 @@ describe('lines and connectors', () => {
     for (const flipped of [false, true]) {
       const pixel = await render(await connector(anchor(576, 576, 1728, 576), flipped ? 0xb40 : 0xb00));
       expect(pixel(192, 96)).toEqual(BLUE);
-      expect(pixel(flipped ? 108 : 276, 100)).toEqual(BLUE);
+      expect(pixel(flipped ? 106 : 277, 99)).toEqual(BLUE);
       expect(pixel(flipped ? 276 : 108, 100)).toEqual(WHITE);
     }
   });
