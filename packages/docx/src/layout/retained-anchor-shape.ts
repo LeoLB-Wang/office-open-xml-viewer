@@ -13,9 +13,12 @@ export function planRetainedAnchorShape(
   text?: TextLayoutService,
   imageFillResourceKey?: string,
   maximumGeometryWork?: number,
+  vmlPictureResourceKey?: string,
+  vmlStrokeResourceKey?: string,
+  vmlEdgeResourcePrefix?: string,
 ): ShapeDrawingPlanResult {
   const child = acquisition.group?.resolvedChildFrame;
   return planShapeDrawing(child ? {
     ...run, rotation: child.rotationDeg, flipH: child.flipH, flipV: child.flipV,
-  } : run, rect, text, run.vmlTextPathInput, imageFillResourceKey, maximumGeometryWork);
+  } : run, rect, text, run.vmlTextPathInput, imageFillResourceKey, maximumGeometryWork, vmlPictureResourceKey, vmlStrokeResourceKey, vmlEdgeResourcePrefix);
 }

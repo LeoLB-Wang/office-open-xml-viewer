@@ -33,7 +33,7 @@ try {
   // Fixture bundling is test setup only; the consumer itself resolves exclusively
   // from its installed packages. Extension aliases support the TS fixture imports.
   const fixtureEntry = join(scratch, 'fixtures.ts');
-  await writeFile(fixtureEntry, `export { buildDocFixture, buildXlsFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/test-fixtures.ts'))};\nexport { buildPptShapeImageFillFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/ppt-shape-image-fill-fixture.ts'))};`);
+  await writeFile(fixtureEntry, `export { buildDocFixture, buildXlsFixture, buildPptFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/test-fixtures.ts'))};\nexport { buildPptShapeImageFillFixture } from ${JSON.stringify(join(root, 'packages/legacy-office/src/ppt-shape-image-fill-fixture.ts'))};\nexport { buildCfbFixture } from ${JSON.stringify(join(root, 'packages/core/src/testing/cfb-fixture.ts'))};`);
   const fixturesBuild = await rolldown({ input: fixtureEntry, platform: 'node', resolve: { extensionAlias: { '.js': ['.ts', '.js'] } } });
   try { await fixturesBuild.write({ file: join(scratch, 'fixtures.mjs'), format: 'es', codeSplitting: false }); }
   finally { await fixturesBuild.close(); }
@@ -42,6 +42,10 @@ try {
   for (const [family, bytes] of Object.entries({ doc: fixtures.buildDocFixture(), xls: fixtures.buildXlsFixture(), ppt: fixtures.buildPptShapeImageFillFixture() })) {
     await writeFile(join(scratch, 'public', `sample.${family}`), bytes);
   }
+  for (const [family, stream] of [['doc', 'WordDocument'], ['xls', 'Workbook'], ['ppt', 'PowerPoint Document']]) {
+    await writeFile(join(scratch, 'public', `unsupported.${family}`), new Uint8Array(fixtures.buildCfbFixture(['Root Entry', stream])));
+  }
+  await writeFile(join(scratch, 'public', 'deferred.ppt'), fixtures.buildPptFixture());
   await writeFile(join(scratch, 'node-smoke.mjs'), `
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -51,7 +55,7 @@ import { PptxViewer } from '@silurus/ooxml/pptx';
 import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
 import { legacyXlsSource } from '@silurus/ooxml-legacy-office/xls';
 import { legacyPptSource } from '@silurus/ooxml-legacy-office/ppt';
-import { materializeDocxDocument, materializeXlsxWorkbook, materializePptxPresentation } from '@silurus/ooxml/node';
+import { materializeDocxDocument, materializeXlsxWorkbook, materializePptxPresentation, OoxmlError } from '@silurus/ooxml/node';
 import { assertCompanionRuntime, CompanionRuntimeMismatchError } from '@silurus/ooxml/internal/companion';
 for (const value of [DocxViewer, XlsxViewer, PptxViewer, legacyDocSource, legacyXlsSource, legacyPptSource]) assert.equal(typeof value, 'function');
 for (const [entry, key] of [['chart-ex','chartEx'], ['tiff','tiff']]) assert.equal(typeof (await import('@silurus/ooxml/' + entry))[key].render, 'function');
@@ -64,12 +68,20 @@ const xls = await materializeXlsxWorkbook(await readFile('public/sample.xls'), {
 assert.equal(xls.worksheets.length, 1);
 const ppt = await materializePptxPresentation(await readFile('public/sample.ppt'), { modelSources: [legacyPptSource()] });
 assert.match(JSON.stringify(ppt), /Picture fill text/);
+for (const [family, open, source] of [
+  ['doc', materializeDocxDocument, legacyDocSource], ['xls', materializeXlsxWorkbook, legacyXlsSource], ['ppt', materializePptxPresentation, legacyPptSource],
+]) {
+  await assert.rejects(async () => open(await readFile('public/unsupported.' + family), { modelSources: [source()] }),
+    error => error instanceof OoxmlError && error.code === 'unsupported-content' && error.details.format === family && error.details.reason === 'source-subset');
+}
+await assert.rejects(async () => materializePptxPresentation(await readFile('public/deferred.ppt'), { modelSources: [legacyPptSource()] }),
+  error => error instanceof OoxmlError && error.code === 'unsupported-content' && error.details.format === 'ppt');
 console.log('Packed Node imports and all three legacy readers passed');
 `);
   process.stdout.write(run(process.execPath, ['node-smoke.mjs']));
   await writeFile(join(scratch, 'index.html'), '<div id="result">loading</div><script type="module" src="/main.js"></script>');
   await writeFile(join(scratch, 'main.js'), `
-import { DocxDocument, DocxViewer } from '@silurus/ooxml/docx';
+import { DocxDocument, DocxViewer, OoxmlError } from '@silurus/ooxml/docx';
 import { XlsxWorkbook, XlsxViewer } from '@silurus/ooxml/xlsx';
 import { PptxPresentation, PptxViewer } from '@silurus/ooxml/pptx';
 import { legacyDocSource } from '@silurus/ooxml-legacy-office/doc';
@@ -87,6 +99,23 @@ try {
       const loaded = await Loader.load(bytes.slice(0), options);
       try { if (loaded.mode !== mode) throw new Error(family + ': expected ' + mode + ', got ' + loaded.mode); }
       finally { loaded.destroy(); }
+      const unsupported = await (await fetch('/unsupported.' + family)).arrayBuffer();
+      try { await Loader.load(unsupported, options); throw new Error('unsupported input was accepted'); }
+      catch (error) {
+        if (!(error instanceof OoxmlError) || error.code !== 'unsupported-content'
+          || error.details?.format !== family || error.details?.reason !== 'source-subset') throw error;
+      }
+      if (family === 'ppt') {
+        const deferred = await (await fetch('/deferred.ppt')).arrayBuffer();
+        let deck;
+        try {
+          deck = await Loader.load(deferred, options);
+          await deck.collectSlideRuns(0);
+          throw new Error('unsupported slide was accepted');
+        } catch (error) {
+          if (!(error instanceof OoxmlError) || error.code !== 'unsupported-content' || error.details?.format !== family) throw error;
+        } finally { deck?.destroy(); }
+      }
       const element = document.createElement(family === 'xls' ? 'div' : 'canvas');
       element.style.cssText = 'width:600px;height:400px';
       document.body.append(element);

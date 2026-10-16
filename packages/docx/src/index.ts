@@ -1,3 +1,4 @@
+export type { DocxDiagnostic, DocxDiagnosticCode } from './types.js';
 export {
   DocxDocument,
   type CollectPageRunsOptions,
@@ -188,6 +189,7 @@ export {
   type OoxmlFormat,
   type OoxmlResourceLimit,
   type OoxmlResourceLimitErrorDetails,
+  type OoxmlUnsupportedContentDetails,
   type OoxmlResourceLimits,
   type XlsxWorksheetLimits,
   type CjkFallback,

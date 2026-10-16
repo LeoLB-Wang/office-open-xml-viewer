@@ -15,6 +15,26 @@ import type {
   WorkerErrorPayload,
 } from '@silurus/ooxml-core/worker';
 
+/** A parser/layout limitation or resource acquisition failure. These immutable
+ * values use the same contract in main-thread and worker rendering. */
+export type DocxDiagnosticCode =
+  | 'FLOW_OVERLAP'
+  | 'BOTTOM_MARGIN_INVASION'
+  | 'FLOW_DOMAIN_INVASION'
+  | 'INVALID_REFERENCE'
+  | 'INVALID_GEOMETRY'
+  | 'INVALID_VALUE'
+  | 'MISSING_RESOURCE'
+  | 'NON_CONVERGENCE'
+  | 'UNSUPPORTED_FEATURE';
+
+export interface DocxDiagnostic {
+  readonly code: DocxDiagnosticCode;
+  readonly severity: 'warning' | 'error';
+  readonly source?: Readonly<DocxStorySource>;
+  readonly message: string;
+}
+
 export interface DocxDocumentModel {
   section: SectionProps;
   body: BodyElement[];
@@ -901,12 +921,26 @@ export interface ShapeRun {
   behindDoc?: boolean;
   /** ECMA-376 §20.4.2.3 `wp:anchor/@relativeHeight`: lower values render first. */
   zOrder: number;
+  /** ECMA-376 Part 4 §19.1.2.18; VML shadow facts resolved by layout. */
+  vmlShadow?: {
+    kind: 'single' | 'double' | 'emboss' | 'perspective';
+    color: string;
+    color2: string;
+    offset: { xPt: number; yPt: number; xFraction: number; yFraction: number };
+    offset2: { xPt: number; yPt: number; xFraction: number; yFraction: number };
+    opacity: number;
+    obscured: boolean;
+    origin: [number, number];
+    matrix: [number, number, number, number, number, number];
+    absolutePerspective: boolean;
+  };
   /** Normalized [0,1] custom-geometry sub-paths. Empty when `presetGeometry`
    *  is set; the renderer chooses between buildCustomPath and buildShapePath. */
   subpaths: PathCmd[][];
   /** ECMA-376 §20.1.9.15 per-path `fill` mode and `stroke` flag, parallel to
    *  `subpaths`; absent when every path uses the defaults. */
   subpathPaint?: Array<{
+    fillRule?: 'nonzero' | 'evenodd';
     fill?: 'none' | 'lighten' | 'lightenLess' | 'darken' | 'darkenLess';
     stroke?: false;
   }>;
@@ -917,6 +951,8 @@ export interface ShapeRun {
    *  `null` preserves omitted named guides so the preset engine can use the
    *  geometry's default for that index. */
   adjValues?: Array<number | null>;
+  /** Part 4 §§19.1.2.10/.11: image above the backing fill, below the outline. */
+  vmlPicture?: Pick<ImageRun, 'imagePath' | 'mimeType' | 'srcRect' | 'colorReplaceFrom' | 'duotone'>;
   fill: ShapeFill | null;
   stroke: string | null;
   strokeWidth?: number;
@@ -1148,6 +1184,13 @@ export type ShapeFill =
   | {
       /** ECMA-376 §20.1.8.14 picture fill on a DrawingML shape. */
       fillType: 'image';
+      /** Part 4 §19.1.2.5 VML brush placement, resolved with lazy image metadata. */
+      vml?: {
+        repeat: boolean;
+        size: [{ value: number; fraction: boolean }, { value: number; fraction: boolean }] | null;
+        origin: [number, number]; position: [number, number];
+        aspect: string; alignShape: boolean;
+      };
       imagePath: string;
       mimeType: string;
       /** Microsoft 2016 SVG original retained beside the raster fallback. */
@@ -1760,7 +1803,7 @@ export interface DocxTextRunInfo {
   fontSize: number;
   /** CSS `font` shorthand used for canvas drawing. */
   font: string;
-  /** Uniform per-code-point pitch in CSS px for horizontal text. */
+  /** Native Canvas tracking pitch in CSS px for horizontal text. */
   letterSpacingPx?: number;
   /** CSS transform used by the overlay for vertical-page text. */
   transform?: string;

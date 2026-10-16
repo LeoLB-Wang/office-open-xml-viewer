@@ -133,6 +133,10 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['dropCachedDerivedBitmapNamespace', 'value'],
     ['decodedBitmapTargetResizeOptions', 'value'],
     ['duotoneImageData', 'value'],
+    ['applyImageDataTransform', 'value'],
+    ['decodeSvgBlobOnMainThread', 'value'],
+    ['OoxmlDecodedImageLimitError', 'value'],
+    ['OoxmlResourceLimitError', 'value'],
     ['getCachedBitmapByPath', 'value'],
     ['getCachedDerivedBitmap', 'value'],
     ['getCachedSvgImageByPath', 'value'],
@@ -143,6 +147,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['isBrowserResizableRasterMimeType', 'value'],
     ['isDecodeTargetResizableRasterFormat', 'value'],
     ['isOoxmlDecodedImageLimitError', 'value'],
+    // Lazy archive admission errors remain terminal at paint-resource catches.
+    ['OoxmlResourceLimitError', 'value'],
     ['isTiffDecodeError', 'value'],
     // Missing optional image codecs are contained at paint-resource acquisition;
     // the placeholder consumes only the already-retained authored bounds.
@@ -167,6 +173,8 @@ const SHARED_PAINT_IMPORTS = new Map([
     ['normalizeImageResourceOptions', 'value'],
     ['planDecodedImageTargets', 'value'],
     ['paintDrawingMLShape', 'value'],
+    // Bounded VML mask/concentric compositing allocates temporary paint-only surfaces.
+    ['createAuxCanvas', 'value'],
     ['withVertFeature', 'value'],
     ['preferVectorBlip', 'value'],
     ['releaseOwnedBitmap', 'value'],

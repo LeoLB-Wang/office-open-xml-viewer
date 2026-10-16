@@ -15,6 +15,7 @@ import {
   GoogleFontPreloadLease,
   loadOfficeFontFallbacks,
   unloadOfficeFontFallbacks,
+  unregisterEmbeddedFonts,
   decodeDataUrl,
   WasmParserHost,
   dropDecodedBitmapCache,
@@ -100,10 +101,11 @@ async function officeRoutesForRequests(
 
 function releaseOfficeFonts(): void {
   for (const pending of officeFontLoads.values()) {
-    void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces));
+    void pending.then((loaded) => unloadOfficeFontFallbacks(loaded.faces), () => undefined);
   }
   officeFontLoads.clear();
 }
+let embeddedFontFaces: FontFace[] = [];
 let embeddedFontAliases: ReadonlyMap<string, string> = new Map();
 let embeddedFontAuthoredFamilies: ReadonlyMap<string, string> = new Map();
 let embeddedFontTuples: ReadonlySet<string> = new Set();
@@ -185,6 +187,8 @@ function getFontBytes(path: string): Promise<Uint8Array> {
 
 async function openPresentation(request: Extract<RenderWorkerRequest, { kind: 'parse' }>) {
   releaseOfficeFonts();
+  unregisterEmbeddedFonts(embeddedFontFaces);
+  embeddedFontFaces = [];
   googleFonts?.release();
   googleFonts = null;
   progressivePreflightGate.reset();
@@ -210,10 +214,14 @@ async function openPresentation(request: Extract<RenderWorkerRequest, { kind: 'p
   const bootstrap = await slidePull.run(() => executeArchiveFromNew(
     request,
   ));
-  // The retained archive exposes font reads as independent operations, so font
-  // decoding can overlap the sequential slide preflight without sharing cursor
-  // ownership. First paint still waits for `fontsLoaded` below.
-  const embeddedFontsLoaded = loadEmbeddedFonts(bootstrap.embeddedFonts, getFontBytes);
+  // Load-time resources belong to the parse failure channel. Complete embedded
+  // extraction before preflight/publication, including a zero-slide deck, so a
+  // rejected font read cannot outlive parse cleanup or publish a ready result.
+  const embedded = await loadEmbeddedFonts(bootstrap.embeddedFonts, getFontBytes);
+  embeddedFontFaces = embedded.faces;
+  embeddedFontAliases = embedded.aliases;
+  embeddedFontAuthoredFamilies = embedded.authoredFamilies;
+  embeddedFontTuples = embedded.tuples;
   cjkFallback = request.cjkFallback;
   googleSubstitutes = request.useGoogleFonts === true;
   // Optional Google subset loading is library policy keyed to the slide model
@@ -230,10 +238,6 @@ async function openPresentation(request: Extract<RenderWorkerRequest, { kind: 'p
   if (request.useGoogleFonts) googleFonts = new GoogleFontPreloadLease(PPTX_GOOGLE_FONTS);
   if (request.progressiveLayout) {
     const ensureFonts = async (): Promise<void> => {
-      const embedded = await embeddedFontsLoaded;
-      embeddedFontAliases = embedded.aliases;
-      embeddedFontAuthoredFamilies = embedded.authoredFamilies;
-      embeddedFontTuples = embedded.tuples;
       if (!request.useGoogleFonts) return;
       await googleFonts?.ensure(
         excludeEmbeddedFontFamilies(preflightBuilder!.currentFontPreloadNames, embedded.aliases),
@@ -273,10 +277,6 @@ async function openPresentation(request: Extract<RenderWorkerRequest, { kind: 'p
     availableSlideCount = bootstrap.slideCount;
     wakeSlideAvailabilityWaiters();
     fontsLoaded = (async () => {
-      const embedded = await embeddedFontsLoaded;
-      embeddedFontAliases = embedded.aliases;
-      embeddedFontAuthoredFamilies = embedded.authoredFamilies;
-      embeddedFontTuples = embedded.tuples;
       if (!request.useGoogleFonts) return embedded.faces;
       await googleFonts?.ensure(
         excludeEmbeddedFontFamilies(preflight.fontPreloadNames, embedded.aliases),
@@ -285,6 +285,8 @@ async function openPresentation(request: Extract<RenderWorkerRequest, { kind: 'p
       return embedded.faces;
     })();
   }
+  // Google subsets started by ordinary preflight must also settle before ready.
+  await fontsLoaded;
   return preflight;
 }
 
@@ -500,8 +502,13 @@ self.onmessage = async (event: MessageEvent<RenderWorkerRequest | WorkerSvgDecod
       try { source?.closeModelSource(); } catch {}
     }
     if (ownsParseReservation) {
+      releaseOfficeFonts();
+      unregisterEmbeddedFonts(embeddedFontFaces);
+      embeddedFontFaces = [];
       googleFonts?.release();
       googleFonts = null;
+      rawParts.clear();
+      try { host.run(() => host.disposeArchive()); } catch {}
       progressivePreflightGate.reset();
       slides?.clear();
       slides = null;

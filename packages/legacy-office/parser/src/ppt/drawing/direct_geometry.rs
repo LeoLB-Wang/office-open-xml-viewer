@@ -39,7 +39,9 @@ pub(super) fn project(
         mixed |= (path.fill(), path.stroke()) != flags;
         command_count = command_count
             .checked_add(path.commands().len())
-            .ok_or_else(|| unsupported("OfficeArt custom-geometry model budget exceeded"))?;
+            .ok_or_else(|| {
+                crate::rejection::resource("OfficeArt custom-geometry model budget exceeded")
+            })?;
     }
     let allocation = command_count
         .checked_mul(std::mem::size_of::<PathCmd>())
@@ -52,15 +54,17 @@ pub(super) fn project(
                 )
                 .and_then(|outer| bytes.checked_add(outer))
         })
-        .ok_or_else(|| unsupported("OfficeArt custom-geometry model budget exceeded"))?;
-    *model_budget = model_budget
-        .checked_sub(allocation)
-        .ok_or_else(|| unsupported("OfficeArt custom-geometry model budget exceeded"))?;
+        .ok_or_else(|| {
+            crate::rejection::resource("OfficeArt custom-geometry model budget exceeded")
+        })?;
+    *model_budget = model_budget.checked_sub(allocation).ok_or_else(|| {
+        crate::rejection::resource("OfficeArt custom-geometry model budget exceeded")
+    })?;
 
     let mut authored = Vec::new();
     authored
         .try_reserve_exact(decoded.paths().len())
-        .map_err(|_| unsupported("OfficeArt custom-geometry allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("OfficeArt custom-geometry allocation failed"))?;
     authored.extend(
         decoded
             .paths()
@@ -71,12 +75,14 @@ pub(super) fn project(
     let mut result = Vec::new();
     result
         .try_reserve_exact(decoded.paths().len())
-        .map_err(|_| unsupported("OfficeArt custom-geometry allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("OfficeArt custom-geometry allocation failed"))?;
     for path in decoded.paths() {
         let mut commands = Vec::new();
         commands
             .try_reserve_exact(path.commands().len())
-            .map_err(|_| unsupported("OfficeArt custom-geometry allocation failed"))?;
+            .map_err(|_| {
+                crate::rejection::resource("OfficeArt custom-geometry allocation failed")
+            })?;
         for command in path.commands() {
             commands.push(match command {
                 DecodedCommand::Move([x, y]) => PathCmd::MoveTo {
@@ -129,10 +135,6 @@ pub(super) fn project(
         paint: Some(paint),
         authored,
     })
-}
-
-fn unsupported(message: &str) -> String {
-    format!("UNSUPPORTED:{message}")
 }
 
 #[cfg(test)]

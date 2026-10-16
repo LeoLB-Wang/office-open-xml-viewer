@@ -32,7 +32,7 @@ async function expectWorkerBitmaps(page: import('@playwright/test').Page, url: s
     try {
       expect(response.ok(), `ordinary asset inspection: ${assetUrl}`).toBe(true);
       const body = await response.text();
-      if (body.includes('ooxml-model-source-module/v1')
+      if (body.includes('ooxml-model-source-module/v2')
         || body.includes('model source view default')) sourceBodies.push(new URL(assetUrl).pathname);
     } finally {
       await response.dispose();

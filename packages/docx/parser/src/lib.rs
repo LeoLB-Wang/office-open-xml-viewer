@@ -24,6 +24,9 @@ mod types;
 mod xml_util;
 
 #[cfg(test)]
+mod allocation_tests;
+
+#[cfg(test)]
 thread_local! {
     static DOCX_RETAINED_MODEL_JSON_LIMIT_OVERRIDE: std::cell::Cell<Option<u64>> =
         const { std::cell::Cell::new(None) };
@@ -270,7 +273,13 @@ impl DocxArchive {
         self.last_document_usage = None;
         let zip = &mut self.archive;
         zip.begin_operation("document-cursor")?;
-        match parser::DocxBodyCursor::start(zip) {
+        let _resource_scope = zip.operation()?.resource_scope()?;
+        let result = parser::DocxBodyCursor::start(zip);
+        if let Err(error) = zip.assert_healthy() {
+            zip.cancel_operation();
+            return Err(error);
+        }
+        match result {
             Ok(cursor) => {
                 self.document_cursor = Some(DocumentCursorState {
                     operation_id,
@@ -360,6 +369,7 @@ impl DocxArchive {
         }
         self.archive.assert_healthy()?;
 
+        let _resource_scope = self.archive.operation()?.resource_scope()?;
         let result = (|| -> Result<(Vec<u8>, bool), String> {
             let state = self
                 .document_cursor
@@ -378,6 +388,7 @@ impl DocxArchive {
             let done = matches!(unit, parser::StreamedDocumentUnit::Complete { .. });
             let reporter = self.archive.operation()?.limit_reporter()?;
             let bytes = serialize_document_unit(&unit, Some(&reporter))?;
+            self.archive.assert_healthy()?;
             Ok((bytes, done))
         })();
         let (bytes, done) = match result {
@@ -1002,6 +1013,43 @@ mod tests {
         .unwrap();
         assert_eq!(details["details"]["violation"]["operation"], "markdown");
         assert_eq!(details["details"]["violation"]["part"], "word/document.xml");
+    }
+
+    #[test]
+    fn shallow_styles_with_quoted_gt_do_not_poison_native_parse() {
+        let document = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>"#;
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+        let mut styles = String::from(
+            r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        );
+        for id in 0..257 {
+            styles.push_str(&format!(r#"<w:style w:styleId="s{id}>"/>"#));
+        }
+        styles.push_str("</w:styles>");
+        let bytes = zip_parts(&[
+            ("word/document.xml", document),
+            ("word/_rels/document.xml.rels", rels),
+            ("word/styles.xml", styles.as_bytes()),
+        ]);
+        parser::parse_from_bytes_with_limits(&bytes, None, None, "parse")
+            .expect("257 sibling styles have depth two, even with quoted greater-than signs");
+    }
+
+    #[test]
+    fn malformed_shallow_styles_do_not_poison_native_parse() {
+        let document = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>"#;
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+        let styles = format!(
+            r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{}</w:styles>"#,
+            r#"<w:style w:styleId='> /' w:styleId="/>" />"#.repeat(257)
+        );
+        let bytes = zip_parts(&[
+            ("word/document.xml", document),
+            ("word/_rels/document.xml.rels", rels),
+            ("word/styles.xml", styles.as_bytes()),
+        ]);
+        parser::parse_from_bytes_with_limits(&bytes, None, None, "parse")
+            .expect("shallow duplicate attributes retain tolerant fallback");
     }
 
     #[test]

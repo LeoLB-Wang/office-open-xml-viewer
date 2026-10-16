@@ -80,9 +80,9 @@ pub(in crate::ppt) fn paragraphs_with_axes(
     let paragraph_count = text.matches('\r').count().saturating_add(1);
     model_charge::<ModelParagraph>(model_budget, paragraph_count)?;
     let mut result = Vec::new();
-    result
-        .try_reserve_exact(paragraph_count)
-        .map_err(|_| unsupported("PowerPoint direct text model allocation failed"))?;
+    result.try_reserve_exact(paragraph_count).map_err(|_| {
+        crate::rejection::resource("PowerPoint direct text model allocation failed")
+    })?;
 
     for paragraph in text.split('\r') {
         charge(work_budget, "PowerPoint direct text work budget exceeded")?;
@@ -244,21 +244,23 @@ pub(in crate::ppt) fn paragraphs_with_axes(
 }
 
 fn charge(budget: &mut usize, message: &str) -> Result<(), String> {
-    *budget = budget.checked_sub(1).ok_or_else(|| unsupported(message))?;
+    *budget = budget
+        .checked_sub(1)
+        .ok_or_else(|| crate::rejection::resource(message))?;
     Ok(())
 }
 
 fn charge_units(budget: &mut usize, units: usize, message: &str) -> Result<(), String> {
     *budget = budget
         .checked_sub(units)
-        .ok_or_else(|| unsupported(message))?;
+        .ok_or_else(|| crate::rejection::resource(message))?;
     Ok(())
 }
 
 fn model_charge<T>(budget: &mut usize, count: usize) -> Result<(), String> {
     let bytes = std::mem::size_of::<T>()
         .checked_mul(count)
-        .ok_or_else(|| unsupported("PowerPoint direct text model size overflow"))?;
+        .ok_or_else(|| crate::rejection::resource("PowerPoint direct text model size overflow"))?;
     charge_units(
         budget,
         bytes,
@@ -309,15 +311,14 @@ pub(in crate::ppt) fn reserve_run_slot(
     if output.len() < output.capacity() {
         return Ok(());
     }
-    let capacity = output
-        .capacity()
-        .max(1)
-        .checked_mul(2)
-        .ok_or_else(|| unsupported("PowerPoint direct text model size overflow"))?;
+    let capacity =
+        output.capacity().max(1).checked_mul(2).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint direct text model size overflow")
+        })?;
     model_charge::<TextRun>(budget, capacity - output.capacity())?;
     output
         .try_reserve_exact(capacity - output.len())
-        .map_err(|_| unsupported("PowerPoint direct text model allocation failed"))
+        .map_err(|_| crate::rejection::resource("PowerPoint direct text model allocation failed"))
 }
 
 /// Preserve the known line-box formatting when projecting a break. Binary
@@ -520,14 +521,14 @@ fn model_paragraph(
     let tab_stops = if let Some(tabs) = context.ruler_tabs {
         let positions = tabs.positions();
         let count = positions.len();
-        *budget = budget
-            .checked_sub(positions.len())
-            .ok_or_else(|| unsupported("PowerPoint ruler tab work budget exceeded"))?;
+        *budget = budget.checked_sub(positions.len()).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint ruler tab work budget exceeded")
+        })?;
         model_charge::<TabStop>(model_budget, count)?;
         let mut result = Vec::new();
-        result
-            .try_reserve_exact(count)
-            .map_err(|_| unsupported("PowerPoint direct text model allocation failed"))?;
+        result.try_reserve_exact(count).map_err(|_| {
+            crate::rejection::resource("PowerPoint direct text model allocation failed")
+        })?;
         for (pos, algn) in positions {
             charge_units(
                 model_budget,
@@ -564,6 +565,7 @@ fn model_paragraph(
     )?));
     let empty = !runs.iter().any(|run| matches!(run, TextRun::Text(_)));
     Ok(ModelParagraph {
+        math_fallbacks: Vec::new(),
         alignment: alignment.to_owned(),
         mar_l,
         mar_r: 0,
@@ -990,6 +992,13 @@ mod tests {
     }
 
     #[test]
+    fn direct_text_work_quota_keeps_resource_classification() {
+        assert!(paragraphs("A", &[], Context::default(), &mut 0, &mut 100)
+            .unwrap_err()
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
+    }
+
+    #[test]
     fn uniform_text_storage_tracks_runs_not_character_count() {
         let text = "A".repeat(2048);
         let length = u32::try_from(text.len() + 1).unwrap();
@@ -1014,7 +1023,7 @@ mod tests {
         assert!(
             paragraphs(&text, &style, context, &mut 10_000, &mut (required - 1))
                 .unwrap_err()
-                .contains("model budget")
+                .starts_with("LEGACY_RESOURCE_LIMIT:")
         );
     }
 

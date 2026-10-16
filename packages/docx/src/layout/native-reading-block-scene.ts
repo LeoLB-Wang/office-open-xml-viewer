@@ -85,7 +85,7 @@ export function acquireNativeReadingBlockScene(
       || child.widthPt < 0 || child.heightPt < 0 || typeof child.flipH !== 'boolean' || typeof child.flipV !== 'boolean') fail('geometry', 'invalid resolved child frame');
     if (run.type !== 'shape') fail('resource', `member ${index} requires ${run.type} acquisition and decoded-resource bounds`);
     if (run.textBoxInput || run.textBlocks?.length || run.textPath || run.vmlTextPathInput) fail('owned-text', `member ${index} requires complete story/glyph ink acquisition`);
-    if (run.fill?.fillType === 'image') fail('resource', `member ${index} has an image fill`);
+    if (run.vmlPicture || run.fill?.fillType === 'image') fail('resource', `member ${index} has an image fill`);
     // Charge the input before the shared planner clones it, not after painting.
     work += 1 + (run.adjValues?.length ?? 0) + (run.strokeCustomDash?.length ?? 0);
     for (const path of run.subpaths) { work += path.length + 1; if (work + resolvedWork + commands.length >= maximumWork) fail('budget', 'shape source allowance exceeded'); }
@@ -95,9 +95,13 @@ export function acquireNativeReadingBlockScene(
     try { planned = nativeReadingOwners.planRetainedAnchorShape(run, acquisition, nativeReadingOwners.retainedAnchorChildFrame(acquisition, outer), undefined, undefined, maximumWork - work - resolvedWork - commands.length - 1); }
     catch (error) { fail(error instanceof nativeReadingOwners.GeometryWorkBudgetError ? 'budget' : 'paint', error instanceof Error ? error.message : 'geometry resolution failed'); }
     if (planned.status !== 'planned' || planned.command.kind !== 'drawingml-shape') fail('paint', `member ${index} cannot retain a vector command`);
-    resolvedWork += planned.command.plan.resolvedGeometry.workUnits;
+    resolvedWork += planned.command.plan.resolvedGeometry.workUnits
+      + (planned.before ?? []).reduce((sum, command) => {
+        if (command.kind !== 'drawingml-shape') fail('paint', 'vector member requires glyph shadow acquisition');
+        return sum + command.plan.resolvedGeometry.workUnits;
+      }, 0);
     if (work + resolvedWork + commands.length + 1 > maximumWork) fail('budget', 'resolved geometry allowance exceeded');
-    commands.push(planned.command);
+    commands.push(...(planned.before ?? []), planned.command);
   }
   const drawing = nativeReadingOwners.snapshotPlainData({
     kind: 'drawing' as const, id, source, flowDomainId,

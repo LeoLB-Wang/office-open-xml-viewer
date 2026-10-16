@@ -1,3 +1,4 @@
+import type { LayoutDiagnostic } from './layout/types.js';
 import { readingDefaultOwners } from './internal/reading-default-owners.js';
 import { readingPaintHooks } from './paint/reading-hooks.js';
 import { isOwnedPaintResourceSession, isUnavailablePaintResourceHandle } from './paint/resource-session.js';
@@ -126,6 +127,7 @@ const LAYOUT_PROGRESS_POST_INTERVAL_MS = 100;
 let renderers: LoadedWorkerRenderers = {};
 let googleFontFaces: FontFace[] = [];
 let embeddedFontFaces: FontFace[] = [];
+let fontDiagnostics: readonly LayoutDiagnostic[] = [];
 let officeFontFaces: FontFace[] = [];
 function releaseRetainedFonts(): void {
   const office = officeFontFaces;
@@ -369,6 +371,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
         officeFontFaces = officeFaces;
         googleFontFaces = googleFaces;
         embeddedFontFaces = embeddedFonts.faces;
+        fontDiagnostics = embeddedFonts.diagnostics ?? [];
         fontsTransferred = true;
         reviewIndexInput = requestedReviewIndexInput;
         doc = requestedDoc;
@@ -411,6 +414,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
         // `comments` / `revisions` from until `parsedMeta` arrives, and load()
         // is about to resolve on that first publication.
         let review: DocumentLayoutPartial['review'] | undefined = {
+          resourceDiagnostics: fontDiagnostics,
           revisions: model.revisions ?? [],
           comments: model.comments ?? [],
           footnotes: model.footnotes ?? [],
@@ -448,6 +452,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       // blocking build, as it always was.
       const layout = doc.layoutVariants.layoutFor(layoutOptions);
       const meta: DocumentMeta = {
+        resourceDiagnostics: fontDiagnostics,
         revisions: model.revisions ?? [],
         comments: model.comments ?? [],
         footnotes: model.footnotes ?? [],
@@ -484,10 +489,12 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       const canvas = req.canvas ?? new OffscreenCanvas(1, 1);
       const source = layoutSourceStoreOf(doc.layoutServices);
       if (!source) throw new Error('Document layout source is not initialized');
+      const diagnostics: LayoutDiagnostic[] = [];
       await renderLayoutSourceToCanvas(source, canvas, req.pageIndex, {
         ...req.opts,
         // Transferred bitmap surfaces and worker fallbacks are document-owned.
         callerOwnedCanvasTarget: false,
+        onDiagnostic: diagnostic => diagnostics.push(diagnostic),
         fetchImage: getImage,
         svgDecoder: svgDecodeClient.decode,
         layoutServices: doc.layoutServices,
@@ -502,7 +509,7 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
         defaultCurrentDateMs: doc.defaultCurrentDateMs,
       });
       const bitmap = canvas.transferToImageBitmap();
-      postOwnedImageBitmap(post, { type: 'pageRendered', id, bitmap, runs });
+      postOwnedImageBitmap(post, { type: 'pageRendered', id, bitmap, runs, diagnostics });
       return;
     }
     if (req.type === 'collectRuns') {
@@ -562,6 +569,8 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       // Cleanup must not replace the parse failure or its terminal response.
       try { sourceOwner?.closeModelSource(); } catch {}
       releaseRetainedFonts();
+      try { host.run(() => host.disposeArchive()); } catch {}
+      rawParts.clear();
       doc = null;
       reviewIndexInput = null;
     }

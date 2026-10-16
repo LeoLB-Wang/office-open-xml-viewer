@@ -237,9 +237,12 @@ self-contained source module and WASM load in the parser worker (or in Node)
 only when a claimed file is opened, and no OOXML package is generated. The
 readers are narrow and experimental and reject unsupported content rather than
 showing a partial document. They do not execute macros, fields, formulas, actions
-or embedded objects. Unsupported claimed content rejects with a diagnostic failure
-without a dedicated typed unsupported-content code; keep a generic fallback and
-offer conversion. The package versions must match exactly; upgrade both together.
+or embedded objects. Claimed content outside the supported subset rejects with
+`OoxmlError.code === 'unsupported-content'` (`details.format` names the source
+format); offer conversion for that code. Resource limits, encryption and parser
+crashes stay distinct from it; some native reader budgets surface as untyped
+errors (see [Experimental legacy Office sources](docs/legacy-office-conversion.md)).
+The package versions must match exactly; upgrade both together.
 No migration is required without the add-on. See the [legacy Office guide](https://ooxml.silurus.dev/legacy-office/)
 for viewer and Node examples, and [Experimental legacy Office sources](docs/legacy-office-conversion.md)
 for the full support boundaries.
@@ -289,10 +292,11 @@ chart behavior is documented in
 [Chart compatibility evidence and scope](docs/chart-compatibility-evidence.md).
 
 The bounded TIFF 6.0 codec decodes the first IFD/page of stripped, top-left
-images in the uncompressed bilevel, 8-bit grayscale, RGB, RGBA and process-CMYK
-classes, plus 1-bit CCITT Group 4. Unsupported or malformed first-page classes
-fail with a diagnostic render error. It is not a general-purpose TIFF library,
-but as a small
+images in the bilevel, 8-bit grayscale, RGB, RGBA and process-CMYK classes,
+uncompressed or LZW-compressed (8-bit classes optionally with the horizontal
+differencing predictor), plus 1-bit CCITT Group 4. Unsupported or malformed
+first-page classes fail with a diagnostic render error. It is not a
+general-purpose TIFF library, but as a small
 by-product the same `tiff.render()` method can provide a simple preview of a
 supported standalone TIFF file. Its optional `TiffRenderOptions` argument can
 request a bounded display-sized bitmap; the Office viewers supply those targets
@@ -812,7 +816,7 @@ file without uploading it.
 | | ChartEx (waterfall / histogram / Pareto / funnel / box &amp; whisker / treemap / sunburst) | ✅ opt-in |
 | | Math equations (OMML `m:oMath` / `m:oMathPara`, rendered via MathJax — opt-in `@silurus/ooxml/math`) | ✅ |
 | | Images (inline and anchored, with text wrap and adaptive display-sized decoding for oversized rasters) | ✅ |
-| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A), process-CMYK and CCITT Group 4) | ✅ |
+| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A) and process-CMYK, uncompressed or LZW, plus CCITT Group 4) | ✅ |
 | | SVG images (`asvg:svgBlip` MS-2016 extension — vector drawn from the embedded `.svg`, raster fallback) | ✅ |
 | | Text boxes / drawing shapes (inline and anchored `wps:wsp` / `wps:txbx`, including solid, gradient, and image fills; `a:prstGeom` — 186 preset geometries via the shared engine; connector arrow heads `headEnd` / `tailEnd` (§20.1.8.3) and `prstDash` dash patterns (§20.1.8.48)). Text-box paragraphs run through the **same line-layout engine as body text**, so kinsoku 行頭/行末禁則 (§17.15.1.58–60), UAX#9 bidi (`w:bidi`, §17.3.1.6), justification (§17.18.44) and tab stops (§17.3.1.37) all apply inside a box | ✅ |
 | | WMF **and EMF** metafile images (legacy vector, incl. inside text boxes) — rasterized via a built-in player: window→viewport mapping (MS-EMF map modes, world transform), pens/brushes, poly/rect/ellipse, text-out, path clipping, and embedded DIB blits | ✅ |
@@ -866,7 +870,7 @@ file without uploading it.
 | | Hidden rows / columns | ✅ |
 | | Row / column outline grouping (`outlineLevel` / `collapsed` §18.3.1.73 / .13, `<outlinePr>` — gutter brackets, +/− collapse, numbered level buttons; view-only) | ✅ |
 | **Elements** | Images (`<xdr:twoCellAnchor>`, with adaptive display-sized decoding for oversized rasters) | ✅ |
-| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A), process-CMYK and CCITT Group 4) | ✅ |
+| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A) and process-CMYK, uncompressed or LZW, plus CCITT Group 4) | ✅ |
 | | OLE embedded objects (`<oleObjects>` — the legacy VML `v:imagedata` preview keyed by `oleObject@shapeId` is drawn; an image-typed `objectPr` target is preferred when present, and the embedded app is not run) | ✅ |
 | | SVG images (`asvg:svgBlip` MS-2016 extension — vector drawn from the embedded `.svg`, raster fallback) | ✅ |
 | | Drawing shapes / text boxes (`xdr:sp`, `xdr:txBody` — 186 preset geometries via the shared engine, with `avLst` adjust handles) | ✅ |
@@ -915,7 +919,7 @@ file without uploading it.
 | | Animations / transitions | ❌ Not planned |
 | **Element types** | Shapes (`sp`) | ✅ |
 | | Pictures (`pic`, with adaptive display-sized decoding for oversized rasters) | ✅ |
-| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A), process-CMYK and CCITT Group 4) | ✅ |
+| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A) and process-CMYK, uncompressed or LZW, plus CCITT Group 4) | ✅ |
 | | SVG images (`asvg:svgBlip` MS-2016 extension — vector drawn from the embedded `.svg`, PNG fallback) | ✅ |
 | | Groups (`grpSp`) with nested transforms | ✅ |
 | | Connectors (`cxnSp`) | ✅ |
@@ -1089,9 +1093,11 @@ decode or playback failures after the presentation handle has been returned.
 
 Stable failures can be narrowed without parsing message strings:
 
-- `OoxmlError` — container failures. Its `code` is `encrypted`,
-  `invalid-password`, `unsupported-encryption`, `legacy-binary-format`, or
-  `not-ooxml`.
+- `OoxmlError` — typed input and source failures. Its `code` is `encrypted`,
+  `invalid-password`, `unsupported-encryption`, `legacy-binary-format`, `unsupported-content`, or
+  `not-ooxml`. For `unsupported-content`, offer conversion: the configured
+  source cannot represent this input. Frozen `details` contain only its
+  `format` identifier and `reason: 'source-subset'`.
 - `OoxmlResourceLimitError` (`code === 'ooxml-resource-limit'`) — a measured
   package or format resource crossed a configurable limit or hard ceiling.
   `details.violation` contains the resource, metric, limit, observed value, and

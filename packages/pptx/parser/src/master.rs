@@ -2795,12 +2795,13 @@ pub(crate) struct EffectiveMaster {
 /// has no `/theme` relationship of its own (keeps simple single-theme decks and
 /// malformed packages working).
 ///
-/// TODO: themeOverride (slide/layout `/themeOverride`, ECMA-376 §14.2.7) is not
-/// yet honored — overrides on the layout or slide would replace parts of the
-/// master theme. Out of scope for per-slide master resolution.
+/// A slide/layout theme override supplies `effective_theme` before extraction:
+/// fonts and style-matrix recipes in inherited master content must be resolved
+/// again as well as colors (CT_BaseStylesOverride, §20.1.6.12).
 pub(crate) fn build_master_bundle(
     master_path: &str,
     fallback_theme: &PptxTheme,
+    effective_theme: Option<&PptxTheme>,
     default_text_style_xml: Option<&str>,
     zip: &mut PptxZip,
 ) -> ParsedMaster {
@@ -2832,10 +2833,12 @@ pub(crate) fn build_master_bundle(
     // presentation theme when the master declares no /theme relationship.
     let theme_path: Option<String> =
         find_rel_target_by_type(&master_rels_xml, "/theme").map(|t| resolve_path(&master_part, &t));
-    let mut theme = theme_path
-        .as_deref()
-        .map(|path| parse_theme_part(path, zip))
-        .unwrap_or_else(|| fallback_theme.clone());
+    let mut theme = effective_theme.cloned().unwrap_or_else(|| {
+        theme_path
+            .as_deref()
+            .map(|path| parse_theme_part(path, zip))
+            .unwrap_or_else(|| fallback_theme.clone())
+    });
     // Bake the master's <p:clrMap> logical-name → slot mapping into the theme.
     bake_clr_map(&mut theme, master_xml_opt.as_deref());
 

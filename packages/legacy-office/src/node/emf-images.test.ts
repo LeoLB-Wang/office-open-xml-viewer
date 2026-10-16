@@ -136,10 +136,10 @@ it.each(['doc', 'ppt'] as const)('retains a %s WMF whose declared size includes 
 it.each(['doc', 'ppt'] as const)('rejects malformed WMF data before EOF through %s', async family => {
   const malformed = new Uint8Array(wmf); malformed[malformed.length - 2] = 1;
   const bytes = blip('wmf', malformed, false, false);
-  await expect(family === 'doc' ? docPictures(doc(bytes)) : pptPictures(ppt(bytes, false, 'wmf'))).rejects.toMatchObject({ message: 'UNSUPPORTED:missing WMF end record' });
+  await expect(family === 'doc' ? docPictures(doc(bytes)) : pptPictures(ppt(bytes, false, 'wmf'))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: family, reason: 'source-subset' } });
 });
 
 it.each(['doc', 'ppt'] as const)('rejects an EMF expansion-size bomb through %s', async family => {
   const bytes = blip('emf', emf, true, false, 0xffffffff);
-  await expect(family === 'doc' ? docPictures(doc(bytes)) : pptPictures(ppt(bytes, true, 'emf'))).rejects.toMatchObject({ message: 'UNSUPPORTED:OfficeArt metafile byte budget exceeded' });
+  await expect(family === 'doc' ? docPictures(doc(bytes)) : pptPictures(ppt(bytes, true, 'emf'))).rejects.toMatchObject({ message: 'LEGACY_RESOURCE_LIMIT:OfficeArt metafile byte budget exceeded' });
 });

@@ -1,3 +1,8 @@
+import { countedSpacingAdvance, countSpacingCharacters, textSpacingAdvance } from '../character-spacing.js';
+import { charSpacingDeltaPx, segmentCharacterGridDeltaPx } from '../line-breaker/advance.js';
+import { shadowInkBounds } from './vml-shadow.js';
+import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
+import { addExactRational, exactRationalFromNumber, exactRationalToNumberUp } from './exact-geometry.js';
 import { readingHooks } from '../internal/reading-hooks.js';
 import { revisionIsOmitted } from './revision-visibility.js';
 import { wordKerningApplies } from './line-compatibility.js';
@@ -61,7 +66,7 @@ import {
   type SegStretch,
 } from '../text-distribute.js';
 import { computeKashidaDistribution, type KashidaLevel } from '../kashida-justify.js';
-import { imageResourceKey } from './source-key.js';
+import { imageResourceKey, vmlPictureResourceKey, vmlStrokeResourceKey, vmlEdgeResourceKey } from './source-key.js';
 import { stableFingerprint } from './fingerprint.js';
 import { chartResourceKey as canonicalChartResourceKey } from './source-key.js';
 import {
@@ -199,6 +204,8 @@ function finiteNonNegative(value: number, name: string): number {
 export type MeasuredTextPlanSegment = Readonly<
   Omit<TextPlacement, 'origin' | 'bounds' | 'advancePt' | 'paintOps'> & {
     measuredWidthPt: number;
+    /** Acquisition-only grid contribution, independent of run tracking. */
+    characterGridDeltaPt?: number;
     basePaintOps: readonly import('./types.js').TextPaintOp[];
     /** Physical advance from the segment origin through the final glyph. Word
      * retains later grid slack for layout but excludes it from a terminal underline. */
@@ -407,7 +414,8 @@ function contextualAdvance(segment: MeasuredTextPlanSegment, text: string): numb
   });
   const scaleX = segment.basePaintOps[0]?.scaleX ?? 1;
   const pitchPt = segment.basePaintOps[0]?.letterSpacingPt ?? 0;
-  return shaped.advancePt * scaleX + [...text].length * pitchPt;
+  const gridPt = segment.characterGridDeltaPt ?? 0;
+  return shaped.advancePt * scaleX + textSpacingAdvance(text, gridPt, pitchPt - gridPt, pitchPt);
 }
 
 function keepGraphemeSafeCuts(
@@ -944,6 +952,7 @@ export function planLine(input: PlanLineInput): LineLayout {
     } else {
       const {
         measuredWidthPt: _measuredWidthPt,
+        characterGridDeltaPt: _characterGridDeltaPt,
         breakBefore: _breakBefore,
         rtl: _rtl,
         digitsAsAN: _digitsAsAN,
@@ -1353,12 +1362,13 @@ function shapePlanDiagnostics(
   plan: ShapeDrawingPlanResult,
   source: SourceRef,
 ): readonly LayoutDiagnostic[] {
-  if (plan.status === 'planned') return Object.freeze([]);
+  const diagnostics = plan.diagnostics ?? [];
+  if (diagnostics.length === 0) return Object.freeze([]);
   const retainedSource = Object.freeze({
     ...source,
     path: Object.freeze([...source.path]),
   });
-  return Object.freeze(plan.diagnostics.map((diagnostic) => Object.freeze({
+  return Object.freeze(diagnostics.map((diagnostic) => Object.freeze({
     ...diagnostic,
     source: retainedSource,
   })));
@@ -2010,6 +2020,9 @@ function textPlanSegment(
     ...(sourceRuns ? { sourceRuns } : {}) };
   if (projected.kind !== 'text') throw new Error('Visible text segment projected as anchor host');
   const pitchPt = segLetterSpacingPx(segment, characterGrid, 1);
+  // fitText replaces run tracking with its existing per-scalar allocation.
+  const gridPt = segment.fitTextPerGapPx ?? segmentCharacterGridDeltaPx(segment, characterGrid, 1);
+  const trackingPt = segment.fitTextPerGapPx !== undefined ? 0 : charSpacingDeltaPx(segment, 1);
   const scaleX = segment.charScale ?? 1;
   const baselineOffsetPt = retainedBaselineOffsetPt(segment);
   const retainedGeometry = retainedGeometryPlan(segment, sourceOffset, projected.color);
@@ -2030,11 +2043,18 @@ function textPlanSegment(
       'Visible text acquisition requires complete authoritative grapheme clusters from TextLayoutService',
     );
   }
+  let precedingScalars = 0;
+  let precedingPitchBearing = 0;
   let clusters = (shapedClusters ?? []).map((cluster, index) => {
     const prefix = segment.text.slice(0, cluster.range.start);
     const text = segment.text.slice(cluster.range.start, cluster.range.end);
-    const precedingScalars = [...prefix].length;
-    const scalarCount = [...text].length;
+    const counts = countSpacingCharacters(text);
+    const clusterSpacingPt = countedSpacingAdvance(counts, gridPt, trackingPt, pitchPt);
+    const prefixSpacingPt = countedSpacingAdvance(
+      { scalars: precedingScalars, pitchBearing: precedingPitchBearing }, gridPt, trackingPt, pitchPt,
+    );
+    precedingScalars += counts.scalars;
+    precedingPitchBearing += counts.pitchBearing;
     const trailingFitPad = index === (shapedClusters?.length ?? 0) - 1
       ? segment.fitTextTrailingPadPx ?? 0
       : 0;
@@ -2063,14 +2083,14 @@ function textPlanSegment(
         xPt:
           cluster.offsetPt * scaleX
           + (segment.leadingWordBoundaryPx ?? 0)
-          + precedingScalars * pitchPt
+          + prefixSpacingPt
           + precedingWidthBalanceAdjustment
           + precedingPunctuationCompression,
         yPt: baselineOffsetPt,
       },
       advancePt:
         cluster.advancePt * scaleX
-        + scalarCount * pitchPt
+        + clusterSpacingPt
         + clusterWidthBalanceAdjustment
         + trailingFitPad
         + clusterPunctuationCompression,
@@ -2196,6 +2216,7 @@ function textPlanSegment(
           fontKerning: template.kerning,
           fontSizePt: projected.fontSizePt,
           letterSpacingPt: pitchPt,
+          characterGridDeltaPt: gridPt,
           charScale: scaleX,
           growTrRotateInk: true,
           writingMode: template.writingMode,
@@ -2312,6 +2333,7 @@ function textPlanSegment(
   return {
     ...style,
     kind: 'text', measuredWidthPt: segment.measuredWidth,
+    characterGridDeltaPt: gridPt,
     ...(segment.latinSpaceCompressionPx ? {
       trailingSpaceCompressionPt: segment.latinSpaceCompressionPx,
     } : {}),
@@ -2977,12 +2999,16 @@ function drawingForShape(
     shape.fill?.fillType === 'image'
       ? imageResourceKey(source, shape.fill.imagePath)
       : undefined,
+    undefined,
+    shape.vmlPicture ? vmlPictureResourceKey(source, shape.vmlPicture.imagePath) : undefined,
+    shape.vmlStrokeFill ? vmlStrokeResourceKey(source, shape.vmlStrokeFill.imagePath) : undefined,
+    vmlEdgeResourceKey(source),
   );
-  const commands = [plan.command];
+  const commands = [...(plan.status === 'planned' ? plan.before ?? [] : []), plan.command];
   const diagnostics = shapePlanDiagnostics(plan, source);
   return {
     kind: 'drawing', id: `${options.id}:drawing:${runIndex}`, source,
-    flowDomainId: options.flowDomainId, flowBounds: rect, inkBounds: rect, advancePt: 0,
+    flowDomainId: options.flowDomainId, flowBounds: rect, inkBounds: shadowInkBounds(plan.status === 'planned' ? plan.before ?? [] : [], rect), advancePt: 0,
     ordinaryFlow: false,
     commands,
     ...(diagnostics.length === 0 ? {} : { diagnostics }),
@@ -3264,6 +3290,11 @@ function anchorAxisOwnership(
     : 'page';
 }
 
+interface AnchorLineReference {
+  readonly bounds: LayoutRect;
+  readonly firstLine: boolean;
+}
+
 interface AcquiredAnchorOccurrence {
   readonly result: AnchorFrameResult;
   readonly drawing?: DrawingLayout;
@@ -3290,6 +3321,7 @@ function acquireAnchorOccurrence(
   paragraphOccurrenceIds: ReadonlySet<string>,
   /** First-line content top before any float moves the line down. */
   contentStartYPt: number,
+  lineReference?: AnchorLineReference,
 ): AcquiredAnchorOccurrence | null {
   let hostLineIndex = -1;
   let host: Extract<ParagraphPlacement, { kind: 'anchor-host' }> | undefined;
@@ -3310,6 +3342,8 @@ function acquireAnchorOccurrence(
   const outer = ordered[0];
   if (!outer?.run.anchorAcquisitionInput) return null;
   const line = lines[hostLineIndex]!;
+  const referenceBounds = lineReference?.bounds ?? line.bounds;
+  const referenceIsFirstLine = lineReference?.firstLine ?? (hostLineIndex === 0);
   const baseFrames = options.anchorFrames;
   const behavior = outer.run.anchorAcquisitionInput.behavior;
   const layoutInCellFrame = behavior.layoutInCellStatus === 'valid'
@@ -3361,16 +3395,16 @@ function acquireAnchorOccurrence(
       },
       // WORD_GRID_PICTURE_LINE_ORIGIN keeps text leading separate from the
       // reference frame; paragraph ownership already precedes before-spacing.
-      // The retained host index owns first-line policy. Distinct physical
+      // The reference host index owns first-line policy. Distinct physical
       // lines can share a numeric top; equal coordinates do not transfer it.
       // Only posOffset was measured: translating the frame for wp:align would
       // also move the line's center/bottom edge, so alignment keeps the line.
-      line: hostLineIndex === 0 && options.context.lineGrid.active && outer.run.type === 'image'
+      line: referenceIsFirstLine && options.context.lineGrid.active && outer.run.type === 'image'
         && outer.run.anchorAcquisitionInput.vertical.choice.kind === 'offset'
-        ? { ...line.bounds, yPt: wordGridPictureLineOriginPt(
-            line.bounds.yPt, options.placement.startYPt, contentStartYPt,
+        ? { ...referenceBounds, yPt: wordGridPictureLineOriginPt(
+            referenceBounds.yPt, options.placement.startYPt, contentStartYPt,
           ) }
-        : line.bounds,
+        : referenceBounds,
       character: host.bounds,
       pageParity: baseFrames?.pageParity ?? null,
     },
@@ -3416,6 +3450,7 @@ function acquireAnchorOccurrence(
     verticalPageFrame: false,
   } : options.environment;
   const commands: DrawingPaintCommand[] = [];
+  const shadowCommands: DrawingPaintCommand[] = [];
   const diagnostics: LayoutDiagnostic[] = [];
   const textBoxes: TextBoxLayout[] = [];
   const textBoxIds: string[] = [];
@@ -3656,8 +3691,13 @@ function acquireAnchorOccurrence(
         run.fill?.fillType === 'image'
           ? imageResourceKey(source, run.fill.imagePath)
           : undefined,
+        undefined,
+        run.vmlPicture ? vmlPictureResourceKey(source, run.vmlPicture.imagePath) : undefined,
+        run.vmlStrokeFill ? vmlStrokeResourceKey(source, run.vmlStrokeFill.imagePath) : undefined,
+        vmlEdgeResourceKey(source),
       );
-      commands.push(plan.command);
+      commands.push(...(plan.status === 'planned' ? plan.before ?? [] : []), plan.command);
+      if (plan.status === 'planned') shadowCommands.push(...(plan.before ?? []));
       diagnostics.push(...shapePlanDiagnostics(plan, source));
       const textBoxId = `${options.id}:anchor-textbox:${occurrenceId}:${runIndex}`;
       const textBox = acquiredShapeTextBoxes.get(runIndex) ?? acquireShapeTextBoxLayout(run, paintRect, {
@@ -3683,7 +3723,7 @@ function acquireAnchorOccurrence(
     source: runSource(options.source, outer.runIndex),
     flowDomainId: options.flowDomainId,
     flowBounds: rect,
-    inkBounds: effectiveResult.geometry.inkBounds,
+    inkBounds: shadowInkBounds(shadowCommands, effectiveResult.geometry.inkBounds, uprightTransform),
     advancePt: 0,
     ordinaryFlow: false,
     ...(uprightTransform ? {
@@ -4056,7 +4096,7 @@ export function alignedAutofitTranslation(
 /** Acquires a DrawingML/WPS text body through the same paragraph measurement
  * and retained layout seam used by ordinary WordprocessingML paragraphs. */
 export function acquireShapeTextBoxLayout(
-  shape: import('./types.js').DeepReadonly<ShapeRun>,
+  shape: import('./types.js').DeepReadonly<ShapeRun & import('./types.js').VmlShapeAcquisitionFacts>,
   rect: LayoutRect,
   options: ShapeTextBoxAcquisitionOptions,
 ): TextBoxLayout | undefined {
@@ -4079,6 +4119,16 @@ export function acquireShapeTextBoxLayout(
     ? acquisition.blockCount
     : acquisition.paragraphs.length;
   if (blockCount === 0) return undefined;
+  // Part 4 §19.1.2.14: text layout uses the envelope of the retained
+  // rectangles; their union clips ink. Keep the host frame/pivot unchanged.
+  const regions = shape.vmlTextRects;
+  let textRect: [number, number, number, number] | undefined;
+  for (const region of regions ?? []) {
+    textRect = textRect ? [
+      Math.min(textRect[0], region[0]), Math.min(textRect[1], region[1]),
+      Math.max(textRect[2], region[2]), Math.max(textRect[3], region[3]),
+    ] : [region[0], region[1], region[2], region[3]];
+  }
   const stackedWordArt = shape.textVert === 'wordArtVert' || shape.textVert === 'wordArtVertRtl';
   const verticalMode = retainedTextBoxVerticalMode(shape.textVert);
   const contentBounds: LayoutRect = verticalMode ? {
@@ -4100,6 +4150,12 @@ export function acquireShapeTextBoxLayout(
     topPt: shape.textInsetT ?? 0, rightPt: shape.textInsetR ?? 0,
     bottomPt: shape.textInsetB ?? 0, leftPt: shape.textInsetL ?? 0,
   };
+  if (textRect) {
+    insets.leftPt += textRect[0]*contentBounds.widthPt;
+    insets.topPt += textRect[1]*contentBounds.heightPt;
+    insets.rightPt += (1-textRect[2])*contentBounds.widthPt;
+    insets.bottomPt += (1-textRect[3])*contentBounds.heightPt;
+  }
   const innerBounds = {
     xPt: contentBounds.xPt + insets.leftPt,
     yPt: contentBounds.yPt + insets.topPt,
@@ -4326,7 +4382,13 @@ export function acquireShapeTextBoxLayout(
       } : {}),
       // Word issue #1668 controls retain overflow in fixed stacked WordArt
       // boxes (wrap square/none and multi-paragraph cases); do not add a body clip.
-      ...(shape.textAutofit === 'none' && !stackedWordArt ? { clipBounds: effectiveInnerBounds } : {}),
+      ...((shape.vmlTextRects?.length || shape.textAutofit === 'none') && !stackedWordArt ? { clipBounds: effectiveInnerBounds } : {}),
+      ...(regions?.length ? { clipRects: regions.map(r => ({
+        xPt: effectiveContentBounds.xPt+r[0]*effectiveContentBounds.widthPt,
+        yPt: effectiveContentBounds.yPt+r[1]*effectiveContentBounds.heightPt,
+        widthPt: (r[2]-r[0])*effectiveContentBounds.widthPt,
+        heightPt: (r[3]-r[1])*effectiveContentBounds.heightPt,
+      })) } : {}),
       advancePt: 0, ordinaryFlow: false, story,
       transform,
       writingMode: shape.textVert === 'vert270' ? 'vertical-lr' : shape.textVert ? 'vertical-rl' : 'horizontal-tb',
@@ -4505,6 +4567,7 @@ function wordMode14ColumnOriginApplies(
 function measurementPlacement(
   options: ParagraphAcquisitionOptions,
   exclusions: readonly WrapExclusion[],
+  observeBand?: (topPt: number, heightPt: number, moved: boolean) => void,
 ): MeasurementPlacement {
   if (exclusions.length === 0) return options.placement;
   if (options.placement.wrap) {
@@ -4520,7 +4583,20 @@ function measurementPlacement(
         });
   return {
     ...options.placement,
-    wrap: exclusionOracle,
+    wrap: observeBand ? {
+      hasExclusions: exclusionOracle.hasExclusions,
+      lineWindow(input) {
+        const result = exclusionOracle.lineWindow(input);
+        observeBand(Math.max(input.topYPt, result.topYPt), input.probeHeightPt,
+          result.topYPt !== input.topYPt);
+        return result;
+      },
+      skipTopAndBottomBands(input) {
+        const result = exclusionOracle.skipTopAndBottomBands(input);
+        observeBand(Math.max(input.yPt, result), 0, result !== input.yPt);
+        return result;
+      },
+    } : exclusionOracle,
   };
 }
 
@@ -4634,9 +4710,25 @@ function paragraphAcquisitionKey(
   } = options.placement;
   const context = options.context;
   const environment = options.environment;
-  const hasFieldRun = lineOnly && paragraph.runs.some((run) => run.type === 'field');
-  const hasNoteReference = lineOnly && paragraph.runs.some((run) =>
+  // Page-field values (ECMA-376 Part 1 §17.16.5.44 PAGE, §17.16.5.42 NUMPAGES,
+  // §17.16.5.13 DATE, §17.16.5.65 TIME) reach measurement only through a field
+  // run's result (resolveFieldText), and note numbers (§17.11) only through a
+  // note reference mark (segment-builder). A paragraph of nothing but text,
+  // break and ptab runs therefore lays out identically under any of them, so
+  // its key must not carry them: field convergence re-acquires the whole
+  // document once the page count is known, and every unchanged placement would
+  // otherwise miss again (each miss charged to the session's operational miss
+  // budget, runtime-state.ts). Any other run kind hands the whole environment
+  // to a nested acquisition (text box story, anchor, math), so its exact
+  // placement stays keyed by all of them. The line key, consumed only by
+  // measureParagraph, keeps its narrower gate.
+  const hasFieldRun = paragraph.runs.some((run) => run.type === 'field');
+  const hasNoteReference = paragraph.runs.some((run) =>
     run.type === 'text' && run.noteRef !== undefined);
+  const nestsEnvironment = !lineOnly && paragraph.runs.some((run) =>
+    run.type !== 'text' && run.type !== 'field' && run.type !== 'break' && run.type !== 'ptab');
+  const keysPageFields = hasFieldRun || nestsEnvironment;
+  const keysNotes = hasNoteReference || nestsEnvironment;
   // Fixed-order tuples avoid the recursive generic fingerprint cost on this hot
   // path. A different property insertion order may conservatively miss for the
   // explicitly JSON-valued geometry below, but can never alias different facts.
@@ -4696,17 +4788,17 @@ function paragraphAcquisitionKey(
       cache.objectIdentity(options.measurer.fontFamilyClasses),
     ],
     [
-      lineOnly && !hasFieldRun ? null : environment.pageIndex,
-      lineOnly && !hasFieldRun ? null : environment.totalPages,
-      lineOnly && !hasFieldRun ? null : environment.displayPageNumber ?? null,
-      lineOnly && !hasFieldRun ? null : environment.pageNumberFormat ?? null,
-      lineOnly && !hasFieldRun ? null : environment.currentDateMs ?? null,
-      (lineOnly && !hasNoteReference) || !environment.noteNumbers
+      keysPageFields ? environment.pageIndex : null,
+      keysPageFields ? environment.totalPages : null,
+      keysPageFields ? environment.displayPageNumber ?? null : null,
+      keysPageFields ? environment.pageNumberFormat ?? null : null,
+      keysPageFields ? environment.currentDateMs ?? null : null,
+      !keysNotes || !environment.noteNumbers
         ? null
         : [...environment.noteNumbers.entries()]
           .sort(([left], [right]) => left.localeCompare(right)),
-      lineOnly && !hasNoteReference ? null : environment.noteReferenceNumber ?? null,
-      lineOnly && !hasNoteReference ? null : environment.noteNumbering
+      keysNotes ? environment.noteReferenceNumber ?? null : null,
+      !keysNotes ? null : environment.noteNumbering
         ? [
           environment.noteNumbering.footnote.format,
           environment.noteNumbering.footnote.start,
@@ -4732,10 +4824,14 @@ function paragraphAcquisitionKey(
       cache.fingerprintOrdinal(layoutServices?.math.fingerprint ?? null),
       cache.fingerprintOrdinal(layoutServices?.verticalGlyphFingerprint ?? null),
       cache.fingerprintOrdinal(verticalGlyphMeasurement?.fingerprint ?? null),
+      environment.showTrackedChanges === true,
+      // The markup resolver lazily registers story-only authors in lookup
+      // order (track-changes.ts). Both exact and line hits skip those lookups:
+      // a fresh pass must acquire again even when this paragraph reads no
+      // page fields, or a later author's colour can inherit the skipped slot.
+      environment.showTrackedChanges === true && environment.revisionAuthorColor
+        ? cache.objectIdentity(environment.revisionAuthorColor) : null,
       ...(lineOnly ? [
-        environment.showTrackedChanges === true,
-        environment.revisionAuthorColor
-          ? cache.objectIdentity(environment.revisionAuthorColor) : null,
         environment.enableOpenTypeFeatures === true,
         environment.positionExtendsLineBox !== false,
       ] : []),
@@ -4984,6 +5080,33 @@ function acquireParagraphCandidate(
   const acquisitionOptions = numberingPlan && !options.context.numberingMarkerGeometry
     ? { ...options, context: { ...options.context, numberingMarkerGeometry: numberingPlan } }
     : options;
+  const measureWithExclusions = (
+    exclusions: readonly WrapExclusion[],
+    observeBand?: (topPt: number, heightPt: number, moved: boolean) => void,
+  ) => measureParagraph(
+    paragraph,
+    acquisitionOptions.context,
+    measurementPlacement(options, exclusions, observeBand),
+    options.measurer,
+    {
+      ...options.environment,
+      paragraphMarkShapeInput: paragraph.paragraphMarkShapeInput,
+      ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
+        firstLineNumberingMarkerBox: numberingPlan.lineBox,
+      } : {}),
+    },
+    continuation,
+  );
+  const lineRelativeOccurrenceIds = new Set(occurrenceIds.size === 0 ? [] : paragraph.runs.flatMap((run) => {
+    if (!anchoredPayloadRun(run)) return [];
+    const input = run.anchorAcquisitionInput!;
+    return occurrenceIds.has(input.occurrenceId)
+      && input.vertical.relativeFrom === 'line'
+      && !input.simplePosition.enabled
+      && ['square', 'tight', 'through', 'topAndBottom'].includes(input.wrap.kind)
+      ? [input.occurrenceId] : [];
+  }));
+  let lineReferences: ReadonlyMap<string, AnchorLineReference> | undefined;
   type Pass = Readonly<{
     measured: MeasuredParagraph;
     layout: ParagraphLayout;
@@ -5003,28 +5126,105 @@ function acquireParagraphCandidate(
         );
         const measured = lineTemplate
           ? placeCachedLineBreaking(lineTemplate, options.placement)
-          : measureParagraph(
-          paragraph,
-          acquisitionOptions.context,
-          measurementPlacement(options, effectiveExclusions),
-          options.measurer,
-          {
-            ...options.environment,
-            paragraphMarkShapeInput: paragraph.paragraphMarkShapeInput,
-            ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
-              firstLineNumberingMarkerBox: numberingPlan.lineBox,
-            } : {}),
-          },
-          continuation,
-          );
-        const layout = projectAcquiredParagraph(
-          paragraph,
-          anchorLineExemptions && anchorLineExemptions.size > 0
-            ? { ...acquisitionOptions, anchorLineExemptions }
-            : acquisitionOptions,
-          measured,
-          stage,
+          : measureWithExclusions(effectiveExclusions);
+        const projectionOptions = anchorLineExemptions && anchorLineExemptions.size > 0
+          ? { ...acquisitionOptions, anchorLineExemptions } : acquisitionOptions;
+        let layout = projectAcquiredParagraph(
+          paragraph, projectionOptions, measured, stage, lineReferences,
         );
+        if (lineReferences === undefined && lineRelativeOccurrenceIds.size > 0) {
+          // ECMA-376 Part 1 §§20.4.2.11–12, 20.4.3.5: positionV's line
+          // frame belongs to the line containing the anchor character. Its own
+          // wrap cannot supply that frame: doing so feeds the output of wrap
+          // back into its input. Acquire each reference without that occurrence,
+          // preserving external exclusions and the other objects' seed geometry,
+          // then retain it for this acquisition, independently of the final host.
+          // This counterfactual step is library solver policy.
+          // Counterfactual work has its own size-weighted aggregate budget;
+          // neither cache misses nor the convergence-pass guard bound this loop.
+          // Projections here acquire only lines, never drawing/textbox stories.
+          const referenceWork = createParagraphAnchorReferenceWorkBudget(paragraph);
+          const seedOwned = canonicalOwnedExclusions(layout, occurrenceIds);
+          const hostReferences = (lines: ParagraphLayout['lines']) => {
+            const references = new Map<string, AnchorLineReference>();
+            lines.forEach((line, index) => {
+              for (const placement of line.placements) {
+                if (placement.kind === 'anchor-host' && placement.anchorOccurrenceId
+                  && !references.has(placement.anchorOccurrenceId)) {
+                  references.set(placement.anchorOccurrenceId, { bounds: line.bounds, firstLine: index === 0 });
+                }
+              }
+            });
+            return references;
+          };
+          const initialReferences = hostReferences(layout.lines);
+          let sharedReferences = initialReferences;
+          let queriedBottomPt = Number.NEGATIVE_INFINITY;
+          let sharedQueriesUnshifted = true;
+          // Measure all seed objects together once. Share only when every wrap
+          // query succeeds at its input Y: there is then no vertical search whose
+          // intermediate probes/events must also be proved independent. An object
+          // strictly below every queried band cannot affect those same queries
+          // when removed. All other objects' exclusions remain in that reference.
+          // A moved query conservatively uses individual budgeted measurements.
+          if (seedOwned.length > 1) {
+            const sharedExclusions = mergeParagraphExclusions(options.exclusions, seedOwned);
+            referenceWork.charge(sharedExclusions);
+            const sharedMeasured = measureWithExclusions(sharedExclusions, (topPt, heightPt, moved) => {
+              sharedQueriesUnshifted &&= !moved;
+              // Round the exact binary sum upward: strict separation must
+              // never discard a tight-wrap top-edge touch through rounding.
+              const bottomPt = exactRationalToNumberUp(addExactRational(
+                exactRationalFromNumber(topPt), exactRationalFromNumber(heightPt),
+              ));
+              queriedBottomPt = Math.max(queriedBottomPt, bottomPt);
+            });
+            sharedReferences = hostReferences(projectAcquiredParagraphLines(
+              paragraph, acquisitionOptions, sharedMeasured,
+            ).lines);
+          }
+          const seedByOccurrence = new Map(seedOwned.map((exclusion) =>
+            [exclusion.anchorOccurrenceId, exclusion]));
+          const references = new Map<string, AnchorLineReference>();
+          let measuredOtherObjects = false;
+          for (const occurrenceId of lineRelativeOccurrenceIds) {
+            const own = seedByOccurrence.get(occurrenceId);
+            let reference: AnchorLineReference | undefined;
+            // Check padded bounds and authored contour; either can extend
+            // higher. Equality stays on the independent-measurement path.
+            if (seedOwned.length > 1 && (!own || (
+              sharedQueriesUnshifted && own.bounds.yPt > queriedBottomPt
+              && own.polygon.every((point) => point.yPt > queriedBottomPt)
+            ))) {
+              reference = sharedReferences.get(occurrenceId);
+              measuredOtherObjects = true;
+            } else {
+              const otherOwned = seedOwned.filter((exclusion) =>
+                exclusion.anchorOccurrenceId !== occurrenceId);
+              measuredOtherObjects ||= otherOwned.length > 0;
+              if (otherOwned.length === 0) {
+                reference = initialReferences.get(occurrenceId);
+              } else {
+                const exclusions = mergeParagraphExclusions(options.exclusions, otherOwned);
+                referenceWork.charge(exclusions);
+                reference = hostReferences(projectAcquiredParagraphLines(paragraph, acquisitionOptions,
+                  measureWithExclusions(exclusions)).lines).get(occurrenceId);
+              }
+            }
+            if (reference) references.set(occurrenceId, reference);
+          }
+          lineReferences = references;
+          // Host-line policy B: after reference acquisition, all exclusions still
+          // apply to the host line. Whether Word instead exempts that line (A),
+          // especially for padding-only overlap, remains an open compatibility
+          // question requiring controlled Office evidence. Any future exemption
+          // belongs at the anchorLineExemptions decision below, not in this frame.
+          if (measuredOtherObjects) {
+            layout = projectAcquiredParagraph(
+              paragraph, projectionOptions, measured, stage, lineReferences,
+            );
+          }
+        }
         const ownedExclusions = canonicalOwnedExclusions(layout, occurrenceIds);
         if (anchorLineExemptions === undefined) {
           anchorLineExemptions = wordMode14AnchorLineExemptions(
@@ -5340,12 +5540,11 @@ export function paragraphLayoutFromMeasurement(
   return projectAcquiredParagraph(paragraph, options, measured, 'complete');
 }
 
-function projectAcquiredParagraph(
+function projectAcquiredParagraphLines(
   paragraph: ParagraphAcquisitionInput,
   options: ParagraphAcquisitionOptions,
   measured: MeasuredParagraph,
-  stage: 'complete' | 'anchor-run',
-): ParagraphLayout {
+) {
   const planningContext = options.continuesFromPrevious
     ? { ...options.context, firstIndentPt: 0 }
     : options.context;
@@ -5398,6 +5597,19 @@ function projectAcquiredParagraph(
       planningContext,
     )];
   }
+  return { lines, planningContext, paragraphXPt, availableWidthPt, occurrences, numberingPlan };
+}
+
+function projectAcquiredParagraph(
+  paragraph: ParagraphAcquisitionInput,
+  options: ParagraphAcquisitionOptions,
+  measured: MeasuredParagraph,
+  stage: 'complete' | 'anchor-run',
+  lineReferences?: ReadonlyMap<string, AnchorLineReference>,
+): ParagraphLayout {
+  const linePlan = projectAcquiredParagraphLines(paragraph, options, measured);
+  let { lines } = linePlan;
+  const { planningContext, paragraphXPt, availableWidthPt, occurrences, numberingPlan } = linePlan;
   const resources: InlineResourceLayout[] = [];
   const drawings: DrawingLayout[] = [];
   const textBoxes: TextBoxLayout[] = [];
@@ -5437,6 +5649,7 @@ function projectAcquiredParagraph(
       paragraphOccurrenceIds,
       options.placement.startYPt
         + (options.placement.suppressSpaceBefore ? 0 : measured.requestedSpaceBeforePt),
+      lineReferences?.get(occurrenceId),
     );
     if (!acquired) continue;
     anchorResults.push(acquired.result);

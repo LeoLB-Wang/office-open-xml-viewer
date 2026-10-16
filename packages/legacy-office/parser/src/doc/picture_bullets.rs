@@ -78,7 +78,9 @@ fn find(word: &[u8], table: &[u8]) -> Result<Option<std::ops::Range<usize>>, Str
     }
     let count = usize::from(u16_at(names, 2)?);
     if count > MAX_BOOKMARKS {
-        return Err(unsupported("Word bookmark count budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word bookmark count budget exceeded",
+        ));
     }
     // Plcfbkf: (count + 1) CPs and count 4-byte FBKFs; Plcfbkl: count + 1 CPs.
     if starts.len() != (count + 1) * 4 + count * 4 || limits.len() != (count + 1) * 4 {
@@ -133,7 +135,9 @@ fn characters<'a>(
     range: std::ops::Range<usize>,
 ) -> Result<Vec<Character<'a>>, String> {
     if range.len() > MAX_BULLET_DOCUMENT_UNITS {
-        return Err(unsupported("Word picture bullet document budget exceeded"));
+        return Err(crate::rejection::resource(
+            "Word picture bullet document budget exceeded",
+        ));
     }
     // The bookmark lies in the main document; its paragraph marks may follow
     // its end. One forward pass finds each character's paragraph mark.

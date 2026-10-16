@@ -16385,14 +16385,14 @@ describe('CH8 — pie / doughnut geometry', () => {
     },
   );
 
-  it('inside pie labels respect tiny-slice capacity', () => {
+  it('inside-end pie labels retain their tiny-slice capacity bound', () => {
     const rec = ringRecordingCtx();
     renderChart(rec.ctx, pieModel({
       series: [series({
         name: 'S', categories: ['TINY_LABEL_LONG', 'Large'], values: [1, 999],
         seriesDataLabels: {
           showVal: false, showCatName: true, showSerName: false, showPercent: false,
-          position: 'ctr',
+          position: 'inEnd',
         },
       })],
     }), RECT, 1);

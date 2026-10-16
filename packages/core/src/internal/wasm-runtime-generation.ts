@@ -1,3 +1,4 @@
+import { withWasmResourceErrors } from '../worker/error-wire.js';
 import {
   detachWasmBindgenResource,
   isWasmTrap,
@@ -47,7 +48,7 @@ export class WasmRuntimeGenerationHost<TArchive extends object> {
       this.throwIfOpenAborted(options);
       await this.awaitReadyOrAbort(options);
       this.throwIfOpenAborted(options);
-      const opened = this.realm.tryRunReady(create);
+      const opened = this.realm.tryRunReady(() => withWasmResourceErrors(create));
       if (!opened.current) continue;
       const handle = new WasmArchiveHandle(this, opened.value, opened.generation);
       this.live.add(handle);
@@ -90,7 +91,7 @@ export class WasmRuntimeGenerationHost<TArchive extends object> {
 
   run<TResult>(handle: WasmArchiveHandle<TArchive>, operation: (archive: TArchive) => TResult): TResult {
     const archive = handle.requireLive(this.realm);
-    return this.realm.run(() => operation(archive));
+    return withWasmResourceErrors(() => this.realm.run(() => operation(archive)));
   }
 
   close(handle: WasmArchiveHandle<TArchive>, free: (archive: TArchive) => void): void {

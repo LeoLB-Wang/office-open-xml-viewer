@@ -102,8 +102,8 @@ export type {
   ViewerCommentMessageContext,
   ViewerCommentThreadContext,
 } from './comment-ui';
-// Typed load-time error (PD4 seed): the `load()` factories throw this with a
-// stable `code` for container-level failures detected on the main thread.
+// Typed input errors: container admission and configured sources report stable
+// codes; workers reconstruct them for load and lazy-operation callers.
 export {
   OoxmlError,
   OoxmlResourceLimitError,
@@ -113,6 +113,7 @@ export {
   type OoxmlResourceMetric,
   type OoxmlResourceName,
   type OoxmlResourceLimitErrorDetails,
+  type OoxmlUnsupportedContentDetails,
   type OoxmlResourceUsageSnapshot,
   type OoxmlResourceViolation,
 } from './errors/ooxml-error';
@@ -244,6 +245,7 @@ export {
 } from './shape/custgeom-endpoints';
 export { hexToRgba, relativeLuma, autoContrastColor, resolveFill, usesPathShade, applyStroke, withPatternCoordinateSpace, withInheritedPatternScope } from './shape/paint';
 export { trackPaintPath, currentStrokeBounds } from './shape/paint-bounds';
+export { measurePaintBounds } from './shape/measure-paint-bounds';
 export type { FillOutline } from './shape/path-gradient';
 export { buildShapePath, drawStar, drawPolygon, ooxmlArcTo } from './shape/preset';
 export {
@@ -272,6 +274,7 @@ export {
   type SvgImageSource,
   type SvgImageDecodeOptions,
 } from './image/svg-image-by-path';
+export { decodeSvgBlobOnMainThread } from './worker/svg-decode-bridge';
 export type { SvgBlobDecoder, SvgDecodeTarget } from './worker/svg-decode-bridge';
 // Shared per-document decoded-raster owner: one weighted LRU, decode gate and
 // render-pass lease covers base blips, media posters, and derived effects across
@@ -319,8 +322,7 @@ export {
   type ChartImageLookup,
 } from './chart/image-fill';
 // Shared WMF (Windows Metafile) player.
-// The docx-specific cosmetic window/device-frame suppression is gated behind
-// `suppressBoundaryFrame` (default off = spec-clean).
+// WMF clipping follows the playback device context.
 export {
   isWmf,
   isEmf,
@@ -405,6 +407,7 @@ export {
 // carry duotone too).
 export {
   applyDuotone,
+  applyImageDataTransform,
   duotoneImageData,
   hex6ToRgb,
   luminance601,
@@ -469,6 +472,8 @@ export {
   type Polyline,
 } from './shape/text-warp';
 export {
+  createRasterCoveragePaint,
+  rasterEffectCoverageBounds,
   applyOuterShadow,
   applyInnerShadow,
   applySoftEdge,

@@ -786,7 +786,12 @@ impl<'a> Formatting<'a> {
             self.budget.take()?;
             // Explicit resource policy. No recursive stack growth, cycles, or
             // exponentially expanded arrays of inherited property records.
-            if result.len() >= 256 || !visited.insert(id) {
+            if result.len() >= 256 {
+                return Err(crate::rejection::resource(
+                    "Word style inheritance depth limit exceeded",
+                ));
+            }
+            if !visited.insert(id) {
                 return Err(unsupported("cyclic or excessive Word style inheritance"));
             }
             let Some(style) = self.styles.get(id).and_then(Option::as_ref) else {

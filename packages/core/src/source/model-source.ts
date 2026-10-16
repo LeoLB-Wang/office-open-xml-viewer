@@ -29,7 +29,7 @@ export type ModelSourceConfigValue = string | number | boolean | null;
 
 export type ModelSourceConfig = Readonly<Record<string, ModelSourceConfigValue>>;
 
-export const MODEL_SOURCE_MODULE_PROTOCOL = 'ooxml-model-source-module/v1';
+export const MODEL_SOURCE_MODULE_PROTOCOL = 'ooxml-model-source-module/v2';
 
 /** Structured-clone-safe instructions for loading one source module. */
 export interface ModelSourceModuleDescriptor {
@@ -79,7 +79,15 @@ export interface OpenedModelSource<TArchive> {
   close(): void;
 }
 
-/** Owning-realm half of a model source: the export `moduleUrl` must provide. */
+/** v2 rejection signal: open or a synchronous archive method may throw a string
+ * `MODEL_SOURCE_UNSUPPORTED:{"format":"source-id","reason":"source-subset"}`.
+ * The viewer validates and reconstructs it as OoxmlError('unsupported-content').
+ * Sources must never use it for quotas, encryption, traps, transport or misuse.
+ * Sources unable to decrypt input may instead throw
+ * `OOXML_SOURCE_UNSUPPORTED_ENCRYPTION` (unsupported-encryption).
+ * Error objects carrying these exact messages are also accepted.
+ *
+ * Owning-realm half of a model source: the export `moduleUrl` must provide. */
 export interface ModelSourceModule<TArchive = unknown> {
   openModelSource(
     bytes: Uint8Array,

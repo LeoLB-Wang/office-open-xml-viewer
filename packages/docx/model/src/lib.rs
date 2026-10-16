@@ -41,6 +41,13 @@ pub const PARSE_DIAGNOSTIC_SEVERITY_NATIVE_DOC_NESTED_CELL_FRAME_FLOW: Diagnosti
 /// `word/document.xml` fact; layout accepts each code only from its own part.
 pub const PARSE_DIAGNOSTIC_PART_NATIVE_DOC_NESTED_CELL_FRAME_FLOW: &str = "WordDocument";
 
+pub const PARSE_DIAGNOSTIC_CODE_REF_BOOKMARK_RESOURCE_LIMIT: &str = "REF_BOOKMARK_RESOURCE_LIMIT";
+pub const PARSE_DIAGNOSTIC_SEVERITY_REF_BOOKMARK_RESOURCE_LIMIT: DiagnosticSeverity =
+    DiagnosticSeverity::Warning;
+pub const PARSE_DIAGNOSTIC_CODE_UNSUPPORTED_VML_CONTENT: &str = "UNSUPPORTED_VML_CONTENT";
+pub const PARSE_DIAGNOSTIC_SEVERITY_UNSUPPORTED_VML_CONTENT: DiagnosticSeverity =
+    DiagnosticSeverity::Warning;
+
 /// Private parser-to-layout diagnostic severity. This wire is intentionally
 /// smaller than the public document model: diagnostics carry stable facts and
 /// source coordinates, never authored text or raw invalid lexical values.
@@ -2029,6 +2036,59 @@ pub struct AnchorAcquisitionWire {
     pub native_picture_metadata: Option<Box<NativePictureMetadataWire>>,
 }
 
+/// VML §19.1.2.18 facts. Absolute offsets remain points; fractional offsets
+/// resolve against final layout dimensions, including group scaling.
+#[derive(Serialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlShadowOffset {
+    pub x_pt: f64,
+    pub y_pt: f64,
+    pub x_fraction: f64,
+    pub y_fraction: f64,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlShadow {
+    pub kind: String,
+    pub color: String,
+    pub color2: String,
+    pub offset: VmlShadowOffset,
+    pub offset2: VmlShadowOffset,
+    pub opacity: f64,
+    pub obscured: bool,
+    pub origin: (f64, f64),
+    pub matrix: [f64; 6],
+    pub absolute_perspective: bool,
+}
+
+/// Part 4 §19.2.2.31: vector-only transform, after host rotation.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlSkew {
+    pub offset: VmlShadowOffset,
+    pub origin: (f64, f64),
+    pub matrix: [f64; 6],
+    pub absolute_perspective: bool,
+}
+
+/// Part 4 §§19.2.2.1/.6/.17/.29/.32: an independent edge pen.
+/// Defaults belong to this pen, never to its parent v:stroke.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlEdgeStroke {
+    pub edge: String,
+    pub color: String,
+    pub width_pt: f64,
+    pub dash: Option<String>,
+    pub cap: Option<String>,
+    pub join: String,
+    pub miter_limit: f64,
+    pub compound: Option<String>,
+    pub image: Option<ShapeFill>,
+    pub pattern: Option<Duotone>,
+}
+
 /// A drawn shape (wps:wsp inside wp:anchor). Positioned like an anchor image
 /// and rendered via core's buildCustomPath + paint primitives.
 #[derive(Serialize, Debug, Clone, Default)]
@@ -2108,6 +2168,36 @@ pub struct ShapeRun {
     /// anchors sharing the same behindDoc value. Lower value = drawn first.
     /// Group children add their document-order index to the anchor value.
     pub z_order: u32,
+    /// Part 4 §19.1.2.18 shadow acquired independently of its source brush.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_shadow: Option<VmlShadow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_skew: Option<VmlSkew>,
+    /// Part 4 §§19.1.2.7/19.2.2.31: cumulative group vector effect,
+    /// in points relative to this leaf's allocation origin. Image data keeps
+    /// its original brush frame. Ancestor effects are composed once per group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_group_transform: Option<[f64; 6]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vml_edge_strokes: Vec<VmlEdgeStroke>,
+    /// Part 4 §§19.1.2.10/.11: picture ink is independent of the backing
+    /// fill and outline on the implied rectangle. Only resource/effect facts
+    /// from this image are consumed; placement belongs to the host shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_picture: Option<Box<ImageRun>>,
+    /// Part 4 §19.1.2.21: independently acquired textured pen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_stroke_fill: Option<ShapeFill>,
+    /// Part 4 §19.1.2.21: pattern strokes map black and coloured pixels separately.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vml_stroke_pattern: Option<Duotone>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vml_inset_pen: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vml_concentric_gradient: bool,
+    /// Part 4 §19.1.2.14: normalized clipping rectangles, in authored order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vml_text_rects: Vec<[f64; 4]>,
     /// normalized [0,1] custom path commands (one or more sub-paths). Empty
     /// when `preset_geometry` is set; the renderer chooses between
     /// buildCustomPath (custGeom) and buildShapePath (prstGeom).
@@ -2347,6 +2437,25 @@ pub enum ShapeStrokeFill {
     },
 }
 
+/// VML Part 4 §19.1.2.5 brush placement. Native image dimensions are
+/// acquired lazily with the image, never inferred from the shape's extent.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlFillLength {
+    pub value: f64,
+    pub fraction: bool,
+}
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VmlImageFill {
+    pub repeat: bool,
+    pub size: Option<(VmlFillLength, VmlFillLength)>,
+    pub origin: (f64, f64),
+    pub position: (f64, f64),
+    pub aspect: String,
+    pub align_shape: bool,
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "fillType", rename_all = "camelCase")]
 pub enum ShapeFill {
@@ -2400,6 +2509,8 @@ pub enum ShapeFill {
         alpha: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         duotone: Option<Duotone>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        vml: Option<VmlImageFill>,
     },
 }
 
@@ -2416,6 +2527,9 @@ pub struct GradientStop {
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PathPaint {
+    /// VML end-delimited path sets use even-odd parity. DrawingML keeps nonzero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill_rule: Option<String>,
     /// ST_PathFillMode (§20.1.10.37) other than `norm`: `none`, `lighten`,
     /// `lightenLess`, `darken` or `darkenLess`.
     #[serde(skip_serializing_if = "Option::is_none")]

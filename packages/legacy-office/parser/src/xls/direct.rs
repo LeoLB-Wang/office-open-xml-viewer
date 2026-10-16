@@ -147,10 +147,10 @@ impl DirectSession {
             if mdw.is_none() {
                 return Ok(());
             }
-            return self.fail("XLS direct host layout decision is not pending");
+            return self.fail_protocol("XLS direct host layout decision is not pending");
         };
         if mdw.is_some_and(|v| !v.is_finite() || v.fract() != 0.0 || !(1.0..=4096.0).contains(&v)) {
-            return self.fail("invalid measured XLS maximum digit width");
+            return self.fail_protocol("invalid measured XLS maximum digit width");
         }
         if let Some(mdw) = mdw {
             self.native_pictures = std::mem::take(&mut self.pictures)
@@ -209,10 +209,12 @@ impl DirectSession {
     pub(crate) fn bootstrap(&mut self) -> Result<xlsx_model::ParsedWorkbook, String> {
         self.healthy()?;
         if self.pending_sheets.is_some() {
-            return self.fail("XLS direct pictures require an explicit font measurement decision");
+            return self.fail_protocol(
+                "XLS direct pictures require an explicit font measurement decision",
+            );
         }
         if self.bootstrapped {
-            return self.fail("XLS direct bootstrap already consumed");
+            return self.fail_protocol("XLS direct bootstrap already consumed");
         }
         let result = self.build_bootstrap();
         if result.is_err() {
@@ -278,10 +280,12 @@ impl DirectSession {
     pub(crate) fn next_sheet(&mut self) -> Result<Option<xlsx_model::Worksheet>, String> {
         self.healthy()?;
         if !self.bootstrapped {
-            return self.fail("XLS direct bootstrap must be consumed before worksheets");
+            return self.fail_protocol("XLS direct bootstrap must be consumed before worksheets");
         }
         if self.pending_sheets.is_some() {
-            return self.fail("XLS direct pictures require an explicit font measurement decision");
+            return self.fail_protocol(
+                "XLS direct pictures require an explicit font measurement decision",
+            );
         }
         if self.sheet_index >= self.sheets.len() {
             return Ok(None);
@@ -319,19 +323,17 @@ impl DirectSession {
     ) -> Result<ProjectedSheetRef<'_>, String> {
         self.healthy()?;
         if !self.bootstrapped {
-            return self.fail("XLS direct bootstrap must be consumed before worksheets");
+            return self.fail_protocol("XLS direct bootstrap must be consumed before worksheets");
         }
         let Some((expected, _)) = self.sheet_meta.get(index) else {
-            return Err(unsupported("XLS direct sheet index is out of range"));
+            return Err("XLS direct sheet index is out of range".to_string());
         };
         if expected != name {
-            return Err(unsupported(
-                "XLS direct sheet name does not match its index",
-            ));
+            return Err("XLS direct sheet name does not match its index".to_string());
         }
         #[cfg(test)]
         if matches!(self.sheets.get(index), Some(SheetSlot::Consumed)) {
-            return Err(unsupported("XLS direct sheet was already consumed"));
+            return Err("XLS direct sheet was already consumed".to_string());
         }
         if self
             .active_projection
@@ -406,20 +408,20 @@ impl DirectSession {
     pub(crate) fn resource(&self, key: &str) -> Result<&[u8], String> {
         self.healthy()?;
         let Some(id) = key.strip_prefix("legacy-xls/image/") else {
-            return Err(unsupported("invalid XLS direct image key"));
+            return Err("invalid XLS direct image key".to_string());
         };
         if id.is_empty()
             || !id.bytes().all(|byte| byte.is_ascii_digit())
             || (id.len() > 1 && id.starts_with('0'))
             || id.parse::<u32>().is_err()
         {
-            return Err(unsupported("invalid XLS direct image key"));
+            return Err("invalid XLS direct image key".to_string());
         }
         self.native_pictures
             .resources
             .get(key)
             .map(Vec::as_slice)
-            .ok_or_else(|| unsupported("unadmitted XLS direct image key"))
+            .ok_or_else(|| "unadmitted XLS direct image key".to_string())
     }
 
     pub(crate) fn assert_healthy(&self) -> Result<(), String> {
@@ -428,10 +430,18 @@ impl DirectSession {
 
     fn healthy(&self) -> Result<(), String> {
         if self.poisoned {
-            Err(unsupported("XLS direct session is poisoned"))
+            Err("XLS direct session is poisoned".to_string())
         } else {
             Ok(())
         }
+    }
+
+    // Caller-owned sequencing/configuration and closed/poisoned state are not
+    // input representability. In particular, a prior quota failure must never
+    // turn into unsupported-content merely because the session is poisoned.
+    fn fail_protocol<T>(&mut self, message: &str) -> Result<T, String> {
+        self.poisoned = true;
+        Err(message.to_owned())
     }
 
     fn fail<T>(&mut self, message: &str) -> Result<T, String> {
@@ -750,7 +760,7 @@ fn charge(budget: &mut usize, bytes: usize) -> Result<(), String> {
 }
 
 fn model_error() -> String {
-    unsupported("XLS direct model byte budget exceeded")
+    crate::rejection::resource("XLS direct model byte budget exceeded")
 }
 
 #[cfg(test)]

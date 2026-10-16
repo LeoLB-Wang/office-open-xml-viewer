@@ -63,6 +63,7 @@ import {
   footnoteAcquisitionWorkBudgetOf,
   paintResourceRegistryOf,
   paragraphAcquisitionCacheOf,
+  headerFooterLayoutCacheOf,
   verticalGlyphMeasurementServiceOf,
 } from './runtime-state.js';
 import { attachStoryBlockLayoutAlgorithms, layoutStory as layoutSharedStory } from './stories.js';
@@ -74,6 +75,7 @@ import type {
   BodyParagraphAcquisitionInput,
 } from './body-layout-kernel.js';
 import { NoteCapacityExceededError } from './body-layout-kernel.js';
+import { NoteStack } from './note-stack.js';
 import { FlowCapacityExceededError } from './flow.js';
 import { projectBodyOccurrence } from './occurrence-projection.js';
 import {
@@ -659,6 +661,7 @@ interface BodyStoryAcquisitionContext {
   readonly noteSourceReuse: WeakMap<object, boolean>;
   readonly source: LayoutSourceStore;
   readonly publicAnchorBridge: typeof publicAnchorBridge;
+  readonly headerFooterContext: string;
 }
 
 /**
@@ -733,9 +736,49 @@ function acquireBodyStoryLayout(
     band: pageIndependent ? null : request.bandTranslationPt ?? null,
     pageFrames: pageIndependent ? null : request.pageFrames ?? null,
   });
-  return dependencies.storyLayoutCache.layout({
-    occurrence,
-    placement,
+  const pageStoryCache = (request.source.story === 'header' || request.source.story === 'footer')
+    ? headerFooterLayoutCacheOf(services) : undefined;
+  const runtime = paragraphAcquisitionCacheOf(services);
+  const field = fieldAcquisitionContextOf(services);
+  const pageField = field.resolveDestinationPage?.(request.pageIndex);
+  if (request.source.story === 'header' || request.source.story === 'footer'
+    || request.source.story === 'footnote' || request.source.story === 'endnote') {
+    // Admit at the acquisition boundary, before either trial or descendant
+    // paragraph debits. Preview, reserve and final composition share this seam;
+    // a caller cannot latch exhaustion before its selected story is credited.
+    // This includes whole notes reacquired on continuation destinations and
+    // separator stories. Text boxes belong to their selecting story closure
+    // (or body U), so detached acquisition must not mint a second credit.
+    runtime?.workBudget.admitPageStories(
+      request.pageStoryOwner ?? sourceKey(request.source), request.pageIndex, [request.source],
+    );
+  }
+  // Source identity fixes settings/styles/revisions, numbering definitions,
+  // resources and the anchor bridge. Context fixes options, exact service
+  // generations and note facts; request preserves every section/container/band/
+  // frame fact (including absent versus explicit zero). Physical page/source
+  // identities keep retained occurrence IDs page-local. NUMPAGES is deliberately
+  // keyed even for field-free stories: no dependency inference is made here.
+  const pageStoryOccurrence = pageStoryCache && runtime ? JSON.stringify([
+    runtime.objectIdentity(source), runtime.objectIdentity(root), request.source, request.pageIndex,
+  ]) : occurrence;
+  const pageStoryPlacement = pageStoryCache ? JSON.stringify([
+    dependencies.headerFooterContext, request, field.totalPages,
+    // Descendant audit: root paragraphs/frames, recursive table cells and
+    // compatibility shapes inherit the candidate's explicit numbering. Complete
+    // text boxes (including boxes in cells/other boxes) reopen a detached root
+    // with the same physical page but NO explicit pageNumber. They read this
+    // raw destination context and the session format fallback instead. Keep
+    // those inputs independently: parent overrides must never mask descendant
+    // dependencies, including absent-to-resolved context with fixed NUMPAGES.
+    // Story tables are laid out whole on this page; no descendant advances it.
+    // Note numbers/settings are source-fixed in headerFooterContext; a header,
+    // footer or text-box root has no numbered-note reference of its own.
+    pageField ?? null, dependencies.state.pageNumberFormat ?? null,
+  ]) : placement;
+  return (pageStoryCache ?? dependencies.storyLayoutCache).layout({
+    occurrence: pageStoryOccurrence,
+    placement: pageStoryPlacement,
     trial: !pageIndependent
       && (request.bandTranslationPt !== undefined || request.pageFrames !== undefined),
     // Replace, never accumulate, a separator root's context; never retain a
@@ -775,8 +818,8 @@ function layoutBodyStory(
     sectionLayout: request.section as SectionLayoutContext,
     pageIndex: request.pageIndex,
     totalPages: fieldContext.totalPages,
-    displayPageNumber: pageFieldContext?.displayPageNumber ?? request.pageIndex + 1,
-    pageNumberFormat: pageFieldContext?.pageNumberFormat ?? state.pageNumberFormat,
+    displayPageNumber: request.pageNumber?.displayNumber ?? pageFieldContext?.displayPageNumber ?? request.pageIndex + 1,
+    pageNumberFormat: request.pageNumber?.format ?? pageFieldContext?.pageNumberFormat ?? state.pageNumberFormat,
     pageWidth: request.section.geometry.pageWidth,
     pageH:
       request.container.capacity === 'unbounded'
@@ -1662,11 +1705,12 @@ function layoutBodyNotes(
     effectiveTablePositioning,
   } = context;
   const notes: NoteLayout[] = [];
-  let cursorYPt = request.container.bounds.yPt;
+  const stack = new NoteStack();
   let first = request.firstOnPage;
   for (const id of request.referenceIds) {
     const sourceNotes = request.kind === 'footnote' ? footnotesById : endnotesById;
     if (!sourceNotes.has(id)) continue;
+    const noteTopPt = stack.topAt(request.container.bounds.yPt);
     const source: SourceRef = {
       story: request.kind,
       storyInstance: id,
@@ -1681,7 +1725,7 @@ function layoutBodyNotes(
     const leading = first && nativeDefinitions
       ? acquireNativeNoteSeparator(context, request, nativeDefinitions[
         request.continuing === true ? 'continuationSeparator' : 'separator'
-      ], cursorYPt, `${request.kind}:${id}:page:${request.pageIndex}:separator`)
+      ], noteTopPt, `${request.kind}:${id}:page:${request.pageIndex}:separator`)
       : undefined;
     // An ordinary DOCX formatted listed story (§17.11.9) replaces only the
     // scalar band height of its role with its own acquired paragraph advance
@@ -1695,12 +1739,12 @@ function layoutBodyNotes(
       ]
       : undefined;
     const selectedBand = selectedDefinition
-      ? acquireSelectedNoteSeparatorBand(context, request, selectedDefinition, cursorYPt)
+      ? acquireSelectedNoteSeparatorBand(context, request, selectedDefinition, noteTopPt)
       : undefined;
     const separatorHeightPt = nativeDefinitions
       ? leading?.advancePt ?? 0
       : selectedBand?.advancePt ?? (first ? FOOTNOTE_SEPARATOR_GAP_PT : 0);
-    const ruleYPt = cursorYPt + (selectedBand?.ruleOffsetPt ?? separatorHeightPt / 2);
+    const ruleYPt = noteTopPt + (selectedBand?.ruleOffsetPt ?? separatorHeightPt / 2);
     const storyContainer = {
       ...request.container,
       // Acquire the source once before page partitioning; this is a resource
@@ -1710,20 +1754,20 @@ function layoutBodyNotes(
       id: `${request.container.id}:${request.kind}:${id}`,
       bounds: {
         ...request.container.bounds,
-        yPt: cursorYPt + separatorHeightPt,
+        yPt: noteTopPt + separatorHeightPt,
         heightPt: Math.max(
           0,
           request.container.bounds.yPt +
             request.container.bounds.heightPt -
-            cursorYPt -
+            noteTopPt -
             separatorHeightPt,
         ),
       },
     };
-    // A planned page-final top moves this note's flow top (cursorYPt) there.
+    // A planned page-final top moves this note's flow top there.
     const plannedTopPt = request.plannedTopsPt?.[id];
     const bandTranslationPt = request.bandTranslationPt
-      ?? (plannedTopPt === undefined ? undefined : { xPt: 0, yPt: plannedTopPt - cursorYPt });
+      ?? (plannedTopPt === undefined ? undefined : { xPt: 0, yPt: plannedTopPt - noteTopPt });
     let story: StoryLayout;
     try {
       story = acquireBodyStoryLayout(storyAcquisitionContext, {
@@ -1788,7 +1832,7 @@ function layoutBodyNotes(
     const advancePt = separatorHeightPt + story.advancePt;
     const flowBounds = Object.freeze({
       xPt: request.container.bounds.xPt,
-      yPt: cursorYPt,
+      yPt: noteTopPt,
       widthPt: request.container.bounds.widthPt,
       heightPt: advancePt,
     });
@@ -1820,7 +1864,7 @@ function layoutBodyNotes(
       story,
     });
     notes.push(note);
-    cursorYPt += advancePt;
+    stack.append(advancePt);
     first = false;
   }
   return Object.freeze(notes);
@@ -2905,6 +2949,30 @@ function openConcreteBodyLayoutSession(
     storyLayoutCache,
     noteSourceReuse: new WeakMap(),
     publicAnchorBridge,
+    // All of these are immutable for this concrete session. Intern large exact
+    // fingerprints in the pagination scope rather than copying font snapshots
+    // into every retained story key. Service identity also covers un-fingerprinted
+    // capabilities; fields use separate views with the same service components.
+    headerFooterContext: JSON.stringify([
+      options, services.allowFootnoteContinuation,
+      ...[services.text, services.images, services.math].map(service => [
+        paragraphAcquisitionCacheOf(services)?.objectIdentity(service),
+        paragraphAcquisitionCacheOf(services)?.fingerprintOrdinal(service.fingerprint ?? null),
+      ]),
+      paragraphAcquisitionCacheOf(services)?.fingerprintOrdinal(services.verticalGlyphFingerprint ?? null),
+      // Numbering settings and reference order are fixed by the sealed source.
+      // Intern that potentially large exact value once, separately from the
+      // session's small context/generation key, whose retained bytes are charged
+      // to the bounded story cache (including markup resolver generations).
+      paragraphAcquisitionCacheOf(services)?.fingerprintOrdinal(
+        JSON.stringify([state.noteNumbering, [...state.noteNumbers]]),
+      ),
+      // This resolver lazily assigns colours to story-only authors. A new
+      // session owns a new generation, so markup stories must not bypass its
+      // registrations by reusing a prior session's acquired paint facts.
+      state.revisionAuthorColor
+        ? paragraphAcquisitionCacheOf(services)?.objectIdentity(state.revisionAuthorColor) : null,
+    ]),
   };
   state.acquireCompleteTextBoxStory = (owner, request) =>
     acquireCompleteBodyTextBoxStory(owner, storyAcquisitionContext, request);

@@ -13,6 +13,7 @@ import { isTiffDecodeError, TiffDecodeError } from '../image/tiff-contract.js';
 import {
   deserializeWorkerError,
   parseResourceLimitError,
+  parseTypedParserError,
   serializeWorkerError,
   type WorkerErrorPayload,
 } from './error-wire.js';
@@ -44,6 +45,42 @@ describe('worker error wire', () => {
 
   const rustError =
     'OOXML_RESOURCE_LIMIT:{"code":"ooxml-resource-limit","details":{"stage":"decompression","violation":{"format":"xlsx","operation":"parse","resource":"archive-entry","part":"xl/worksheets/sheet1.xml","metric":"actual-inflated-bytes","limit":5,"observed":6,"configurable":true,"usage":{"archiveEntryCount":1,"declaredInflatedBytes":6,"largestInflatedEntryBytes":6,"distinctInflatedBytes":6,"operationInflatedBytes":6}}}}';
+
+  it.each([
+    {
+      stage: 'serialization', resource: 'docx-retained-model-json', metric: 'bytes',
+      part: 'word/document.xml', limit: 134217728, observed: 134217729,
+      message: 'OOXML resource limit exceeded for word/document.xml (docx-retained-model-json, serialization): bytes 134217729 > 134217728',
+    },
+    {
+      stage: 'container', resource: 'archive', metric: 'entry-count',
+      part: undefined, limit: 1, observed: 2,
+      message: 'OOXML resource limit exceeded (archive, container): entry-count 2 > 1',
+    },
+  ])('identifies $resource and its stage in parser and worker errors', ({
+    stage, resource, metric, part, limit, observed, message,
+  }) => {
+    const details = {
+      stage,
+      violation: {
+        format: 'docx', operation: 'parse', resource, metric,
+        ...(part === undefined ? {} : { part }),
+        limit, observed, configurable: false, usage: USAGE,
+      },
+    };
+    const envelope = `OOXML_RESOURCE_LIMIT:${JSON.stringify({ code: 'ooxml-resource-limit', details })}`;
+    const parsed = parseResourceLimitError(envelope);
+    expect(parsed).toBeInstanceOf(OoxmlResourceLimitError);
+    expect(parsed?.message).toBe(message);
+    const wire = structuredClone(serializeWorkerError(new Error(envelope)));
+    expect(wire).toEqual({
+      message, errorName: 'OoxmlResourceLimitError', code: 'ooxml-resource-limit',
+      resourceLimit: details,
+    });
+    const restored = deserializeWorkerError(wire);
+    expect(restored).toBeInstanceOf(OoxmlResourceLimitError);
+    expect(restored).toMatchObject({ message, code: 'ooxml-resource-limit', details });
+  });
 
   it('parses an exact Rust envelope into the public typed error', () => {
     const error = parseResourceLimitError(new Error(rustError));
@@ -121,7 +158,12 @@ describe('worker error wire', () => {
   it.each([
     'image-dimension',
     'image-pixels',
+    'tiff-lzw-work',
     'active-decoded-bytes',
+    'metafile-record-points',
+    'metafile-record-polygons',
+    'metafile-record-rectangles',
+    'metafile-record-text-units',
   ] satisfies OoxmlDecodedImageLimitMetric[])(
     'preserves the %s decoded-image quota error across the worker boundary',
     (metric) => {
@@ -662,4 +704,48 @@ describe('worker error wire', () => {
     expect((restored as OoxmlResourceLimitError).details.violation.part)
       .toBe('untrusted-archive-entry');
   });
+});
+
+it('preserves content-free model-source rejections across the worker boundary', () => {
+  const error = parseTypedParserError('MODEL_SOURCE_UNSUPPORTED:{"format":"custom","reason":"source-subset","text":"private"}');
+  expect(error).toBeInstanceOf(OoxmlError);
+  expect(error).toMatchObject({ code: 'unsupported-content', details: { format: 'custom', reason: 'source-subset' } });
+  expect(JSON.stringify(error)).not.toContain('private');
+  const restored = deserializeWorkerError(structuredClone(serializeWorkerError(error)));
+  expect(restored).toBeInstanceOf(OoxmlError);
+  expect(restored).toMatchObject({ code: 'unsupported-content', details: { format: 'custom', reason: 'source-subset' } });
+});
+
+it('does not promote malformed or unbounded source signals to typed content rejections', () => {
+  expect(parseTypedParserError('MODEL_SOURCE_UNSUPPORTED:{"format":"/private/path","reason":"source-subset"}')).toBeUndefined();
+  expect(parseTypedParserError(`MODEL_SOURCE_UNSUPPORTED:${'x'.repeat(1024)}`)).toBeUndefined();
+  const restored = deserializeWorkerError({ code: 'unsupported-content', message: 'private diagnostic' });
+  expect(restored).not.toBeInstanceOf(OoxmlError);
+  expect(restored.message).not.toContain('private diagnostic');
+  expect(restored).not.toHaveProperty('code');
+});
+
+it('preserves source rejection metadata from separately bundled error classes without forwarding their diagnostics', () => {
+  class SourceBundleError extends Error {
+    readonly code = 'unsupported-content';
+    readonly details = { format: 'custom', reason: 'source-subset', text: 'PRIVATE' };
+  }
+  const payload = serializeWorkerError(new SourceBundleError('PRIVATE'));
+  expect(JSON.stringify(payload)).not.toContain('PRIVATE');
+  expect(deserializeWorkerError(structuredClone(payload))).toMatchObject({ name: 'OoxmlError',
+    code: 'unsupported-content', details: { format: 'custom', reason: 'source-subset' } });
+});
+
+it('keeps measured resource errors distinct when a source owner bundles another error class', () => {
+  const original = new OoxmlResourceLimitError('quota', { stage: 'container', violation: {
+    format: 'docx', operation: 'open', resource: 'archive', metric: 'entry-count',
+    limit: 0, observed: 1, configurable: true, usage: USAGE,
+  } });
+  class SourceBundleQuota extends Error {
+    readonly code = 'ooxml-resource-limit';
+    readonly details = original.details;
+  }
+  const restored = deserializeWorkerError(structuredClone(serializeWorkerError(new SourceBundleQuota('quota'))));
+  expect(restored).toBeInstanceOf(OoxmlResourceLimitError);
+  expect((restored as OoxmlResourceLimitError).details).toEqual(original.details);
 });

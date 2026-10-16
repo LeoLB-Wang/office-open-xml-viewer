@@ -338,7 +338,7 @@ fn checked_product(count: usize, size: usize) -> Result<usize, String> {
 }
 
 fn model_budget_error() -> String {
-    unsupported("XLS direct geometry model byte budget exceeded")
+    crate::rejection::resource("XLS direct geometry model byte budget exceeded")
 }
 
 #[cfg(test)]

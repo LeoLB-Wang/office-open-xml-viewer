@@ -1,4 +1,6 @@
 import {
+  OoxmlResourceLimitError,
+  isOoxmlDecodedImageLimitError,
   deobfuscateOdttf,
   embeddedFontBytesAreWithinLimit,
   normalizeFontMetricFamily,
@@ -9,9 +11,11 @@ import {
   type ResolvedFontMetric,
 } from '@silurus/ooxml-core';
 import {
+  parseResourceLimitError,
   HARD_MAX_RAW_PART_CACHE_BYTES,
   HARD_MAX_RAW_PART_CACHE_ENTRIES,
 } from '@silurus/ooxml-core/worker';
+import type { LayoutDiagnostic } from './layout/types.js';
 import type { DocxDocumentModel, EmbeddedFontRef } from './types';
 import { wordOpenTypeAutoLineRatios } from './layout/line-compatibility.js';
 
@@ -25,6 +29,7 @@ const MAX_RETAINED_FONT_FACES = HARD_MAX_RAW_PART_CACHE_ENTRIES;
 const MAX_CONCURRENT_FONT_OPERATIONS = 2;
 
 export interface LoadedEmbeddedFonts {
+  readonly diagnostics?: readonly LayoutDiagnostic[];
   readonly faces: FontFace[];
   readonly metrics: Readonly<Record<string, ResolvedFontMetric>>;
   /** Successfully loaded authored tuples and their resource-specific Canvas families. */
@@ -139,7 +144,8 @@ function sha256(bytes: Uint8Array): Uint8Array {
  * MUST run before pagination (which measures text). No-ops when the document
  * embeds no fonts. Individual part fetches are concurrent; a rejected fetch
  * skips only that face (the rest still register) so one missing part never
- * aborts the whole document.
+ * aborts the whole document. Typed resource-limit failures remain fatal: they
+ * enforce archive policy rather than diagnose malformed font content.
  *
  * Returns the shared `FontFace` objects registered for this document (deduped +
  * refcounted in core). The caller ({@link DocxDocument}) holds them and passes
@@ -184,7 +190,13 @@ export async function loadEmbeddedFonts(
     const batch = uniqueRefs.slice(start, Math.min(start + MAX_CONCURRENT_FONT_OPERATIONS, admittedRefCount));
     const fetched = await Promise.all(batch.map(async (ref) => {
       try { return await fetchFontBytes(ref.partPath); }
-      catch { return null; }
+      catch (error) {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+        // Worker rendering reads WASM directly, before bridge deserialization.
+        const resourceError = parseResourceLimitError(error);
+        if (resourceError) throw resourceError;
+        return null;
+      }
     }));
     for (let index = 0; index < batch.length; index++) {
       const ref = batch[index];
@@ -267,12 +279,18 @@ export async function loadEmbeddedFonts(
     }
   }
 
-  if (resourceSkipped > 0) {
-    console.warn(`[ooxml] skipped ${resourceSkipped} embedded font face(s) under the document font resource limits`);
-  }
+  // These are library resource ceilings, not an Office font-selection rule.
+  // Retain a diagnostic even when no face fits; callers render with fallback.
+  const diagnostics: readonly LayoutDiagnostic[] = resourceSkipped > 0
+    ? Object.freeze([Object.freeze({
+        code: 'MISSING_RESOURCE' as const,
+        severity: 'warning' as const,
+        message: `Skipped ${resourceSkipped} embedded font face(s) under the document font resource limits; fallback fonts are used`,
+      })])
+    : Object.freeze([]);
 
   const loadable = faces;
-  if (loadable.length === 0) return { faces: [], metrics: {}, routes: [] };
+  if (loadable.length === 0) return { faces: [], metrics: {}, routes: [], diagnostics };
   // FontFace.load() runs concurrently within one core registration call. Batch
   // registration as well as fetching so browser font decoding respects the
   // same per-document concurrency limit. Release earlier batches if a later
@@ -310,7 +328,7 @@ export async function loadEmbeddedFonts(
     const requested = normalizeFontMetricFamily(entry.route.requestedFamily);
     metrics[weight === 400 && style === 'normal' ? requested : `${requested}:${weight}:${style}`] = entry.metric;
   }
-  return { faces: loadedFaces, metrics: Object.freeze(metrics), routes: Object.freeze(routes) };
+  return { faces: loadedFaces, metrics: Object.freeze(metrics), routes: Object.freeze(routes), diagnostics };
 }
 
 /** bold / boldItalic slots ⇒ CSS `font-weight: bold`; otherwise `normal`. */
