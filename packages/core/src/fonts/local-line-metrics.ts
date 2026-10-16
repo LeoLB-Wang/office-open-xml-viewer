@@ -137,7 +137,7 @@ export async function loadLocalFontCoverageProbe(
     const loaded = await withFontCeiling(probe.load());
     if (loaded && probe.status === 'loaded'
       && (probe as FontFace & { sizeAdjust?: string }).sizeAdjust === '0%'
-      && coverageOracleWorks(probe)) return probe;
+      && coverageOracleWorks(probe, face)) return probe;
   } catch { /* Optional coverage unavailable: decline resource geometry. */ }
   releaseFaces([probe]);
   return null;
@@ -145,23 +145,26 @@ export async function loadLocalFontCoverageProbe(
 
 /** A readable size-adjust descriptor does not prove the engine applies it to
  * Canvas geometry. Before trusting zero geometry as ownership, the probe must
- * show both sides of the contract: the face's own Latin glyph measures zero,
- * and at least one glyph from scripts a Latin face rarely carries keeps a
- * positive fallback advance. An engine (or a face) failing either side
- * declines the measured projection and keeps the catalog path. */
+ * measure the face's own Latin glyph as zero in every dimension, while the
+ * same glyph in the paint face keeps positive geometry (so the zero comes
+ * from size-adjust, not from a degenerate measurement). An engine that only
+ * zeroes advances (WebKit keeps ink extents) or a face without that glyph
+ * declines the measured projection and keeps the catalog path. No
+ * other-script fallback is measured here: that would start a system
+ * fallback-font search on the first-display path. */
 const OWNED_PROBE = 'A';
-const FALLBACK_PROBE = '漢あ한अ';
 
-function coverageOracleWorks(probe: FontFace): boolean {
+function coverageOracleWorks(probe: FontFace, paint: FontFace): boolean {
   // Once per loaded probe, so a fresh context costs nothing measurable.
   const context = newCoverageContext();
   if (!context) return false;
   try {
     context.font = `${probe.style} ${probe.weight} 100px ${quoteCssFontFamily(probe.family)}`;
     const owned = context.measureText(OWNED_PROBE);
-    const fallback = context.measureText(FALLBACK_PROBE);
+    context.font = `${paint.style} ${paint.weight} 100px ${quoteCssFontFamily(paint.family)}`;
+    const painted = context.measureText(OWNED_PROBE);
     return owned.width === 0 && owned.actualBoundingBoxAscent === 0
-      && owned.actualBoundingBoxDescent === 0 && fallback.width > 0;
+      && owned.actualBoundingBoxDescent === 0 && painted.width > 0;
   } catch {
     return false;
   }
@@ -225,31 +228,20 @@ export function localFontMetricCoversText(
   const cached = cache.get(text);
   if (cached !== undefined) return cached;
   // Native measurement happens once per distinct cluster, not per distinct
-  // text. A text whose clusters are all known costs no measurement; otherwise
-  // one whole-text measurement settles the common all-owned case, and only a
-  // text with fallback is split into its unknown clusters.
-  const clusters = [...clustersOf(text)];
+  // text, so a document costs about as many probes as it has distinct
+  // clusters. Each cluster is measured on its own: a zero result for a whole
+  // text does not prove every cluster is owned (a joiner can absorb an
+  // unsupported combining mark).
   let covered = true;
-  const unknown: string[] = [];
-  for (const cluster of clusters) {
-    const owned = prepared.clusters.get(cluster);
-    if (owned === false) { covered = false; break; }
-    if (owned === undefined) unknown.push(cluster);
-  }
-  if (covered && unknown.length > 0) {
-    const whole = measureCoverage(prepared.font, unknown.length === clusters.length ? text : unknown.join(''));
-    if (whole === undefined) return false;
-    if (whole || unknown.length === 1) {
-      for (const cluster of unknown) rememberCluster(prepared, cluster, whole);
-      covered = whole;
-    } else {
-      for (const cluster of unknown) {
-        const owned = measureCoverage(prepared.font, cluster);
-        if (owned === undefined) return false;
-        rememberCluster(prepared, cluster, owned);
-        if (!owned) { covered = false; break; }
-      }
+  for (const cluster of clustersOf(text)) {
+    let owned = prepared.clusters.get(cluster);
+    if (owned === undefined) {
+      const measured = measureCoverage(prepared.font, cluster);
+      if (measured === undefined) return false;
+      owned = measured;
+      rememberCluster(prepared, cluster, owned);
     }
+    if (!owned) { covered = false; break; }
   }
   if (cache.size >= 1024) cache.delete(cache.keys().next().value!);
   cache.set(text, covered);

@@ -38,7 +38,8 @@ function contractCanvas() {
           actualBoundingBoxDescent: 0 } as TextMetrics;
       }
       const scale = px(this.font) / 2048;
-      return { fontBoundingBoxAscent: 1825 * scale, fontBoundingBoxDescent: 443 * scale } as TextMetrics;
+      return { width: 1200 * scale * text.length, fontBoundingBoxAscent: 1825 * scale,
+        fontBoundingBoxDescent: 443 * scale } as TextMetrics;
     },
   };
 }

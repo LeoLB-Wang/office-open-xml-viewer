@@ -90,7 +90,7 @@ describe('prepared local-face normal line measurement', () => {
     expect(measureLocalFontNormalLine(face, env.fonts, env.context, 2048, null)).toBeNull();
   });
 
-  it('measures glyph ownership per distinct cluster, settling owned texts in one probe', () => {
+  it('measures glyph ownership once per distinct cluster, not per distinct text', () => {
     const measured: string[] = [];
     vi.stubGlobal('OffscreenCanvas', class {
       getContext() {
@@ -112,13 +112,12 @@ describe('prepared local-face normal line measurement', () => {
       expect(localFontMetricCoversText(metric, 'abc', route)).toBe(true);
       expect(localFontMetricCoversText(metric, 'cab ba', route)).toBe(true);
       expect(localFontMetricCoversText(metric, 'ab\u6f22', route)).toBe(false);
-      // One whole-text probe settles 'abc'; later texts probe only their
-      // unknown clusters (the space, then the CJK cluster): three probes.
-      expect(measured).toEqual(['abc', ' ', '\u6f22']);
-      // Mixed unknown clusters with fallback are split to find the culprit.
+      // a, b, c, space and the CJK cluster: five native probes for three texts.
+      expect(measured).toEqual(['a', 'b', 'c', ' ', '\u6f22']);
+      // A joiner absorbing an unowned mark must not mark the joiner owned:
+      // each cluster is probed on its own.
       measured.length = 0;
-      expect(localFontMetricCoversText(metric, 'xy\u3042', route)).toBe(false);
-      expect(measured).toEqual(['xy\u3042', 'x', 'y', '\u3042']);
+      expect(localFontMetricCoversText(metric, 'x\u2060\u0301', route)).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
