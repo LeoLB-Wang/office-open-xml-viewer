@@ -274,6 +274,7 @@ export {
   type SvgImageSource,
   type SvgImageDecodeOptions,
 } from './image/svg-image-by-path';
+export { decodeSvgBlobOnMainThread } from './worker/svg-decode-bridge';
 export type { SvgBlobDecoder, SvgDecodeTarget } from './worker/svg-decode-bridge';
 // Shared per-document decoded-raster owner: one weighted LRU, decode gate and
 // render-pass lease covers base blips, media posters, and derived effects across
@@ -406,6 +407,7 @@ export {
 // carry duotone too).
 export {
   applyDuotone,
+  applyImageDataTransform,
   duotoneImageData,
   hex6ToRgb,
   luminance601,

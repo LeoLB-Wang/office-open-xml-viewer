@@ -50,6 +50,7 @@ export type CanvasPaintResourceHandler<K extends PaintResourceDescriptorKind> = 
   bounds: LayoutRect,
   ctx: PaintCanvas2D,
   nativeImagePlan?: NativeReadingImagePlan,
+  coverageBounds?: LayoutRect,
 ) => void;
 
 export type CanvasPaintResourceHandlers = Readonly<{
@@ -63,6 +64,7 @@ export interface CanvasPaintResourcePainter {
     bounds: LayoutRect,
     ctx: PaintCanvas2D,
     nativeImagePlan?: NativeReadingImagePlan,
+    coverageBounds?: LayoutRect,
   ): void;
 }
 
