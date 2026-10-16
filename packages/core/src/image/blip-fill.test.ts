@@ -34,6 +34,12 @@ describe('effect fill tile geometry', () => {
       expect(p.ctx.drawImage).not.toHaveBeenCalled();
     });
 
+  it('rejects a non-finite DPI rather than substituting a default', () => {
+    const p = paint(image({}, NaN));
+    expect(p.run).toThrowError(expect.objectContaining({ code: 'ooxml-decoded-image-limit' }));
+    expect(p.ctx.drawImage).not.toHaveBeenCalled();
+  });
+
   it.each([3.25, -2.75])('normalizes phase and retains alternate-tile flips for offset %s', tx => {
     const p = paint(image({ tx: tx * 12700, flip: 'x' }));
     p.run();

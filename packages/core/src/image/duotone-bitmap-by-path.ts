@@ -24,12 +24,18 @@ export async function getCachedDuotoneBitmapByPath(
   const release = blipEffectImageFills(value.effects).length ? acquireCurrentBitmapCacheLease(fetchImage) : undefined;
   return loadEffects(imagePath, mimeType, value, fetchImage, opts, { work: 0 }).finally(() => release?.());
 }
-function loadEffects(
+// Validation failures must reject the promise so the outer source lease is released.
+async function loadEffects(
   imagePath: string, mimeType: string, value: BlipPixelEffects,
   fetchImage: Parameters<typeof getCachedPixelTransformBitmapByPath>[3],
   opts: NonNullable<Parameters<typeof getCachedPixelTransformBitmapByPath>[4]>,
   ledger: { work: number },
 ): Promise<ImageBitmap | null> {
+  // JSON tuples encode valid finite physical dimensions without decimal
+  // ambiguity. Reject invalid numbers before JSON can collapse them to null.
+  if (![opts.widthPt ?? 0, opts.heightPt ?? 0].every(v => Number.isFinite(v) && v >= 0)) {
+    throw new OoxmlError('unsupported-image-effect', 'Invalid physical image effect dimensions');
+  }
   const physical = (width?: number, height?: number): BlipPixelEffects => ({ ...value,
     emuPerPixelX: opts.widthPt && width ? opts.widthPt * 12700 / width : value.emuPerPixelX,
     emuPerPixelY: opts.heightPt && height ? opts.heightPt * 12700 / height : value.emuPerPixelY,

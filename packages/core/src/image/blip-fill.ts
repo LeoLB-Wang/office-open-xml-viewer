@@ -80,6 +80,7 @@ export function effectFillPixels(
       if (fill.alpha != null) ctx.globalAlpha *= fill.alpha;
       if (fill.tile) {
         const tile = fill.tile, natural = imageNaturalSize(image);
+        finiteGeometry(fill.dpi ?? 96);
         // §20.1.8.58. Missing placement facts use the shared image painter's
         // top-left, unscaled grid. The source's nominal 96 dpi is the existing
         // decoder policy when embedded DPI is unavailable.

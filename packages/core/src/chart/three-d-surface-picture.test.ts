@@ -8,6 +8,7 @@ import {
 function paint(
   fill: ImageFill,
   options: {
+    rejectSourceDraw?: boolean;
     imageWidth?: number;
     imageHeight?: number;
     faceWidth?: number;
@@ -44,7 +45,10 @@ function paint(
           return (...args: number[]) => transforms.push(args);
         }
         if (property === 'drawImage') {
-          return (...args: unknown[]) => draws.push(args);
+          return (...args: unknown[]) => {
+            if (options.rejectSourceDraw && args[0] === image) throw new Error('unsafe grid reached paint');
+            draws.push(args);
+          };
         }
         if (property === 'translate' || property === 'scale') {
           return (...values: number[]) => operations.push({ kind: property, values });
@@ -336,6 +340,13 @@ describe('CT_Surface tiled pictures', () => {
     dpi: 96,
     tile: { tx: 0, ty: 0, sx: 1, sy: 1, flip: 'none', algn: 'tl' },
   } satisfies ImageFill;
+
+  it('declines unsafe shifted indices before allocating and painting tile pixels', () => {
+    const result = paint({ ...tiled, tile: { ...tiled.tile, tx: 1.5e20 } },
+      { imageWidth: 1, imageHeight: 100, rejectSourceDraw: true });
+    expect(result.painted).toBe(false);
+    expect(result.sourceDraws).toHaveLength(0);
+  });
 
   it('repeats the physical source size in face-local coordinates', () => {
     const result = paint(tiled, {

@@ -399,6 +399,14 @@ describe('getCachedDuotoneBitmapByPath with CT_Blip effects', () => {
       .rejects.toMatchObject({ code: 'unsupported-image-effect' });
   });
 
+  it('rejects non-finite physical cache dimensions before decoding', async () => {
+    const fetchImage = vi.fn(async () => new Blob());
+    await expect(getCachedDuotoneBitmapByPath('blur.png', 'image/png', {
+      effects: [{ type: 'blur', radius: 12700, grow: false }],
+    }, fetchImage, { widthPt: NaN, heightPt: 3 })).rejects.toMatchObject({ code: 'unsupported-image-effect' });
+    expect(fetchImage).not.toHaveBeenCalled();
+  });
+
   it('keeps physical blur sizes 1.2 × 3 and 1 × 2.3 independent in the real cache', async () => {
     const pixels = new Uint8ClampedArray(Array.from({ length: 9 }, () => [20, 40, 60, 255]).flat());
     const factory = ((w: number, h: number) => {
