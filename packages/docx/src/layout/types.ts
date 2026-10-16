@@ -530,6 +530,7 @@ export type ImagePaintResourceDescriptor = Readonly<{
   /** Part 4 §19.1.2.21: clr1 replaces black, clr2 replaces coloured pixels. */
   vmlStrokePattern?: DeepReadonly<Duotone>;
   vmlFill?: DeepReadonly<Extract<import('../types.js').ShapeFill, { fillType: 'image' }>['vml']>;
+  blipEffects?: DeepReadonly<import('@silurus/ooxml-core').BlipEffect[]>;
 }>;
 
 /** Exact accepted source facts, including decode-order/intrinsic ownership.

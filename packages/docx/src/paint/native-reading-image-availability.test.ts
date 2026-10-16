@@ -39,6 +39,7 @@ describe('native reading image resource-only admission', () => {
     assert.throws(() => assertNativeReadingImageAvailable(fixture({ svgImagePath: 'other.svg' }), plan, rect), /binding mismatch/);
     assert.throws(() => assertNativeReadingImageAvailable(fixture({ colorReplaceFrom: '' }), plan, rect), /binding mismatch/);
     assert.throws(() => assertNativeReadingImageAvailable(fixture({ duotone: { clr1: '000000', clr2: 'FFFFFF' } }), plan, rect), /binding mismatch/);
+    assert.throws(() => assertNativeReadingImageAvailable(fixture({ blipEffects: [{ type: 'luminance', bright: .9, contrast: 0 }] }), plan, rect), /binding mismatch/);
     assert.throws(() => assertNativeReadingImageAvailable(fixture({ documentOrder: 1 }), plan, rect), /binding mismatch/);
     assert.throws(() => assertNativeReadingImageAvailable(fixture({ intrinsicSize: { widthPt: 10, heightPt: 20 } }), plan, rect), /binding mismatch/);
     assert.throws(() => assertNativeReadingImageAvailable(owned, plan, { ...rect, widthPt: 41 }), /dimensions mismatch/);

@@ -50,6 +50,7 @@ function imageCandidate(
     ...(run.duotone === undefined ? {} : { duotone: { ...run.duotone } }),
     ...(run.vmlStrokePattern === undefined ? {} : { vmlStrokePattern: run.vmlStrokePattern }),
     ...(run.vmlFill === undefined ? {} : { vmlFill: run.vmlFill }),
+    ...(run.blipEffects?.length ? { blipEffects: run.blipEffects.map(effect => ({ ...effect })) } : {}),
   };
 }
 
