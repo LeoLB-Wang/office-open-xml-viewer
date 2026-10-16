@@ -41,6 +41,15 @@ describe('verticalDrawMode (UAX#50 vo → draw mode)', () => {
 });
 
 describe('planVerticalRunWithCapability (retained vertical paint geometry)', () => {
+  it.each([2, -1])('keeps vertical retained origins aligned with mark-free tracking at %s pt', pitch => {
+    const { ctx } = mockCtx();
+    ctx.measureText = (text: string) => ({ width: [...text].filter(c => c === 'a' || c === 'b' || c === '字').length * 10 } as TextMetrics);
+    const cells = planVerticalRunWithCapability(ctx, 'a\u030Ab字', 10, pitch);
+    expect(cells.map(c => [c.text, c.originPt, c.advancePt])).toEqual([
+      ['a\u030Ab', 0, 20 + 2 * pitch], ['字', 20 + 2 * pitch + (10 + pitch) / 2, 10 + pitch],
+    ]);
+  });
+
   it('retains the font em-box cross-axis correction for a sideways phone number', () => {
     const { ctx } = mockCtx({
       fontBoundingBoxAscent: 10,

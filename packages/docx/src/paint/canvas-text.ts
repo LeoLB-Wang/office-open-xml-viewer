@@ -315,6 +315,13 @@ function paintParagraphContents(node: ParagraphLayout, context: CanvasPaintConte
       const previousLetterSpacing = ctx.letterSpacing;
       const previousKerning = ctx.fontKerning;
       for (const op of placement.paintOps) {
+        // §17.3.3.29: an unselected optional hyphen must not affect display.
+        // Strip only the paint string, preserving all retained UTF-16 source
+        // ranges for slicing, hit testing and selection. Keep one contextual
+        // draw even for cs runs containing literal U+00AD (Firefox otherwise
+        // gives it native letterSpacing). Selected breaks already contain '-'.
+        const text = op.text.replace(/\u00AD/gu, '');
+        if (text.length === 0) continue;
         ctx.direction = op.direction;
         ctx.fontKerning = op.kerning;
         const originXPt = placement.origin.xPt + op.offset.xPt;
@@ -335,7 +342,7 @@ function paintParagraphContents(node: ParagraphLayout, context: CanvasPaintConte
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.letterSpacing = `${op.letterSpacingPt}px`;
-          const draw = (): void => ctx.fillText(op.text, glyphOffsetXPt, glyphOffsetYPt);
+          const draw = (): void => ctx.fillText(text, glyphOffsetXPt, glyphOffsetYPt);
           if (op.verticalFeature) {
             withVertFeature(ctx as CanvasRenderingContext2D, draw);
           }
@@ -348,18 +355,18 @@ function paintParagraphContents(node: ParagraphLayout, context: CanvasPaintConte
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.letterSpacing = `${op.letterSpacingPt / op.scaleX}px`;
-          ctx.fillText(op.text, glyphOffsetXPt, glyphOffsetYPt);
+          ctx.fillText(text, glyphOffsetXPt, glyphOffsetYPt);
           ctx.restore();
         } else if (op.scaleX !== 1) {
           ctx.save();
           ctx.translate(originXPt + glyphOffsetXPt, originYPt + glyphOffsetYPt);
           ctx.scale(op.scaleX, 1);
           ctx.letterSpacing = `${op.letterSpacingPt / op.scaleX}px`;
-          ctx.fillText(op.text, 0, 0);
+          ctx.fillText(text, 0, 0);
           ctx.restore();
         } else {
           ctx.letterSpacing = `${op.letterSpacingPt}px`;
-          ctx.fillText(op.text, originXPt + glyphOffsetXPt, originYPt + glyphOffsetYPt);
+          ctx.fillText(text, originXPt + glyphOffsetXPt, originYPt + glyphOffsetYPt);
         }
       }
       ctx.letterSpacing = previousLetterSpacing;
