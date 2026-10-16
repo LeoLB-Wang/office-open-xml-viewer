@@ -184,6 +184,8 @@ export function pptxFontPreloadNames(
  * inherit through paragraph/body defaults (§21.1.2.3.9); theme tokens resolve
  * against the same major/minor values used by the renderer. Loading is delayed
  * until the slide is requested, so unused slides and styles fetch no assets. */
+const CSS_GENERIC_FAMILY_NAMES = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui']);
+
 export function pptxSlideOfficeFontRequests(
   slide: Slide,
   majorFont: string | null,
@@ -201,10 +203,13 @@ export function pptxSlideOfficeFontRequests(
     return family.split(',')[0]?.trim() ?? null;
   };
   const add = (family: string | null | undefined, bold: boolean, italic: boolean) => {
-    if (resolved(family)?.toLowerCase() !== 'calibri') return;
+    // Every authored face is probed, so layout can admit catalog geometry
+    // only for faces proven present (no family-name gate).
+    const name = resolved(family);
+    if (!name || CSS_GENERIC_FAMILY_NAMES.has(name.toLowerCase())) return;
     const weight = bold ? 700 : 400;
     const style = italic ? 'italic' : 'normal';
-    requests.set(`${weight}:${style}`, { family: 'Calibri', weight, style });
+    requests.set(`${name.toLowerCase()}:${weight}:${style}`, { family: name, weight, style });
   };
   const body = (textBody: TextBody | null | undefined) => {
     for (const paragraph of textBody?.paragraphs ?? []) {

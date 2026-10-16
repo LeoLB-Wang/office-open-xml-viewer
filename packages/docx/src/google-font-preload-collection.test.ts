@@ -313,10 +313,18 @@ describe('script-scoped Arabic visual substitutes', () => {
         measureContext: canvas.getContext('2d') as CanvasRenderingContext2D,
         ...(source === 'embedded' ? { embeddedRoutes: [{ requestedFamily: 'Sakkal Majalla',
           resolvedFamily: alias, weight: 400, style: 'normal' as const, resourceIdentity: 'embedded:test' }] } : {}),
-        ...(source === 'local' ? { localMetrics: { 'sakkal majalla': {
-          requestedFamily: 'Sakkal Majalla', family: alias, weight: 400, style: 'normal' as const,
-          sourceIdentity: 'local:test', lineHeightRatio: 1,
-        } } } : {}),
+        // Arial is present here (its own resource metric), so the scalar-slot
+        // assertions below concern substitute scoping, not absent-face metrics.
+        localMetrics: {
+          arial: {
+            requestedFamily: 'Arial', family: 'Arial', weight: 400, style: 'normal' as const,
+            sourceIdentity: 'local:arial', lineHeightRatio: 1.15, designAscentRatio: 0.905, designDescentRatio: 0.212,
+          },
+          ...(source === 'local' ? { 'sakkal majalla': {
+            requestedFamily: 'Sakkal Majalla', family: alias, weight: 400, style: 'normal' as const,
+            sourceIdentity: 'local:test', lineHeightRatio: 1,
+          } } : {}),
+        },
         ...(source === 'installed' ? { installedSubstituteFamilies: ['sakkal majalla'] } : {}),
       });
       if (source === 'css') vi.unstubAllGlobals();

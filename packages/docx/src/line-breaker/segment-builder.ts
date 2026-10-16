@@ -1787,6 +1787,9 @@ function appendRunsToSegments(
             if (!('text' in segment)) throw new Error('A note metric probe lost its text authority');
             segment.text = '';
             segment.metricOnly = true;
+            // Without a selected-face line metric (an absent authored face),
+            // the host's vertical box still comes from its painting face.
+            segment.metricProbeText = 'x';
             segment.sourceRunIndex = runIndex;
             if (segment.textShapeRequest) {
               segment.textShapeRequest = Object.freeze(independentTextShapeRequest(segment.textShapeRequest, ''));

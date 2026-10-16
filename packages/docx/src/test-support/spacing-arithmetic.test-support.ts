@@ -1,3 +1,4 @@
+import { referenceFontLineMetrics } from '../reference-font-line-metrics.js';
 import { layoutDocument } from '../document-layout.js';
 import { createLayoutServices } from '../layout-runtime.js';
 import { paintLayoutPage } from '../paint/canvas-page.js';
@@ -65,7 +66,12 @@ export async function recordSpacingFixture(
       original(text, x, y);
     };
   }
-  const layout = layoutDocument(model, createLayoutServices(model, { measureContext: ctx }), { currentDateMs: 0 });
+  // Arial is present (its resource metric is the catalog line projection), as
+  // in the captured main geometry; an absent face would use its fallback box.
+  const arial = { ...referenceFontLineMetrics('Arial', 400, 'normal')!, requestedFamily: 'Arial', family: 'Arial',
+    weight: 400, style: 'normal' as const, sourceIdentity: 'local:arial' };
+  const layout = layoutDocument(model, createLayoutServices(model, { measureContext: ctx, localMetrics: { arial } }),
+    { currentDateMs: 0 });
   const advances = layout.pages.flatMap(page => page.layers.body.flatMap(node =>
     node.kind === 'paragraph' ? node.lines.map(line => line.placements.flatMap(placement =>
       placement.kind === 'text' ? [[placement.text, placement.advancePt,

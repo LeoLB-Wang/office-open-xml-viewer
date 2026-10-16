@@ -205,9 +205,11 @@ describe('native reference font vertical layout', () => {
     }
   });
 
-  it('uses authored Calibri vertical geometry with a native CSS fallback, without borrowing widths', () => {
-    // A CSS fallback does not prove that Calibri paints the glyph. Its catalog
-    // sides still define Word pagination; glyph advances remain measured.
+  it('sizes an absent authored face from its painting fallback, not the authored catalog', () => {
+    // Layout follows the face that paints: with Calibri absent, a native CSS
+    // family list paints a browser fallback, so the authored catalog line box
+    // is not admitted and the span keeps that fallback's Canvas box. Pagination
+    // differences from Office caused by the missing face are accepted.
     const layoutServices = services();
     const segment = buildSegments([{
       type: 'text', text: 'A B', fontFamily: 'Calibri', fontFamilyEastAsia: 'Calibri',
@@ -217,11 +219,11 @@ describe('native reference font vertical layout', () => {
       pageIndex: 0, totalPages: 1, layoutServices,
       characterSpacingControl: 'compressPunctuation',
     })[0] as LayoutTextSeg;
-    expect(segment.referenceFontVerticalMetric).toBe(true);
-    expect(segment.resolvedLineHeightRatio).toBe(2500 / 2048);
+    expect(segment.referenceFontVerticalMetric).toBeFalsy();
+    expect(segment.resolvedLineHeightRatio).toBeUndefined();
     expect(segment.latinSpaceAverageWidthRatio).toBeUndefined();
     const line = layoutLines(context, [segment], 100, 0, 1)[0]!;
-    expect(line.intendedSingle).toBeCloseTo(10 * 2500 / 2048, 8);
+    expect(line.ascent + line.descent).toBeCloseTo(8 + 2, 8);
     expect(line.segments[0]?.measuredWidth).toBe(10);
   });
 
@@ -475,12 +477,14 @@ describe('native reference font vertical layout', () => {
     expect(referenceFontLineMetrics('BIZ UDMincho', 400, 'italic')).toBeUndefined();
   });
 
-  it('allocates the BIZ UD line box for its Japanese family names at 10.5 pt', () => {
-    // Name identity is shared font metadata (core catalogue aliases), not a
-    // Word policy: the Japanese names reach the same pinned vertical profile.
-    // No local resource is confirmed here, so Canvas glyph widths stay in force.
+  it('keeps absent BIZ UD faces on their painting fallback, whatever the family spelling', () => {
+    // Name identity is shared font metadata (core catalogue aliases): the
+    // Japanese names reach the same pinned profile. No local resource is
+    // confirmed here, so the face is absent and its catalog line box is not
+    // admitted; the painting fallback's Canvas box and widths stay in force.
     const layoutServices = services();
     for (const family of ['BIZ UD明朝', 'BIZ UDゴシック']) {
+      expect(referenceFontLineMetrics(family, 400, 'normal')?.lineHeightRatio).toBeCloseTo(1.3, 8);
       for (const bold of [false, true]) {
         const segments = buildSegments([{
           type: 'text', text: '資料を確認します。',
@@ -490,15 +494,15 @@ describe('native reference font vertical layout', () => {
         }] as DocRun[], { pageIndex: 0, totalPages: 1, layoutServices });
         const segment = segments[0] as LayoutTextSeg;
         const line = layoutLines(context, segments, 200, 0, 1)[0]!;
-        expect(segment.referenceFontVerticalMetric).toBe(true);
-        expect(line.ascent + line.descent).toBeCloseTo(13.65, 8);
+        expect(segment.referenceFontVerticalMetric).toBeFalsy();
+        expect(line.ascent + line.descent).not.toBeCloseTo(13.65, 2);
         expect(line.segments[0]?.measuredWidth).toBe(45);
       }
       expect(referenceFontLineMetrics(family, 400, 'italic')).toBeUndefined();
     }
   });
 
-  it('allocates an auto table row from BIZ UDGothic normal spacing and cell margins', () => {
+  it('allocates an auto table row for an absent BIZ UDGothic from its painting fallback and cell margins', () => {
     const section = {
       pageWidth: 612, pageHeight: 792, marginTop: 72, marginRight: 72,
       marginBottom: 72, marginLeft: 72, headerDistance: 36,
@@ -534,7 +538,8 @@ describe('native reference font vertical layout', () => {
         cellMarginTop: 0, cellMarginBottom: 0, cellMarginLeft: 0, cellMarginRight: 0,
         jc: 'left',
       } as unknown as DocTable;
-      expect(layoutBodyTableRowAdvances(table, section, context)).toEqual([20.65]);
+      // Absent face: the fallback's Canvas box (8 + 2) plus the 3.5 pt margins.
+      expect(layoutBodyTableRowAdvances(table, section, context)).toEqual([3.5 + 10 + 3.5]);
     }
     expect(referenceFontLineMetrics('BIZ UDGothic', 400, 'italic')).toBeUndefined();
   });

@@ -211,19 +211,17 @@ export function mayUseExactLocalReferenceWidthMetric(
 export function mayUseAuthoredReferenceVerticalMetric(
   selected: FontResolution | undefined,
 ): selected is FontResolution {
-  // Library pagination policy for an unavailable authored face: keep the
-  // document's known OpenType line box while Canvas paints/measures a serif or
-  // sans fallback. Word's §17.3.1.33 automatic/atLeast line advances follow
-  // the authored font; a controlled missing-Calibri case matched Word's five
-  // pages only with this vertical projection. This says nothing about glyph
-  // coverage or advances, which remain selected-resource/Canvas measurements.
+  // Layout follows the face that actually paints on the host. A native CSS
+  // family list whose authored face is not installed paints with a browser
+  // fallback, so the authored face's catalog line box would size lines for
+  // glyphs drawn by a different face; that span keeps its own Canvas box.
+  // See LIBRARY_ABSENT_FACE_FALLBACK_LINE_BOX (layout/line-compatibility.ts).
   // A loaded local() tuple uses the catalog only when neither parsed nor
   // prepared host measurements supply the required geometry. A registered
   // substitute is a different selected face: if its resource metric is
   // unavailable, use its Canvas line box in both axes instead of importing the
   // authored font's vertical geometry.
-  return selected?.source === 'native'
-    || mayUseExactLocalReferenceWidthMetric(selected);
+  return mayUseExactLocalReferenceWidthMetric(selected);
 }
 
 /** A prepared host face that failed coverage must fall through to the span's

@@ -4,6 +4,7 @@ import { FONT_TRACKING_SENTINEL, FONT_BASELINE_SENTINEL, FONT_SPACE_SENTINEL } f
 import { preparedPowerPointText } from './font-display-text.js';
 import { pptxSlideCjkFallback } from './google-fonts.js';
 import type { CjkLang } from '@silurus/ooxml-core';
+import { normalizeLocalFontMetricFamily } from '@silurus/ooxml-core';
 import { containsHanScript } from '@silurus/ooxml-core/internal/script-preload-accumulator';
 import type {
   Slide,
@@ -1333,16 +1334,14 @@ export function buildFont(
   const authoredFamily = rc.embeddedFontAuthoredFamilies?.get(normalized) ?? normalized;
   const inferredWeight = namedFaceWeight(authoredFamily);
   const weight = bold ? 'bold ' : inferredWeight ? `${inferredWeight} ` : '';
-  const routeKey = bold || inferredWeight === 700
-    ? `calibri:700:${italic ? 'italic' : 'normal'}`
-    : italic ? 'calibri:400:italic' : 'calibri';
-  const embeddedTuple = `calibri:${bold || inferredWeight === 700 ? 700 : 400}:${italic ? 'italic' : 'normal'}`;
+  const tupleWeight = bold || inferredWeight === 700 ? 700 : 400;
+  const routeKey = officeRouteKey(authoredFamily, tupleWeight, italic);
+  const embeddedTuple = `${authoredFamily.toLowerCase()}:${tupleWeight}:${italic ? 'italic' : 'normal'}`;
   // ECMA-376 §19.3.1.52: master txStyles is an optional source of text style.
   // The theme-minor CSS fallback when every font slot is absent is renderer
-  // policy, not evidence that an exact Calibri resource was selected. Preserve
-  // that established fallback until a run or inherited style names a face.
-  const officeRoute = hasNamedFamily && authoredFamily.toLowerCase() === 'calibri'
-    && !rc.embeddedFontTuples?.has(embeddedTuple)
+  // policy, not evidence that an exact resource was selected. Preserve that
+  // established fallback until a run or inherited style names a face.
+  const officeRoute = hasNamedFamily && !rc.embeddedFontTuples?.has(embeddedTuple)
     ? rc.officeFontRoutes?.[routeKey]
     : undefined;
   const fallback = containsHanScript(text)
@@ -1382,7 +1381,20 @@ function lineMetricFor(
 ): PowerPointFaceMetrics | undefined {
   if (CSS_GENERIC_FAMILIES.has(family)) return undefined;
   if (rc.embeddedFontAuthoredFamilies?.has(family)) return undefined;
+  // Layout follows the face that paints. Catalog geometry describes a face
+  // only when that face is present (an exact local() route was loaded); an
+  // absent authored face paints with a browser fallback, so the run keeps
+  // the ordinary line model instead of the absent face's ascent share.
+  const authored = normalizeFontFamily(family, rc);
+  const weight = bold || namedFaceWeight(authored) === 700 ? 700 : 400;
+  if (!rc.officeFontRoutes?.[officeRouteKey(authored, weight, italic)]) return undefined;
   return powerPointFaceMetrics(family, bold, italic);
+}
+
+/** The core office-fallback route key for an authored family tuple. */
+function officeRouteKey(family: string, weight: number, italic: boolean): string {
+  const normalized = normalizeLocalFontMetricFamily(family);
+  return weight === 400 && !italic ? normalized : `${normalized}:${weight}:${italic ? 'italic' : 'normal'}`;
 }
 
 /**

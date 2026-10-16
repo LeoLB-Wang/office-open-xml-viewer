@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TextRunData } from '@silurus/ooxml-core';
-import { renderTextBody } from './renderer.js';
+import { renderTextBodyWithPresentFaces as renderTextBody } from './test-support/present-faces.js';
+import { renderTextBody as renderTextBodyAsAuthored } from './renderer.js';
 import {
   powerPointAscentShare, SHARE_CACHE_LIMIT,
 } from './powerpoint-line-metrics.js';
@@ -483,4 +484,29 @@ describe('pPr fontAlgn and line-break marks (#1636)', () => {
     // stays: ~150 000 metric entries are needed to exceed V8's spread-argument
     // limit (~125 000 here) that this test guards.
   }, 60_000);
+});
+
+describe('absent authored faces (layout follows the painting face)', () => {
+  function absentBaselines(font: string): number[] {
+    const body = {
+      verticalAnchor: 't', paragraphs: [paragraph([{ text: 'Ag', font, size: 100 }]),
+        paragraph([{ text: 'Ag', font, size: 100 }])],
+      defaultFontSize: 18, defaultBold: null, defaultItalic: null,
+      lIns: 0, rIns: 0, tIns: 0, bIns: 0, wrap: 'none', vert: 'horz', autoFit: 'none',
+    } as TextBody;
+    const { ctx, draws } = context();
+    // No office route: the authored face is not installed on the host.
+    renderTextBodyAsAuthored(ctx, body, 0, 0, 2000, 800, SCALE);
+    const ys: number[] = [];
+    for (const d of draws) if (!ys.some((y) => Math.abs(y - d.y) < 1e-6)) ys.push(d.y);
+    return ys;
+  }
+
+  it('keeps the ordinary line model instead of the absent face\'s catalog ascent share', () => {
+    const present = baselines([paragraph([{ text: 'Ag', font: 'Yu Gothic', size: 100 }]),
+      paragraph([{ text: 'Ag', font: 'Yu Gothic', size: 100 }])]);
+    // Same placement as a CSS generic family, which has no catalog face.
+    expect(absentBaselines('Yu Gothic')).toEqual(absentBaselines('sans-serif'));
+    expect(absentBaselines('Yu Gothic')).not.toEqual(present);
+  });
 });

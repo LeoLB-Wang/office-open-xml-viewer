@@ -45,7 +45,7 @@ describe('PPTX exact Office face requests', () => {
     expect(pptxSlideOfficeFontRequests(slide, 'Calibri Light', 'Calibri')).toEqual([]);
   });
 
-  it('resolves theme, paragraph, and run style while excluding unrelated faces', () => {
+  it('resolves theme, paragraph, and run style for every authored face', () => {
     const slide = {
       elements: [{ type: 'shape', textBody: {
         defaultBold: false, defaultItalic: false,
@@ -60,9 +60,12 @@ describe('PPTX exact Office face requests', () => {
         }],
       } }],
     } as unknown as Slide;
+    // Every authored face is probed (no family-name gate), so line metrics can
+    // admit catalog geometry only for faces proven present.
     expect(pptxSlideOfficeFontRequests(slide, 'Cambria', 'Calibri')).toEqual([
       { family: 'Calibri', weight: 400, style: 'normal' },
       { family: 'Calibri', weight: 700, style: 'normal' },
+      { family: 'Arial', weight: 700, style: 'italic' },
     ]);
   });
 

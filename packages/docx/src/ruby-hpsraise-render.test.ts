@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildSegments, rubyAscentReservePx } from './line-layout.js';
 import { layoutDocument } from './document-layout.js';
+import { referenceFontLineMetrics } from './reference-font-line-metrics.js';
 import { createLayoutServices } from './layout-runtime.js';
 import { renderDocumentToCanvas } from './renderer.js';
 import type {
@@ -120,8 +121,15 @@ describe('§17.3.3.12 w:hpsRaise ruby geometry', () => {
       run.fontFamily = 'Yu Mincho';
       run.ruby = hasRuby ? { text: 'かん', fontSizePt: 6, hpsRaisePt: 2 } : undefined;
       const { canvas } = makeRecordingCanvas();
+      // Yu Mincho is present (its resource metric is the catalog usWin
+      // projection), so its design minimum governs the grid cells.
+      const yuMincho = referenceFontLineMetrics('Yu Mincho', 400, 'normal')!;
       const layout = layoutDocument(model, createLayoutServices(model, {
         measureContext: canvas.getContext('2d'),
+        localMetrics: { 'yu mincho': {
+          ...yuMincho, requestedFamily: 'Yu Mincho', family: 'Yu Mincho', weight: 400, style: 'normal',
+          sourceIdentity: 'local:yu-mincho',
+        } },
       }));
       const retained = layout.pages[0].layers.body[0];
       if (retained.kind !== 'paragraph') throw new Error('expected ruby test paragraph');
