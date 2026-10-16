@@ -14,7 +14,7 @@ it.each(['main', 'worker'] as const)('rasterizes SVG through the supported %s de
     getContext() {
       return {
         drawImage() {},
-        getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255, 0, 0, 0, 255]) }),
+        getImageData: () => ({ width: 2, height: 1, data: new Uint8ClampedArray([0, 0, 0, 255, 0, 0, 0, 255]) }),
         putImageData: (data: ImageData) => written.push([...data.data]),
       };
     }

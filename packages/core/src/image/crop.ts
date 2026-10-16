@@ -1,3 +1,4 @@
+import { OoxmlError } from '../errors/ooxml-error.js';
 import { imageEffectFrame } from './image-effect-frame.js';
 // Shared `<a:srcRect>` source-rectangle crop (ECMA-376 §20.1.8.55) for the docx,
 // pptx and xlsx renderers. The crop is a fraction of the image's NATIVE pixel
@@ -229,12 +230,21 @@ export function drawImageCropped(
       // frame. A source crop still selects that frame; only an uncropped
       // picture paints the Gaussian's transparent outset beyond its bounds.
       const { w, h } = imageNaturalSize(img);
-      const crop = projection === undefined ? imageCropProjection(srcRect) : projection;
+      let crop: Readonly<ImageCropProjection> | null;
+      try { crop = projection === undefined ? imageCropProjection(srcRect, true) : projection; }
+      catch { throw new OoxmlError('unsupported-image-effect', 'Unrepresentable image effect crop'); }
+      const draw = (...coordinates: [number, number, number, number] | [number, number, number, number, number, number, number, number]) => {
+        // Canvas may silently ignore non-finite arguments. The effect frame
+        // must not turn a malformed crop/overflow into a missing picture.
+        if (!coordinates.every(Number.isFinite)) throw new OoxmlError('unsupported-image-effect', 'Unrepresentable image effect paint projection');
+        if (coordinates.length === 4) ctx.drawImage(img, ...coordinates);
+        else ctx.drawImage(img, ...coordinates);
+      };
       if (!crop) {
-        ctx.drawImage(img, x - frame.x / frame.width * width, y - frame.y / frame.height * height,
+        draw(x - frame.x / frame.width * width, y - frame.y / frame.height * height,
           w / frame.width * width, h / frame.height * height);
       } else if (crop.sourceWidth > 0 && crop.sourceHeight > 0) {
-        ctx.drawImage(img, frame.x + crop.sourceX * frame.width, frame.y + crop.sourceY * frame.height,
+        draw(frame.x + crop.sourceX * frame.width, frame.y + crop.sourceY * frame.height,
           crop.sourceWidth * frame.width, crop.sourceHeight * frame.height,
           x + crop.dxFraction * width, y + crop.dyFraction * height,
           crop.dwFraction * width, crop.dhFraction * height);

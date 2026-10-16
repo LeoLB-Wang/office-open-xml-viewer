@@ -13,7 +13,7 @@ export function blurPlan(width: number, height: number, radiusX: number, radiusY
   const rx = Math.ceil(radiusX), ry = Math.ceil(radiusY);
   const w = width + (grow ? 2 * rx : 0), h = height + (grow ? 2 * ry : 0);
   const taps = 2 * rx + 2 * ry + 2;
-  const work = w * h * (taps + 1) + 2 * taps;
+  const work = w * h * (taps + 2) + 2 * taps;
   const kernelBytes = (taps + 4) * Float64Array.BYTES_PER_ELEMENT;
   const pixels = w * h;
   if (![w, h, pixels, work].every(Number.isSafeInteger) || work > MAX_IMAGE_EFFECT_PIXEL_WORK) {

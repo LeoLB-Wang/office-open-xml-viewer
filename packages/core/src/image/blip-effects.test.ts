@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   applyBlipPixelEffects,
   blipPixelEffectsKey,
+  blipPixelEffectWork,
   assertBlipPixelEffectsBudget,
   blipGrayLevel,
   blipLuminance,
@@ -584,4 +585,58 @@ describe('getCachedDuotoneBitmapByPath effect budget', () => {
     dropDuotoneBitmapCache(fetchImage);
     dropBitmapCacheByPath(fetchImage);
   });
+});
+
+
+it('charges the reviewer’s two tiled overlays before any painting, including recursive masks', () => {
+  const fill = { fillType: 'image' as const, imagePath: 'tile.png', mimeType: 'image/png',
+    dpi: 65535, tile: { sx: .00003, sy: 1000 } };
+  const overlay: BlipEffect = { type: 'fillOverlay', fill, blend: 'over' };
+  const runtime = { images: new Map([[fill, { width: 1, height: 1 } as CanvasImageSource]]),
+    offscreenFactory: vi.fn(() => { throw new Error('painting must not start'); }) };
+  const physical = { emuPerPixelX: 12700, emuPerPixelY: 12700 };
+  // Each fill alone fits; their 182,041,680 draw iterations together do not.
+  const one = { ...physical, effects: [overlay] };
+  expect(blipPixelEffectWork(one, 1, 1, runtime)).toBeGreaterThanOrEqual(91_020_840);
+  expect(blipPixelEffectWork(one, 1, 1, runtime)).toBeLessThan(MAX_IMAGE_EFFECT_PIXEL_WORK);
+  for (const effects of [[overlay, overlay], [overlay, { type: 'alphaMod', container: {
+    kind: 'tree', effects: [overlay],
+  } } as BlipEffect]]) {
+    const buf = buffer([10, 20, 30, 40]);
+    expect(() => applyBlipPixelEffects(buf, { ...physical, effects }, runtime))
+      .toThrowError(expect.objectContaining({ metric: 'image-effect-work' }));
+    expect([...buf.data]).toEqual([10, 20, 30, 40]);
+  }
+  expect(runtime.offscreenFactory).not.toHaveBeenCalled();
+});
+
+
+it('budgets both separable blur passes cumulatively through recursive alphaMod', () => {
+  const blur: BlipEffect = { type: 'blur', radius: 4500 * 9525, grow: false };
+  const one: BlipPixelEffects = { effects: [blur] };
+  const work = blipPixelEffectWork(one, 64, 64);
+  // Two tap loops and their output visits, plus kernel construction.
+  expect(work).toBeGreaterThanOrEqual(64 * 64 * (18002 + 2));
+  expect(work).toBeLessThan(MAX_IMAGE_EFFECT_PIXEL_WORK);
+  expect(() => assertBlipPixelEffectsBudget({ effects: [blur, { type: 'alphaMod', container: {
+    kind: 'tree', effects: [blur],
+  } }] }, 64 * 64, { width: 64, height: 64 }))
+    .toThrowError(expect.objectContaining({ metric: 'image-effect-work' }));
+});
+
+it.each([
+  new DOMException('Native bake failed', 'InvalidStateError'),
+  Object.assign(new Error('Native bake failed'), { code: 'ERR_NATIVE_BAKE' }),
+])('normalizes non-library bake errors even when they carry a code', async failure => {
+  vi.stubGlobal('createImageBitmap', vi.fn(async (source: unknown) => {
+    if (!(source instanceof Blob)) throw failure;
+    return { width: 1, height: 1, close() {} };
+  }));
+  const factory = (() => ({ width: 1, height: 1, getContext: () => ({
+    drawImage() {}, getImageData: () => buffer([0, 0, 0, 255]), putImageData() {},
+  }) })) as unknown as OffscreenFactory;
+  await expect(getCachedDuotoneBitmapByPath('picture.png', 'image/png', {
+    effects: [{ type: 'grayscale' }],
+  }, async () => new Blob(), { offscreenFactory: factory }))
+    .rejects.toMatchObject({ code: 'unsupported-image-effect' });
 });

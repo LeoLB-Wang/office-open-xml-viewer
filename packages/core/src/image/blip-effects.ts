@@ -48,7 +48,7 @@ import { fillPaintWorkspaceBytes } from '../shape/paint.js';
 import { affinePlan, affinePixels, unionEffectGrids, type Affine } from './blip-spatial.js';
 import { expandBlipEffect, blipMaskOperations } from './blip-compound.js';
 import type { SolidFill, NoFill, PatternFill, ImageFill, GradientFill, GradientStop, Shadow, Glow, Reflection } from '../types/common.js';
-import { blendRgba, effectFillPixels, type BlendMode, type BlipEffectRuntime } from './blip-fill.js';
+import { blendRgba, effectFillPixels, effectFillWork, type BlendMode, type BlipEffectRuntime } from './blip-fill.js';
 import { blurPlan, blurPixels, type EffectBuffer } from './blip-blur.js';
 import { rgbToHsl, hslToRgb, interpolateColorChannel } from '../shape/color-space.js';
 import { OoxmlError } from '../errors/ooxml-error.js';
@@ -177,7 +177,7 @@ export function blipPixelEffectPasses(value: BlipPixelEffects): number {
 }
 
 interface EffectPlan { count: number; work: number; pixels: number; peak: number; width: number; height: number; frame?: EffectBuffer['frame'] }
-function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width: number; height: number }): EffectPlan {
+function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width: number; height: number }, runtime?: BlipEffectRuntime): EffectPlan {
   const names = effectContainers(value.effects);
   const active = new Set<BlipEffectContainer>();
   let count = 0, work = 0;
@@ -206,6 +206,7 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
       }
       if (effect.type === 'unsupported') throw new OoxmlError('unsupported-image-effect', `Malformed CT_Blip effect: ${effect.effect}`);
       work += current;
+      if (effect.type === 'luminance') work += 256; // channel lookup table construction
       const expanded = expandBlipEffect(effect, { width, height, frame }, value);
       if (expanded) {
         const p = visit(expanded, { width, height, frame, pixels: current });
@@ -218,7 +219,10 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
       } else if (blipMaskOperations(effect, { width, height, frame }, value) && current > 0) {
         const p = visit(blipMaskOperations(effect, { width, height, frame }, value) as readonly BlipEffect[],
           { width, height, frame, pixels: current });
-        peak = Math.max(peak, current + p.peak); work += current * 3;
+        peak = Math.max(peak, current + p.peak);
+        // Input clone, mask postprocessing and frame sampling. Outset can
+        // grow the mask, so charge its output grid as well as the parent.
+        work += current * 3 + p.pixels;
         if (effect.type !== 'shadow') { width = p.width; height = p.height; frame = p.frame; current = p.pixels; }
       } else if (effect.type === 'blur' && effect.radius !== 0 && current > 0) {
         const inputPixels = current;
@@ -240,6 +244,8 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
         if (active.has(container)) throw new OoxmlError('unsupported-image-effect', 'Cyclic effect container');
         active.add(container);
         if (container.kind !== 'tree' && container.kind !== 'sib') throw new OoxmlError('unsupported-image-effect', 'Invalid effect container kind');
+        // Every evaluated branch clones the parent before its own operations.
+        work += current * (container.kind === 'tree' ? 1 : container.effects.length);
         const results = container.kind === 'tree'
           ? [visit(container.effects, { width, height, frame, pixels: current })]
           : container.effects.map(e => visit([e], { width, height, frame, pixels: current }));
@@ -270,7 +276,15 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
         active.delete(container);
       } else if (effect.type === 'fillOverlay' || effect.type === 'fill') {
         peak = Math.max(peak, current * 3 + fillPaintWorkspaceBytes(effect.fill) / 4);
-        if (effect.fill.fillType === 'gradient') work += effect.fill.stops.length * Math.max(1, Math.ceil(Math.log2(effect.fill.stops.length)));
+        if (current > 0) work += effectFillWork(effect.fill, { width, height, frame },
+          value.emuPerPixelX ?? 9525, value.emuPerPixelY ?? 9525, runtime);
+        // Brush construction also paints bounded auxiliary rasters (pattern,
+        // gradient tile and path-shade workspace), independently of base size.
+        // One visit per workspace byte conservatively covers the auxiliary
+        // fill/readback passes, mirrored cells, and shade init/solve/write.
+        // Effect fills use a rectangular outline, so edge work is bounded too.
+        if (current > 0) work += fillPaintWorkspaceBytes(effect.fill);
+        if (effect.fill.fillType === 'gradient') work += 2 * effect.fill.stops.length * (1 + Math.max(1, Math.ceil(Math.log2(effect.fill.stops.length)))); // outer and tile brush stops
       }
     }
     return { count, work, width, height, frame, pixels: current, peak };
@@ -281,7 +295,7 @@ function effectPlan(value: BlipPixelEffects, pixels: number, geometry?: { width:
   // readback backing store is explicitly released before graph evaluation.
   // Original-fill references hold a snapshot only during evaluation. It is
   // released before the final ImageData/canvas/result-bitmap bake.
-  if (usesOriginalImage(value.effects)) result.peak += pixels;
+  if (usesOriginalImage(value.effects)) { result.peak += pixels; result.work += pixels; }
   result.peak = Math.max(result.peak, result.pixels * 3);
   result.peak += pixels;
   return result;
@@ -321,9 +335,11 @@ function effectContainers(effects: readonly BlipEffect[]): Map<string, BlipEffec
   return result;
 }
 
-/** Planned sample visits, including convolution taps and recursive branches. */
-export function blipPixelEffectWork(value: BlipPixelEffects, width: number, height: number): number {
-  return effectPlan(value, width * height, { width, height }).work;
+/** Complete sample/draw-iteration upper bound, including recursive branches.
+ * Tiled fills require their decoded runtime sources: guessing a source grid
+ * here could undercharge or incorrectly reject a valid document. */
+export function blipPixelEffectWork(value: BlipPixelEffects, width: number, height: number, runtime: BlipEffectRuntime = {}): number {
+  return effectPlan(value, width * height, { width, height }, runtime).work;
 }
 
 function usesOriginalImage(effects: readonly BlipEffect[], seen = new Set<BlipEffectContainer>()): boolean {
@@ -346,7 +362,8 @@ function usesOriginalImage(effects: readonly BlipEffect[], seen = new Set<BlipEf
  * Reject malformed chains, or a transform whose step count, workspace or work exceeds the
  * shared resource policy (`MAX_IMAGE_EFFECT_PASSES`,
  * `MAX_IMAGE_EFFECT_PIXEL_WORK` in pixel-budget.ts) before any pixel is
- * touched. A crossing is an `OoxmlDecodedImageLimitError`, the same catchable
+ * touched. This source-independent preflight is completed with decoded tile
+ * sources by blipPixelEffectWork before evaluation. A crossing is an `OoxmlDecodedImageLimitError`, the same catchable
  * quota failure as an over-budget decode; effects are never dropped or
  * truncated to fit. `pixels` 0 checks the pass count alone (before decoding).
  */
@@ -376,6 +393,11 @@ export function applyBlipPixelEffects(buf: EffectBuffer, value: BlipPixelEffects
     additional += size.width * size.height;
   }
   assertBlipPixelEffectsBudget(value, d.length / 4, buf, additional);
+  const work = blipPixelEffectWork(value, buf.width, buf.height, runtime);
+  if (!Number.isSafeInteger(work) || work > MAX_IMAGE_EFFECT_PIXEL_WORK) {
+    throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK,
+      Number.isSafeInteger(work) ? work : Number.MAX_SAFE_INTEGER);
+  }
   const context = { names: effectContainers(value.effects), original: usesOriginalImage(value.effects) ? clonePixels(buf) : undefined };
   return evaluateBlipPixels(buf, value, runtime, context);
 }

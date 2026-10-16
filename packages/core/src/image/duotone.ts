@@ -174,53 +174,62 @@ export async function applyImageDataTransform(
   const factory = opts.offscreenFactory ?? defaultOffscreenFactory;
   const surface = factory(width, height);
   if (!surface) return img;
-  const ctx = surface.getContext('2d');
-  if (!ctx) return img;
-  ctx.drawImage(img, 0, 0);
-  let data: ImageData;
+  let completed = false;
   try {
-    data = ctx.getImageData(0, 0, width, height);
-  } catch {
-    // Tainted canvas / unsupported readback — leave the picture unrecoloured.
-    return img;
-  }
-  const mutable = surface as { width: number; height: number };
-  if (opts.releaseReadbackSurface) mutable.width = 0;
-  let result = transform(data);
-  const output = { width: result?.width ?? width, height: result?.height ?? height };
-  const frame = result?.frame;
-  if (result && result !== data) {
-    if (!opts.releaseReadbackSurface) mutable.width = 0;
-    if (typeof ImageData !== 'undefined') {
-      data = new ImageData(result.data as Uint8ClampedArray<ArrayBuffer>, result.width, result.height);
-    } else {
-      // Canvas implementations without the DOM constructor supply the same
-      // generic allocation through their 2D context. Allocate/copy while the
-      // readback backing store is released, then drop the kernel output before
-      // restoring the canvas: at most four full RGBA surfaces coexist.
-      if (!ctx.createImageData) throw new Error('ImageData allocation is unavailable');
-      const written = ctx.createImageData(result.width, result.height);
-      written.data.set(result.data); data = written;
+    const ctx = surface.getContext('2d');
+    if (!ctx) return img;
+    ctx.drawImage(img, 0, 0);
+    let data: ImageData;
+    try {
+      data = ctx.getImageData(0, 0, width, height);
+    } catch {
+      // Tainted canvas / unsupported readback — leave the picture unrecoloured.
+      return img;
     }
-    result = undefined;
+    const mutable = surface as { width: number; height: number };
+    if (opts.releaseReadbackSurface) mutable.width = 0;
+    let result = transform(data);
+    const output = { width: result?.width ?? width, height: result?.height ?? height };
+    const frame = result?.frame;
+    if (result && result !== data) {
+      if (!opts.releaseReadbackSurface) mutable.width = 0;
+      if (typeof ImageData !== 'undefined') {
+        data = new ImageData(result.data as Uint8ClampedArray<ArrayBuffer>, result.width, result.height);
+      } else {
+        // Canvas implementations without the DOM constructor supply the same
+        // generic allocation through their 2D context. Allocate/copy while the
+        // readback backing store is released, then drop the kernel output before
+        // restoring the canvas: at most four full RGBA surfaces coexist.
+        if (!ctx.createImageData) throw new Error('ImageData allocation is unavailable');
+        const written = ctx.createImageData(result.width, result.height);
+        written.data.set(result.data); data = written;
+      }
+      result = undefined;
+    }
+    if (opts.releaseReadbackSurface || output.width !== width || output.height !== height || mutable.width === 0) {
+      mutable.width = output.width; mutable.height = output.height;
+    }
+    ctx.putImageData(data, 0, 0);
+    const resizeOptions = decodedBitmapTargetResizeOptions(
+      output.width,
+      output.height,
+      opts.targetWidthPx,
+      opts.targetHeightPx,
+    );
+    const bitmap = resizeOptions
+      ? await createImageBitmap(surface, resizeOptions)
+      : await createImageBitmap(surface);
+    if (frame) {
+      const sx = bitmap.width / output.width, sy = bitmap.height / output.height;
+      setImageEffectFrame(bitmap, { x: frame.x * sx, y: frame.y * sy,
+        width: frame.width * sx, height: frame.height * sy });
+    }
+    completed = true;
+    return bitmap;
+  } finally {
+    // Failed readback, evaluation or native bake owns no result. Release its
+    // backing store immediately; do not retain a discarded full-size surface
+    // until GC. Successful Node shims may return the surface itself as bitmap.
+    if (!completed) (surface as { width: number }).width = 0;
   }
-  if (opts.releaseReadbackSurface || output.width !== width || output.height !== height || mutable.width === 0) {
-    mutable.width = output.width; mutable.height = output.height;
-  }
-  ctx.putImageData(data, 0, 0);
-  const resizeOptions = decodedBitmapTargetResizeOptions(
-    output.width,
-    output.height,
-    opts.targetWidthPx,
-    opts.targetHeightPx,
-  );
-  const bitmap = resizeOptions
-    ? await createImageBitmap(surface, resizeOptions)
-    : await createImageBitmap(surface);
-  if (frame) {
-    const sx = bitmap.width / output.width, sy = bitmap.height / output.height;
-    setImageEffectFrame(bitmap, { x: frame.x * sx, y: frame.y * sy,
-      width: frame.width * sx, height: frame.height * sy });
-  }
-  return bitmap;
 }

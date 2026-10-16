@@ -14,9 +14,11 @@ import {
 import {
   type OffscreenFactory,
 } from './duotone';
-import { OoxmlError } from '../errors/ooxml-error.js';
+import { OoxmlError, OoxmlResourceLimitError } from '../errors/ooxml-error.js';
+import { isTiffDecodeError } from './tiff-contract.js';
+import { isOptionalImageCodecUnavailableError } from './optional-image-fallback.js';
 import { imageNaturalSize } from './crop';
-import { MAX_IMAGE_EFFECT_BASE_PIXELS, MAX_RASTER_PIXELS } from './pixel-budget.js';
+import { MAX_IMAGE_EFFECT_BASE_PIXELS, MAX_RASTER_PIXELS, isOoxmlDecodedImageLimitError } from './pixel-budget.js';
 import { decodedBitmapTargetResizeOptions } from './raster-target.js';
 import { carryIncompleteMetafileReport } from './raster-or-metafile.js';
 
@@ -132,6 +134,7 @@ export async function getCachedPixelTransformBitmapByPath(
     async () => {
       const { w, h } = imageNaturalSize(base);
       if (w <= 0 || h <= 0) {
+        if (duotone.strict) throw new OoxmlError('unsupported-image-effect', 'Invalid image effect source dimensions');
         return { bitmap: failClosedOnDuotoneFailure ? null : base, owned: false };
       }
       // Before the transform allocates its surfaces: passes × pixels must fit
@@ -153,7 +156,9 @@ export async function getCachedPixelTransformBitmapByPath(
         // Surface/readback/bake failures of a complete chain are terminal at
         // host picture fallbacks too. Existing typed quota/archive/codec
         // errors retain their identity across the worker boundary.
-        if (duotone.strict && !(error && typeof error === 'object' && 'code' in error)) {
+        if (duotone.strict && !(error instanceof OoxmlError || error instanceof OoxmlResourceLimitError
+          || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)
+          || isOptionalImageCodecUnavailableError(error))) {
           throw new OoxmlError('unsupported-image-effect', 'Image effect surface or bitmap bake failed');
         }
         throw error;

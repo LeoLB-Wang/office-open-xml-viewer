@@ -36,20 +36,22 @@ async function loadEffects(
   if (![opts.widthPt ?? 0, opts.heightPt ?? 0].every(v => Number.isFinite(v) && v >= 0)) {
     throw new OoxmlError('unsupported-image-effect', 'Invalid physical image effect dimensions');
   }
-  const physical = (width?: number, height?: number): BlipPixelEffects => ({ ...value,
-    emuPerPixelX: opts.widthPt && width ? opts.widthPt * 12700 / width : value.emuPerPixelX,
-    emuPerPixelY: opts.heightPt && height ? opts.heightPt * 12700 / height : value.emuPerPixelY,
-  });
+  const physical = (width?: number, height?: number): BlipPixelEffects => {
+    const effects = { ...value,
+      emuPerPixelX: opts.widthPt && width ? opts.widthPt * 12700 / width : value.emuPerPixelX,
+      emuPerPixelY: opts.heightPt && height ? opts.heightPt * 12700 / height : value.emuPerPixelY,
+    };
+    if (![effects.emuPerPixelX ?? 9525, effects.emuPerPixelY ?? 9525].every(v => Number.isFinite(v) && v > 0)) {
+      throw new OoxmlError('unsupported-image-effect', 'Unrepresentable physical image effect sampling');
+    }
+    return effects;
+  };
   const images = new Map<object, CanvasImageSource>();
   return getCachedPixelTransformBitmapByPath(imagePath, mimeType, {
     key: `fx:${blipPixelEffectsKey(value)}|physical:${JSON.stringify([opts.widthPt ?? 0, opts.heightPt ?? 0])}`,
     strict: true,
     preflight: (pixels, width, height) => {
       assertBlipPixelEffectsBudget(physical(width, height), pixels, width && height ? { width, height } : undefined);
-      if (width && height) {
-        ledger.work += blipPixelEffectWork(physical(width, height), width, height);
-        if (ledger.work > MAX_IMAGE_EFFECT_PIXEL_WORK) throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK, ledger.work);
-      }
     },
     prepare: async base => {
       const effects = physical(base.width, base.height);
@@ -70,6 +72,11 @@ async function loadEffects(
         additionalPixels += size.width * size.height;
       }
       assertBlipPixelEffectsBudget(effects, base.width * base.height, base, additionalPixels);
+      // Nested transforms charge this same ledger before they paint. Reserve
+      // the complete parent plan only once its decoded tile sources are known;
+      // this includes every recursive mask, blur tap and fill draw iteration.
+      ledger.work += blipPixelEffectWork(effects, base.width, base.height, { images });
+      if (ledger.work > MAX_IMAGE_EFFECT_PIXEL_WORK) throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK, ledger.work);
     },
     apply: (base, options) => applyImageDataTransform(base,
       data => applyBlipPixelEffects(data, physical(base.width, base.height), { offscreenFactory: opts.offscreenFactory, images, baseImage: base }), options),
