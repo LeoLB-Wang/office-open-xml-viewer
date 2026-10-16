@@ -39,7 +39,7 @@ function fakeSource<T extends ModelSourceTarget>(
     claim: vi.fn(claim),
     beginLoad: () => ({
       module: {
-        protocol: 'ooxml-model-source-module/v1',
+        protocol: 'ooxml-model-source-module/v2',
         target,
         moduleUrl: fixtureUrl(`${target}-model-source.mjs`),
         config,

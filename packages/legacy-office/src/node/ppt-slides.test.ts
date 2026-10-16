@@ -40,7 +40,7 @@ describe('slide visibility', () => {
       concat(info(0), info(4)), record(1, 0x03f9, new Uint8Array(16)), record(16, 0x03f9, new Uint8Array(16)),
       record(0, 0x03f9, new Uint8Array(15)), record(0, 0x03f9, new Uint8Array(17)),
     ]) {
-      await expect(materialize(input(payload))).rejects.toThrow(/SlideShowSlideInfoAtom/);
+      await expect(materialize(input(payload))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
     }
   });
 });
@@ -154,6 +154,6 @@ describe('backgrounds', () => {
 
   it('rejects a slide without a drawing instead of projecting outline text', async () => {
     // Rust: ppt/drawing/direct_model.rs::rejects_missing_local_drawing_instead_of_silently_losing_outline_text.
-    await expect(materialize(buildPptFixture())).rejects.toThrow(/no drawing/);
+    await expect(materialize(buildPptFixture())).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   });
 });

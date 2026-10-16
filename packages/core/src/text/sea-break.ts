@@ -177,21 +177,13 @@ export function isDictionarySeaText(text: string): boolean {
   return hasDict;
 }
 
-// ── Segmenter plumbing (cached + test-injectable) ────────────────────────────
+// ── Segmenter plumbing (cached) ────────────────────────────
 
 /** Minimal shape of one `Intl.Segments` entry we rely on. */
 interface SeaSegment {
   index: number;
   isWordLike?: boolean;
 }
-/** A word segmenter: text (a single SEA span) → its word segments. Injected in
- *  tests for determinism / to exercise the unavailable + throwing paths. */
-export type SeaWordSegmenter = (text: string, script: SeaScript) => Iterable<SeaSegment>;
-
-// `undefined` = use the platform ICU segmenter; `null` = force unavailable
-// (test); a function = use it (test).
-let wordSegmenterOverride: SeaWordSegmenter | null | undefined;
-
 const intlWordCache = new Map<SeaScript, Intl.Segmenter | null>();
 
 function intlWordSegmenter(script: SeaScript): Intl.Segmenter | null {
@@ -210,26 +202,8 @@ function intlWordSegmenter(script: SeaScript): Intl.Segmenter | null {
 }
 
 function wordSegmenterFor(script: SeaScript): ((span: string) => Iterable<SeaSegment>) | null {
-  if (wordSegmenterOverride === null) return null; // forced unavailable (test)
-  if (typeof wordSegmenterOverride === 'function') {
-    const fn = wordSegmenterOverride;
-    return (span) => fn(span, script);
-  }
   const intl = intlWordSegmenter(script);
   return intl ? (span) => intl.segment(span) as Iterable<SeaSegment> : null;
-}
-
-/** Test seam: override the word segmenter. `null` forces the unavailable path;
- *  a function supplies deterministic segments; call {@link resetSeaSegmenterForTest}
- *  to restore the platform ICU segmenter. Not for production use. */
-export function setSeaWordSegmenterForTest(fn: SeaWordSegmenter | null): void {
-  wordSegmenterOverride = fn;
-}
-/** Test seam: restore the default platform ICU segmenter and clear caches. */
-export function resetSeaSegmenterForTest(): void {
-  wordSegmenterOverride = undefined;
-  intlWordCache.clear();
-  graphemeSegmenter = undefined;
 }
 
 // ── Break offsets ────────────────────────────────────────────────────────────

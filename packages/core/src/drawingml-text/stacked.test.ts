@@ -194,3 +194,21 @@ it.each(['wordArtVert', 'wordArtVertRtl'] as const)('%s preserves blank display 
     expect(b.axisX - a.axisX).toBeCloseTo(display ? (direction === 'wordArtVert' ? 2 : -2) * CELL : 0);
   }
 });
+
+// The prefix is atomic: it consumes the first column's wrap/alignment budget,
+// never repeats on a continuation, and participates in that column's thickness.
+it('includes an atomic prefix in first-column wrapping, alignment and anchoring', () => {
+  const p = para(['ABC'], { firstLineIndent: -CELL / 2,
+    firstLinePrefix: { advance: 2 * CELL, thickness: 2 * CELL } });
+  const l = layoutStackedText([p], options({ rect: { ...RECT, height: 3 * CELL } }));
+  expect(l.glyphs.map(g => [g.text, g.column, g.cellTop / CELL])).toEqual([
+    ['A', 0, 1.5], ['B', 1, 0], ['C', 1, 1],
+  ]);
+  expect(l.columns[0].thickness).toBe(2 * CELL);
+  expect(l.columns[0].prefixTop).toBeCloseTo(-CELL / 2);
+  expect(l.columns[1].prefixTop).toBeUndefined();
+  const centered = layoutStackedText([para(['A'], { firstLinePrefix: p.firstLinePrefix })],
+    options({ rect: { ...RECT, height: 4 * CELL }, anchorCtr: true }));
+  expect(centered.columns[0].prefixTop).toBeCloseTo(CELL / 2);
+  expect(centered.glyphs[0].cellTop).toBeCloseTo(2.5 * CELL);
+});

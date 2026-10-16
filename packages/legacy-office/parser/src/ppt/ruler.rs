@@ -50,9 +50,9 @@ fn decode<'a>(data: &'a [u8], budget: &mut usize) -> Result<(u32, Ruler<'a>), St
         let entries = data
             .get(pos..end)
             .ok_or_else(|| unsupported("truncated PowerPoint ruler tabs"))?;
-        *budget = budget
-            .checked_sub(count)
-            .ok_or_else(|| unsupported("PowerPoint ruler tab work budget exceeded"))?;
+        *budget = budget.checked_sub(count).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint ruler tab work budget exceeded")
+        })?;
         for entry in entries.as_chunks::<4>().0 {
             if u16_at(entry, 2)? > 3 {
                 return Err(unsupported("invalid PowerPoint ruler tab alignment"));

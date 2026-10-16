@@ -496,17 +496,12 @@ export function deferBitmapCloseWhileLeased(
 
 /** Options for {@link getCachedBitmapByPath}. `widthPt`/`heightPt` size a
  * metafile raster; `targetWidthPx`/`targetHeightPx` select a display-resolution
- * variant for ordinary rasters. `suppressBoundaryFrame` is the docx-only WMF
- * window/device-boundary edge suppression (spec-clean default OFF;
- * pptx/xlsx leave it unset). */
+ * variant for ordinary rasters. */
 export interface CachedBitmapOptions {
   /** Intended draw width in points; sizes any metafile raster target. */
   widthPt?: number;
   /** Intended draw height in points; see `widthPt`. */
   heightPt?: number;
-  /** Enable the docx cosmetic window/device-frame suppression heuristic. Default
-   *  false = spec-clean. Only docx opts in. */
-  suppressBoundaryFrame?: boolean;
   /** Optional TIFF codec retained by the owning document. */
   tiff?: TiffRenderer;
   /** Desired width of the full raster source in device pixels. */
@@ -515,7 +510,7 @@ export interface CachedBitmapOptions {
   targetHeightPx?: number;
   /** Retained base-surface pixel ceiling for multi-surface effect pipelines. */
   maxRetainedPixels?: number;
-  /** Worker-only SVG decoder. Window renderers use HTMLImageElement instead. */
+  /** SVG rasterizer for pixel effects or worker rendering. */
   svgDecoder?: SvgBlobDecoder;
   /** Policy for a metafile that cannot be fully played (default
    *  `'draw-supported'`, the OOXML renderers' compatibility policy); see
@@ -597,7 +592,6 @@ export function cachedBitmapVariantKey(
 interface MetafileVariant {
   readonly width: number;
   readonly height: number;
-  readonly suppressBoundaryFrame: boolean;
   readonly pixelLimit: number;
   readonly rejectIncomplete: boolean;
 }
@@ -611,7 +605,6 @@ function metafileVariant(opts: CachedBitmapOptions): MetafileVariant {
   return {
     width: target.w,
     height: target.h,
-    suppressBoundaryFrame: opts.suppressBoundaryFrame === true,
     pixelLimit: retainedPixelLimit(opts),
     rejectIncomplete: opts.incompleteMetafile === 'reject',
   };
@@ -620,9 +613,9 @@ function metafileVariant(opts: CachedBitmapOptions): MetafileVariant {
 function metafileVariantPrefix(imagePath: string, variant: MetafileVariant): string {
   const pathKey = `${imagePath.length}:${imagePath}`;
   // A strict (reject) decode must never be satisfied by a partial picture a
-  // compatibility decode cached, nor the reverse; the default key is unchanged.
+  // compatibility decode cached, nor the reverse.
   const strict = variant.rejectIncomplete ? 'r1:' : '';
-  return `metafile:${pathKey}:s${variant.suppressBoundaryFrame ? 1 : 0}:p${variant.pixelLimit}:${strict}`;
+  return `metafile:${pathKey}:p${variant.pixelLimit}:${strict}`;
 }
 
 function metafileVariantKey(
@@ -958,7 +951,6 @@ export function getCachedBitmapByPath(
   const {
     widthPt = 0,
     heightPt = 0,
-    suppressBoundaryFrame = false,
     tiff,
     targetWidthPx,
     targetHeightPx,
@@ -971,14 +963,23 @@ export function getCachedBitmapByPath(
       BASE_CACHE_NAMESPACE,
       cachedBitmapVariantKey(imagePath, normalized),
       owner,
-      async () => ({
-        bitmap: await svgDecoder(await fetchImage(imagePath, mimeType), {
+      async () => {
+        const bitmap = await svgDecoder(await fetchImage(imagePath, mimeType), {
           targetWidthPx,
           targetHeightPx,
-        }),
-        owned: true,
-      }),
-    );
+        });
+        // The host decoder has the ordinary image ceiling; effect callers can
+        // require a smaller base because several pixel surfaces coexist. Check
+        // before transferring ownership to the cache or allocating effects.
+        try {
+          enforceCachedRetainedBudget(bitmap, normalized);
+        } catch (error) {
+          closeBitmapOnce(bitmap);
+          throw error;
+        }
+        return { bitmap, owned: true };
+      },
+    ).then((bitmap) => enforceCachedRetainedBudget(bitmap, normalized));
   }
   const decode = (
     cacheKey: string,
@@ -996,7 +997,6 @@ export function getCachedBitmapByPath(
         const decodeOpts = {
           widthPt,
           heightPt,
-          suppressBoundaryFrame,
           tiff,
           targetWidthPx: resizeToTarget ? targetWidthPx : undefined,
           targetHeightPx: resizeToTarget ? targetHeightPx : undefined,

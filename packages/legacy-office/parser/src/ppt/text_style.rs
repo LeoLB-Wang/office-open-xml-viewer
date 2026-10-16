@@ -129,11 +129,11 @@ pub(in crate::ppt) fn direct_character_masks(
     let runs = read_runs(text, style, work_budget)?;
     let mut size = Vec::new();
     size.try_reserve_exact(length)
-        .map_err(|_| unsupported("PowerPoint text size mask allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("PowerPoint text size mask allocation failed"))?;
     let mut color = Vec::new();
     color
         .try_reserve_exact(length)
-        .map_err(|_| unsupported("PowerPoint text color mask allocation failed"))?;
+        .map_err(|_| crate::rejection::resource("PowerPoint text color mask allocation failed"))?;
     let mut previous = 0;
     for (end, character) in runs.characters {
         size.extend(std::iter::repeat_n(
@@ -166,10 +166,9 @@ impl Reader<'_, '_> {
         Ok(n)
     }
     fn run_end(&mut self, start: usize, length: usize) -> Result<usize, String> {
-        *self.budget = self
-            .budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint text style work budget exceeded"))?;
+        *self.budget = self.budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint text style work budget exceeded")
+        })?;
         let count = self.u32()? as usize;
         start
             .checked_add(count)
@@ -306,7 +305,7 @@ impl Paragraph {
             *r.budget = r
                 .budget
                 .checked_sub(count)
-                .ok_or_else(|| unsupported("PowerPoint tab work budget exceeded"))?;
+                .ok_or_else(|| crate::rejection::resource("PowerPoint tab work budget exceeded"))?;
             for _ in 0..count {
                 r.u32()?;
             }
@@ -531,12 +530,14 @@ fn read_levels(atom: Record<'_>, budget: &mut usize) -> Result<Vec<Level>, Strin
     };
     let count = usize::from(r.u16()?);
     if count > 5 {
-        return Err(unsupported("too many PowerPoint master text levels"));
+        return Err(crate::rejection::resource(
+            "too many PowerPoint master text levels",
+        ));
     }
     *r.budget = r
         .budget
         .checked_sub(count)
-        .ok_or_else(|| unsupported("PowerPoint master text work budget exceeded"))?;
+        .ok_or_else(|| crate::rejection::resource("PowerPoint master text work budget exceeded"))?;
     let mut levels: Vec<Option<Level>> = vec![None; count];
     for index in 0..count {
         // MS-PPT 2.9.36: only text types >=5 include an explicit level field.
@@ -624,8 +625,15 @@ pub(super) fn fonts(children: &[Record<'_>], budget: &mut usize) -> Result<Vec<S
                 .iter()
                 .filter(|r| r.kind == 4023)
             {
-                if entity.version != 0 || entity.payload.len() != 68 || fonts.len() >= 65536 {
+                if entity.version != 0 || entity.payload.len() != 68 {
                     return Err(unsupported("invalid PowerPoint font entity"));
+                }
+                // MS-PPT 2.9.8 bounds the collection by its record envelope;
+                // limiting retained entries to the font-index domain is policy.
+                if fonts.len() >= 65_536 {
+                    return Err(crate::rejection::resource(
+                        "PowerPoint font retention budget exceeded",
+                    ));
                 }
                 let units: Vec<u16> = entity.payload[..64]
                     .as_chunks::<2>()
@@ -1430,6 +1438,27 @@ mod tests {
                 .unwrap_err()
                 .contains("model budget")
         );
+    }
+
+    #[test]
+    fn font_retention_ceiling_is_distinct_from_invalid_font_entities() {
+        use super::super::persist::tests::record;
+        for count in [65_536, 65_537] {
+            let entities = record(0, 4023, &[0; 68]).repeat(count);
+            let env = record(15, 1010, &record(15, 2005, &entities));
+            let children = parse_records(&env, &mut 200_000).unwrap();
+            let result = fonts(&children, &mut 200_000);
+            if count == 65_536 {
+                assert_eq!(result.unwrap().len(), count);
+            } else {
+                assert!(result.unwrap_err().starts_with("LEGACY_RESOURCE_LIMIT:"));
+            }
+        }
+        let env = record(15, 1010, &record(15, 2005, &record(0, 4023, &[0; 67])));
+        let children = parse_records(&env, &mut 100).unwrap();
+        assert!(fonts(&children, &mut 100)
+            .unwrap_err()
+            .starts_with("UNSUPPORTED:"));
     }
 
     #[test]

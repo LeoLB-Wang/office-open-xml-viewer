@@ -254,7 +254,7 @@ function withDisabledBuild(check) {
 }
 
 export function assertNoSourceRuntime(code, name) {
-  if (code.includes('ooxml-model-source-module/v1') || code.includes('model source view default')
+  if (code.includes('ooxml-model-source-module/v2') || code.includes('model source view default')
     || code.includes('Native reading scene ')
     || code.includes('Invalid native reading word-breaking owner')
     || code.includes('DRAWINGS_RELOCATED_FOR_READING')) {

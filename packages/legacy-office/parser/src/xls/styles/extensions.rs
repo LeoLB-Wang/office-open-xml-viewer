@@ -74,7 +74,9 @@ impl Extensions {
             let count = usize::from(u16_at(data, 18)?);
             // Resource policy; includes unknown future properties without retaining them.
             if count > 1024 {
-                return Err(unsupported("too many BIFF XF extension properties"));
+                return Err(crate::rejection::resource(
+                    "too many BIFF XF extension properties",
+                ));
             }
             let mut offset = 20usize;
             let mut colors = BTreeMap::new();

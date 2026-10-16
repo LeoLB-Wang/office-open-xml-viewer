@@ -114,7 +114,9 @@ impl Stops {
         }
         for (position, descriptor) in added_positions.into_iter().zip(descriptors) {
             if self.0.len() >= MAX_RESOLVED_TABS && !self.0.contains_key(&position) {
-                return Err(unsupported("Word resolved custom tab limit exceeded"));
+                return Err(crate::rejection::resource(
+                    "Word resolved custom tab limit exceeded",
+                ));
             }
             self.0.insert(position, descriptor);
         }

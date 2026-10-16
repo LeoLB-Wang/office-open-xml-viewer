@@ -1,3 +1,4 @@
+import { inheritCellFontLanguage } from './internal/cell-font-language.js';
 import {
   XlsxWorkbook,
   acquireXlsxWorksheetPreview,
@@ -2110,6 +2111,7 @@ class XlsxViewerEngine implements ZoomableViewer {
     const worksheet = createSheetViewModel(source);
     if (this.opts.comments === false) {
       const hidden = { ...worksheet, commentRefs: [], comments: [] };
+      inheritCellFontLanguage(worksheet, hidden);
       inheritWorksheetPreviewBounds(worksheet, hidden);
       inheritWorksheetPolicy(worksheet, hidden);
       return hidden;
@@ -2131,6 +2133,7 @@ class XlsxViewerEngine implements ZoomableViewer {
       commentRefs: worksheet.commentRefs?.filter((ref) => !resolved.has(ref)),
       comments: worksheet.comments?.filter((comment) => !resolved.has(comment.cellRef)),
     };
+    inheritCellFontLanguage(worksheet, unresolved);
     inheritWorksheetPreviewBounds(worksheet, unresolved);
     inheritWorksheetPolicy(worksheet, unresolved);
     return unresolved;

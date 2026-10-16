@@ -107,7 +107,9 @@ impl Store<'_> {
             return Err(unsupported("invalid Word picture bullet display box"));
         }
         if self.occurrences >= 1_000_000 {
-            return Err(unsupported("Word picture occurrence budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word picture occurrence budget exceeded",
+            ));
         }
         let picture = self.acquire_picture_bullet(formatting, bullet)?;
         if picture.crop[0] + picture.crop[1] >= 100_000
@@ -286,7 +288,9 @@ impl Store<'_> {
             .checked_sub(required)
             .ok_or("OUTPUT_TOO_LARGE")?;
         if self.occurrences >= 1_000_000 {
-            return Err(unsupported("Word picture occurrence budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word picture occurrence budget exceeded",
+            ));
         }
         self.occurrences += 1;
         self.part_offsets.insert(offset);

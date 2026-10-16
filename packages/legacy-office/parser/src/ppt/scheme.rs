@@ -105,7 +105,7 @@ impl Resolver {
             }
             for item in parse_records(list.payload, budget)? {
                 if masters.len() >= MAX_MASTERS {
-                    return Err(unsupported("too many PowerPoint masters"));
+                    return Err(crate::rejection::resource("too many PowerPoint masters"));
                 }
                 if item.kind != 1011 || item.version != 0 || item.payload.len() != 20 {
                     return Err(unsupported("invalid PowerPoint master reference"));
@@ -189,9 +189,9 @@ impl Resolver {
         let Some(first) = entry(slide, budget)?.objects_parent else {
             return Ok(std::rc::Rc::from([]));
         };
-        *budget = budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint master object work budget exceeded"))?;
+        *budget = budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint master object work budget exceeded")
+        })?;
         if let Some(layers) = self.object_cache.get(&first) {
             return Ok(layers.clone());
         }
@@ -199,10 +199,15 @@ impl Resolver {
         let mut layers = Vec::new();
         let mut parent = Some(first);
         while let Some(id) = parent {
-            *budget = budget
-                .checked_sub(1)
-                .ok_or_else(|| unsupported("PowerPoint master object work budget exceeded"))?;
-            if path.len() >= MAX_DEPTH || path.contains(&id) {
+            *budget = budget.checked_sub(1).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint master object work budget exceeded")
+            })?;
+            if path.len() >= MAX_DEPTH {
+                return Err(crate::rejection::resource(
+                    "PowerPoint inheritance depth limit exceeded",
+                ));
+            }
+            if path.contains(&id) {
                 return Err(unsupported(
                     "cyclic or excessive PowerPoint master object inheritance",
                 ));
@@ -241,13 +246,18 @@ impl Resolver {
         path: &mut Vec<u32>,
         budget: &mut usize,
     ) -> Result<Option<drawing::SpannedBackground>, String> {
-        *budget = budget
-            .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint background work budget exceeded"))?;
+        *budget = budget.checked_sub(1).ok_or_else(|| {
+            crate::rejection::resource("PowerPoint background work budget exceeded")
+        })?;
         if let Some(value) = self.background_cache.get(&id) {
             return Ok(value.clone());
         }
-        if path.len() >= MAX_DEPTH || path.contains(&id) {
+        if path.len() >= MAX_DEPTH {
+            return Err(crate::rejection::resource(
+                "PowerPoint inheritance depth limit exceeded",
+            ));
+        }
+        if path.contains(&id) {
             return Err(unsupported(
                 "cyclic or excessive PowerPoint background inheritance",
             ));
@@ -273,10 +283,15 @@ impl Resolver {
         let mut parent = entry(slide, budget)?.main_parent;
         let mut path = Vec::new();
         while let Some(id) = parent {
-            *budget = budget
-                .checked_sub(1)
-                .ok_or_else(|| unsupported("PowerPoint text master work budget exceeded"))?;
-            if path.len() >= MAX_DEPTH || path.contains(&id) {
+            *budget = budget.checked_sub(1).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint text master work budget exceeded")
+            })?;
+            if path.len() >= MAX_DEPTH {
+                return Err(crate::rejection::resource(
+                    "PowerPoint inheritance depth limit exceeded",
+                ));
+            }
+            if path.contains(&id) {
                 return Err(unsupported(
                     "cyclic or excessive PowerPoint text master inheritance",
                 ));
@@ -302,10 +317,15 @@ impl Resolver {
         let mut parent = entry(slide, budget)?.main_parent;
         let mut path = Vec::new();
         while let Some(id) = parent {
-            *budget = budget
-                .checked_sub(1)
-                .ok_or_else(|| unsupported("PowerPoint theme master work budget exceeded"))?;
-            if path.len() >= MAX_DEPTH || path.contains(&id) {
+            *budget = budget.checked_sub(1).ok_or_else(|| {
+                crate::rejection::resource("PowerPoint theme master work budget exceeded")
+            })?;
+            if path.len() >= MAX_DEPTH {
+                return Err(crate::rejection::resource(
+                    "PowerPoint inheritance depth limit exceeded",
+                ));
+            }
+            if path.contains(&id) {
                 return Err(unsupported(
                     "cyclic or excessive PowerPoint theme master inheritance",
                 ));
@@ -341,12 +361,17 @@ impl Resolver {
     ) -> Result<Option<Scheme>, String> {
         *budget = budget
             .checked_sub(1)
-            .ok_or_else(|| unsupported("PowerPoint scheme work budget exceeded"))?;
+            .ok_or_else(|| crate::rejection::resource("PowerPoint scheme work budget exceeded"))?;
         if let Some(value) = self.cache.get(&id) {
             return Ok(*value);
         }
         // Implementation resource policy, not a format-defined depth limit.
-        if path.len() >= MAX_DEPTH || path.contains(&id) {
+        if path.len() >= MAX_DEPTH {
+            return Err(crate::rejection::resource(
+                "PowerPoint inheritance depth limit exceeded",
+            ));
+        }
+        if path.contains(&id) {
             return Err(unsupported(
                 "cyclic or excessive PowerPoint scheme inheritance",
             ));
@@ -504,7 +529,7 @@ mod tests {
         assert!(resolver
             .objects(parsed(&slide), &mut 1000)
             .unwrap_err()
-            .contains("excessive"));
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
         assert!(resolver.object_cache.is_empty());
         resolver.masters.get_mut(&2).unwrap().objects_parent = Some(1);
         assert!(resolver
@@ -606,7 +631,7 @@ mod tests {
             .master_background(1, &mut Vec::new(), &mut 1000)
             .err()
             .unwrap()
-            .contains("excessive"));
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 
     #[test]
@@ -694,7 +719,7 @@ mod tests {
         assert!(r
             .master(1, &mut Vec::new(), &mut 1000)
             .unwrap_err()
-            .contains("excessive"));
+            .starts_with("LEGACY_RESOURCE_LIMIT:"));
     }
 
     #[test]

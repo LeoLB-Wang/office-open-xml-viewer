@@ -122,6 +122,7 @@ import {
   metafileRasterSize,
   sourceRasterTargetSize,
   isOoxmlDecodedImageLimitError,
+  OoxmlResourceLimitError,
   isTiffDecodeError,
   highlightBox,
   symbolFontToUnicode,
@@ -244,7 +245,11 @@ export interface RenderContext {
 
 /** Information about a rendered text segment for building a transparent selection overlay. */
 export interface PptxTextRunInfo {
-  /** Paint-order element index in the rendered slide snapshot. */
+  /** Paint-order index for distinguishing displayed text containers, including
+   * recovery previews. This is not a source-model locator for hit testing. */
+  renderElementIndex?: number;
+  /** Original slide-model element index. Absent for recovery-preview text,
+   * which has no element in the source tree used by hit testing. */
   elementIndex?: number;
   /** Provenance of that rendered element. */
   origin?: import('./types.js').SlideElementOrigin;
@@ -455,7 +460,10 @@ async function planSlideImages(
             retainedSurfaceCount,
           }
         : null)
-      .catch(() => null));
+      .catch((error: unknown) => {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+        return null;
+      }));
   };
 
   const background = slide.background;
@@ -574,7 +582,10 @@ async function planSlideImages(
               sourceWidthPx: inspection.dimensions.width,
               sourceHeightPx: inspection.dimensions.height,
             }
-          : null).catch(() => null));
+          : null).catch((error: unknown) => {
+            if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+            return null;
+          }));
       }
     }
   }
@@ -639,6 +650,7 @@ function slideMayDecodeImages(slide: Slide): boolean {
     if (element.type === 'media') return !!element.posterPath;
     if (element.type === 'chart') return collectChartImageFillUsages(element.chart).length > 0;
     if (!elementImageFillUsages(element).next().done) return true;
+    if ((element.type === 'shape' || element.type === 'table') && element.mathFallback?.elements.length) return true;
     return element.type === 'shape' && (
       element.fill?.fillType === 'image'
       || !!element.textBody?.paragraphs.some(paragraph => asBullet(paragraph.bullet).type === 'blip')
@@ -702,6 +714,75 @@ export function resolveShapeFill(
   return resolveFillCore(fill, ctx, x, y, w, h, shapeRotationDeg, patternPtToUserUnits, undefined, outline, paintBounds);
 }
 
+/** DrawingML underline (§20.1.10.82, §21.1.2.3.9). Horizontal runs use
+ * their drawing size; stacked text supplies its column's common size/frame. */
+function paintRunUnderline(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
+  x: number, baseline: number, width: number, glyphPaint: string | CanvasGradient | CanvasPattern,
+  scale: number, dpr: number, drawSizePx = seg.drawSizePx ?? seg.sizePx): void {
+  if (seg.underline && !seg.underlineLineNoFill
+    && (!seg.noFill || seg.underlineFill || seg.underlineColor || seg.underlineLine?.fill)) {
+    // §21.1.2.3.13 uFillTx follows the actual glyph fill (including
+    // pattFill), while §21.1.2.3.12 uFill supplies its own fill choice.
+    // Office PDF shows a separately chosen underline pattern on the
+    // same slide-aligned grid.
+    const underlinePaint = seg.underlineFill
+      ? resolveFillCore(seg.underlineFill, ctx, x, baseline, width, drawSizePx * 0.05,
+          0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
+      : seg.underlineLine?.fill
+        ? resolveFillCore(seg.underlineLine.fill, ctx, x, baseline, width,
+            drawSizePx * 0.05, 0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
+        : seg.underlineColor ?? glyphPaint;
+    drawUnderline(ctx, x, baseline, width, drawSizePx,
+      underlinePaint, seg.underlineStyle, dpr,
+      seg.underlineLine?.width ? emuToPx(seg.underlineLine.width, scale) : undefined);
+  }
+}
+
+function paintRunStrike(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
+  x: number, baseline: number, width: number, glyphPaint: string | CanvasGradient | CanvasPattern,
+  dpr: number): void {
+  const drawSizePx = seg.drawSizePx ?? seg.sizePx;
+  if (seg.strikethrough && !seg.noFill) {
+    const lineW = Math.max(1, drawSizePx * 0.05);
+    ctx.strokeStyle = glyphPaint;
+    ctx.lineWidth = lineW;
+    ctx.setLineDash([]);
+    // Crispness nudge (see crispOffset): the strike is a horizontal stroke;
+    // an odd device-pixel width is centered on one device row by snapping its
+    // y onto the nearest crisp device position (otherwise it straddles two
+    // rows → blurry). Snap each line from its own y.
+    const yMid = baseline - drawSizePx * 0.32;
+    if (seg.strikeDouble) {
+      // Two parallel lines straddling the standard strike position,
+      // separated by ~ 1.5× the line weight (visually distinct yet
+      // staying inside the glyph's central band).
+      const offset = lineW * 0.9;
+      const yUp = yMid - offset;
+      const yDn = yMid + offset;
+      ctx.beginPath();
+      ctx.moveTo(x, yUp + crispOffset(yUp, lineW, dpr));
+      ctx.lineTo(x + width, yUp + crispOffset(yUp, lineW, dpr));
+      ctx.moveTo(x, yDn + crispOffset(yDn, lineW, dpr));
+      ctx.lineTo(x + width, yDn + crispOffset(yDn, lineW, dpr));
+      ctx.stroke();
+    } else {
+      const sy = yMid + crispOffset(yMid, lineW, dpr);
+      ctx.beginPath();
+      ctx.moveTo(x, sy);
+      ctx.lineTo(x + width, sy);
+      ctx.stroke();
+    }
+  }
+}
+
+/** Horizontal text uses the same frame for both decorations. */
+function paintRunDecorations(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
+  x: number, baseline: number, width: number, glyphPaint: string | CanvasGradient | CanvasPattern,
+  scale: number, dpr: number): void {
+  paintRunUnderline(ctx, seg, x, baseline, width, glyphPaint, scale, dpr);
+  paintRunStrike(ctx, seg, x, baseline, width, glyphPaint, dpr);
+}
+
 // ===== Text layout helpers =====
 
 // The run-underline painter `drawUnderline` (ECMA-376 §20.1.10.82
@@ -725,6 +806,7 @@ interface MathRender {
   tinted: Map<string, CanvasImageSource>;
 }
 const mathRenders = new WeakMap<MathNode[], MathRender>();
+const failedMath = new WeakSet<MathNode[]>();
 
 /**
  * Tint the cached black equation image to `color`. PowerPoint equations follow
@@ -740,21 +822,22 @@ function tintedMathImage(render: MathRender, color: string): CanvasImageSource {
   return tinted;
 }
 
+/** All currently supported text-bearing slide elements, including table cells. */
+function* elementTextBodies(element: SlideElement): Generator<TextBody> {
+  if (element.type === 'shape' && element.textBody) yield element.textBody;
+  else if (element.type === 'table') {
+    for (const row of element.rows) for (const cell of row.cells) {
+      if (cell.textBody) yield cell.textBody;
+    }
+  }
+}
+
 /** Gather every math run reachable from a slide's shapes and table cells. */
 function collectSlideMathRuns(slide: Slide): { nodes: MathNode[]; display: boolean }[] {
   const found: { nodes: MathNode[]; display: boolean }[] = [];
-  const fromBody = (body: TextBody | null) => {
-    if (!body) return;
-    for (const para of body.paragraphs) {
-      for (const run of para.runs) {
-        if (run.type === 'math') found.push({ nodes: run.nodes, display: run.display });
-      }
-    }
-  };
-  for (const el of slide.elements) {
-    if (el.type === 'shape') fromBody(el.textBody);
-    else if (el.type === 'table') {
-      for (const row of el.rows) for (const cell of row.cells) fromBody(cell.textBody);
+  for (const element of slide.elements) for (const body of elementTextBodies(element)) {
+    for (const para of body.paragraphs) for (const run of para.runs) {
+      if (run.type === 'math') found.push({ nodes: run.nodes, display: run.display });
     }
   }
   return found;
@@ -763,17 +846,24 @@ function collectSlideMathRuns(slide: Slide): { nodes: MathNode[]; display: boole
 /**
  * Pre-render every equation on the slide to an image (async), so the
  * synchronous layout/draw passes can place them by reading cached extents.
- * A conversion failure leaves the equation unrendered rather than throwing.
+ * Conversion failures retain their authored fallback or a visible diagnostic.
+ * An absent optional engine remains an explicit caller opt-out.
  */
 export async function prepareSlideMath(slide: Slide, math: MathRenderer): Promise<void> {
   const runs = collectSlideMathRuns(slide);
   if (runs.length === 0) return;
-  await math.loadMathJax();
+  try { await math.loadMathJax(); }
+  catch (error) {
+    if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+    for (const r of runs) if (!mathRenders.has(r.nodes)) failedMath.add(r.nodes);
+    return;
+  }
   for (const r of runs) {
     if (mathRenders.has(r.nodes)) continue;
     try {
       const out = await math.mathMLToSvg(mathToMathML(r.nodes, r.display));
       const raster = await rasterizeMathSvg(out, '#000000');
+      failedMath.delete(r.nodes);
       mathRenders.set(r.nodes, {
         raster,
         widthEm: out.widthEm,
@@ -781,9 +871,33 @@ export async function prepareSlideMath(slide: Slide, math: MathRenderer): Promis
         descentEm: out.descentEm,
         tinted: new Map(),
       });
-    } catch {
-      // leave unrendered
+    } catch (error) {
+      // Resource governance is fail-closed; only conversion failures select
+      // an authored preview or the unavailable-equation diagnostic.
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
+      failedMath.add(r.nodes);
     }
+  }
+}
+
+/** Reuse the unavailable-content painter for a failed equation with no MCE
+ * preview. This is library failure policy, not a substitute Office equation. */
+function paintEquation(ctx: CanvasRenderingContext2D, style: LayoutSegment, x: number, y: number) {
+  const equation = style.math!;
+  const render = equation.unavailable ? undefined : mathRenders.get(equation.nodes);
+  const height = equation.ascent + equation.descent;
+  if (!(equation.width > 0 && height > 0)) return;
+  if (render) ctx.drawImage(tintedMathImage(render, style.color), x, y, equation.width, height);
+  else if (equation.fallbackText) {
+    ctx.font = style.font;
+    ctx.fillStyle = style.color;
+    const baseline = ctx.textBaseline;
+    const align = ctx.textAlign;
+    ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    ctx.fillText(equation.fallbackText, x, y);
+    ctx.textBaseline = baseline; ctx.textAlign = align;
+  } else if (equation.unavailable) {
+    paintOptionalImagePlaceholder(ctx, 'equation', { x, y, width: equation.width, height });
   }
 }
 
@@ -872,6 +986,8 @@ type LayoutSegment = {
     width: number;
     ascent: number;
     descent: number;
+    fallbackText?: string;
+    unavailable?: boolean;
   };
 };
 
@@ -1562,6 +1678,7 @@ export function paragraphInputRuns(
   rc: RenderContext,
   /** Horizontal layout only: see {@link powerPointKinsokuAcrossRuns}. */
   quoteSeams = false,
+  measureCtx?: CanvasRenderingContext2D,
 ): {
   input: DrawingMlInputRun<LayoutSegment>[];
   sameStyle: (a: LayoutSegment, b: LayoutSegment) => boolean;
@@ -1600,7 +1717,35 @@ export function paragraphInputRuns(
   // The line-metric mark of every a:br, keyed by its input index (see
   // `followingMark` in layoutParagraph).
   const breakMarks = new Map<number, LayoutSegment>();
+  // Runtime recovery is library policy; Part 3 §§9.3–9.4 defines a complete
+  // MCE alternative, never a per-equation preview. Prefix counts make nested
+  // branch failure checks linear. The outermost failed range wins (the parser
+  // emits inner alternatives first, including equal ranges), suppressing
+  // even successfully converted Choice equations, without rewriting the model
+  // or shifting the source run IDs of surrounding text. Both horizontal and
+  // stacked layout consume this same projection.
+  let previews: Map<number, { end: number; text: string }> | undefined;
+  if (para.mathFallbacks?.length) {
+    previews = new Map();
+    const failures = [0];
+    for (const run of para.runs) {
+      failures.push(failures[failures.length - 1]
+        + (run.type === 'math' && failedMath.has(run.nodes) ? 1 : 0));
+    }
+    for (const fallback of para.mathFallbacks) {
+      const { start, end } = fallback;
+      if (Number.isInteger(start) && Number.isInteger(end) && start >= 0
+        && end <= para.runs.length && end > start && para.runs[start].type === 'math'
+        && failures[end] > failures[start] && end >= (previews.get(start)?.end ?? start)) {
+        previews.set(start, fallback);
+      }
+    }
+  }
+  let previewEnd = 0;
   for (const [sourceRunId, run] of para.runs.entries()) {
+    if (sourceRunId < previewEnd) continue;
+    const preview = previews?.get(sourceRunId);
+    if (preview) previewEnd = preview.end;
     if (run.type !== 'text') seam = null;
     if (run.type === 'break') {
       const sizePx = run.fontSize != null
@@ -1628,18 +1773,23 @@ export function paragraphInputRuns(
       continue;
     }
     if (run.type === 'math') {
-      const render = mathRenders.get(run.nodes);
+      const render = preview ? undefined : mathRenders.get(run.nodes);
       const emPx = run.fontSize != null
         ? run.fontSize * PT_TO_EMU * scale * fontScale : defaultFontSizePx;
-      const width = render ? render.widthEm * emPx : 0;
+      const unavailable = !!preview || (!render && failedMath.has(run.nodes));
+      const fallbackText = preview?.text ?? (unavailable ? run.fallbackText : undefined);
+      if (measureCtx) measureCtx.font = `${emPx}px sans-serif`;
+      const width = render ? render.widthEm * emPx : unavailable
+        ? measureCtx?.measureText(fallbackText ?? 'Equation unavailable').width ?? 0 : 0;
       const style: LayoutSegment = {
         text: '', font: `${emPx}px sans-serif`, sizePx: emPx,
         color: run.color ? hexToRgba(run.color) : defaultColor,
         underline: false, strikethrough: false,
         math: {
           nodes: run.nodes, display: run.display, width,
-          ascent: render ? render.ascentEm * emPx : 0,
+          ascent: render ? render.ascentEm * emPx : unavailable ? emPx : 0,
           descent: render ? render.descentEm * emPx : 0,
+          fallbackText, unavailable,
         },
       };
       input.push({ type: 'object', width, style, display: run.display });
@@ -1890,7 +2040,7 @@ export function layoutParagraph(
   firstLineIndentPx: number = 0,
 ): LayoutLine[] {
   const { input, sameStyle, breakMarks } = paragraphInputRuns(
-    para, defaultFontSizePx, defaultColor, scale, defaultBold, defaultItalic, fontScale, slideNumber, rc, true,
+    para, defaultFontSizePx, defaultColor, scale, defaultBold, defaultItalic, fontScale, slideNumber, rc, true, ctx,
   );
   const marRPx = emuToPx(para.marR, scale);
   const broken = breakDrawingMlText(input, {
@@ -2063,7 +2213,7 @@ async function prepareBackground(
           },
         };
       }
-      if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
+      if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
         return { paint: paintBase, failure: { error } };
       }
       // Decode failed — the white base remains as the fallback.
@@ -2151,7 +2301,7 @@ async function prepareBackground(
             });
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           // Paint failed — the white base painted above remains as the fallback.
         }
       },
@@ -2238,7 +2388,9 @@ export function tileSourceExtent(
  * `DOMMatrix` translate on the pattern transform.
  *
  * The caller has already clipped to the fill box and set globalAlpha. Background
- * callers omit `dpi` and preserve their prior 96-DPI behavior.
+ * callers omit `dpi` and preserve their prior 96-DPI behavior. `coverage` can
+ * extend beyond this alignment box when the caller counter-rotates the brush;
+ * expanding coverage must not shift the tile registration or phase.
  */
 function paintTiledBackground(
   ctx: CanvasRenderingContext2D,
@@ -2250,6 +2402,7 @@ function paintTiledBackground(
   srcRect?: PictureElement['srcRect'],
   intrinsicSize?: Readonly<{ width: number; height: number }>,
   dpi = 96,
+  coverage = { x: 0, y: 0, w: canvasW, h: canvasH },
 ): boolean {
   // Native tile size in slide px: image px → EMU @96dpi → × sx/sy → × scale.
   // §20.1.8.55 applies before the fill mode: for tile mode the cropped source
@@ -2279,16 +2432,37 @@ function paintTiledBackground(
   // createAuxCanvas rounds each requested axis up. Charge the actual allocation,
   // not the fractional geometry, so two individually-safe fractions cannot
   // cross the retained scratch-area limit after independent ceil operations.
-  const scratchW = Math.max(1, Math.ceil(cellW));
-  const scratchH = Math.max(1, Math.ceil(cellH));
-  if (!Number.isFinite(scratchW) || !Number.isFinite(scratchH)
-    || scratchW > MAX_CANVAS_DIMENSION || scratchH > MAX_CANVAS_DIMENSION
-    || scratchW > Math.floor(MAX_CANVAS_AREA / scratchH)) return false;
-  const aux = createAuxCanvas(cellW, cellH);
+  if (!Number.isFinite(cellW) || !Number.isFinite(cellH)) return false;
+  // Preserve the previous rasterization for cells that fit: draw at the
+  // authored size into the ceil-sized canvas and repeat those integer pixels.
+  // Normalizing even fractional cells to their exact extent changes sampling
+  // and seam placement. Only cells previously omitted use the bounded path.
+  let scratchW = Math.max(1, Math.ceil(cellW));
+  let scratchH = Math.max(1, Math.ceil(cellH));
+  const oversized = scratchW > MAX_CANVAS_DIMENSION || scratchH > MAX_CANVAS_DIMENSION
+    || scratchW > Math.floor(MAX_CANVAS_AREA / scratchH);
+  if (oversized) {
+    // Raster size is resource policy, not a DrawingML geometry limit. Avoid
+    // upsampling small sources; the pattern transform restores the authored
+    // extent (§20.1.8.58), including mirrored-neighbour cadence.
+    scratchW = Math.min(MAX_CANVAS_DIMENSION,
+      Math.max(1, Math.ceil(Math.min(cellW, source.width * (flipX ? 2 : 1)))));
+    scratchH = Math.min(MAX_CANVAS_DIMENSION,
+      Math.max(1, Math.ceil(Math.min(cellH, source.height * (flipY ? 2 : 1)))));
+    if (scratchW * scratchH > MAX_CANVAS_AREA) {
+      const reduction = Math.sqrt(MAX_CANVAS_AREA / (scratchW * scratchH));
+      scratchW = Math.max(1, Math.floor(scratchW * reduction));
+      scratchH = Math.max(1, Math.floor(scratchH * reduction));
+    }
+  }
+  const rasterScaleX = oversized ? scratchW / cellW : 1;
+  const rasterScaleY = oversized ? scratchH / cellH : 1;
+  const aux = createAuxCanvas(scratchW, scratchH);
   if (!aux) return false;
   const actx = aux.getContext('2d') as CanvasRenderingContext2D | null;
   if (!actx) return false;
 
+  actx.scale(rasterScaleX, rasterScaleY);
   const drawCell = (cx: number, cy: number, mx: boolean, my: boolean) => {
     actx.save();
     actx.translate(cx + (mx ? tileW : 0), cy + (my ? tileH : 0));
@@ -2315,15 +2489,17 @@ function paintTiledBackground(
   // `setTransform` exists where DOMMatrix is available (browser + skia-canvas).
   // The translate aligns a cell origin with (px, py); `repeat` covers the box.
   if (typeof pattern.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
-    pattern.setTransform(new DOMMatrix().translateSelf(px, py));
+    pattern.setTransform(new DOMMatrix().translateSelf(px, py).scaleSelf(1 / rasterScaleX, 1 / rasterScaleY));
     ctx.fillStyle = pattern;
-    ctx.fillRect(0, 0, canvasW, canvasH);
+    ctx.fillRect(coverage.x, coverage.y, coverage.w, coverage.h);
   } else {
     // Fallback: bake the phase into the fill origin by translating the context.
     ctx.save();
     ctx.translate(px, py);
+    ctx.scale(1 / rasterScaleX, 1 / rasterScaleY);
     ctx.fillStyle = pattern;
-    ctx.fillRect(-px, -py, canvasW, canvasH);
+    ctx.fillRect((coverage.x - px) * rasterScaleX, (coverage.y - py) * rasterScaleY,
+      coverage.w * rasterScaleX, coverage.h * rasterScaleY);
     ctx.restore();
   }
   return true;
@@ -2366,6 +2542,7 @@ export function paintPreparedShapeImageFill(
   bounds: Readonly<{ x: number; y: number; w: number; h: number }>,
   scale: number,
   evenOdd = false,
+  shapeTransform: Readonly<{ rotation: number; flipH: boolean; flipV: boolean }> = { rotation: 0, flipH: false, flipV: false },
 ): boolean {
   if (!prepared || !(bounds.w > 0) || !(bounds.h > 0)) return false;
   if (!shapeImageFillModeIsPaintable(fill)) return false;
@@ -2374,14 +2551,31 @@ export function paintPreparedShapeImageFill(
   try {
     ctx.clip(evenOdd ? 'evenodd' : 'nonzero');
     if (fill.alpha != null) ctx.globalAlpha *= Math.max(0, Math.min(1, fill.alpha));
-    // rotWithShape=false needs the image frame counter-transform here. Its
-    // rotated/flipped placement is intentionally not guessed without Office
-    // evidence; absence and true retain the ordinary shape-local frame.
+    // CT_BlipFillProperties (§20.1.8.14): keep the clipped shape geometry,
+    // but cancel its rotation about the fill-box centre. A reflected local
+    // frame reverses the rotation sign (R F R = F); the reflection itself is
+    // retained because rotWithShape controls rotation, not flips.
+    let fillRotation = 0;
+    if (fill.rotWithShape === false && shapeTransform.rotation !== 0) {
+      const sign = shapeTransform.flipH !== shapeTransform.flipV ? 1 : -1;
+      ctx.translate(x + w / 2, y + h / 2);
+      fillRotation = sign * shapeTransform.rotation * Math.PI / 180;
+      ctx.rotate(fillRotation);
+      ctx.translate(-(x + w / 2), -(y + h / 2));
+    }
     if (fill.tile) {
+      // §20.1.8.58 repeats across the entire clipped shape. Counter-rotation
+      // changes the clip's extent in the brush frame, not the tile's phase or
+      // its alignment box. Cover the inverse-rotated box about the same centre.
+      const cos = Math.abs(Math.cos(fillRotation));
+      const sin = Math.abs(Math.sin(fillRotation));
+      const coverW = w * cos + h * sin;
+      const coverH = w * sin + h * cos;
       ctx.translate(x, y);
       return paintTiledBackground(
         ctx, prepared.image, fill.tile, w, h, scale, fill.srcRect, prepared.intrinsicSize,
         fill.dpi && fill.dpi > 0 ? fill.dpi : 96,
+        { x: (w - coverW) / 2, y: (h - coverH) / 2, w: coverW, h: coverH },
       );
     }
     const rect = fill.fillRect ?? {};
@@ -3954,6 +4148,7 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
           { x: bx, y: by, w: bw, h: bh },
           scale,
           evenOddFill,
+          el,
         )
       : undefined;
 
@@ -4462,12 +4657,133 @@ export function resolveBulletLabel(
   return '';
 }
 
+/** Shared marker content, font, color and size resolution (§21.1.2.4).
+ * Layout owns placement; the marker's authored properties do not depend on
+ * whether its paragraph advances horizontally or down a stacked column. */
+function paragraphBullet(body: TextBody, para: Paragraph, paraDefaultColor: string,
+  scale: number, fontScale: number, rc: RenderContext, autoNumCounters: Map<number, number>) {
+  // Per ECMA-376 §21.1.2.4.13: when no buSz* is declared, the bullet takes
+  // the first run's font size. Using paraDefaultFontSizePx here (the layout
+  // lvl1pPr defRPr fallback, typically 18pt) oversizes the bullet so a
+  // hanging indent calibrated against the run (12pt) can't contain it —
+  // that's why the em-dash was overlapping the text.
+  const bulletBaseSizePt = (() => {
+    for (const r of para.runs) {
+      if (r.type === 'text' && r.fontSize != null) return r.fontSize;
+    }
+    return para.defFontSize ?? body.defaultFontSize ?? 18;
+  })();
+  const bulletBaseSizePx = bulletBaseSizePt * PT_TO_EMU * scale * fontScale;
+
+  // ECMA-376 §21.1.2.4.4 (CT_TextCharBullet) / §21.1.2.4.10 (buClrTx): when
+  // no explicit `<a:buClr>` is present, the bullet inherits the *first run*'s
+  // color, NOT the shape-level default text color. The two diverge on
+  // templates where `<p:style><a:fontRef>` resolves to white (lt1) — runs
+  // override that with their own `<a:rPr><a:solidFill>`, but bullets without
+  // a buClr would otherwise pick up the white default and become invisible
+  // (the slide-13 sample-2 regression).
+  const firstRunColorHex = (() => {
+    for (const r of para.runs) {
+      if (r.type === 'text' && r.color) return r.color;
+    }
+    return null;
+  })();
+  const bulletInheritedColor = firstRunColorHex
+    ? hexToRgba(firstRunColorHex)
+    : paraDefaultColor;
+  const firstRunFontFamily = (() => {
+    for (const r of para.runs) {
+      if (r.type === 'text' && r.fontFamily) return r.fontFamily;
+    }
+    return para.defFontFamily ?? null;
+  })();
+
+  let bulletLabel  = '';
+  let bulletSizePx = bulletBaseSizePx;
+  let bulletFamily = 'sans-serif';
+  let bulletFont   = buildFont(false, false, bulletSizePx, bulletFamily, rc);
+  let bulletColor  = bulletInheritedColor;
+  let bulletFollowsText = false;
+  // Picture bullet (`<a:buBlip>`, §21.1.2.4.2). Resolved to its image + drawn
+  // size below; stays null for char/number/none bullets.
+  let bulletImage: { imagePath: string; mimeType: string; sizePx: number } | null = null;
+
+  // Resolve the marker label and advance the autoNum counter. Empty
+  // paragraphs (Enter on a blank line) draw no marker and do not advance the
+  // counter — PowerPoint keeps a blank line between numbered items unnumbered
+  // while continuing the sequence. ECMA-376 §21.1.2.4.x gives no numeric
+  // rule, so PowerPoint's behaviour is the reference (see resolveBulletLabel).
+  bulletLabel = resolveBulletLabel(para, autoNumCounters);
+
+  // The parser may emit the picture-bullet variant (`type: "blip"`), which the
+  // shared core `Bullet` type doesn't list — narrow once via asBullet.
+  const bullet = asBullet(para.bullet);
+  if (bullet.type === 'char') {
+    const b = bullet;
+    // ECMA-376 §21.1.2.4.10 (buSzPts): an ABSOLUTE point size sizes the marker
+    // independent of the run — convert pt → px like any run size
+    // (PT_TO_EMU·scale·fontScale). It wins over §21.1.2.4.9 (buSzPct, percent of
+    // the run size); with neither, the marker takes the run size (§21.1.2.4.13).
+    const bSizePx = b.sizePts != null
+      ? b.sizePts * PT_TO_EMU * scale * fontScale
+      : b.sizePct != null
+        ? bulletBaseSizePx * (b.sizePct / 100)
+        : bulletBaseSizePx;
+    // If the char was mapped to a Unicode symbol, use sans-serif for reliable rendering.
+    // Otherwise use the specified font (e.g. Wingdings on systems that have it).
+    const convertedFamily = bulletLabel !== b.char ? 'sans-serif' : normalizeFontFamily(b.fontFamily ?? null, rc);
+    bulletSizePx = bSizePx;
+    bulletFamily = convertedFamily;
+    bulletFont  = buildFont(false, false, bSizePx, convertedFamily, rc, bulletLabel,
+      hasNamedFontFamily(b.fontFamily));
+    bulletColor = b.color ? hexToRgba(b.color) : bulletInheritedColor;
+    bulletFollowsText = !b.color;
+  } else if (bullet.type === 'autoNum') {
+    const b = bullet;
+    const bSizePx = b.sizePts != null
+      ? b.sizePts * PT_TO_EMU * scale * fontScale
+      : b.sizePct != null
+        ? bulletBaseSizePx * (b.sizePct / 100)
+        : bulletBaseSizePx;
+    bulletSizePx = bSizePx;
+    bulletFamily = normalizeFontFamily(b.fontFamily ?? firstRunFontFamily, rc);
+    bulletFont = buildFont(
+      false,
+      false,
+      bSizePx,
+      normalizeFontFamily(b.fontFamily ?? firstRunFontFamily, rc),
+      rc,
+      bulletLabel,
+      hasNamedFontFamily(b.fontFamily ?? firstRunFontFamily),
+    );
+    // ECMA-376 §21.1.2.4.4 (buClr): an explicit `<a:buClr>` colours the
+    // auto-number marker, mirroring the char-bullet branch above. Only when it
+    // is absent does the marker fall back to the buClrTx default
+    // (§21.1.2.4.5 — the inherited first-run colour).
+    bulletColor = bullet.color ? hexToRgba(bullet.color) : bulletInheritedColor;
+    bulletFollowsText = !bullet.color;
+  } else if (bullet.type === 'blip') {
+    // ECMA-376 §21.1.2.4.2 picture bullet. Its height follows the text's em
+    // box, scaled by `<a:buSzPct>`, while paint preserves the source aspect
+    // (§21.1.2.4.9; default 100%). It's not a glyph, so there is no label —
+    // an empty paragraph still draws no marker (bulletLabel stays '' and the
+    // draw site gates the image on the first line having content).
+    // §21.1.2.4.10 (buSzPts): an absolute point size overrides the §21.1.2.4.9
+    // percentage, matching the char-bullet branch above.
+    const b = bullet;
+    const sizePx = pictureBulletSizePt(body, para, b) * PT_TO_EMU * scale * fontScale;
+    bulletImage = { imagePath: b.imagePath, mimeType: b.mimeType, sizePx };
+  }
+
+  return { bulletLabel, bulletFont, bulletSizePx, bulletFamily, bulletColor, bulletFollowsText, bulletImage };
+}
+
 /**
  * PowerPoint input for stacked vertical text. Paragraph defaults, the stored
  * normAutofit fontScale / lnSpcReduction and paragraph spacing follow the
  * horizontal path; spAutoFit keeps the stored geometry (PowerPoint does not
- * refit an unedited shape). Bullets are not drawn for stacked bodies: no
- * control measured one.
+ * refit an unedited shape). Marker properties share the horizontal resolver;
+ * margins and indents are measured in the column reading direction.
  */
 function renderStackedTextBody(
   ctx: CanvasRenderingContext2D,
@@ -4483,6 +4799,7 @@ function renderStackedTextBody(
   slideNumber: number | undefined,
   rc: RenderContext,
   onTextRun?: TextRunCallback,
+  fetchImage?: FetchImage,
 ): void {
   const fontScale = body.autoFit === 'norm' && body.fontScale != null && body.fontScale > 0 && body.fontScale < 1
     ? body.fontScale : 1;
@@ -4492,11 +4809,15 @@ function renderStackedTextBody(
   const bodyDefaultBold = body.defaultBold ?? false;
   const bodyDefaultItalic = body.defaultItalic ?? false;
   let sameStyle: ((a: LayoutSegment, b: LayoutSegment) => boolean) | undefined;
+  const autoNumCounters = new Map<number, number>();
+  const markers: ReturnType<typeof paragraphBullet>[] = [];
   const paragraphs: StackedParagraphInput<LayoutSegment>[] = body.paragraphs.map((para) => {
     const sizePx = para.defFontSize != null ? para.defFontSize * pxPerPt * fontScale : bodyDefaultFontSizePx;
     const color = para.defColor ? hexToRgba(para.defColor) : bodyDefaultColor;
+    const marker = paragraphBullet(body, para, color, scale, fontScale, rc, autoNumCounters);
+    markers.push(marker);
     const built = paragraphInputRuns(para, sizePx, color, scale, bodyDefaultBold, bodyDefaultItalic, fontScale,
-      slideNumber, rc);
+      slideNumber, rc, false, ctx);
     sameStyle ??= built.sameStyle;
     const firstText = built.input.find((item) => item.type === 'text');
     const family = normalizeFontFamily(para.defFontFamily ?? null, rc);
@@ -4506,17 +4827,35 @@ function renderStackedTextBody(
       text: '', font: buildFont(bold, italic, sizePx, family, rc, ''), sizePx, color,
       underline: false, strikethrough: false, lineMetric: lineMetricFor(family, bold, italic, rc), faceFamily: family,
     };
+    // §21.1.2.2.2: the insertion position has its own run properties. In
+    // particular an explicit noStrike must stop inherited final-mark strokes.
+    const endRun = para.endRunProperties;
+    const endInput = endRun ? paragraphInputRuns({ ...para, runs: [{ ...endRun, text: ' ' }] },
+      sizePx, color, scale, bodyDefaultBold, bodyDefaultItalic, fontScale, slideNumber, rc, false, ctx)
+      .input.find(item => item.type === 'text') : undefined;
     const spacing = (pts: number | null, pct: number | undefined): DrawingMlLineSpacing =>
       pct != null ? { type: 'pct', val: pct }
         : pts != null ? { type: 'pts', val: (pts / 100) * fontScale } : undefined;
     return {
       runs: built.input,
+      marginStart: emuToPx(para.marL, scale),
+      marginEnd: emuToPx(para.marR, scale),
+      firstLineIndent: emuToPx(para.indent, scale),
+      marker: !paragraphHasRenderableContent(para) ? undefined : marker.bulletLabel ? {
+        text: marker.bulletLabel,
+        style: { text: marker.bulletLabel, font: marker.bulletFont, sizePx: marker.bulletSizePx,
+          color: marker.bulletColor, underline: false, strikethrough: false,
+          faceFamily: marker.bulletFamily, lineMetric: lineMetricFor(marker.bulletFamily, false, false, rc) },
+      } : marker.bulletImage ? {
+        advance: marker.bulletImage.sizePx, thickness: marker.bulletImage.sizePx,
+      } : undefined,
       alignment: para.alignment,
       lineSpacing: para.spaceLine?.type === 'pts'
         ? { type: 'pts', val: powerPointExactLinePoints(para.spaceLine.val) } : para.spaceLine,
       spaceBefore: spacing(para.spaceBefore, para.spaceBeforePct),
       spaceAfter: spacing(para.spaceAfter, para.spaceAfterPct),
       markStyle,
+      endMarkStyle: endInput?.type === 'text' ? endInput.style : undefined,
       eastAsianLineBreak: para.eaLnBrk !== false,
     };
   });
@@ -4531,16 +4870,45 @@ function renderStackedTextBody(
     pxPerPt,
     paragraphs,
     sameStyle,
-    drawObject: (style, x, y) => {
-      const equation = style.math!;
-      const render = mathRenders.get(equation.nodes);
-      // Match horizontal paint: optional/failed math has no ink or warning.
-      // Core stacked layout preserves the display boundary's blank column.
-      if (!render) return;
-      const height = equation.ascent + equation.descent;
-      if (equation.width > 0 && height > 0) {
-        ctx.drawImage(tintedMathImage(render, style.color), x, y, equation.width, height);
+    drawMarker: (index, axisX, top) => {
+      const para = body.paragraphs[index];
+      if (!paragraphHasRenderableContent(para)) return;
+      const marker = markers[index];
+      const y = top;
+      // §21.1.2.4.2: keep a picture marker per paragraph, sized by the shared
+      // buSzPct/buSzPts resolver. Electronic PDF export has shown a single
+      // image at the box upper-left for stacked text, but that observation is
+      // not isolated across image classes/export paths: no compatibility rule.
+      ctx.save();
+      const image = marker.bulletImage;
+      const bitmap = image ? rc.pictureBulletImages?.has(image.imagePath)
+        ? rc.pictureBulletImages.get(image.imagePath) : fetchImage
+          ? peekCachedBitmapByPath(image.imagePath, fetchImage) : null : null;
+      if (image && bitmap) {
+        const h = image.sizePx;
+        const w = bitmap.height > 0 ? h * bitmap.width / bitmap.height : h;
+        ctx.drawImage(bitmap, axisX - w / 2, y, w, h);
       }
+      ctx.restore();
+    },
+    markerPaint: (index, axisX, baseline) => {
+      const marker = markers[index];
+      const first = paragraphs[index].runs.find(run => run.type === 'text');
+      return marker.bulletFollowsText && first?.type === 'text' && first.style.patternFill
+        ? resolveSegmentTextPaint(ctx, first.style, axisX, baseline, scale) : marker.bulletColor;
+    },
+    drawUnderline: (style, width, columnSizePx) => {
+      paintRunUnderline(ctx, style, 0, 0, width, style.color, scale, rc.dpr, columnSizePx);
+    },
+    sameUnderline: (a, b) => a.underline === b.underline && a.underlineStyle === b.underlineStyle
+      && a.underlineColor === b.underlineColor && a.underlineFill === b.underlineFill
+      && a.underlineLine === b.underlineLine && a.underlineLineNoFill === b.underlineLineNoFill
+      && a.color === b.color && a.noFill === b.noFill,
+    drawStrike: (style, x, baseline, width) => {
+      paintRunStrike(ctx, style, x, baseline, width, style.color, rc.dpr);
+    },
+    drawObject: (style, x, y) => {
+      paintEquation(ctx, style, x, y);
     },
   });
   if (!onTextRun) return;
@@ -4595,7 +4963,7 @@ export function renderTextBody(
     // Like the rotated modes, a table row measures a vertical body by its box.
     if (measureOnly) return bw;
     renderStackedTextBody(ctx, body, body.vert, bx, by, bw, bh, scale, shapeDefaultTextColor ?? themeDefaultColor,
-      shapeRotation, slideNumber, rc, onTextRun);
+      shapeRotation, slideNumber, rc, onTextRun, fetchImage);
     return;
   }
 
@@ -4795,112 +5163,8 @@ export function renderTextBody(
     // dash overlap noted below, and docx PR #476).
     const hasBullet = paragraphHasBullet(para);
 
-    // Per ECMA-376 §21.1.2.4.13: when no buSz* is declared, the bullet takes
-    // the first run's font size. Using paraDefaultFontSizePx here (the layout
-    // lvl1pPr defRPr fallback, typically 18pt) oversizes the bullet so a
-    // hanging indent calibrated against the run (12pt) can't contain it —
-    // that's why the em-dash was overlapping the text.
-    const bulletBaseSizePt = (() => {
-      for (const r of para.runs) {
-        if (r.type === 'text' && r.fontSize != null) return r.fontSize;
-      }
-      return para.defFontSize ?? body.defaultFontSize ?? 18;
-    })();
-    const bulletBaseSizePx = bulletBaseSizePt * PT_TO_EMU * scale * fontScale;
-
-    // ECMA-376 §21.1.2.4.4 (CT_TextCharBullet) / §21.1.2.4.10 (buClrTx): when
-    // no explicit `<a:buClr>` is present, the bullet inherits the *first run*'s
-    // color, NOT the shape-level default text color. The two diverge on
-    // templates where `<p:style><a:fontRef>` resolves to white (lt1) — runs
-    // override that with their own `<a:rPr><a:solidFill>`, but bullets without
-    // a buClr would otherwise pick up the white default and become invisible
-    // (the slide-13 sample-2 regression).
-    const firstRunColorHex = (() => {
-      for (const r of para.runs) {
-        if (r.type === 'text' && r.color) return r.color;
-      }
-      return null;
-    })();
-    const bulletInheritedColor = firstRunColorHex
-      ? hexToRgba(firstRunColorHex)
-      : paraDefaultColor;
-    const firstRunFontFamily = (() => {
-      for (const r of para.runs) {
-        if (r.type === 'text' && r.fontFamily) return r.fontFamily;
-      }
-      return para.defFontFamily ?? null;
-    })();
-
-    let bulletLabel  = '';
-    let bulletFont   = buildFont(false, false, bulletBaseSizePx, 'sans-serif', rc);
-    let bulletColor  = bulletInheritedColor;
-    let bulletFollowsText = false;
-    // Picture bullet (`<a:buBlip>`, §21.1.2.4.2). Resolved to its image + drawn
-    // size below; stays null for char/number/none bullets.
-    let bulletImage: { imagePath: string; mimeType: string; sizePx: number } | null = null;
-
-    // Resolve the marker label and advance the autoNum counter. Empty
-    // paragraphs (Enter on a blank line) draw no marker and do not advance the
-    // counter — PowerPoint keeps a blank line between numbered items unnumbered
-    // while continuing the sequence. ECMA-376 §21.1.2.4.x gives no numeric
-    // rule, so PowerPoint's behaviour is the reference (see resolveBulletLabel).
-    bulletLabel = resolveBulletLabel(para, autoNumCounters);
-
-    // The parser may emit the picture-bullet variant (`type: "blip"`), which the
-    // shared core `Bullet` type doesn't list — narrow once via asBullet.
-    const bullet = asBullet(para.bullet);
-    if (bullet.type === 'char') {
-      const b = bullet;
-      // ECMA-376 §21.1.2.4.10 (buSzPts): an ABSOLUTE point size sizes the marker
-      // independent of the run — convert pt → px like any run size
-      // (PT_TO_EMU·scale·fontScale). It wins over §21.1.2.4.9 (buSzPct, percent of
-      // the run size); with neither, the marker takes the run size (§21.1.2.4.13).
-      const bSizePx = b.sizePts != null
-        ? b.sizePts * PT_TO_EMU * scale * fontScale
-        : b.sizePct != null
-          ? bulletBaseSizePx * (b.sizePct / 100)
-          : bulletBaseSizePx;
-      // If the char was mapped to a Unicode symbol, use sans-serif for reliable rendering.
-      // Otherwise use the specified font (e.g. Wingdings on systems that have it).
-      const convertedFamily = bulletLabel !== b.char ? 'sans-serif' : normalizeFontFamily(b.fontFamily ?? null, rc);
-      bulletFont  = buildFont(false, false, bSizePx, convertedFamily, rc, bulletLabel,
-        hasNamedFontFamily(b.fontFamily));
-      bulletColor = b.color ? hexToRgba(b.color) : bulletInheritedColor;
-      bulletFollowsText = !b.color;
-    } else if (bullet.type === 'autoNum') {
-      const b = bullet;
-      const bSizePx = b.sizePts != null
-        ? b.sizePts * PT_TO_EMU * scale * fontScale
-        : b.sizePct != null
-          ? bulletBaseSizePx * (b.sizePct / 100)
-          : bulletBaseSizePx;
-      bulletFont = buildFont(
-        false,
-        false,
-        bSizePx,
-        normalizeFontFamily(b.fontFamily ?? firstRunFontFamily, rc),
-        rc,
-        bulletLabel,
-        hasNamedFontFamily(b.fontFamily ?? firstRunFontFamily),
-      );
-      // ECMA-376 §21.1.2.4.4 (buClr): an explicit `<a:buClr>` colours the
-      // auto-number marker, mirroring the char-bullet branch above. Only when it
-      // is absent does the marker fall back to the buClrTx default
-      // (§21.1.2.4.5 — the inherited first-run colour).
-      bulletColor = bullet.color ? hexToRgba(bullet.color) : bulletInheritedColor;
-      bulletFollowsText = !bullet.color;
-    } else if (bullet.type === 'blip') {
-      // ECMA-376 §21.1.2.4.2 picture bullet. Its height follows the text's em
-      // box, scaled by `<a:buSzPct>`, while paint preserves the source aspect
-      // (§21.1.2.4.9; default 100%). It's not a glyph, so there is no label —
-      // an empty paragraph still draws no marker (bulletLabel stays '' and the
-      // draw site gates the image on the first line having content).
-      // §21.1.2.4.10 (buSzPts): an absolute point size overrides the §21.1.2.4.9
-      // percentage, matching the char-bullet branch above.
-      const b = bullet;
-      const sizePx = pictureBulletSizePt(body, para, b) * PT_TO_EMU * scale * fontScale;
-      bulletImage = { imagePath: b.imagePath, mimeType: b.mimeType, sizePx };
-    }
+    const { bulletLabel, bulletFont, bulletColor, bulletFollowsText, bulletImage } =
+      paragraphBullet(body, para, paraDefaultColor, scale, fontScale, rc, autoNumCounters);
 
     // Text start X and wrap width.
     //
@@ -5644,14 +5908,8 @@ export function renderTextBody(
 
       // ── Equation segment: draw the cached image instead of text ──────────
       if (seg.math) {
-        const render = mathRenders.get(seg.math.nodes);
         const w = seg.math.width;
-        const h = seg.math.ascent + seg.math.descent;
-        if (render && w > 0 && h > 0) {
-          const top = baseline - seg.math.ascent;
-          const img = tintedMathImage(render, seg.color);
-          ctx.drawImage(img, penX, top, w, h);
-        }
+        paintEquation(ctx, seg, penX, baseline - seg.math.ascent);
         penX += w;
         penX += jext;
         continue;
@@ -5922,58 +6180,7 @@ export function renderTextBody(
         });
       }
 
-      if (seg.underline && !seg.underlineLineNoFill
-        && (!seg.noFill || seg.underlineFill || seg.underlineColor || seg.underlineLine?.fill)) {
-        // §21.1.2.3.13 uFillTx follows the actual glyph fill (including
-        // pattFill), while §21.1.2.3.12 uFill supplies its own fill choice.
-        // Office PDF shows a separately chosen underline pattern on the
-        // same slide-aligned grid.
-        const underlinePaint = seg.underlineFill
-          ? resolveFillCore(
-              seg.underlineFill, ctx, penX, segBaseline, segW + jext, drawSizePx * 0.05,
-              0, scale * PT_TO_EMU,
-            ) ?? 'rgba(0,0,0,0)'
-          : seg.underlineLine?.fill
-            ? resolveFillCore(seg.underlineLine.fill, ctx, penX, segBaseline,
-                segW + jext, drawSizePx * 0.05, 0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
-            : seg.underlineColor ?? glyphPaint;
-        drawUnderline(ctx, penX, segBaseline, segW + jext, drawSizePx,
-          underlinePaint, seg.underlineStyle, rc.dpr,
-          seg.underlineLine?.width ? emuToPx(seg.underlineLine.width, scale) : undefined);
-      }
-
-      if (seg.strikethrough && !seg.noFill) {
-        const lineW = Math.max(1, drawSizePx * 0.05);
-        ctx.strokeStyle = glyphPaint;
-        ctx.lineWidth = lineW;
-        ctx.setLineDash([]);
-        // Crispness nudge (see crispOffset): the strike is a horizontal stroke;
-        // an odd device-pixel width is centered on one device row by snapping its
-        // y onto the nearest crisp device position (otherwise it straddles two
-        // rows → blurry). Snap each line from its own y.
-        const yMid = segBaseline - drawSizePx * 0.32;
-        if (seg.strikeDouble) {
-          // Two parallel lines straddling the standard strike position,
-          // separated by ~ 1.5× the line weight (visually distinct yet
-          // staying inside the glyph's central band).
-          const offset = lineW * 0.9;
-          const yUp = yMid - offset;
-          const yDn = yMid + offset;
-          ctx.beginPath();
-          ctx.moveTo(penX, yUp + crispOffset(yUp, lineW, rc.dpr));
-          ctx.lineTo(penX + segW + jext, yUp + crispOffset(yUp, lineW, rc.dpr));
-          ctx.moveTo(penX, yDn + crispOffset(yDn, lineW, rc.dpr));
-          ctx.lineTo(penX + segW + jext, yDn + crispOffset(yDn, lineW, rc.dpr));
-          ctx.stroke();
-        } else {
-          const sy = yMid + crispOffset(yMid, lineW, rc.dpr);
-          ctx.beginPath();
-          ctx.moveTo(penX, sy);
-          ctx.lineTo(penX + segW + jext, sy);
-          ctx.stroke();
-        }
-      }
-
+      paintRunDecorations(ctx, seg, penX, segBaseline, segW + jext, glyphPaint, scale, rc.dpr);
       penX += segW;
       penX += jext;
     }
@@ -6602,7 +6809,8 @@ async function preparePicture(
       // (uncropped is the overwhelmingly common case for icons).
       try {
         bitmap = await getCachedSvgImageByPath(el.svgImagePath, fetchImage, svgOptions);
-      } catch {
+      } catch (error) {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
         // §20.1.8.23 duotone recolour applies only to the raster fallback — an
         // SVG vector original has no readable pixel grid (matches xlsx).
         bitmap = dataIsSvg
@@ -6647,10 +6855,12 @@ async function preparePicture(
  *  paints the unavailable-picture placeholder, a decoded-image budget or TIFF
  *  decode error propagates, and any other broken image is skipped. */
 function pictureFailure(el: PictureElement, scale: number, error: unknown): PreparedPaint {
+  // Resource failures (including lazy package extraction) are fatal even when
+  // ordinary unsupported/corrupt image content may produce a fallback.
   if (isOptionalImageCodecUnavailableError(error, 'tiff')) {
     return { paint: (ctx) => paintUnavailablePicture(ctx, el, scale) };
   }
-  if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
+  if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
     return { ...NO_PAINT, failure: { error } };
   }
   return NO_PAINT;
@@ -7113,7 +7323,7 @@ async function prepareMedia(
       if (isOptionalImageCodecUnavailableError(error, 'tiff')) {
         posterCodecUnavailable = true;
       } else {
-        if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
+        if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) {
           return { ...NO_PAINT, failure: { error } };
         }
         // fall through to plain fill
@@ -7538,7 +7748,7 @@ export function renderTable(
       ctx.beginPath();
       ctx.rect(x, y, w, h);
       paintPreparedShapeImageFill(ctx, fill, rc.shapeFillImages?.get(shapeFillKey(fill)),
-        { x, y, w, h }, scale);
+        { x, y, w, h }, scale, false, el);
     } else {
       const paint = resolveShapeFill(fill, ctx, x, y, w, h, el.rotation, scale * PT_TO_EMU);
       if (paint) {
@@ -8034,6 +8244,60 @@ async function renderSlideLeased(
   // lower-res) backing store to fill it — a visible slide beats a blank one.
   const clamped = clampCanvasSize(canvasW * dpr, canvasH * dpr);
   const effectiveDpr = clamped.clamped ? dpr * clamped.scale : dpr;
+  // Resolve equation previews before image target planning, so a selected
+  // fallback uses the same bounded decode plan as ordinary slide pictures.
+  if (opts.math) {
+    await prepareSlideMath(slide, opts.math);
+    if (superseded()) return canvas;
+  }
+  // Keep model locators separate from paint-order indices. Preview elements
+  // exist only in this projection; source hit testing still uses the input slide.
+  let sourceIndices: (number | undefined)[] | undefined;
+  const sourceSlide = slide;
+  if (opts.math) {
+    // Resolve whole MCE branches atomically, including branches that emit more
+    // than one shape. A prefix count keeps failure checks linear in the slide's
+    // emitted elements rather than rescanning overlapping branch ranges.
+    const failures = [0];
+    const previews = new Map<number, { end: number; elements: SlideElement[] }>();
+    for (const element of slide.elements) {
+      let failed = false;
+      for (const body of elementTextBodies(element)) {
+        if (body.paragraphs.some(para => para.runs.some(run => run.type === 'math' && failedMath.has(run.nodes)))) {
+          failed = true;
+          break;
+        }
+      }
+      failures.push(failures[failures.length - 1] + (failed ? 1 : 0));
+    }
+    slide.elements.forEach((element, index) => {
+      if ((element.type !== 'shape' && element.type !== 'table') || !element.mathFallback) return;
+      const fallback = element.mathFallback;
+      const start = index - fallback.before;
+      const end = index + fallback.after + 1;
+      if (start >= 0 && end <= slide.elements.length && failures[end] > failures[start]
+        && end > (previews.get(start)?.end ?? start)) {
+        previews.set(start, { end, elements: fallback.elements });
+      }
+    });
+    const elements: SlideElement[] = [];
+    sourceIndices = [];
+    for (let i = 0; i < slide.elements.length;) {
+      const preview = previews.get(i);
+      if (preview) {
+        for (const element of preview.elements) {
+          elements.push(element);
+          sourceIndices.push(undefined);
+        }
+        i = preview.end;
+      } else {
+        sourceIndices.push(i);
+        elements.push(slide.elements[i++]);
+      }
+    }
+    slide = { ...slide, elements };
+  }
+
   const plannedImages = planSlideImages(
     slide,
     canvasW,
@@ -8080,17 +8344,18 @@ async function renderSlideLeased(
     return canvas;
   }
 
-  const themeDefaultColor = opts.defaultTextColor
-    ? `#${opts.defaultTextColor}`
+  const defaultTextColor = slide.theme ? slide.theme.defaultTextColor : opts.defaultTextColor;
+  const themeDefaultColor = defaultTextColor
+    ? `#${defaultTextColor}`
     : '#000000';
 
   const pictureBulletImages = new Map<string, SvgImageSource | null>();
   const shapeFillImages = new Map<string, PreparedShapeFill | null>();
   const rc: RenderContext = {
-    cjkFallback: opts.cjkFallback ? pptxSlideCjkFallback(slide, opts.majorFont ?? null, opts.minorFont ?? null, opts.cjkFallback) : undefined,
-    themeMajorFont: opts.majorFont ?? null,
-    themeMinorFont: opts.minorFont ?? null,
-    themeHlinkColor: opts.hlinkColor ?? null,
+    cjkFallback: opts.cjkFallback ? pptxSlideCjkFallback(slide, slide.theme ? slide.theme.majorFont : opts.majorFont ?? null, slide.theme ? slide.theme.minorFont : opts.minorFont ?? null, opts.cjkFallback) : undefined,
+    themeMajorFont: slide.theme ? slide.theme.majorFont : opts.majorFont ?? null,
+    themeMinorFont: slide.theme ? slide.theme.minorFont : opts.minorFont ?? null,
+    themeHlinkColor: slide.theme ? slide.theme.hlinkColor : opts.hlinkColor ?? null,
     embeddedFontAliases: opts.embeddedFontAliases,
     embeddedFontAuthoredFamilies: opts.embeddedFontAuthoredFamilies,
     embeddedFontTuples: opts.embeddedFontTuples,
@@ -8122,18 +8387,6 @@ async function renderSlideLeased(
     imagePlan,
   ));
   if (superseded()) return canvas;
-
-  // Pre-rasterize any equations so the synchronous text layout can place them.
-  // `math` is the engine injected once at PptxPresentation.load and threaded in
-  // here; without it, equations are skipped and the asset never enters the bundle.
-  if (!failed() && opts.math) {
-    try {
-      await prepareSlideMath(slide, opts.math);
-    } catch (error) {
-      leadingSteps.push({ ...NO_PAINT, failure: { error } });
-    }
-    if (superseded()) return canvas;
-  }
 
   const slideNumber = slide.slideNumber;
 
@@ -8379,7 +8632,7 @@ async function renderSlideLeased(
             pictureBulletImages.set(path, null);
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           pictureBulletImages.set(path, null);
         }
       });
@@ -8422,7 +8675,8 @@ async function renderSlideLeased(
                 ...(target ?? {}),
                 workerDecoder: opts.svgDecoder,
               });
-            } catch {
+            } catch (error) {
+              if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
               bitmap = await decodeFallback();
             }
           } else {
@@ -8434,7 +8688,7 @@ async function renderSlideLeased(
             chartMarkerImages.set(key, null);
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           chartMarkerImages.set(key, null);
         }
       });
@@ -8487,7 +8741,8 @@ async function renderSlideLeased(
               image = await getCachedSvgImageByPath(fill.svgImagePath as string, fetchImage, {
                 ...(target ?? {}), workerDecoder: opts.svgDecoder,
               });
-            } catch {
+            } catch (error) {
+              if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error)) throw error;
               image = await fallback();
             }
           } else {
@@ -8499,7 +8754,7 @@ async function renderSlideLeased(
             shapeFillImages.set(key, null);
             return;
           }
-          if (isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
+          if (error instanceof OoxmlResourceLimitError || isOoxmlDecodedImageLimitError(error) || isTiffDecodeError(error)) throw error;
           shapeFillImages.set(key, null);
         }
       });
@@ -8542,14 +8797,30 @@ async function renderSlideLeased(
     // A text-run callback may start a newer render of this canvas; stop so we
     // don't paint this (now stale) slide over the newer one.
     if (superseded()) return canvas;
+    const sourceIndex = sourceIndices ? sourceIndices[elementIndex] : elementIndex;
+    const elementTextRun: TextRunCallback | undefined = onTextRun
+      ? (run) => {
+          if (sourceIndex === undefined) {
+            // Preview ids belong to the unselected MCE branch, so neither its
+            // shape id nor a projected array index can address the source model.
+            onTextRun({
+              ...run,
+              renderElementIndex: elementIndex,
+              elementIndex: undefined,
+              origin: undefined,
+              shapeId: undefined,
+            });
+          } else {
+            onTextRun({
+              ...run,
+              renderElementIndex: elementIndex,
+              elementIndex: sourceIndex,
+              origin: sourceSlide.elementSources?.[sourceIndex]?.origin ?? 'slide',
+            });
+          }
+        }
+      : undefined;
     if (el.type === 'shape') {
-      const elementTextRun: TextRunCallback | undefined = onTextRun
-        ? (run) => onTextRun({
-            ...run,
-            elementIndex,
-            origin: slide.elementSources?.[elementIndex]?.origin ?? 'slide',
-          })
-        : undefined;
       withPatternCoordinateSpace(ctx, slidePatternFrame, () =>
         renderShape(ctx, el, scale, themeDefaultColor, slideNumber, rc, elementTextRun, opts.fetchImage));
     } else if (el.type === 'picture' || el.type === 'media') {
@@ -8559,13 +8830,6 @@ async function renderSlideLeased(
         if (step.failure) throw step.failure.error;
       }
     } else if (el.type === 'table') {
-      const elementTextRun: TextRunCallback | undefined = onTextRun
-        ? (run) => onTextRun({
-            ...run,
-            elementIndex,
-            origin: slide.elementSources?.[elementIndex]?.origin ?? 'slide',
-          })
-        : undefined;
       withPatternCoordinateSpace(ctx, slidePatternFrame, () =>
         renderTable(ctx, el, scale, slideNumber, rc, elementTextRun));
     } else if (el.type === 'chart') {

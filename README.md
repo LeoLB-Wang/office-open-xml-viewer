@@ -237,9 +237,12 @@ self-contained source module and WASM load in the parser worker (or in Node)
 only when a claimed file is opened, and no OOXML package is generated. The
 readers are narrow and experimental and reject unsupported content rather than
 showing a partial document. They do not execute macros, fields, formulas, actions
-or embedded objects. Unsupported claimed content rejects with a diagnostic failure
-without a dedicated typed unsupported-content code; keep a generic fallback and
-offer conversion. The package versions must match exactly; upgrade both together.
+or embedded objects. Claimed content outside the supported subset rejects with
+`OoxmlError.code === 'unsupported-content'` (`details.format` names the source
+format); offer conversion for that code. Resource limits, encryption and parser
+crashes stay distinct from it; some native reader budgets surface as untyped
+errors (see [Experimental legacy Office sources](docs/legacy-office-conversion.md)).
+The package versions must match exactly; upgrade both together.
 No migration is required without the add-on. See the [legacy Office guide](https://ooxml.silurus.dev/legacy-office/)
 for viewer and Node examples, and [Experimental legacy Office sources](docs/legacy-office-conversion.md)
 for the full support boundaries.
@@ -1089,9 +1092,11 @@ decode or playback failures after the presentation handle has been returned.
 
 Stable failures can be narrowed without parsing message strings:
 
-- `OoxmlError` — container failures. Its `code` is `encrypted`,
-  `invalid-password`, `unsupported-encryption`, `legacy-binary-format`, or
-  `not-ooxml`.
+- `OoxmlError` — typed input and source failures. Its `code` is `encrypted`,
+  `invalid-password`, `unsupported-encryption`, `legacy-binary-format`, `unsupported-content`, or
+  `not-ooxml`. For `unsupported-content`, offer conversion: the configured
+  source cannot represent this input. Frozen `details` contain only its
+  `format` identifier and `reason: 'source-subset'`.
 - `OoxmlResourceLimitError` (`code === 'ooxml-resource-limit'`) — a measured
   package or format resource crossed a configurable limit or hard ceiling.
   `details.violation` contains the resource, metric, limit, observed value, and

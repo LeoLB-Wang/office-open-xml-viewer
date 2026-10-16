@@ -34,6 +34,7 @@ struct GovernorState {
     format: OoxmlFormat,
     policy: ResourcePolicy,
     operation: String,
+    scoped_operation_id: Option<u64>,
     usage: ResourceUsage,
     // Central-directory identity, not a display path: duplicate ZIP names must
     // not accidentally share accounting state.
@@ -84,6 +85,9 @@ pub enum HardResourceLimitKind {
     XmlDomComplexity,
     ChartexAllocationElements,
     ChartexAllocationBytes,
+    ChartStyleFormats,
+    ChartCustomNumberFormats,
+    ChartNumberFormatBytes,
     PptxSharedDependencyProjectionBytes,
     PptxSharedCacheEntries,
     PptxSharedCacheProjectionBytes,
@@ -100,6 +104,10 @@ pub enum HardResourceLimitKind {
     WorksheetJsonBytes,
     WorksheetCacheRows,
     WorksheetCacheCells,
+    WorksheetReferenceCells,
+    WorksheetReferenceStringBytes,
+    WorksheetReferenceIndexCells,
+    WorksheetReferenceIndexStringBytes,
 }
 
 impl HardResourceLimitKind {
@@ -108,6 +116,12 @@ impl HardResourceLimitKind {
             Self::XmlEventBytes => ("parsing", "xml-event", "bytes"),
             Self::XmlContextBytes => ("parsing", "xml-context", "bytes"),
             Self::XmlNestingDepth => ("parsing", "xml-tree", "depth"),
+            Self::WorksheetReferenceCells => ("parsing", "worksheet-reference", "cells"),
+            Self::WorksheetReferenceStringBytes => ("parsing", "worksheet-reference", "bytes"),
+            Self::WorksheetReferenceIndexCells => ("parsing", "worksheet-reference-index", "cells"),
+            Self::WorksheetReferenceIndexStringBytes => {
+                ("parsing", "worksheet-reference-index", "bytes")
+            }
             Self::DocxBodyBlockXmlBytes => ("parsing", "docx-body-block-xml", "bytes"),
             Self::DocxBodyChunkJsonBytes => ("serialization", "docx-body-chunk-json", "bytes"),
             Self::DocxBootstrapJsonBytes => ("serialization", "docx-bootstrap-json", "bytes"),
@@ -122,6 +136,9 @@ impl HardResourceLimitKind {
             }
             Self::ChartexAllocationElements => ("parsing", "chartex-allocation", "elements"),
             Self::ChartexAllocationBytes => ("parsing", "chartex-allocation", "bytes"),
+            Self::ChartStyleFormats => ("parsing", "chart-style-formats", "entries"),
+            Self::ChartCustomNumberFormats => ("parsing", "chart-custom-number-formats", "entries"),
+            Self::ChartNumberFormatBytes => ("parsing", "chart-number-format-bytes", "bytes"),
             Self::XmlDomComplexity => ("parsing", "xml-dom", "complexity-units"),
             Self::PptxSharedDependencyProjectionBytes => {
                 ("parsing", "pptx-shared-dependency", "projected-bytes")
@@ -220,6 +237,7 @@ pub struct ResourceScope {
     governor: ResourceGovernor,
     previous_active: Option<ResourceGovernor>,
     previous_operation: String,
+    previous_logical_operation_id: Option<u64>,
     previous_operation_bytes: u64,
     restore_parent_operation: bool,
     logical_operation_id: Option<u64>,
@@ -227,7 +245,7 @@ pub struct ResourceScope {
 
 impl Drop for ResourceScope {
     fn drop(&mut self) {
-        if self.logical_operation_id.is_some() || self.restore_parent_operation {
+        {
             let mut state = self.governor.0.borrow_mut();
             if let Some(id) = self.logical_operation_id {
                 let inflated_bytes = state.usage.operation_inflated_bytes;
@@ -237,8 +255,14 @@ impl Drop for ResourceScope {
             }
             if self.restore_parent_operation {
                 state.operation = std::mem::take(&mut self.previous_operation);
-                state.usage.operation_inflated_bytes = self.previous_operation_bytes;
+                // A nested entry read may have charged the same logical
+                // operation. Restore its latest ledger, never a stale snapshot.
+                state.usage.operation_inflated_bytes = self
+                    .previous_logical_operation_id
+                    .and_then(|id| state.operations.get(&id).map(|op| op.inflated_bytes))
+                    .unwrap_or(self.previous_operation_bytes);
             }
+            state.scoped_operation_id = self.previous_logical_operation_id;
         }
         ACTIVE_GOVERNOR.with(|active| {
             *active.borrow_mut() = self.previous_active.take();
@@ -279,6 +303,7 @@ impl ResourceGovernor {
                 public_entries: decode(max_archive_entries, STANDARD_MAX_ARCHIVE_ENTRIES),
             },
             operation: "open".to_string(),
+            scoped_operation_id: None,
             usage: ResourceUsage::default(),
             max_actual_by_part: HashMap::new(),
             next_operation_id: 1,
@@ -314,7 +339,11 @@ impl ResourceGovernor {
             .get(&operation.0)
             .ok_or_else(|| "resource operation does not belong to this governor".to_string())?;
         let name = logical.name.clone();
-        let inflated_bytes = logical.inflated_bytes;
+        let inflated_bytes = if state.scoped_operation_id == Some(operation.0) {
+            state.usage.operation_inflated_bytes
+        } else {
+            logical.inflated_bytes
+        };
         drop(state);
         Ok(self.enter_scope(name, inflated_bytes, Some(operation.0)))
     }
@@ -326,6 +355,14 @@ impl ResourceGovernor {
         logical_operation_id: Option<u64>,
     ) -> ResourceScope {
         let mut state = self.0.borrow_mut();
+        if let Some(id) = state.scoped_operation_id {
+            let bytes = state.usage.operation_inflated_bytes;
+            if let Some(parent) = state.operations.get_mut(&id) {
+                parent.inflated_bytes = bytes;
+            }
+        }
+        let previous_logical_operation_id =
+            std::mem::replace(&mut state.scoped_operation_id, logical_operation_id);
         let previous_operation = std::mem::replace(&mut state.operation, operation);
         let previous_operation_bytes = state.usage.operation_inflated_bytes;
         state.usage.operation_inflated_bytes = operation_inflated_bytes;
@@ -339,6 +376,7 @@ impl ResourceGovernor {
             governor: self.clone(),
             previous_active,
             previous_operation,
+            previous_logical_operation_id,
             previous_operation_bytes,
             restore_parent_operation,
             logical_operation_id,
@@ -763,6 +801,35 @@ mod tests {
         let _scope = governor.scope("open");
         observe_archive_metadata(STANDARD_MAX_ARCHIVE_ENTRIES + 1, 0).unwrap();
         assert_eq!(governor.0.borrow().policy.public_entries, None);
+    }
+
+    #[test]
+    fn nested_logical_scopes_preserve_charges_and_limit_error_usage() {
+        let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, None, None, None);
+        let operation = governor.begin_operation("parse");
+        {
+            let _outer = governor.scope_operation(operation).unwrap();
+            observe_inflated(0, "document.xml", 4, 4).unwrap();
+            {
+                let _entry = governor.scope_operation(operation).unwrap();
+                observe_inflated(1, "styles.xml", 3, 3).unwrap();
+            }
+            let error =
+                observe_hard_limit(HardResourceLimitKind::XmlNestingDepth, None, 1, 2).unwrap_err();
+            let payload: serde_json::Value =
+                serde_json::from_str(error.strip_prefix("OOXML_RESOURCE_LIMIT:").unwrap()).unwrap();
+            assert_eq!(
+                payload["details"]["violation"]["usage"]["operationInflatedBytes"],
+                7
+            );
+        }
+        assert_eq!(
+            governor
+                .usage_for_operation(operation)
+                .unwrap()
+                .operation_inflated_bytes,
+            7
+        );
     }
 
     #[test]

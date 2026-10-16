@@ -127,7 +127,9 @@ impl Index {
         A: FnMut(usize) -> Result<(), String>,
     {
         if paragraph_count > MAX_STORY_CONTROLS + 1 {
-            return Err(unsupported("Word table context paragraph budget exceeded"));
+            return Err(crate::rejection::resource(
+                "Word table context paragraph budget exceeded",
+            ));
         }
         let mut contexts = allocate_none(paragraph_count, admit)?;
         let mut tables = Vec::new();
@@ -289,7 +291,9 @@ impl Index {
                 None => return Err(unsupported("Word table context lacks source ancestry")),
             }
         }
-        Err(unsupported("Word source ancestry depth budget exceeded"))
+        Err(crate::rejection::resource(
+            "Word source ancestry depth budget exceeded",
+        ))
     }
 
     pub(super) fn outer_row_position(

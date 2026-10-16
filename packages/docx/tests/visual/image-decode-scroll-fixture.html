@@ -81,7 +81,7 @@
             maxChannelDelta: closest.maxChannelDelta,
             canvasWidth: closest.canvas.width,
             canvasHeight: closest.canvas.height,
-            mountedPages: viewer.mountedPageIndicesForTest(),
+            mountedPages: [...viewer._slots.keys()],
           };
         }
       }

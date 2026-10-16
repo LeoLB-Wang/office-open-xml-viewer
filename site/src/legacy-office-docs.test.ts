@@ -23,7 +23,7 @@ describe('experimental legacy Office add-on guidance', () => {
       expect(page).toContain(`modelSources: [${factory}()]`);
       expect(page).toContain(viewer);
     }
-    for (const contract of ['experimental', 'versions must match', 'openPptxPresentation', 'session.close()', 'legacy-binary-format', 'no dedicated typed', 'Markdown', 'WASM', 'moduleUrl', 'wasmUrl']) {
+    for (const contract of ['experimental', 'versions must match', 'openPptxPresentation', 'session.close()', 'legacy-binary-format', 'unsupported-content', 'source-subset', 'Markdown', 'WASM', 'moduleUrl', 'wasmUrl']) {
       expect(page).toContain(contract);
     }
     expect(source('./pages/bundle-size.astro')).toContain('Optional add-on package');

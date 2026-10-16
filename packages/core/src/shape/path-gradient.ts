@@ -1,3 +1,4 @@
+import { counterRotatedFillTransform } from './fill-frame';
 import type { GradientFill, GradientStop } from '../types/common';
 import { createAuxCanvasForContext } from '../canvas/aux-canvas';
 
@@ -11,27 +12,15 @@ export interface ShadeBox { x: number; y: number; w: number; h: number }
 type Point = [number, number];
 type Matrix = [number, number, number, number, number, number];
 
-// Resource policy, not an OOXML rule: at most 512² raster pixels. Exact
-// row intersections of bilinear bands avoid probing their bounding boxes.
-// For E flattened edges, R <= 512 rows and P <= 512² pixels, geometry work is
-// O(N + E R (log(E + 1) + alpha(P)) + P alpha(P)):
-// focus crossings are sorted per row,
-// N is input outline work; E <= 32768 after the explicit support budget.
-// Each band has constant-degree row extrema, and successor links remove
-// assigned pixels. Geometry memory is O(N + P); no shade geometry is
-// clustered or cached. Stop sorting/ramp construction is separate.
-// This is an inherent additive cost over main's native point-focus brush,
-// not a constant-factor latency promise. A sequential Node/Skia resolve-only
-// probe at 512px with 32768 alternating-radius edges measured medians of
-// 0.14s (center), 0.35s (corner), 0.45s (outside-area focus) after replacing
-// rational extrema with shared-edge scans for convex bands. The previous
-// renderer measured 1.00s/2.20s/2.25s in the same three-run comparison.
-// Hardware-dependent times include outline traversal and raster generation,
-// not the subsequent paint; folded bands still require rational extrema.
-// Work guards cover the maximum supported edge count and reject larger inputs
-// before raster allocation. Tiled paints retain the native brush entirely.
+// Resource policy, not an OOXML rule: at most 512² raster pixels. For E
+// flattened edges, R <= 512 rows and P <= 512² pixels, scanline geometry work
+// is O(N + E R log(E + 1) + (E R + P) alpha(P)); memory is O(N + P).
+// Reading the authored outline necessarily costs O(N). Increasing its edge
+// count never increases raster size or the number of successful pixel solves:
+// successor sets assign each pixel once, without an E × P shading loop.
+// ECMA-376 §20.1.8.46 does not limit path complexity: keep the authored field
+// for every edge count rather than substituting a circular gradient.
 const MAX_EDGE = 512;
-const EDGE_LIMIT = 32768;
 const MARGIN = 2;
 const BEZIER_SEGMENTS = 16;
 const ARC_STEP = Math.PI / 32;
@@ -456,7 +445,8 @@ export function bandRowSpans(corners: Point[], y: number): Array<[number, number
  * and is a library support boundary, not an Office brush classifier.
  * Unsupported outlines keep the previous path-specific native resolver;
  * adjustment/aspect/topology boundaries lack live Office evidence (#1599).
- * Rotation framing also keeps the previous local frame pending live evidence.
+ * ECMA-376 §20.1.8.33 applies rotWithShape to every gradient style, including
+ * path shades (§20.1.8.46); counter-rotate the complete field when false.
  * Returns null when the host cannot allocate the shade raster.
  */
 export function resolvePathShade(
@@ -464,6 +454,7 @@ export function resolvePathShade(
   frame: ShadeBox, shapeBox: ShadeBox, outline?: FillOutline,
   paintBounds?: ShadeBox,
   work?: ShadeWork,
+  rotation = 0,
 ): CanvasPattern | null {
   if (hasInvertedPathShadeFocus(fill)) return null;
   const focus = pathShadeFocusRect(fill);
@@ -484,9 +475,6 @@ export function resolvePathShade(
     && box.w > 0 && box.h > 0)) return null;
   if (typeof ctx.getTransform !== 'function' || fill.stops.length === 0) return null;
   const outlinePolygons = outline ? flattenFillOutline(outline, ctx, shapeBox) : [];
-  // Explicit resource policy: above this edge budget retain main's native
-  // circle approximation. Never cluster geometry or silently alter its shape.
-  if (outlinePolygons.reduce((n, polygon) => n + polygon.length, 0) > EDGE_LIMIT) return null;
   const coverage = outlinePolygons.length > 0 ? outlinePolygons : [rectangle(shapeBox)];
   // Host topology constrains rect shades too: rect only changes the field,
   // not the evidence boundary. Non-kernel outlines (arrows, chevrons, holes,
@@ -509,7 +497,19 @@ export function resolvePathShade(
   // The authored shade frame stays separate from these raster bounds.
   const painted = boundsOf([...coverageField.flat(), ...rectangle(fieldFrame)]
     .map(p => apply(user, p[0], p[1])));
-  const device = paintBounds ? boundsOf([...rectangle(painted), ...rectangle(paintBounds)]) : painted;
+  let device = paintBounds ? boundsOf([...rectangle(painted), ...rectangle(paintBounds)]) : painted;
+  if (rotation !== 0) {
+    // The non-repeating brush must cover the clipped shape after its paint
+    // frame counter-rotates. Include the inverse-rotated coverage; outside
+    // the authored shade contour the field already uses the final stop.
+    const expanded = rectangle(device).map(point => {
+      const local = apply(userInverse, point[0], point[1]);
+      const turned = counterRotatedFillTransform({ e: local[0], f: local[1] },
+        -rotation, shapeBox.x + shapeBox.w / 2, shapeBox.y + shapeBox.h / 2);
+      return apply(user, turned.e ?? local[0], turned.f ?? local[1]);
+    });
+    device = boundsOf([...rectangle(device), ...expanded]);
+  }
   if (![device.x, device.y, device.w, device.h].every(Number.isFinite)) return null;
   const k = Math.min(1, (MAX_EDGE - 2 * MARGIN - 1) / Math.max(device.w, 1e-9),
     (MAX_EDGE - 2 * MARGIN - 1) / Math.max(device.h, 1e-9));
@@ -663,8 +663,8 @@ export function resolvePathShade(
   const pattern = ctx.createPattern(surface, 'no-repeat');
   if (!pattern || typeof pattern.setTransform !== 'function') return null;
   const auxToUser = multiply(userInverse, auxToDevice);
-  pattern.setTransform({
+  pattern.setTransform(counterRotatedFillTransform({
     a: auxToUser[0], b: auxToUser[1], c: auxToUser[2], d: auxToUser[3], e: auxToUser[4], f: auxToUser[5],
-  });
+  }, rotation, shapeBox.x + shapeBox.w / 2, shapeBox.y + shapeBox.h / 2));
   return pattern;
 }

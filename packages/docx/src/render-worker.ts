@@ -562,6 +562,8 @@ self.onmessage = async (e: MessageEvent<RenderWorkerWireRequest | WorkerSvgDecod
       // Cleanup must not replace the parse failure or its terminal response.
       try { sourceOwner?.closeModelSource(); } catch {}
       releaseRetainedFonts();
+      try { host.run(() => host.disposeArchive()); } catch {}
+      rawParts.clear();
       doc = null;
       reviewIndexInput = null;
     }

@@ -71,9 +71,9 @@ describe('local PP9 automatic numbering', () => {
   });
 
   it('rejects malformed local numbering instead of dropping it', async () => {
-    await expect(materialize(input(extension(41)))).rejects.toThrow(/automatic numbering scheme/);
-    await expect(materialize(input(extension(3, 0)))).rejects.toThrow(/automatic numbering start/);
-    await expect(materialize(input(extension().slice(0, -1)))).rejects.toThrow(/UNSUPPORTED/);
+    await expect(materialize(input(extension(41)))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
+    await expect(materialize(input(extension(3, 0)))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
+    await expect(materialize(input(extension().slice(0, -1)))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   });
 });
 
@@ -82,7 +82,7 @@ it.each([false, true])('validates the signed character position domain without i
     record(0, 4001, concat(little32(2), little16(0), little32(0), little32(2), little32(0x80000), little16(position & 65535))));
   for (const position of [-100, 100]) expect(textOf(await materialize(textSlide(body(position), outline)))).toBe('X');
   for (const position of [-101, 101]) {
-    await expect(materialize(textSlide(body(position), outline))).rejects.toThrow(/character baseline position/);
+    await expect(materialize(textSlide(body(position), outline))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   }
 });
 
@@ -100,8 +100,8 @@ describe('local ruler tabs', () => {
   it('rejects truncated tab arrays and invalid alignments', async () => {
     const invalid = stops.slice();
     new DataView(invalid.buffer).setUint16(4, 65535, true);
-    await expect(materialize(textSlide(body, false, ruler(invalid)))).rejects.toThrow(/ruler tab alignment/);
-    await expect(materialize(textSlide(body, false, record(0, 4006, concat(little32(4), stops.slice(0, -1)))))).rejects.toThrow(/ruler tabs/);
+    await expect(materialize(textSlide(body, false, ruler(invalid)))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
+    await expect(materialize(textSlide(body, false, record(0, 4006, concat(little32(4), stops.slice(0, -1)))))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   });
 });
 
@@ -123,7 +123,7 @@ describe('paragraph text direction', () => {
   });
 
   it('rejects reserved direction values', async () => {
-    for (const direction of [2, 65535]) await expect(materialize(input(direction))).rejects.toThrow(/text direction/);
+    for (const direction of [2, 65535]) await expect(materialize(input(direction))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
   });
 });
 
@@ -177,7 +177,7 @@ describe('text inheritance and placement', () => {
     expect(runs[0]).toMatchObject({ text: 'Text', fontSize: 36, bold: true, color: 'FFFFFF' });
     expect(runs[1]).toMatchObject({ text: 'Text', fontSize: 36, bold: true, color: '000000' });
     expect(runs[2]).toMatchObject({ text: 'Text', fontSize: null, bold: null });
-    await expect(materialize(buildPptFixture(drawing(shape(576, true, false, 999)), undefined, master))).rejects.toThrow(/unresolved PowerPoint master shape/);
+    await expect(materialize(buildPptFixture(drawing(shape(576, true, false, 999)), undefined, master))).rejects.toMatchObject({ code: 'unsupported-content', details: { format: 'ppt', reason: 'source-subset' } });
     if (!skia) return;
     // Against an explicit dark background only the inherited white frame shows white ink.
     presentation.slides[0].background = { fillType: 'solid', color: '10263F' };

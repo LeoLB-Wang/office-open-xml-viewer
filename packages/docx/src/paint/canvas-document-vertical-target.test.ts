@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildPageLayers } from '../layout/page-graph.js';
 import { rasterPaintOccurrencesForPage } from '../layout/text-index.js';
 import type { DocumentLayout, LayoutPage, PaintResourceRegistry } from '../layout/types.js';
+import * as browserImages from './browser-images.js';
 import { renderSelectedDocumentPage } from './canvas-document.js';
-import { TiffDecodeError, type ChartModel, type TiffRenderOptions } from '@silurus/ooxml-core';
+import { OoxmlResourceLimitError, TiffDecodeError, type ChartModel, type TiffRenderOptions } from '@silurus/ooxml-core';
 
 class RecordingContext {
   readonly operations: string[] = [];
@@ -110,9 +111,64 @@ function tiffDimensions(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('vertical OpenType paint target projection', () => {
+  it.each(['image', 'image-planning', 'svg-fallback', 'chart-fill', 'chart-svg-fallback'] as const)(
+    'rejects page rendering on archive resource failures during %s', async (site) => {
+      vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 8, height: 8, close() {} })));
+      const error = new OoxmlResourceLimitError('archive limit', {
+        stage: 'decompression', violation: {
+          format: 'docx', operation: 'extract-image', resource: 'archive-entry',
+          metric: 'actual-inflated-bytes', part: 'word/media/limit.png',
+          limit: 1, observed: 2, configurable: true,
+          usage: { archiveEntryCount: 1, declaredInflatedBytes: 2,
+            distinctInflatedBytes: 2, operationInflatedBytes: 2 },
+        },
+      });
+      const chart = site.startsWith('chart');
+      const svg = site.includes('svg');
+      // Exercise the supplemental chart resolver when no shared preload entry
+      // exists. Its real archive fetch must retain the same terminal contract.
+      if (chart) vi.spyOn(browserImages, 'preloadPaintImages').mockResolvedValueOnce(new Map());
+      const descriptor = chart ? {
+        kind: 'chart' as const, resourceKey: 'chart:limit', intrinsicSize: { widthPt: 80, heightPt: 40 },
+        model: { chartType: 'line', categories: ['A'], series: [{ name: 'S', values: [1],
+          markerFillPaint: { fillType: 'image', stretch: true,
+            imagePath: 'word/media/limit.png', mimeType: 'image/png',
+            ...(svg ? { svgImagePath: 'word/media/original.svg' } : {}),
+          },
+        }] } as ChartModel,
+      } : {
+        kind: 'image' as const, resourceKey: 'image:limit', intrinsicSize: { widthPt: 80, heightPt: 40 },
+        partPath: 'word/media/limit.png', mimeType: site === 'image-planning' ? 'image/emf' : 'image/png',
+        ...(svg ? { svgImagePath: 'word/media/original.svg' } : {}),
+      };
+      const resources: PaintResourceRegistry = {
+        keys: [descriptor.resourceKey], descriptors: [descriptor],
+        resolve() { return descriptor as never; },
+      };
+      const selected: LayoutPage = { ...page, layers: { ...page.layers,
+        capabilities: { requiresElementBackedVerticalGlyphPaint: false, resourceKeys: [descriptor.resourceKey] },
+      } };
+      const fetchImage = vi.fn(async (path: string) => {
+        if ((!svg && site !== 'image-planning') || path.endsWith('.svg')
+          || (site === 'image-planning' && fetchImage.mock.calls.length === 1)) throw error;
+        return new Blob(['healthy'], { type: 'image/png' });
+      });
+      const canvas = new WorkerCanvas();
+      await expect(renderSelectedDocumentPage(
+        { pages: [selected], diagnostics: [] }, selected, canvas as unknown as OffscreenCanvas,
+        { dpr: 1, parseError: false, registry: resources, textRuns: [], fetchImage,
+          rasterPaintOccurrences: [{ resourceKey: descriptor.resourceKey,
+            resourceKind: chart ? 'chart' : 'image', widthPt: 80, heightPt: 40 }],
+        },
+      )).rejects.toBe(error);
+      expect(canvas.context.operations).not.toContain('clearRect');
+      expect(fetchImage).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('sizes a grouped image decode from its final retained paint frame under an adaptive budget', async () => {
     const resourceKey = 'image:body:grouped';
     const finalFrame = { xPt: 20, yPt: 10, widthPt: 8, heightPt: 9 };

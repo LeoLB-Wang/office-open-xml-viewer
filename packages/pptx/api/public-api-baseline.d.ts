@@ -1030,7 +1030,13 @@ export interface Duotone {
     clr1: string;
     clr2: string;
 }
+export interface EquationBranchFallback {
+    elements: SlideElement[];
+    before: number;
+    after: number;
+}
 export interface EquationRun {
+    fallbackText?: string;
     type: 'math';
     nodes: MathNode[];
     display: boolean;
@@ -1293,7 +1299,7 @@ export interface MediaElement {
     mediaPath: string;
     mimeType: string;
 }
-const MODEL_SOURCE_MODULE_PROTOCOL = 'ooxml-model-source-module/v1';
+const MODEL_SOURCE_MODULE_PROTOCOL = 'ooxml-model-source-module/v2';
 export interface ModelSource<T extends ModelSourceTarget = ModelSourceTarget> {
     readonly target: T;
     claim(bytes: Uint8Array): boolean;
@@ -1326,12 +1332,13 @@ export class OoxmlDecodedImageLimitError extends RangeError {
     readonly code: 'ooxml-decoded-image-limit';
     constructor(metric: OoxmlDecodedImageLimitMetric, limit: number, observed: number);
 }
-export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work';
+export type OoxmlDecodedImageLimitMetric = 'image-dimension' | 'image-pixels' | 'active-decoded-bytes' | 'image-effect-count' | 'image-effect-work' | 'metafile-path-commands' | 'metafile-record-points' | 'metafile-record-polygons' | 'metafile-record-rectangles' | 'metafile-record-text-units';
 export class OoxmlError extends Error {
     readonly code: OoxmlErrorCode;
-    constructor(code: OoxmlErrorCode, message: string);
+    readonly details?: OoxmlUnsupportedContentDetails;
+    constructor(code: OoxmlErrorCode, message: string, details?: OoxmlUnsupportedContentDetails);
 }
-export type OoxmlErrorCode = 'encrypted' | 'invalid-password' | 'unsupported-encryption' | 'legacy-binary-format' | 'not-ooxml' | 'invalid-numbering';
+export type OoxmlErrorCode = 'encrypted' | 'invalid-password' | 'unsupported-encryption' | 'legacy-binary-format' | 'not-ooxml' | 'invalid-numbering' | 'unsupported-content';
 export type OoxmlErrorStage = 'container' | 'decompression' | 'parsing' | 'serialization' | 'layout' | 'rendering' | 'worker';
 export type OoxmlFormat = 'docx' | 'xlsx' | 'pptx';
 export type OoxmlResourceLimit = number | null;
@@ -1404,6 +1411,10 @@ export interface OoxmlResourceViolation {
     readonly configurable: boolean;
     readonly usage: OoxmlResourceUsageSnapshot;
 }
+export interface OoxmlUnsupportedContentDetails {
+    readonly format: string;
+    readonly reason: 'source-subset';
+}
 export interface OpenedModelSource<TArchive> {
     readonly archive: TArchive;
     readonly viewDefaults?: Readonly<Record<string, boolean>>;
@@ -1411,6 +1422,11 @@ export interface OpenedModelSource<TArchive> {
 }
 export function openExternalHyperlink(url: string, allowed?: readonly string[], win?: Pick<Window, 'open'> | undefined): boolean;
 export interface Paragraph extends Paragraph__emitterCollision1 {
+    mathFallbacks?: {
+        start: number;
+        end: number;
+        text: string;
+    }[];
     eaLnBrk: boolean;
     fontAlgn?: 't' | 'ctr' | 'b';
     defTabSz?: number;
@@ -1722,6 +1738,7 @@ export interface PptxSlidePoint {
     readonly y: number;
 }
 export interface PptxTextRunInfo {
+    renderElementIndex?: number;
     elementIndex?: number;
     origin?: SlideElementOrigin;
     shapeId?: string;
@@ -1955,6 +1972,7 @@ export interface Shadow {
     rotWithShape?: boolean;
 }
 export interface ShapeElement {
+    mathFallback?: EquationBranchFallback;
     type: 'shape';
     x: number;
     y: number;
@@ -1995,6 +2013,12 @@ export interface ShapeElement {
     hyperlinkAction?: string;
 }
 export interface Slide {
+    theme?: {
+        defaultTextColor: string | null;
+        majorFont: string | null;
+        minorFont: string | null;
+        hlinkColor: string | null;
+    };
     index: number;
     slideNumber: number;
     partName?: string;
@@ -2084,6 +2108,7 @@ export interface TableCell {
     vMerge: boolean;
 }
 export interface TableElement {
+    mathFallback?: EquationBranchFallback;
     background?: Fill;
     type: 'table';
     id?: string;
