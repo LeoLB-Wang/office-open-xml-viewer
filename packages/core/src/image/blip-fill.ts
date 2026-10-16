@@ -35,6 +35,14 @@ export function blendRgba(base: ArrayLike<number>, bi: number, fill: ArrayLike<n
   }
   out[oi + 3] = Math.round(a * 255);
 }
+// Resource policy: geometry must remain finite and retain integer tile parity.
+// A finite work product alone cannot prove that an authored grid is iterable.
+function rejectFillGeometry(): never {
+  throw new OoxmlDecodedImageLimitError('image-effect-work', MAX_IMAGE_EFFECT_PIXEL_WORK, Number.MAX_SAFE_INTEGER);
+}
+function finiteGeometry(...values: number[]): void {
+  if (!values.every(v => Number.isFinite(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER)) rejectFillGeometry();
+}
 export function effectFillPixels(
   fill: BlipEffectFill, input: EffectBuffer, emuX: number, emuY: number, runtime: BlipEffectRuntime,
 ): EffectBuffer {
@@ -62,6 +70,8 @@ export function effectFillPixels(
   const sx = 12700 / emuX, sy = 12700 / emuY;
   const w = f.width / sx, h = f.height / sy;
   try {
+    finiteGeometry(f.x, f.y, sx, sy, w, h);
+    if (!(sx > 0 && sy > 0 && w >= 0 && h >= 0)) rejectFillGeometry();
     ctx.translate(f.x, f.y); ctx.scale(sx, sy);
     if (fill.fillType === 'image') {
       const image = runtime.images?.get(fill);
@@ -75,6 +85,8 @@ export function effectFillPixels(
         // decoder policy when embedded DPI is unavailable.
         const tw = natural.w * 72 / (fill.dpi || 96) * (tile.sx ?? 1);
         const th = natural.h * 72 / (fill.dpi || 96) * (tile.sy ?? 1);
+        finiteGeometry(tw, th);
+        if (!(tw > 0 && th > 0)) rejectFillGeometry();
         const cols = Math.ceil(w / tw) + 2, rows = Math.ceil(h / th) + 2;
         const work = cols * rows;
         if (!Number.isSafeInteger(work) || work > MAX_IMAGE_EFFECT_PIXEL_WORK) {
@@ -87,19 +99,32 @@ export function effectFillPixels(
         const ay = alignment.startsWith('b') ? h - th
           : ['l', 'ctr', 'r'].includes(alignment) ? (h - th) / 2 : 0;
         const ox = ax + (tile.tx ?? 0) / 12700, oy = ay + (tile.ty ?? 0) / 12700;
+        finiteGeometry(ox, oy);
         const x0 = Math.floor(-ox / tw), y0 = Math.floor(-oy / th);
-        for (let y = y0; y < y0 + rows; y++) for (let x = x0; x < x0 + cols; x++) {
-          const flipX = (tile.flip === 'x' || tile.flip === 'xy') && Math.abs(x % 2) === 1;
-          const flipY = (tile.flip === 'y' || tile.flip === 'xy') && Math.abs(y % 2) === 1;
-          ctx.save(); ctx.translate(ox + x * tw, oy + y * th);
+        if (![x0, y0].every(Number.isSafeInteger)) rejectFillGeometry();
+        // §20.1.8.58: translation changes phase, not the number of tiles.
+        // Reduce coordinates before painting; retain the original index parity
+        // for flip. Bounded counters always advance, even near IEEE-754 limits.
+        const phase = (offset: number, size: number) => {
+          const r = offset % size;
+          return r > 0 ? r - size : r;
+        };
+        const px = phase(ox, tw), py = phase(oy, th);
+        finiteGeometry(px + (cols - 1) * tw, py + (rows - 1) * th);
+        for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+          const flipX = (tile.flip === 'x' || tile.flip === 'xy') && Math.abs((x0 % 2 + col) % 2) === 1;
+          const flipY = (tile.flip === 'y' || tile.flip === 'xy') && Math.abs((y0 % 2 + row) % 2) === 1;
+          ctx.save(); ctx.translate(px + col * tw, py + row * th);
           ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
           drawImageCropped(ctx, image, fill.srcRect, flipX ? -tw : 0, flipY ? -th : 0, tw, th);
           ctx.restore();
         }
       } else {
         const r = fill.fillRect;
-        drawImageCropped(ctx, image, fill.srcRect, (r?.l ?? 0) * w, (r?.t ?? 0) * h,
-          w * (1 - (r?.l ?? 0) - (r?.r ?? 0)), h * (1 - (r?.t ?? 0) - (r?.b ?? 0)));
+        const dx = (r?.l ?? 0) * w, dy = (r?.t ?? 0) * h;
+        const dw = w * (1 - (r?.l ?? 0) - (r?.r ?? 0)), dh = h * (1 - (r?.t ?? 0) - (r?.b ?? 0));
+        finiteGeometry(dx, dy, dw, dh, dx + dw, dy + dh);
+        drawImageCropped(ctx, image, fill.srcRect, dx, dy, dw, dh);
       }
       ctx.restore();
     } else {

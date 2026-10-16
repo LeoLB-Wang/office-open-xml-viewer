@@ -206,6 +206,9 @@ export function paintChartThreeDSurfacePicture(
       const firstRow = Math.floor(-origin.y / tileMetrics.tileH);
       const lastColumn = Math.ceil((width - origin.x) / tileMetrics.tileW);
       const lastRow = Math.ceil((height - origin.y) / tileMetrics.tileH);
+      // Resource policy: safe work counts alone do not prove that shifted
+      // indices advance or retain alternate-tile parity in IEEE-754.
+      if (![firstColumn, firstRow, lastColumn, lastRow].every(Number.isSafeInteger)) return false;
       const columns = Math.max(0, lastColumn - firstColumn);
       const rows = Math.max(0, lastRow - firstRow);
       const repetitions = columns * rows;
@@ -293,8 +296,10 @@ export function paintChartThreeDSurfacePicture(
         const scaleY = tileFace.canvas.height / tileFace.height;
         tileFace.context.save();
         tileFace.context.scale(scaleX, scaleY);
-        for (let row = tileFace.firstRow; row < tileFace.lastRow; row++) {
-          for (let column = tileFace.firstColumn; column < tileFace.lastColumn; column++) {
+        for (let ri = 0; ri < tileFace.lastRow - tileFace.firstRow; ri++) {
+          const row = tileFace.firstRow + ri;
+          for (let ci = 0; ci < tileFace.lastColumn - tileFace.firstColumn; ci++) {
+            const column = tileFace.firstColumn + ci;
             const dx = tileFace.origin.x + column * tileMetrics.tileW;
             const dy = tileFace.origin.y + row * tileMetrics.tileH;
             const mirrorX = tileMetrics.flipX && Math.abs(column) % 2 === 1;

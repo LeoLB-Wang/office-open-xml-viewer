@@ -1233,8 +1233,16 @@ export function paintChartImageFill(
   const originY = y + origin.y;
   const firstColumn = Math.floor((x - originX) / tileW) - 1;
   const firstRow = Math.floor((y - originY) / tileH) - 1;
-  for (let row = firstRow; row < firstRow + rows; row++) {
-    for (let column = firstColumn; column < firstColumn + columns; column++) {
+  // A bounded repetition count does not make a huge starting index iterable.
+  // Resource policy: decline grids whose integer parity cannot be represented.
+  if (![firstColumn, firstRow, firstColumn + columns, firstRow + rows].every(Number.isSafeInteger)) {
+    ctx.restore();
+    return false;
+  }
+  for (let ri = 0; ri < rows; ri++) {
+    const row = firstRow + ri;
+    for (let ci = 0; ci < columns; ci++) {
+      const column = firstColumn + ci;
       const dx = originX + column * tileW;
       const dy = originY + row * tileH;
       const mirrorX = flipX && Math.abs(column) % 2 === 1;
