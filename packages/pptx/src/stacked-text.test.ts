@@ -136,11 +136,12 @@ describe('pptx stacked vertical text (wordArtVert / wordArtVertRtl)', () => {
     expect(calls.some((c) => c.text === '「')).toBe(false);
   });
 
-  it('uses bold-specific vert coverage for the drawing face', () => {
+  it.each([false, true])('uses bold-specific vert coverage for the drawing face (italic=%s)', (italic) => {
     const advances = [false, true].map((bold) => {
       const { ctx } = mockCtx();
       const b = body('ーA', 'wordArtVert', 'Microsoft JhengHei');
       (b.paragraphs[0].runs[0] as TextRunData).bold = bold;
+      (b.paragraphs[0].runs[0] as TextRunData).italic = italic;
       const runs: PptxTextRunInfo[] = [];
       renderTextBody(ctx, b, 0, 0, 100, 470, SCALE,
         null, 0, false, false, '#000000', undefined, undefined, (run) => runs.push(run));

@@ -24,11 +24,14 @@ import { findReferenceFontMetrics } from '../fonts/reference-font-metrics.js';
 /** 7/6: the ratio of a stacked cell to the face box. */
 export const STACKED_CELL_FACTOR = 7 / 6;
 
-/** Select the requested face (including localized/PostScript aliases), falling
- * back to the family's available weight/style for named faces or synthetic styles.
- * Keep the same source preference for the face box and vert coverage. */
+/** Library policy: select the requested weight/style, then relax style before
+ * weight so synthetic italic retains the requested weight's metrics and coverage.
+ * Finally allow any weight for named cuts (e.g. Medium/Light aliases). Keep the
+ * same source preference for the face box and vert coverage at every step. */
 function stackedProfile(family: string, bold: boolean, italic: boolean) {
-  let profiles = findReferenceFontMetrics(family, { weight: bold ? 700 : 400, style: italic ? 'italic' : 'normal' });
+  const weight = bold ? 700 : 400;
+  let profiles = findReferenceFontMetrics(family, { weight, style: italic ? 'italic' : 'normal' });
+  if (profiles.length === 0) profiles = findReferenceFontMetrics(family, { weight });
   if (profiles.length === 0) profiles = findReferenceFontMetrics(family);
   return profiles.find((p) => p.source === 'macos-supplemental')
     ?? profiles.find((p) => p.source === 'office-mac') ?? profiles[0];

@@ -68,13 +68,13 @@ describe('Excel DrawingML stacked WordArt', () => {
     expect(calls[1].y - calls[0].y).toBeCloseTo((7 / 6) * (2636 / 2048) * 24, 6);
   });
 
-  it('uses bold-specific vert coverage before wrapping shape text', () => {
+  it.each([false, true])('uses bold-specific vert coverage before wrapping shape text (italic=%s)', (italic) => {
     const nextGlyphX = [false, true].map((bold) => {
       const { ctx, calls } = record();
       drawShapeText(ctx, body('wordArtVert', {
         wrap: 'square',
         paragraphs: [{ align: 'l', runs: [{ type: 'text', text: 'ーA', size: 18,
-          bold, italic: false, fontFace: 'Microsoft JhengHei' }] }],
+          bold, italic, fontFace: 'Microsoft JhengHei' }] }],
       }), 200, 50, 1);
       return calls[1].x;
     });

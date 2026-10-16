@@ -157,6 +157,35 @@ describe('stacked face and character tables', () => {
     expect(stackedVerticalGlyph('Yu Gothic Medium', cp('〈'))).toBe(false);
   });
 
+  it('preserves bold coverage and metrics when the italic face is missing', () => {
+    for (const ch of 'ー‥') {
+      const cp = ch.codePointAt(0) as number;
+      expect(stackedVerticalGlyph('Microsoft JhengHei', cp, true, true)).toBe(false);
+      expect(stackedVerticalGlyph('MicrosoftJhengHeiBold', cp, true, true)).toBe(false);
+    }
+    // Yu Gothic's bold face box differs from Regular, unlike JhengHei's.
+    expect(stackedFaceBox('Yu Gothic', true, true))
+      .toEqual({ ascent: 2024 / 2048, descent: 612 / 2048 });
+  });
+
+  it('uses regular coverage and metrics when only italic is requested but missing', () => {
+    for (const ch of 'ー‥') {
+      expect(stackedVerticalGlyph('Microsoft JhengHei', ch.codePointAt(0) as number, false, true)).toBe(true);
+    }
+    expect(stackedFaceBox('Yu Gothic', false, true))
+      .toEqual({ ascent: 2017 / 2048, descent: 619 / 2048 });
+  });
+
+  it('retains a named weight when the requested weight is missing', () => {
+    for (const [bold, italic] of [[false, false], [true, true]] as const) {
+      // Medium has no vert substitution for 〈, whereas Regular does.
+      expect(stackedVerticalGlyph('Yu Gothic Medium', 0x3008, bold, italic)).toBe(false);
+      expect(stackedVerticalGlyph('Yu Gothic Medium', 0xff08, bold, italic)).toBe(true);
+      expect(stackedFaceBox('Yu Gothic Medium', bold, italic))
+        .toEqual({ ascent: 2028 / 2048, descent: 608 / 2048 });
+    }
+  });
+
   it('turns only the measured set sideways and knows which faces have vertical glyphs', () => {
     const cp = (c: string) => c.codePointAt(0) as number;
     for (const c of '(（「、ー…∥') expect(stackedSidewaysCharacter(cp(c)), c).toBe(true);
