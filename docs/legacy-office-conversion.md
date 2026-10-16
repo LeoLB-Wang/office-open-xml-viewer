@@ -60,7 +60,7 @@ Each factory accepts the same optional settings:
 interface LegacySourceOptions {
   wasmUrl?: string; // absolute URL of the reader's WASM
   moduleUrl?: string; // absolute URL of the reader's source module
-  maxInputBytes?: number; // defaults to, and may not exceed, 256 MiB
+  maxInputBytes?: number; // optional caller limit; omitted means no whole-file gate
 }
 ```
 
@@ -106,9 +106,15 @@ source does not claim takes the unchanged OOXML path, so:
 - encrypted OOXML packages keep their existing encryption errors;
 - configuring `legacyDocSource()` does not enable XLS or PPT input.
 
-Claimed input larger than `maxInputBytes` throws a `RangeError`. The limit is
-resource policy, not an Office format limit. After a source claims a file, a
-reader failure rejects the load: there is no fallback to another source or to
+When the caller sets `maxInputBytes`, claimed input larger than that positive
+safe integer throws a `RangeError`. There is no default or library-imposed
+whole-file size ceiling. Applications that require the former 256 MiB input
+limit must pass `maxInputBytes: 256 * 1024 * 1024` explicitly. Source copies remain
+fallible: allocation failure is a classified resource error. Internal budgets
+apply to actual inflated or retained work, rather than compressed or declared
+sizes. These budgets are library policy, not Office format limits.
+
+After a source claims a file, a reader failure rejects the load: there is no fallback to another source or to
 the OOXML path. Password-protected legacy binaries, pre-CFB Office formats and
 unsupported binary structures are rejected by the readers. These checks are
 structural, never filename-based.

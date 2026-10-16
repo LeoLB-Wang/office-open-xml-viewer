@@ -47,7 +47,6 @@ export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends 
   config: Readonly<{
     label: string;
     format?: LegacyFamily;
-    maximumSourceBytes: number;
     loadGlue(): Promise<G>;
     resolveWasm(wasmUrl: string): Promise<unknown>;
     construct(glue: G, bytes: Uint8Array, construction?: C): A;
@@ -108,9 +107,6 @@ export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends 
       const poisoned = failure();
       if (poisoned) throw poisoned;
       const validatedUrl = validateDirectWasmUrl(wasmUrl, config.label);
-      if (bytes.byteLength > config.maximumSourceBytes) {
-        throw new RangeError(`${config.label} direct source byte budget exceeded`);
-      }
       throwIfAborted(signal, config.label);
       let glue: G;
       try {

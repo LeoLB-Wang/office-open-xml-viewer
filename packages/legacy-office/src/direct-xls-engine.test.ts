@@ -1,12 +1,11 @@
 // XLS wiring of the shared direct-source runtime: the generated glue's
-// LegacyXlsWorkbook, its native close, the 256 MiB source budget and the
+// LegacyXlsWorkbook, its native close, and
 // initialization/abort ownership rules. URL validation and trap containment
 // are tested once in direct-source-runtime.test.ts; the Normal-font host
 // layout is the XLSX host's (packages/xlsx host-layout.ts), not the engine's.
 import { describe, expect, it, vi } from 'vitest';
 import {
   createLegacyXlsSourceEngine,
-  MAX_LEGACY_XLS_SOURCE_BYTES,
   type LegacyXlsGlue,
   type LegacyXlsNativeArchive,
 } from './direct-xls-engine.js';
@@ -54,15 +53,6 @@ describe('direct XLS source engine', () => {
     expect(archives[0]!.closeNative.mock.invocationCallOrder[0])
       .toBeLessThan(archives[0]!.released.mock.invocationCallOrder[0]!);
     expect(() => first.archive.parse()).toThrow(/closed/);
-  });
-
-  it('rejects the source byte budget before initialization', async () => {
-    const load = vi.fn();
-    const engine = createLegacyXlsSourceEngine(load, vi.fn());
-    await expect(engine.open({ byteLength: MAX_LEGACY_XLS_SOURCE_BYTES + 1 } as Uint8Array, wasmUrl))
-      .rejects.toThrow('byte budget');
-    expect(MAX_LEGACY_XLS_SOURCE_BYTES).toBe(256 * 1024 * 1024);
-    expect(load).not.toHaveBeenCalled();
   });
 
   it('cancels pending initialization and cleans an archive aborted after construction', async () => {

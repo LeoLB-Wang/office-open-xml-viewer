@@ -1,11 +1,10 @@
 // PPT wiring of the shared direct-source runtime: the generated glue's
-// LegacyPptPresentation, its native close, the 256 MiB source budget and the
+// LegacyPptPresentation, its native close, and
 // initialization/abort/cleanup ownership rules. URL validation, pinning and
 // trap containment are tested once in direct-source-runtime.test.ts.
 import { describe, expect, it, vi } from 'vitest';
 import {
   createLegacyPptSourceEngine,
-  MAX_LEGACY_PPT_SOURCE_BYTES,
   type LegacyPptGlue,
   type LegacyPptNativeArchive,
 } from './direct-ppt-engine.js';
@@ -55,14 +54,6 @@ describe('direct PPT source engine', () => {
     expect(() => second.archive.assert_healthy()).not.toThrow();
     expect(archives[1]!.released).not.toHaveBeenCalled();
     second.closeArchive();
-  });
-
-  it('rejects the source byte budget before loading the glue', async () => {
-    const load = vi.fn();
-    const engine = createLegacyPptSourceEngine(load, vi.fn());
-    await expect(engine.open({ byteLength: MAX_LEGACY_PPT_SOURCE_BYTES + 1 } as Uint8Array, wasmUrl)).rejects.toThrow('byte budget');
-    expect(MAX_LEGACY_PPT_SOURCE_BYTES).toBe(256 * 1024 * 1024);
-    expect(load).not.toHaveBeenCalled();
   });
 
   it('aborts one pending owner promptly while the shared initialization serves another', async () => {

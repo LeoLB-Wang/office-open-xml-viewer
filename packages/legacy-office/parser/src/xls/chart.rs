@@ -23,7 +23,7 @@ pub(crate) fn parse(
     references: &project::References<'_>,
     budget: &std::cell::Cell<usize>,
 ) -> Result<Option<ooxml_common::chart::ChartModel>, String> {
-    let raw = reader::read(records)?;
+    let raw = reader::read(records, budget)?;
     project::project_bounded(&raw, palette, references, budget)
 }
 
@@ -156,6 +156,9 @@ impl<'a> Cells<'a> {
             for row in rows.0..=rows.1 {
                 for column in columns.0..=columns.1 {
                     if output.len() >= MAX_REFERENCED_CELLS {
+                        // Resource policy must not turn authored references into
+                        // an unresolved formula and hence empty/generated data.
+                        self.budget_exceeded.set(true);
                         return None;
                     }
                     let left = self

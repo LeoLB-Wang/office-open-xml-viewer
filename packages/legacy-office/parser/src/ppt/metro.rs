@@ -58,8 +58,6 @@ use pptx_model::{ShapeElement, TextRun};
 
 /// Implementation resource policy, not a format limit.
 #[cfg(feature = "direct-ppt")]
-const MAX_BLOB_BYTES: usize = 4 * 1024 * 1024;
-#[cfg(feature = "direct-ppt")]
 const MAX_PART_BYTES: u64 = 1024 * 1024;
 #[cfg(feature = "direct-ppt")]
 const MAX_PACKAGE_BYTES: u64 = 4 * 1024 * 1024;
@@ -170,12 +168,11 @@ pub(in crate::ppt) fn master_theme(
 }
 
 /// Inspect raw metadata before opening: passwordless ZIP access rejects
-/// encrypted entries before it can return a ZipFile. These embedded-part
-/// ceilings are implementation resource policy, not representational limits.
+/// encrypted entries before it can return a ZipFile. Size declarations are
+/// untrusted metadata; callers bound actual decompressor output instead.
 fn open_part<'a, R: std::io::Read + std::io::Seek>(
     archive: &'a mut zip::ZipArchive<R>,
     name: &str,
-    maximum: u64,
 ) -> Result<zip::read::ZipFile<'a>, String> {
     let unreadable = || unsupported("unreadable PowerPoint embedded part");
     let index = crate::opc_part::entry_index(archive, name).ok_or_else(unreadable)?;
@@ -184,11 +181,6 @@ fn open_part<'a, R: std::io::Read + std::io::Seek>(
         if entry.encrypted() {
             return Err(crate::rejection::encryption(
                 "encrypted PowerPoint embedded ZIP entry",
-            ));
-        }
-        if entry.size() > maximum {
-            return Err(crate::rejection::resource(
-                "PowerPoint embedded part byte budget exceeded",
             ));
         }
     }
@@ -214,29 +206,40 @@ fn theme_part(package: &[u8], decoded_budget: &mut usize) -> Result<String, Stri
                 "encrypted PowerPoint theme ZIP entry",
             ));
         }
-        if entry.size() > MAX_THEME_BYTES {
-            return Err(crate::rejection::resource(
-                "PowerPoint theme part byte budget exceeded",
-            ));
-        }
     }
     let mut read = |name: &str| -> Result<String, String> {
-        let entry = open_part(&mut archive, name, MAX_THEME_BYTES)?;
-        // Charge every inflated part before allocation. All main masters
-        // share this budget; per-entry limits alone do not bound retention.
-        let declared_bytes = usize::try_from(entry.size()).map_err(|_| {
-            crate::rejection::resource("PowerPoint theme size exceeds this platform")
-        })?;
-        super::charge_text(decoded_budget, declared_bytes)?;
-        let mut text = String::new();
-        entry
-            .take(declared_bytes as u64 + 1)
-            .read_to_string(&mut text)
-            .map_err(|_| unreadable())?;
-        // Forged ZIP lengths are malformed, independently of resource policy.
-        if text.len() != declared_bytes {
+        let entry = open_part(&mut archive, name)?;
+        // Charge actual output across all masters, never ZIP declarations.
+        let mut entry = entry;
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 8192];
+        loop {
+            let allowance = (MAX_THEME_BYTES as usize - bytes.len())
+                .min(*decoded_budget)
+                .saturating_add(1)
+                .min(chunk.len());
+            let count = entry
+                .read(&mut chunk[..allowance])
+                .map_err(|_| unreadable())?;
+            if count == 0 {
+                break;
+            }
+            super::charge_text(decoded_budget, count)?;
+            if bytes.len() + count > MAX_THEME_BYTES as usize {
+                return Err(crate::rejection::resource(
+                    "PowerPoint theme part byte budget exceeded",
+                ));
+            }
+            bytes
+                .try_reserve(count)
+                .map_err(|_| crate::rejection::resource("PowerPoint theme allocation failed"))?;
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        // Header consistency is integrity validation after measured work.
+        if bytes.len() as u64 != entry.size() {
             return Err(unreadable());
         }
+        let text = String::from_utf8(bytes).map_err(|_| unreadable())?;
         Ok(text)
     };
     // Follow the package relationships: root -> theme manager -> theme.
@@ -376,12 +379,17 @@ fn alternative_part(blob: &[u8]) -> Result<Option<(String, String)>, String> {
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML package");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
-    let entry = open_part(&mut archive, "_rels/.rels", MAX_PART_BYTES)?;
+    let entry = open_part(&mut archive, "_rels/.rels")?;
     let mut rels = String::new();
     entry
         .take(MAX_PART_BYTES + 1)
         .read_to_string(&mut rels)
         .map_err(|_| unreadable())?;
+    if rels.len() as u64 > MAX_PART_BYTES {
+        return Err(crate::rejection::resource(
+            "PowerPoint embedded part byte budget exceeded",
+        ));
+    }
     let doc = parse_xml(&rels)?;
     let mut found = None;
     for node in doc.root_element().children().filter(|n| n.is_element()) {
@@ -421,7 +429,7 @@ fn read_blob_reference_part<R: std::io::Read + std::io::Seek>(
 ) -> Result<String, String> {
     use std::io::Read;
     let unreadable = || unverifiable("relationship");
-    let entry = open_part(archive, name, MAX_PART_BYTES)?;
+    let entry = open_part(archive, name)?;
     let mut text = String::new();
     entry
         .take(MAX_PART_BYTES + 1)
@@ -556,7 +564,7 @@ fn sole_blob_image(blob: &[u8], part: &str, image_path: &str) -> Result<Vec<u8>,
     if target != image_path {
         return Err(unreadable());
     }
-    let entry = open_part(&mut archive, &target, MAX_PART_BYTES)?;
+    let entry = open_part(&mut archive, &target)?;
     let mut bytes = Vec::new();
     entry
         .take(MAX_PART_BYTES + 1)
@@ -692,7 +700,7 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
             Some("jpg" | "jpeg") => "jpg",
             _ => return Err(unreadable()),
         };
-        let entry = open_part(&mut archive, &path, MAX_PART_BYTES)?;
+        let entry = open_part(&mut archive, &path)?;
         let mut bytes = Vec::new();
         entry
             .take(MAX_PART_BYTES + 1)
@@ -995,17 +1003,12 @@ pub(in crate::ppt) fn adopt(
     text_budget: &mut usize,
     model_budget: &mut usize,
 ) -> Result<Option<ShapeElement>, String> {
-    if blob.len() > MAX_BLOB_BYTES {
-        return Err(crate::rejection::resource(
-            "PowerPoint alternative shape XML exceeds its size limit",
-        ));
-    }
-    // One parse attempt of work, and the package's declared inflated size
-    // against the session's decoded-text byte budget.
+    // One parse attempt of work. Charge the session for actual output of
+    // each package entry, including unselected entries, before XML projection.
     *work_budget = work_budget.checked_sub(1).ok_or_else(|| {
         crate::rejection::resource("PowerPoint alternative shape XML work budget exceeded")
     })?;
-    super::charge_text(text_budget, inflated_size(blob)?)?;
+    measure_inflation(blob, text_budget)?;
     let Some((kind, part)) = alternative_part(blob)? else {
         return Ok(None);
     };
@@ -1295,7 +1298,7 @@ struct PlaceholderLocals {
 /// shape relies on a missing layout. Inspect direct `p:spPr` components and
 /// authored `p:style` references to distinguish local style from inherited
 /// layout properties (ECMA-376 Annex L.3.2.3). The archive and part sizes
-/// have already passed `inflated_size` and the PPTX
+/// have already passed `measure_inflation` and the PPTX
 /// standalone parser's bounds; this second read is limited to placeholders.
 #[cfg(feature = "direct-ppt")]
 fn placeholder_locals(blob: &[u8], part: &str, theme: &Theme) -> Result<PlaceholderLocals, String> {
@@ -1303,7 +1306,7 @@ fn placeholder_locals(blob: &[u8], part: &str, theme: &Theme) -> Result<Placehol
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML placeholder");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
-    let entry = open_part(&mut archive, part, MAX_PART_BYTES)?;
+    let entry = open_part(&mut archive, part)?;
     let mut xml = String::new();
     entry
         .take(MAX_PART_BYTES + 1)
@@ -1405,32 +1408,59 @@ pub(in crate::ppt) fn adopt(
     Err(unverifiable("part"))
 }
 
-/// Sum of the package entries' declared uncompressed sizes, bounded by the
-/// package policy. The PPTX package reader enforces the same limits while
-/// inflating.
+/// Library resource policy for actual decompressor work, not ZIP metadata.
+/// Drain with a fixed buffer so a crossing fails before retaining an oversized
+/// part. The text ledger covers each entry once per adoption attempt; later
+/// projection reads are independently bounded by the same per-part policy.
+/// Validate size consistency only after inflation: forged declarations are
+/// malformed ZIP data, not evidence of a resource violation. This also keeps
+/// the ordinary PPTX parser's declared-size checks from becoming admission
+/// policy for an alternative that has already passed this actual-byte gate.
 #[cfg(feature = "direct-ppt")]
-fn inflated_size(blob: &[u8]) -> Result<usize, String> {
+fn measure_inflation(blob: &[u8], text_budget: &mut usize) -> Result<(), String> {
+    use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML package");
     let oversized =
         || crate::rejection::resource("PowerPoint alternative shape XML exceeds its size limit");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
     let mut total = 0u64;
+    let mut buffer = [0; 8192];
     for index in 0..archive.len() {
-        let entry = archive.by_index_raw(index).map_err(|_| unreadable())?;
-        if entry.encrypted() {
+        if archive
+            .by_index_raw(index)
+            .map_err(|_| unreadable())?
+            .encrypted()
+        {
             return Err(crate::rejection::encryption(
                 "encrypted PowerPoint alternative ZIP entry",
             ));
         }
-        if entry.size() > MAX_PART_BYTES {
-            return Err(oversized());
+        let mut entry = archive.by_index(index).map_err(|_| unreadable())?;
+        let mut actual = 0u64;
+        loop {
+            let allowance = (MAX_PART_BYTES - actual)
+                .min(MAX_PACKAGE_BYTES - total)
+                .min(*text_budget as u64)
+                .saturating_add(1)
+                .min(buffer.len() as u64) as usize;
+            let count = entry
+                .read(&mut buffer[..allowance])
+                .map_err(|_| unreadable())?;
+            if count == 0 {
+                break;
+            }
+            super::charge_text(text_budget, count)?;
+            actual += count as u64;
+            total += count as u64;
+            if actual > MAX_PART_BYTES || total > MAX_PACKAGE_BYTES {
+                return Err(oversized());
+            }
         }
-        total = total.checked_add(entry.size()).ok_or_else(oversized)?;
+        if actual != entry.size() {
+            return Err(unreadable());
+        }
     }
-    if total > MAX_PACKAGE_BYTES {
-        return Err(oversized());
-    }
-    usize::try_from(total).map_err(|_| oversized())
+    Ok(())
 }
 
 #[cfg(any(test, feature = "direct-ppt"))]
@@ -3258,7 +3288,7 @@ mod tests {
                 Some(Theme::Readable { .. })
             ));
             // Central-directory uncompressed size, with real deflate data and
-            // CRC intact. The reader must bound actual reads by the precharge.
+            // CRC intact. Charge actual reads, then reject the inconsistent header.
             let offset = blob
                 .windows(4)
                 .enumerate()
@@ -3443,6 +3473,77 @@ mod tests {
             assert!(matches!(adopted.fill, Some(Fill::Solid { color }) if color == "FF0000"));
         }
 
+        fn inflation_package(sizes: &[usize]) -> Vec<u8> {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for (index, size) in sizes.iter().enumerate() {
+                writer
+                    .start_file(
+                        format!("{index}.xml"),
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated),
+                    )
+                    .unwrap();
+                writer.write_all(&vec![b'x'; *size]).unwrap();
+            }
+            writer.finish().unwrap().into_inner()
+        }
+
+        fn declared_size(mut bytes: Vec<u8>, size: u32) -> Vec<u8> {
+            for (signature, offset) in [(b"PK\x03\x04", 22), (b"PK\x01\x02", 24)] {
+                let at = bytes.windows(4).position(|sig| sig == signature).unwrap();
+                bytes[at + offset..at + offset + 4].copy_from_slice(&size.to_le_bytes());
+            }
+            bytes
+        }
+
+        #[test]
+        fn inflation_enforces_actual_part_package_and_session_boundaries() {
+            let part = MAX_PART_BYTES as usize;
+            let mut unlimited = usize::MAX;
+            let exact = inflation_package(&[part; 4]);
+            let mut budget = MAX_PACKAGE_BYTES as usize;
+            measure_inflation(&exact, &mut budget).unwrap();
+            assert_eq!(budget, 0);
+            error(
+                measure_inflation(
+                    &inflation_package(&[part, part, part, part, 1]),
+                    &mut unlimited,
+                ),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            // A forged small declaration cannot hide actual decompressor work.
+            let too_large = declared_size(inflation_package(&[part + 1]), 1);
+            error(
+                measure_inflation(&too_large, &mut unlimited),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            let small = inflation_package(&[32]);
+            let mut exact = 32;
+            measure_inflation(&small, &mut exact).unwrap();
+            assert_eq!(exact, 0);
+            error(measure_inflation(&small, &mut 31), "LEGACY_RESOURCE_LIMIT:");
+        }
+
+        #[test]
+        fn oversized_declarations_are_integrity_errors_after_actual_work() {
+            let forged = declared_size(inflation_package(&[32]), u32::MAX);
+            let mut budget = 32;
+            error(measure_inflation(&forged, &mut budget), "UNSUPPORTED:");
+            assert_eq!(budget, 0); // actual output, not the untrusted declaration
+        }
+
+        #[test]
+        fn compressed_container_length_does_not_reject_a_small_alternative() {
+            // ZIP permits a prepended self-extracting stub. Its bytes perform
+            // no inflation and must not consume the alternative's budget.
+            let mut bytes = vec![0; 4 * 1024 * 1024];
+            bytes.extend(blob(SHAPE_XML));
+            assert!(run_adopt(&element("FF0000"), &bytes, &theme(), AMPLE)
+                .0
+                .unwrap()
+                .is_some());
+        }
+
         #[test]
         fn unverifiable_alternatives_fail_closed() {
             let element = element("FF0000");
@@ -3454,10 +3555,10 @@ mod tests {
                 let error = result.0.expect_err("must fail closed");
                 assert!(error.starts_with("LEGACY_RESOURCE_LIMIT:"), "{error}");
             };
-            // Oversized and over budget are resource policy, not unsupported content.
+            // Oversized actual output and exhausted budgets are resource policy.
             resource_limited(run_adopt(
                 &element,
-                &vec![0; MAX_BLOB_BYTES + 1],
+                &blob(&"x".repeat(MAX_PART_BYTES as usize + 1)),
                 &theme(),
                 AMPLE,
             ));
