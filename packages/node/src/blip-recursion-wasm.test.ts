@@ -23,6 +23,7 @@ function deck(effects: string, inherited: boolean) {
 
 it.each([
   ['inherited picture fill cycle', '<a:fillOverlay blend="over"><a:grpFill/></a:fillOverlay>', true, 'unsupported-image-effect'],
+  ['malformed Unicode color', '<a:clrRepl><a:srgbClr val="A😀B"/></a:clrRepl>', false, 'unsupported-image-effect'],
   ['deep inline alphaMod', '<a:alphaMod><a:cont>'.repeat(40) + '<a:grayscl/>' + '</a:cont></a:alphaMod>'.repeat(40), false, 'ooxml-decoded-image-limit'],
 ] as const)('real WASM safely transports %s as a typed failure', async (_name, effects, inherited, code) => {
   const model = await materializePptxPresentation(deck(effects, inherited));
