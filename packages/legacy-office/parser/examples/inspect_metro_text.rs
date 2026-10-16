@@ -2,7 +2,7 @@
 //! This uses dev-only dependencies and is not compiled into reader WASM.
 #[path = "../src/officeart/metro_text.rs"]
 mod metro_text;
-use std::io::Read;
+mod support;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -10,10 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.next().is_some() {
         return Err("expected exactly one path".into());
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
+    let bytes = support::read_source(std::fs::File::open(path)?)?;
     let mut budget = metro_text::Budget {
         bytes: 1024 * 1024,
         events: 100_000,

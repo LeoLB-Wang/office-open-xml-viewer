@@ -1,5 +1,5 @@
 //! Passive native development metadata, not a list of renderable images.
-use std::io::Read;
+mod support;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -7,10 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.next().is_some() {
         return Err("too many arguments".into());
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(source)?
-        .take(256 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
+    let bytes = support::read_source(std::fs::File::open(source)?)?;
     let anchors = legacy_office_parser::inspect_xls_anchors(&bytes)?;
     println!("sheet,shape,shapeFlags,object,objectType,objectFlags,groupDepth,behavior,colL,rowT,dxL,dyT,colR,rowB,dxR,dyB,pictureIndex,cropTop,cropBottom,cropLeft,cropRight,rotation,clipboardFormat,autoPicture");
     for a in anchors {

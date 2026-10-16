@@ -378,7 +378,7 @@ pub(in crate::ppt) fn unverifiable(what: &str) -> String {
 fn alternative_part(blob: &[u8]) -> Result<Option<(String, String)>, String> {
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML package");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, &mut MAX_RECORDS.clone())?;
     let entry = open_part(&mut archive, "_rels/.rels")?;
     let mut rels = String::new();
     entry
@@ -448,7 +448,7 @@ fn validate_blob_references(blob: &[u8], part: &str) -> Result<(), String> {
     use std::collections::BTreeSet;
 
     let unreadable = || unverifiable("relationship");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, &mut MAX_RECORDS.clone())?;
     // Resource policy: avoid a reference-by-entry quadratic scan of a ZIP
     // with a huge number of tiny entries. Ordinary Office shape blobs are
     // much smaller; this limit makes the passive check bounded.
@@ -525,7 +525,7 @@ fn validate_blob_references(blob: &[u8], part: &str) -> Result<(), String> {
 fn sole_blob_image(blob: &[u8], part: &str, image_path: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let unreadable = || unverifiable("relationship");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, &mut MAX_RECORDS.clone())?;
     let xml = read_blob_reference_part(&mut archive, part)?;
     let doc = parse_xml(&xml)?;
     let refs: Vec<_> = doc
@@ -584,8 +584,7 @@ fn sole_blob_image(blob: &[u8], part: &str, image_path: &str) -> Result<Vec<u8>,
 #[cfg(feature = "direct-ppt")]
 fn blob_hyperlinks_only(blob: &[u8], part: &str) -> Result<bool, String> {
     use std::collections::BTreeSet;
-    let unreadable = || unverifiable("relationship");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, &mut MAX_RECORDS.clone())?;
     let xml = read_blob_reference_part(&mut archive, part)?;
     let doc = parse_xml(&xml)?;
     let mut ids = BTreeSet::new();
@@ -638,7 +637,7 @@ fn blob_bullet_images(blob: &[u8], part: &str) -> Result<Option<Vec<BlobBulletAs
     use std::collections::BTreeMap;
     use std::io::Read;
     let unreadable = || unverifiable("relationship");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, &mut MAX_RECORDS.clone())?;
     let xml = read_blob_reference_part(&mut archive, part)?;
     let doc = parse_xml(&xml)?;
     let mut ids = Vec::new();
@@ -1008,7 +1007,7 @@ pub(in crate::ppt) fn adopt(
     *work_budget = work_budget.checked_sub(1).ok_or_else(|| {
         crate::rejection::resource("PowerPoint alternative shape XML work budget exceeded")
     })?;
-    measure_inflation(blob, text_budget)?;
+    measure_inflation(blob, work_budget, text_budget)?;
     let Some((kind, part)) = alternative_part(blob)? else {
         return Ok(None);
     };
@@ -1305,7 +1304,7 @@ fn placeholder_locals(blob: &[u8], part: &str, theme: &Theme) -> Result<Placehol
     use ooxml_common::ns::{is_a_ns, is_p_ns};
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML placeholder");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, &mut MAX_RECORDS.clone())?;
     let entry = open_part(&mut archive, part)?;
     let mut xml = String::new();
     entry
@@ -1408,6 +1407,9 @@ pub(in crate::ppt) fn adopt(
     Err(unverifiable("part"))
 }
 
+#[cfg(feature = "direct-ppt")]
+mod zip_index;
+
 /// Library resource policy for actual decompressor work, not ZIP metadata.
 /// Drain with a fixed buffer so a crossing fails before retaining an oversized
 /// part. The text ledger covers each entry once per adoption attempt; later
@@ -1417,12 +1419,16 @@ pub(in crate::ppt) fn adopt(
 /// the ordinary PPTX parser's declared-size checks from becoming admission
 /// policy for an alternative that has already passed this actual-byte gate.
 #[cfg(feature = "direct-ppt")]
-fn measure_inflation(blob: &[u8], text_budget: &mut usize) -> Result<(), String> {
+fn measure_inflation(
+    blob: &[u8],
+    work_budget: &mut usize,
+    text_budget: &mut usize,
+) -> Result<(), String> {
     use std::io::Read;
     let unreadable = || unsupported("unreadable PowerPoint alternative shape XML package");
     let oversized =
         || crate::rejection::resource("PowerPoint alternative shape XML exceeds its size limit");
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(blob)).map_err(|_| unreadable())?;
+    let mut archive = zip_index::open(blob, work_budget)?;
     let mut total = 0u64;
     let mut buffer = [0; 8192];
     for index in 0..archive.len() {
@@ -3496,17 +3502,180 @@ mod tests {
             bytes
         }
 
+        fn empty_package(count: usize) -> Vec<u8> {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for index in 0..count {
+                writer
+                    .start_file(
+                        format!("{index}.xml"),
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Stored),
+                    )
+                    .unwrap();
+            }
+            writer.finish().unwrap().into_inner()
+        }
+
+        #[test]
+        fn seventy_thousand_empty_entries_fail_closed_without_inflated_output() {
+            let package = empty_package(70_000);
+            error(
+                measure_inflation(&package, &mut MAX_RECORDS.clone(), &mut 0),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            error(
+                run_adopt(&element("FF0000"), &package, &theme(), AMPLE).0,
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn empty_entries_consume_session_work_including_repeated_adoptions() {
+            let package = empty_package(2);
+            let mut work = 2;
+            measure_inflation(&package, &mut work, &mut 0).unwrap();
+            assert_eq!(work, 0);
+            error(
+                measure_inflation(&package, &mut work, &mut 0),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn forged_capacities_fail_before_index_construction() {
+            // No central directory exists. Ordinary ZIP opening would reject
+            // the container, but only after trusting its index capacity. The
+            // metadata-work boundary must reject first, with no allocation
+            // proportional to this attacker-selected count.
+            let count = 65_534u16;
+            let mut classic = vec![0; count as usize];
+            let central = classic.len();
+            classic.extend_from_slice(&[0; 46]);
+            classic[central..central + 4].copy_from_slice(b"PK\x01\x02");
+            let footer = classic.len();
+            classic.extend_from_slice(&[0; 22]);
+            classic[footer..footer + 4].copy_from_slice(b"PK\x05\x06");
+            classic[footer + 8..footer + 10].copy_from_slice(&count.to_le_bytes());
+            classic[footer + 10..footer + 12].copy_from_slice(&count.to_le_bytes());
+            classic[footer + 12..footer + 16].copy_from_slice(&46u32.to_le_bytes());
+            classic[footer + 16..footer + 20].copy_from_slice(&(central as u32).to_le_bytes());
+            // count <= directory offset: zip 2.x would reserve this large index
+            // before finding that the directory has only one header.
+            error(
+                measure_inflation(&classic, &mut usize::MAX.clone(), &mut 0),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+            let mut bytes = vec![0u8; 56 + 20 + 22];
+            bytes[..4].copy_from_slice(b"PK\x06\x06");
+            bytes[4..12].copy_from_slice(&44u64.to_le_bytes());
+            bytes[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+            bytes[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+            bytes[56..60].copy_from_slice(b"PK\x06\x07");
+            bytes[72..76].copy_from_slice(&1u32.to_le_bytes());
+            bytes[76..80].copy_from_slice(b"PK\x05\x06");
+            bytes[84..88].fill(0xff);
+            error(
+                measure_inflation(&bytes, &mut usize::MAX.clone(), &mut 0),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn zip64_index_work_uses_physical_metadata_with_a_prepended_stub() {
+            let package = empty_package(2);
+            let footer = package.len() - 22;
+            let mut bytes = vec![0; 4096];
+            bytes[..4].copy_from_slice(b"PK\x05\x06"); // inert signature in the stub
+            bytes.extend_from_slice(&package[..footer]);
+            let mut tail = vec![0u8; 56 + 20];
+            tail[..4].copy_from_slice(b"PK\x06\x06");
+            tail[4..12].copy_from_slice(&44u64.to_le_bytes());
+            tail[24..32].copy_from_slice(&2u64.to_le_bytes());
+            tail[32..40].copy_from_slice(&2u64.to_le_bytes());
+            let u32_at = |at| u32::from_le_bytes(package[at..at + 4].try_into().unwrap()) as u64;
+            tail[40..48].copy_from_slice(&u32_at(footer + 12).to_le_bytes());
+            tail[48..56].copy_from_slice(&u32_at(footer + 16).to_le_bytes());
+            tail[56..60].copy_from_slice(b"PK\x06\x07");
+            tail[64..72].copy_from_slice(&(footer as u64).to_le_bytes());
+            tail[72..76].copy_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&tail);
+            bytes.extend_from_slice(&package[footer..]);
+            let end = bytes.len();
+            bytes[end - 14..end - 10].fill(0xff);
+            let mut work = 2;
+            measure_inflation(&bytes, &mut work, &mut 0).unwrap();
+            assert_eq!(work, 0);
+        }
+
+        #[test]
+        fn ignored_zip64_locator_cannot_hide_the_classic_index_count() {
+            let mut bytes = vec![0u8; 56 + 20 + 22];
+            bytes[..4].copy_from_slice(b"PK\x06\x06");
+            bytes[4..12].copy_from_slice(&44u64.to_le_bytes());
+            bytes[24..32].copy_from_slice(&1u64.to_le_bytes());
+            bytes[32..40].copy_from_slice(&1u64.to_le_bytes());
+            bytes[56..60].copy_from_slice(b"PK\x06\x07");
+            bytes[72..76].copy_from_slice(&1u32.to_le_bytes());
+            bytes[76..80].copy_from_slice(b"PK\x05\x06");
+            bytes[84..86].copy_from_slice(&65_534u16.to_le_bytes());
+            bytes[86..88].copy_from_slice(&1u16.to_le_bytes());
+            // zip 2.x consults ZIP64 only when the classic total count or
+            // directory offset is saturated. It would index 65,534 here.
+            error(
+                measure_inflation(&bytes, &mut usize::MAX.clone(), &mut 0),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn retained_zip_names_exhaust_metadata_before_index_construction() {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for index in 0..150 {
+                writer
+                    .start_file(
+                        format!("{index}{}", "x".repeat(60_000)),
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Stored),
+                    )
+                    .unwrap();
+            }
+            let bytes = writer.finish().unwrap().into_inner();
+            error(
+                measure_inflation(&bytes, &mut usize::MAX.clone(), &mut 0),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
+        }
+
+        #[test]
+        fn a_footer_in_the_comment_cannot_bypass_the_index_reservation() {
+            let mut bytes = empty_package(2);
+            let footer = bytes.len() - 22;
+            bytes[footer + 20..footer + 22].copy_from_slice(&23u16.to_le_bytes());
+            let mut fake = [0u8; 23];
+            fake[..4].copy_from_slice(b"PK\x05\x06");
+            fake[8..12].copy_from_slice(&[0xfe, 0xff, 0xfe, 0xff]);
+            bytes.extend_from_slice(&fake);
+            // The dependency accepts trailing bytes after an EOCD comment and
+            // would try this later footer first. Only the reserved footer may
+            // reach its allocator, and ambiguous selection must fail closed.
+            error(
+                measure_inflation(&bytes, &mut usize::MAX.clone(), &mut 0),
+                "UNSUPPORTED:",
+            );
+        }
+
         #[test]
         fn inflation_enforces_actual_part_package_and_session_boundaries() {
             let part = MAX_PART_BYTES as usize;
             let mut unlimited = usize::MAX;
             let exact = inflation_package(&[part; 4]);
             let mut budget = MAX_PACKAGE_BYTES as usize;
-            measure_inflation(&exact, &mut budget).unwrap();
+            measure_inflation(&exact, &mut usize::MAX.clone(), &mut budget).unwrap();
             assert_eq!(budget, 0);
             error(
                 measure_inflation(
                     &inflation_package(&[part, part, part, part, 1]),
+                    &mut usize::MAX.clone(),
                     &mut unlimited,
                 ),
                 "LEGACY_RESOURCE_LIMIT:",
@@ -3514,21 +3683,27 @@ mod tests {
             // A forged small declaration cannot hide actual decompressor work.
             let too_large = declared_size(inflation_package(&[part + 1]), 1);
             error(
-                measure_inflation(&too_large, &mut unlimited),
+                measure_inflation(&too_large, &mut usize::MAX.clone(), &mut unlimited),
                 "LEGACY_RESOURCE_LIMIT:",
             );
             let small = inflation_package(&[32]);
             let mut exact = 32;
-            measure_inflation(&small, &mut exact).unwrap();
+            measure_inflation(&small, &mut usize::MAX.clone(), &mut exact).unwrap();
             assert_eq!(exact, 0);
-            error(measure_inflation(&small, &mut 31), "LEGACY_RESOURCE_LIMIT:");
+            error(
+                measure_inflation(&small, &mut usize::MAX.clone(), &mut 31),
+                "LEGACY_RESOURCE_LIMIT:",
+            );
         }
 
         #[test]
         fn oversized_declarations_are_integrity_errors_after_actual_work() {
             let forged = declared_size(inflation_package(&[32]), u32::MAX);
             let mut budget = 32;
-            error(measure_inflation(&forged, &mut budget), "UNSUPPORTED:");
+            error(
+                measure_inflation(&forged, &mut usize::MAX.clone(), &mut budget),
+                "UNSUPPORTED:",
+            );
             assert_eq!(budget, 0); // actual output, not the untrusted declaration
         }
 

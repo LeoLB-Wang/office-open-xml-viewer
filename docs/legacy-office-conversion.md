@@ -413,8 +413,9 @@ fail inspection rather than being silently repaired. Unsupported encodings,
 unreferenced slots and unresolved delayed entries are not exposed. No external
 resource, macro, OLE object or drawing action is evaluated.
 
-Inspection caps the source at 256 MiB, assembled drawing data and retained media
-at 128 MiB each, and the drawing/decoding walk at two million records. Shared
+Native inspection examples read the complete source with fallible allocation and
+no default input-length ceiling. Inspection caps assembled drawing data and retained
+media at 128 MiB each, and the drawing/decoding walk at two million records. Shared
 image limits also apply. These are independent resource ceilings, not a combined
 process-memory guarantee: source, workbook, assembled data and extracted images
 can coexist. The helper is excluded from production WASM even when its Cargo
