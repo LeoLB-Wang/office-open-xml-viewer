@@ -67,15 +67,25 @@ interface NormalBox { readonly height: number; readonly ascent: number; readonly
 function measureNormalBox(
   face: FontFace, context: CanvasFontBoxProbeContext, emPx: number, ownerDocument: Document,
 ): NormalBox | null {
-  const font = `${face.style} ${face.weight} ${emPx}px ${quoteCssFontFamily(face.family)}`;
+  const family = quoteCssFontFamily(face.family);
+  const font = `${face.style} ${face.weight} ${emPx}px ${family}`;
+  // The strut lives in a closed shadow tree so application stylesheets
+  // (including !important rules) cannot restyle it; the computed family is
+  // checked as well, so the DOM height belongs to the face Canvas measures.
+  const host = ownerDocument.createElement('div');
+  host.style.cssText = 'all:initial;position:fixed;visibility:hidden;contain:strict;';
   const probe = ownerDocument.createElement('span');
-  probe.style.cssText = `all:initial;position:fixed;visibility:hidden;white-space:pre;font:${font};line-height:normal;`;
+  probe.style.cssText = `all:initial;display:block;white-space:pre;font:${font};line-height:normal;`;
   probe.textContent = '\u200b';
   const previousFont = context.font;
   try {
+    if (typeof host.attachShadow !== 'function') return null;
+    host.attachShadow({ mode: 'closed' }).append(probe);
     context.font = font;
     const box = context.measureText('');
-    ownerDocument.body.append(probe);
+    ownerDocument.body.append(host);
+    const view = ownerDocument.defaultView;
+    if (!view || unquoted(view.getComputedStyle(probe).fontFamily) !== unquoted(family)) return null;
     const height = probe.offsetHeight;
     const ascent = box.fontBoundingBoxAscent;
     const descent = box.fontBoundingBoxDescent;
@@ -86,9 +96,14 @@ function measureNormalBox(
     // An unavailable measurement leaves the caller's catalog fallback intact.
     return null;
   } finally {
-    probe.remove();
+    host.remove();
     context.font = previousFont;
   }
+}
+
+/** Engines differ in whether a computed single family keeps its quotes. */
+function unquoted(family: string): string {
+  return family.trim().replace(/^(["'])(.*)\1$/, '$2');
 }
 
 /** offsetHeight is an integer CSS pixel, so each reading carries up to one
@@ -161,7 +176,22 @@ function newCoverageContext(): CanvasFontBoxProbeContext | null {
 let coverageContext: CanvasFontBoxProbeContext | null | undefined;
 interface CoverageRoute {
   readonly font: string;
+  /** Text results (bounded) and the per-cluster answers they are built from. */
   readonly results: Map<string, boolean>;
+  readonly clusters: Map<string, boolean>;
+}
+
+const graphemes = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+  ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
+/** Browser font fallback chooses a face per grapheme cluster, so ownership of
+ * a text is ownership of each of its clusters. Printable ASCII clusters are
+ * single characters. Without a segmenter the whole text is one unit. */
+function clustersOf(text: string): Iterable<string> {
+  if (PRINTABLE_ASCII.test(text)) return text;
+  if (!graphemes) return [text];
+  return Array.from(graphemes.segment(text), (part) => part.segment);
 }
 const coverageResults = new WeakMap<ResolvedFontMetric, WeakMap<CanvasFontRoute, CoverageRoute>>();
 
@@ -187,26 +217,44 @@ export function localFontMetricCoversText(
     prepared = {
       font: `${metric.style ?? 'normal'} ${metric.weight ?? 400} 100px ${familyList}`,
       results: new Map(),
+      clusters: new Map(),
     };
     byRoute.set(route, prepared);
   }
   const cache = prepared.results;
   const cached = cache.get(text);
   if (cached !== undefined) return cached;
-  coverageContext ??= newCoverageContext();
-  if (!coverageContext) return false;
-  const previous = coverageContext.font;
-  let covered = false;
-  try {
-    coverageContext.font = prepared.font;
-    const result = coverageContext.measureText(text);
-    covered = result.width === 0 && result.actualBoundingBoxAscent === 0
-      && result.actualBoundingBoxDescent === 0;
-  } finally { coverageContext.font = previous; }
-  // Resource-governance bound, unrelated to layout or coverage decisions.
+  // Native measurement happens once per distinct cluster, not per distinct
+  // text, so a document costs about as many probes as it has distinct
+  // clusters rather than one per segment.
+  let covered = true;
+  for (const cluster of clustersOf(text)) {
+    let owned = prepared.clusters.get(cluster);
+    if (owned === undefined) {
+      const measured = measureCoverage(prepared.font, cluster);
+      if (measured === undefined) return false;
+      owned = measured;
+      // Resource-governance bound, unrelated to layout or coverage decisions.
+      if (prepared.clusters.size >= 4096) prepared.clusters.delete(prepared.clusters.keys().next().value!);
+      prepared.clusters.set(cluster, owned);
+    }
+    if (!owned) { covered = false; break; }
+  }
   if (cache.size >= 1024) cache.delete(cache.keys().next().value!);
   cache.set(text, covered);
   return covered;
+}
+
+function measureCoverage(font: string, text: string): boolean | undefined {
+  coverageContext ??= newCoverageContext();
+  if (!coverageContext) return undefined;
+  const previous = coverageContext.font;
+  try {
+    coverageContext.font = font;
+    const result = coverageContext.measureText(text);
+    return result.width === 0 && result.actualBoundingBoxAscent === 0
+      && result.actualBoundingBoxDescent === 0;
+  } finally { coverageContext.font = previous; }
 }
 
 /** Measure a worker-resolved exact local source in the DOM realm. The caller

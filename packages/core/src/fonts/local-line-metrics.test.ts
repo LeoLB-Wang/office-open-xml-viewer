@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { measureLocalFontNormalLine } from './local-line-metrics.js';
+import { describe, expect, it, vi } from 'vitest';
+import { localFontMetricCoversText, measureLocalFontNormalLine } from './local-line-metrics.js';
+import type { ResolvedFontMetric } from './resource-metrics.js';
+import type { CanvasFontRoute } from './canvas-route.js';
 
 // Boxes are given at a 2048px probe and scale with the requested size, like
 // an engine without a size ceiling; `clampPx` emulates an engine that clamps.
@@ -10,13 +12,25 @@ function environment(height = 2355, clampPx = Infinity) {
   const probe = {
     style: { cssText: '' }, textContent: '',
     get offsetHeight() { reads++; return Math.round(height * px(probe.style.cssText) / 2048); },
+  };
+  const host = {
+    style: { cssText: '' },
+    attachShadow: () => ({ append() {} }),
     remove() { removed++; },
   };
   const fonts = {} as FontFaceSet;
+  // `family` emulates the computed font-family; an application stylesheet
+  // overriding the strut would change it.
+  const computed = { family: undefined as string | undefined };
   const document = {
     fonts,
     body: { append() {} },
-    createElement: () => probe,
+    createElement: (tag: string) => tag === 'div' ? host : probe,
+    defaultView: {
+      getComputedStyle: () => ({
+        fontFamily: computed.family ?? /px ("[^"]*")/.exec(probe.style.cssText)?.[1] ?? '',
+      }),
+    },
   } as unknown as Document;
   const context = {
     font: '12px serif',
@@ -25,7 +39,7 @@ function environment(height = 2355, clampPx = Infinity) {
       return { fontBoundingBoxAscent: 1825 * scale, fontBoundingBoxDescent: 443 * scale } as TextMetrics;
     },
   };
-  return { document, fonts, context, probe, reads: () => reads, removed: () => removed };
+  return { document, fonts, context, probe, computed, reads: () => reads, removed: () => removed };
 }
 
 describe('prepared local-face normal line measurement', () => {
@@ -59,6 +73,14 @@ describe('prepared local-face normal line measurement', () => {
     expect(measureLocalFontNormalLine({ ...face } as FontFace, tiny.fonts, tiny.context, 2048, tiny.document)).toBeNull();
   });
 
+  it('declines a strut whose computed family is not the measured face', () => {
+    const face = { family: 'isolated-face', weight: '400', style: 'normal', status: 'loaded' } as FontFace;
+    const env = environment();
+    env.computed.family = 'Verdana';
+    expect(measureLocalFontNormalLine(face, env.fonts, env.context, 2048, env.document)).toBeNull();
+    expect(env.reads()).toBe(0);
+  });
+
   it('declines unavailable, foreign-realm and invalid measurements', () => {
     const face = { family: 'isolated-face', weight: '400', style: 'normal', status: 'loaded' } as FontFace;
     const env = environment(Number.NaN);
@@ -66,5 +88,34 @@ describe('prepared local-face normal line measurement', () => {
     expect(env.removed()).toBe(1);
     expect(measureLocalFontNormalLine(face, {} as FontFaceSet, env.context, 2048, env.document)).toBeNull();
     expect(measureLocalFontNormalLine(face, env.fonts, env.context, 2048, null)).toBeNull();
+  });
+
+  it('measures glyph ownership once per distinct cluster, not per distinct text', () => {
+    const measured: string[] = [];
+    vi.stubGlobal('OffscreenCanvas', class {
+      getContext() {
+        return {
+          font: '',
+          measureText(text: string) {
+            measured.push(text);
+            const owned = /^[a-z ]+$/.test(text);
+            return { width: owned ? 0 : 50, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 } as TextMetrics;
+          },
+        };
+      }
+    });
+    try {
+      const metric = {
+        family: 'isolated-face', requiresGlyphCoverage: true, glyphCoverageProbeFamily: 'isolated-face_coverage',
+      } as ResolvedFontMetric;
+      const route = { familyList: '"isolated-face", serif' } as CanvasFontRoute;
+      expect(localFontMetricCoversText(metric, 'abc', route)).toBe(true);
+      expect(localFontMetricCoversText(metric, 'cab ba', route)).toBe(true);
+      expect(localFontMetricCoversText(metric, 'ab\u6f22', route)).toBe(false);
+      // a, b, c, space and the CJK cluster: five native probes for three texts.
+      expect(measured.sort()).toEqual([' ', 'a', 'b', 'c', '\u6f22'].sort());
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

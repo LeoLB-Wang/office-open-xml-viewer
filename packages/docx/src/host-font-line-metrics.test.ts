@@ -66,15 +66,20 @@ describe('DOCX host-face line geometry', () => {
     let probes = 0;
     const context = contractCanvas();
     vi.stubGlobal('FontFace', LocalFace);
+    let strut = '';
     vi.stubGlobal('document', {
       fonts, body: { append() {} },
-      createElement: (tag: string) => tag === 'canvas' ? { getContext: () => context } : {
-        style: { cssText: '' }, textContent: '', remove() {},
-        get offsetHeight() {
-          probes++;
-          return Math.round(2355 * Number(/(\d+)px/.exec(this.style.cssText)?.[1] ?? 0) / 2048);
+      defaultView: { getComputedStyle: () => ({ fontFamily: /px ("[^"]*")/.exec(strut)?.[1] ?? '' }) },
+      createElement: (tag: string) => tag === 'canvas' ? { getContext: () => context }
+        : tag === 'div' ? { style: { cssText: '' }, attachShadow: () => ({ append() {} }), remove() {} }
+        : {
+          style: { set cssText(value: string) { strut = value; }, get cssText() { return strut; } },
+          textContent: '',
+          get offsetHeight() {
+            probes++;
+            return Math.round(2355 * Number(/(\d+)px/.exec(strut)?.[1] ?? 0) / 2048);
+          },
         },
-      },
     });
     let first: Awaited<ReturnType<typeof loadDocxOfficeFontFallbacks>> | undefined;
     let second: typeof first;
