@@ -4806,10 +4806,14 @@ function paragraphAcquisitionKey(
       cache.fingerprintOrdinal(layoutServices?.math.fingerprint ?? null),
       cache.fingerprintOrdinal(layoutServices?.verticalGlyphFingerprint ?? null),
       cache.fingerprintOrdinal(verticalGlyphMeasurement?.fingerprint ?? null),
+      environment.showTrackedChanges === true,
+      // The markup resolver lazily registers story-only authors in lookup
+      // order (track-changes.ts). Both exact and line hits skip those lookups:
+      // a fresh pass must acquire again even when this paragraph reads no
+      // page fields, or a later author's colour can inherit the skipped slot.
+      environment.showTrackedChanges === true && environment.revisionAuthorColor
+        ? cache.objectIdentity(environment.revisionAuthorColor) : null,
       ...(lineOnly ? [
-        environment.showTrackedChanges === true,
-        environment.revisionAuthorColor
-          ? cache.objectIdentity(environment.revisionAuthorColor) : null,
         environment.enableOpenTypeFeatures === true,
         environment.positionExtendsLineBox !== false,
       ] : []),
