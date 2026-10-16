@@ -764,6 +764,14 @@ fn underline_fill_choice<'a, 'input>(
         .find(|node| node.is_element() && matches!(node.tag_name().name(), "uFill" | "uFillTx"))
 }
 
+/// DrawingML ST_TextVerticalType (bodyPr@vert and tcPr@vert) restricts xsd:token.
+/// As with the other single-word ST_ enums, strip only XML token padding;
+/// internal whitespace and NBSP cannot turn an unknown value into `horz`.
+/// Apply this to direct/inherited bodyPr and the table-cell tcPr override.
+pub(crate) fn parse_text_vertical_type(raw: &str) -> String {
+    raw.trim_matches(&[' ', '\t', '\r', '\n'][..]).to_owned()
+}
+
 /// A `<a:prstTxWarp>` child of `<a:bodyPr>`: `None` when absent, `Some(None)`
 /// for an explicit `textNoShape` (no warp), `Some(Some(_))` for a warp preset.
 fn parse_text_warp(body_pr: roxmltree::Node<'_, '_>) -> Option<Option<TextWarp>> {
@@ -883,7 +891,7 @@ impl InheritedBodyPr {
                 attr_i64(&body_pr, "bIns"),
             ],
             wrap: attr(&body_pr, "wrap"),
-            vert: attr(&body_pr, "vert"),
+            vert: attr(&body_pr, "vert").map(|value| parse_text_vertical_type(&value)),
             num_col: attr(&body_pr, "numCol")
                 .and_then(|v| v.parse::<u32>().ok())
                 .filter(|&n| n >= 1),
@@ -1546,7 +1554,7 @@ pub(crate) fn parse_text_body(
     let t_ins = body.t_ins;
     let b_ins = body.b_ins;
     let wrap = body.wrap;
-    let vert = body.vert;
+    let vert = parse_text_vertical_type(&body.vert);
     let auto_fit = body.auto_fit;
     // parse_body_pr only reports stored scales from the shape's own autofit
     // child. When the shape has none, the inherited child supplies them.

@@ -8,9 +8,7 @@ use ooxml_common::bounded_xml::MCE_NS;
 use ooxml_common::depth::parse_guarded;
 use ooxml_common::mce::select_alternate_content;
 use ooxml_common::ns::{attr_ns, is_w_ns, relationships};
-pub(crate) use ooxml_common::numbering::word_level_use;
-#[cfg(test)]
-use ooxml_common::numbering::{format_counter, format_word_synthetic_zero};
+use ooxml_common::numbering::format_counter;
 use ooxml_common::numbering::{CounterEngine, CounterIdentity, LevelFacts};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -30,6 +28,76 @@ mod counter_instance_tests;
 #[cfg(test)]
 #[path = "numbering/word_ilvl_tests.rs"]
 pub(crate) mod word_ilvl_tests;
+
+/// Word's paragraph level byte (DOCX `w:ilvl` after its lexical narrowing;
+/// see the DOCX adapter) mapped to the level that paints the marker and the
+/// level whose counter advances. Separate the formatting source from the
+/// advancing counter. ECMA-376 Part 1
+/// §17.9 defines only the reference/definition relationship; MS-OI29500
+/// §2.1.277 documents Word's 0..255 authoring limit, not its malformed-value
+/// rendering. These branches are observations from Word 16.113 controls:
+/// every byte 0..255; signed, leading-zero, plus, 2^31 and 2^32 boundaries;
+/// a two-level definition; a level-8 replacement; and style-origin numPr.
+/// Each control placed levels 0, 1, and 8 before/after the target and checked
+/// its marker and subsequent counters. Values 16..255 repeat every 16 bytes;
+/// 9..15 have the special first-block behavior encoded below. The fixed `9`
+/// is a fresh fallback marker value, even when level 8 has startOverride=20.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WordLevelUse {
+    pub marker_level: Option<u32>,
+    pub counter_level: Option<u32>,
+    /// `Some(0)` or `Some(9)` uses a display value independent of any counter.
+    pub fixed_counter: Option<u32>,
+}
+
+pub(crate) fn word_level_use(ilvl: u8) -> WordLevelUse {
+    let (marker_level, counter_level, fixed_counter) = match ilvl {
+        0..=8 => (Some(u32::from(ilvl)), Some(u32::from(ilvl)), None),
+        9..=12 => (None, None, None),
+        13..=14 => (Some(8), None, Some(9)),
+        15 => (Some(0), Some(0), None),
+        _ => match ilvl % 16 {
+            level @ 0..=7 => (Some(8), Some(u32::from(level)), Some(0)),
+            8 => (Some(8), Some(8), None),
+            _ => (Some(8), None, Some(9)),
+        },
+    };
+    WordLevelUse {
+        marker_level,
+        counter_level,
+        fixed_counter,
+    }
+}
+
+/// Word 16.113's display of a counter reset by an ilvl byte in 16..255.
+/// Forty-three supported number formats were measured with level-8 `%9` and
+/// `ilvl=16`; multi-placeholder controls checked zero formatting on `%1`..`%8`.
+/// The ordinary format_counter(0) intentionally keeps its existing library
+/// semantics for unrelated start=0 documents.
+fn format_word_synthetic_zero(format: &str) -> String {
+    match format {
+        "lowerRoman" | "upperRoman" | "lowerLetter" | "upperLetter" | "arabicAlpha"
+        | "arabicAbjad" | "russianLower" | "russianUpper" | "thaiLetters" | "hindiVowels"
+        | "hindiConsonants" | "hebrew1" | "hebrew2" | "none" | "bullet" => String::new(),
+        "decimalZero" => "00".to_string(),
+        "numberInDash" => "- 0 -".to_string(),
+        "decimalFullWidth" => "０".to_string(),
+        "thaiNumbers" => "๐".to_string(),
+        "hindiNumbers" => "०".to_string(),
+        "ideographDigital"
+        | "japaneseDigitalTenThousand"
+        | "japaneseCounting"
+        | "chineseCountingThousand"
+        | "japaneseLegal" => "〇".to_string(),
+        "koreanDigital" | "koreanCounting" => "영".to_string(),
+        "koreanDigital2" => "零".to_string(),
+        "taiwaneseDigital" | "chineseCounting" | "taiwaneseCounting" => "○".to_string(),
+        "taiwaneseCountingThousand" | "chineseLegalSimplified" | "ideographLegalTraditional" => {
+            "零".to_string()
+        }
+        _ => format_counter(0, format),
+    }
+}
 
 /// The authored paragraph reference is an XML Schema integer (ECMA-376 Part 1
 /// §17.9.3). Word 16.113's measured display path first narrows its decimal
@@ -741,13 +809,19 @@ impl NumberingMap {
                 index,
             )
         };
-        if word_zero {
-            self.counters
-                .resolve_text_word_zero(identity, level, start_at, facts)
-        } else {
-            self.counters
-                .resolve_text(identity, level, counter, start_at, facts)
-        }
+        self.counters.resolve_text_with_formatter(
+            identity,
+            level,
+            counter,
+            facts,
+            |index, live, format| {
+                if word_zero && (index == level || live.is_none()) {
+                    format_word_synthetic_zero(format)
+                } else {
+                    format_counter(live.unwrap_or_else(|| start_at(index)), format)
+                }
+            },
+        )
     }
 }
 

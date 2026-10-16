@@ -16,8 +16,8 @@ use crate::master::{
 };
 use crate::text::{
     complete_level_faces, complete_level_sizes, empty_level_bullets, parse_text_body,
-    resolve_latin_face, InheritedBodyPr, LevelBullets, LevelFaces, LevelFontSizes, LevelIndents,
-    LevelRunProperties, RunProperties, HARD_DEFAULT_LATIN_FACE,
+    parse_text_vertical_type, resolve_latin_face, InheritedBodyPr, LevelBullets, LevelFaces,
+    LevelFontSizes, LevelIndents, LevelRunProperties, RunProperties, HARD_DEFAULT_LATIN_FACE,
 };
 use crate::theme::{PptxRawSchemeResolver, PptxSchemeResolver, PptxThemeSource};
 use crate::types::*;
@@ -2562,7 +2562,9 @@ fn parse_table_cell_with_chain(
     let anchor = tc_pr
         .and_then(|n| attr(&n, "anchor"))
         .map(|a| a.to_string());
-    let text_direction = tc_pr.and_then(|n| attr(&n, "vert"));
+    let text_direction = tc_pr
+        .and_then(|n| attr(&n, "vert"))
+        .map(|value| parse_text_vertical_type(&value));
     // Table-cell margins (tcPr marL/marT/marR/marB) play the role of the
     // inherited insets for the cell's text body.
     let text_insets = tc_pr.map(|n| InheritedBodyPr {
@@ -4346,6 +4348,64 @@ mod style_ref_tests {
                 &mut zip,
             );
             assert_eq!(cell.horz_overflow.as_deref(), expected, "{attribute}");
+        }
+    }
+
+    #[test]
+    fn table_cell_vertical_tokens_collapse_only_xml_padding() {
+        for (raw, expected) in [
+            ("horz", "horz"),
+            ("&#x20;&#x9;horz&#xA;&#xD;", "horz"),
+            ("&#xA0;horz&#xA0;", "\u{a0}horz\u{a0}"),
+            ("ho&#x9;rz", "ho\trz"),
+            (" vert270 ", "vert270"),
+        ] {
+            // bodyPr serves table and shape text; tcPr overrides it for cells.
+            for on_cell in [false, true] {
+                let (body_attr, cell_attr) = if on_cell {
+                    (r#"vert="vert""#.to_owned(), format!(r#"vert="{raw}""#))
+                } else {
+                    (format!(r#"vert="{raw}""#), String::new())
+                };
+                let xml = format!(
+                    r#"<a:tc xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                      <a:txBody><a:bodyPr {body_attr}/><a:p/></a:txBody>
+                      <a:tcPr {cell_attr}/>
+                    </a:tc>"#
+                );
+                let doc = roxmltree::Document::parse(&xml).unwrap();
+                let mut zip = empty_zip();
+                let cell = parse_table_cell(
+                    doc.root_element(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    "ppt/slides/slide1.xml",
+                    &crate::master::TableTextLevels::default(),
+                    &mut zip,
+                );
+                assert_eq!(
+                    cell.text_body.unwrap().vert,
+                    expected,
+                    "{raw}, tcPr={on_cell}"
+                );
+                if !on_cell {
+                    let body_pr = doc
+                        .descendants()
+                        .find(|n| {
+                            n.has_tag_name((
+                                "http://schemas.openxmlformats.org/drawingml/2006/main",
+                                "bodyPr",
+                            ))
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        crate::text::InheritedBodyPr::from_body_pr(body_pr)
+                            .vert
+                            .as_deref(),
+                        Some(expected)
+                    );
+                }
+            }
         }
     }
 
