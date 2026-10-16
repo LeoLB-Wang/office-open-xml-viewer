@@ -794,7 +794,7 @@ it('transforms acquired arrow contours with their shafts without retracting twic
   // width, core arrow-geometry.ts). Skew maps (x, y) to (x, y + x/2 − 34) at
   // 1 px/pt, so the head becomes (120,66) (90,36) (90,66). A head regenerated
   // on the skewed shaft would be (120,66) (99.9,39.2) (86.5,66). Pixel (92, 41)
-  // is ≥3 px inside the first and ~7 px outside the second. The shaft
+  // is ~2.1 px inside the first (≥1.4 px across the pixel) and ~7 px outside the second. The shaft
   // (y 48.6–55.4 there) misses it.
   expect([...skewed.pixels.slice((41*200+92)*4,(41*200+92)*4+3)]).toEqual([0,0,255]);
 });

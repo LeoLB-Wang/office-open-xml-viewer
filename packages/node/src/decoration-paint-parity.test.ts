@@ -111,7 +111,7 @@ describe.skipIf(!skia)('non-path-gradient paints retain main frames on rotated d
       const shaft = await renderCase(route, fill, previous, 'shaft');
       const head = await renderCase(route, fill, previous, 'head');
       // Tail tip of the 300 px path rotated 30° about its centre. The new open
-      // arrow and its pen reach ~127 px from it; outside that, the shafts are
+      // arrow and its pen reach ~131 px from it; outside that, the shafts are
       // identical geometry and must keep main's exact pixels.
       const u = { x: Math.cos(Math.PI / 6), y: Math.sin(Math.PI / 6) }, n = { x: -u.y, y: u.x };
       const tip = { x: 200 + 150 * u.x, y: 200.5 + 150 * u.y };
