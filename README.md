@@ -292,10 +292,11 @@ chart behavior is documented in
 [Chart compatibility evidence and scope](docs/chart-compatibility-evidence.md).
 
 The bounded TIFF 6.0 codec decodes the first IFD/page of stripped, top-left
-images in the uncompressed bilevel, 8-bit grayscale, RGB, RGBA and process-CMYK
-classes, plus 1-bit CCITT Group 4. Unsupported or malformed first-page classes
-fail with a diagnostic render error. It is not a general-purpose TIFF library,
-but as a small
+images in the bilevel, 8-bit grayscale, RGB, RGBA and process-CMYK classes,
+uncompressed or LZW-compressed (8-bit classes optionally with the horizontal
+differencing predictor), plus 1-bit CCITT Group 4. Unsupported or malformed
+first-page classes fail with a diagnostic render error. It is not a
+general-purpose TIFF library, but as a small
 by-product the same `tiff.render()` method can provide a simple preview of a
 supported standalone TIFF file. Its optional `TiffRenderOptions` argument can
 request a bounded display-sized bitmap; the Office viewers supply those targets
@@ -815,7 +816,7 @@ file without uploading it.
 | | ChartEx (waterfall / histogram / Pareto / funnel / box &amp; whisker / treemap / sunburst) | ✅ opt-in |
 | | Math equations (OMML `m:oMath` / `m:oMathPara`, rendered via MathJax — opt-in `@silurus/ooxml/math`) | ✅ |
 | | Images (inline and anchored, with text wrap and adaptive display-sized decoding for oversized rasters) | ✅ |
-| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A), process-CMYK and CCITT Group 4) | ✅ |
+| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A) and process-CMYK, uncompressed or LZW, plus CCITT Group 4) | ✅ |
 | | SVG images (`asvg:svgBlip` MS-2016 extension — vector drawn from the embedded `.svg`, raster fallback) | ✅ |
 | | Text boxes / drawing shapes (inline and anchored `wps:wsp` / `wps:txbx`, including solid, gradient, and image fills; `a:prstGeom` — 186 preset geometries via the shared engine; connector arrow heads `headEnd` / `tailEnd` (§20.1.8.3) and `prstDash` dash patterns (§20.1.8.48)). Text-box paragraphs run through the **same line-layout engine as body text**, so kinsoku 行頭/行末禁則 (§17.15.1.58–60), UAX#9 bidi (`w:bidi`, §17.3.1.6), justification (§17.18.44) and tab stops (§17.3.1.37) all apply inside a box | ✅ |
 | | WMF **and EMF** metafile images (legacy vector, incl. inside text boxes) — rasterized via a built-in player: window→viewport mapping (MS-EMF map modes, world transform), pens/brushes, poly/rect/ellipse, text-out, path clipping, and embedded DIB blits | ✅ |
@@ -869,7 +870,7 @@ file without uploading it.
 | | Hidden rows / columns | ✅ |
 | | Row / column outline grouping (`outlineLevel` / `collapsed` §18.3.1.73 / .13, `<outlinePr>` — gutter brackets, +/− collapse, numbered level buttons; view-only) | ✅ |
 | **Elements** | Images (`<xdr:twoCellAnchor>`, with adaptive display-sized decoding for oversized rasters) | ✅ |
-| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A), process-CMYK and CCITT Group 4) | ✅ |
+| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A) and process-CMYK, uncompressed or LZW, plus CCITT Group 4) | ✅ |
 | | OLE embedded objects (`<oleObjects>` — the legacy VML `v:imagedata` preview keyed by `oleObject@shapeId` is drawn; an image-typed `objectPr` target is preferred when present, and the embedded app is not run) | ✅ |
 | | SVG images (`asvg:svgBlip` MS-2016 extension — vector drawn from the embedded `.svg`, raster fallback) | ✅ |
 | | Drawing shapes / text boxes (`xdr:sp`, `xdr:txBody` — 186 preset geometries via the shared engine, with `avLst` adjust handles) | ✅ |
@@ -918,7 +919,7 @@ file without uploading it.
 | | Animations / transitions | ❌ Not planned |
 | **Element types** | Shapes (`sp`) | ✅ |
 | | Pictures (`pic`, with adaptive display-sized decoding for oversized rasters) | ✅ |
-| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A), process-CMYK and CCITT Group 4) | ✅ |
+| | TIFF images (opt-in `@silurus/ooxml/tiff`; bounded bilevel, grayscale, RGB(A) and process-CMYK, uncompressed or LZW, plus CCITT Group 4) | ✅ |
 | | SVG images (`asvg:svgBlip` MS-2016 extension — vector drawn from the embedded `.svg`, PNG fallback) | ✅ |
 | | Groups (`grpSp`) with nested transforms | ✅ |
 | | Connectors (`cxnSp`) | ✅ |
