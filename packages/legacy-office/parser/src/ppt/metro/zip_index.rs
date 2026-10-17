@@ -112,6 +112,23 @@ fn policy(blob: &[u8], work_budget: &mut usize) -> Result<Policy, String> {
                 "encrypted PowerPoint alternative ZIP entry",
             ));
         }
+        // Bound the reader's per-field Unicode name/comment re-hashing.
+        let name_len = u16_at(cursor + 28).ok_or_else(unreadable)? as usize;
+        let extra_len = u16_at(cursor + 30).ok_or_else(unreadable)? as usize;
+        let comment_len = u16_at(cursor + 32).ok_or_else(unreadable)? as usize;
+        let name_start = cursor + 46;
+        let extra_start = name_start + name_len;
+        let comment_start = extra_start + extra_len;
+        let (Some(name), Some(extra), Some(comment)) = (
+            blob.get(name_start..extra_start),
+            blob.get(extra_start..comment_start),
+            blob.get(comment_start..comment_start + comment_len),
+        ) else {
+            return Err(unreadable());
+        };
+        if !ooxml_common::zip::central_unicode_extra_fields_are_valid(name, extra, comment) {
+            return Err(unreadable());
+        }
         metadata_bytes =
             metadata_bytes.saturating_add(u16_at(cursor + 28).ok_or_else(unreadable)? as usize);
         if metadata_bytes as u64 > ooxml_common::resource::HARD_MAX_CENTRAL_DIRECTORY_BYTES {
@@ -223,4 +240,27 @@ pub(super) fn open<'a>(
     }
     state.set(IndexState::Ready);
     Ok(archive)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn repeated_unicode_path_fields_are_rejected_before_zip_indexing() {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file("a.xml", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"a").unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+        let field = crate::opc_part::test_unicode_path_field("a.xml");
+        let once = crate::opc_part::test_with_central_extra(&zip, &field);
+        assert!(super::open(&once, &mut 1_000).is_ok());
+        let twice =
+            crate::opc_part::test_with_central_extra(&zip, &[field.clone(), field].concat());
+        let error = super::open(&twice, &mut 1_000)
+            .err()
+            .expect("duplicate field rejected");
+        assert!(error.starts_with("UNSUPPORTED:"), "{error}");
+    }
 }

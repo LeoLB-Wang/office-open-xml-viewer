@@ -400,6 +400,12 @@ fn validate_unicode_extra_fields(
     Ok(())
 }
 
+/// [`validate_unicode_extra_fields`] for ZIP readers outside this module
+/// (legacy embedded packages) that walk their own central directory.
+pub fn central_unicode_extra_fields_are_valid(name: &[u8], extra: &[u8], comment: &[u8]) -> bool {
+    validate_unicode_extra_fields(name, extra, comment).is_ok()
+}
+
 fn walk_central_directory<F>(
     data: &[u8],
     directory: CentralDirectory,

@@ -60,3 +60,45 @@ pub(crate) fn test_empty_deflate(name: &str, blocks: usize, output: &[u8]) -> Ve
     bytes[footer + 16..footer + 20].copy_from_slice(&(central as u32).to_le_bytes());
     bytes
 }
+
+/// Test fixture: splice `extra` into the first central-directory entry of
+/// `zip` (central directory and EOCD sizes adjusted; offsets are unchanged
+/// because the central directory follows every local entry).
+#[cfg(test)]
+pub(crate) fn test_with_central_extra(zip: &[u8], extra: &[u8]) -> Vec<u8> {
+    let central = zip
+        .windows(4)
+        .position(|w| w == b"PK\x01\x02")
+        .expect("central header");
+    let eocd = zip
+        .windows(4)
+        .rposition(|w| w == b"PK\x05\x06")
+        .expect("EOCD");
+    let name_len = u16::from_le_bytes([zip[central + 28], zip[central + 29]]) as usize;
+    let extra_len = u16::from_le_bytes([zip[central + 30], zip[central + 31]]) as usize;
+    let at = central + 46 + name_len + extra_len;
+    let mut out = zip[..at].to_vec();
+    out.extend_from_slice(extra);
+    out.extend_from_slice(&zip[at..]);
+    let new_extra = (extra_len + extra.len()) as u16;
+    out[central + 30..central + 32].copy_from_slice(&new_extra.to_le_bytes());
+    let eocd = eocd + extra.len();
+    let size =
+        u32::from_le_bytes(out[eocd + 12..eocd + 16].try_into().unwrap()) + extra.len() as u32;
+    out[eocd + 12..eocd + 16].copy_from_slice(&size.to_le_bytes());
+    out
+}
+
+/// Test fixture: one Info-ZIP Unicode Path field restating `name`.
+#[cfg(test)]
+pub(crate) fn test_unicode_path_field(name: &str) -> Vec<u8> {
+    let mut body = vec![1u8];
+    let mut crc = flate2::Crc::new();
+    crc.update(name.as_bytes());
+    body.extend_from_slice(&crc.sum().to_le_bytes());
+    body.extend_from_slice(name.as_bytes());
+    let mut field = 0x7075u16.to_le_bytes().to_vec();
+    field.extend_from_slice(&(body.len() as u16).to_le_bytes());
+    field.extend_from_slice(&body);
+    field
+}
