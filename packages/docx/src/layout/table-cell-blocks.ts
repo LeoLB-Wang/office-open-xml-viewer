@@ -1,4 +1,3 @@
-import type { CellElement } from '../types.js';
 import type { FlowFragment } from './flow-fragment.js';
 import type { ParagraphLayout } from './types.js';
 import { paragraphGapPt } from './paragraph-spacing.js';
@@ -61,8 +60,8 @@ export interface RetainedCellBlockPlacement {
  * `hideMark` (ECMA-376 §17.4.21: the end-of-cell mark is ignored for the
  * row height), for a final paragraph that holds only that mark, including
  * the sole paragraph of an empty cell. The rule applies to each hideMark
- * `word-trailing-structural-cell-marker`
  * cell independently of the other cells in the row.
+ * `word-trailing-structural-cell-marker`
  */
 export function isStructuralTrailingParagraph(
   content: TableCellLayoutSource['content'],

@@ -589,7 +589,7 @@ function measureAdjacentTableGroup(
   request: AdjacentBodyTableRequest,
   operations: BodyTableMeasurementOperations,
 ): TableMeasureResult {
-  const { dependencies, services, state } = context;
+  const { dependencies, state } = context;
 
   if (request.cursor && request.cursor.kind !== 'adjacent-table-group') {
     throw new Error('Adjacent table group acquisition received an ordinary table cursor');
@@ -818,8 +818,8 @@ function measurePositionedTable(
   operations: BodyTableMeasurementOperations,
   frame: PositionedTableFrame,
 ): TableMeasureResult {
-  const { dependencies, services, state, sessionState } = context;
-  const { table, sourceIndex, retained, cursor, pageHeightPt, authoredPositioning } = frame;
+  const { state, sessionState } = context;
+  const { table, retained, cursor, pageHeightPt, authoredPositioning } = frame;
 
   const positioning =
     request.cursor?.kind === 'table' && request.cursor.floatingContinuationFrame === 'fresh-text'

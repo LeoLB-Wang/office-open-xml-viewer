@@ -4,7 +4,6 @@ import type {
   BodyLayoutInput,
   BodyParagraphSourceInput,
   BodySectionLayoutInput,
-  BodyTableSourceInput,
 } from './body-layout-input.js';
 import type {
   BodyAcquisitionLocation,
@@ -53,7 +52,6 @@ import {
   createPageFlowState,
   placeFlowNode,
   UnsupportedPageFlowTransitionError,
-  type PageFlowState,
 } from './paginator.js';
 
 import {
@@ -2246,9 +2244,9 @@ function* paginateBodyPassSteps(
           && afterNext.break === 'page'
           // A trailing hard break belongs to the anchor's own source paragraph.
           // It governs what follows that paragraph; it is not evidence that the
-        // `word-pre-break-inline-drawing-group`
           // preceding inline resource and anchor form a movable keep group.
           && afterNext.sameSourceParagraphAsPrevious !== true;
+        // `word-pre-break-inline-drawing-group`
         const hasInlineDrawingResource = wordPreBreakInlineDrawingResource(acquired.layout);
         if (
           cursor.boundary === null
@@ -2288,9 +2286,9 @@ function* paginateBodyPassSteps(
           && followingEntry.break === 'page';
         if (
           cursor.boundary === null
-          // `word-pre-break-anchor-paragraph`
           && followedByHardPageBreak
         ) {
+          // `word-pre-break-anchor-paragraph`
           const neutral = wordFlowNeutralPreBreakAnchorParagraph(acquired.layout);
           if (neutral !== null) {
             state = acceptNode(
@@ -2971,9 +2969,9 @@ function composePageStories(
       if (!hasPageStories) return page;
       throw new Error('Page-story composition requires a story-capable layout session');
     }
-      // `word-vertical-section-physical-header-footer`
     const vertical = sectionWritingMode(page.section) !== 'horizontal-tb';
     const geometry = vertical
+      // `word-vertical-section-physical-header-footer`
       ? physicalSectionGeometry(page.section.geometry, page.section.nativeSectionFlow)
       : page.section.geometry;
     const inlineStartPt = Math.abs(geometry.marginLeft);

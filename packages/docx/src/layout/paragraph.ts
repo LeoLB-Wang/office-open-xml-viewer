@@ -51,7 +51,7 @@ import {
 } from './text.js';
 import { eastAsianUprightPaintOps } from './vertical-glyph-orientation.js';
 import { wordTrackChangeDecoration } from './paint-compatibility.js';
-import type { DocParagraph, DocRun, ShapeRun } from '../types.js';
+import type { DocRun, ShapeRun } from '../types.js';
 import {
   computeLineVisualOrder,
   jcIsFullyJustified,
@@ -166,7 +166,7 @@ export {
   prepareBodyFrameMetadata,
 } from './frame.js';
 export type { BodyFrameGroup } from './frame.js';
-import type { ParagraphAcquisitionInput, ParagraphAcquisitionRun, ParagraphLayoutSource } from './text.js';
+import type { ParagraphAcquisitionInput, ParagraphLayoutSource } from './text.js';
 import type { VerticalGlyphMeasurementService } from './measurement-capabilities.js';
 import type {
   DrawingLayout,
@@ -2129,10 +2129,6 @@ function textPlanSegment(
     const cellPitchPt = segment.snapGridCellPitchPx;
     let precedingCells = 0;
     clusters = clusters.map((cluster, index) => {
-      const text = segment.text.slice(
-        cluster.range.start - sourceOffset,
-        cluster.range.end - sourceOffset,
-      );
       const cells = wordSnapToCharsEastAsianCellCount(
         cluster.advancePt,
         cellPitchPt,
@@ -2492,11 +2488,11 @@ function planMeasuredLines(
   const hasExplicitTab = measured.lines.some((line) => line.layout.segments.some((segment) => 'isTab' in segment));
   const earliestTab = paragraph.tabStops?.reduce<(typeof paragraph.tabStops)[number] | undefined>(
     (earliest, stop) => !earliest || stop.pos < earliest.pos ? stop : earliest,
-  // `word-numeric-decimal-tab-inference`
     undefined,
   );
   const visibleText = measured.lines.flatMap((line) => line.layout.segments.flatMap((segment) =>
     'text' in segment && !segment.metricOnly ? [segment.text] : [])).join('').trim();
+  // `word-numeric-decimal-tab-inference`
   const decimalAutoTabPt = !hasExplicitTab
     && earliestTab?.alignment === 'decimal'
     && visibleText !== ''
@@ -3382,11 +3378,11 @@ function acquireAnchorOccurrence(
                   lines[0]?.bounds.heightPt ?? 0,
                 ),
               }
-        // `word-paragraph-anchor-pre-spacing-origin`
             : baseFrames.column
         : null,
       paragraph: {
         xPt: options.placement.paragraphXPt,
+        // `word-paragraph-anchor-pre-spacing-origin`
         yPt: options.placement.startYPt + (
           outer.run.anchorAcquisitionInput.vertical.relativeFrom === 'paragraph'
           && outer.run.anchorAcquisitionInput.wrap.kind === 'none'
@@ -3563,11 +3559,11 @@ function acquireAnchorOccurrence(
       // retains its authored position. Cross-paragraph entries remain blockers.
       const movingVerticalOwnership = anchorAxisOwnership(
         placedResult,
-        // `word-lower-layer-same-paragraph-anchor-composition`
         'vertical',
         layoutInCell && options.anchorCellBounds !== undefined,
       );
       const sameParagraphBlockers = sameParagraphCollisions.filter((entry) =>
+        // `word-lower-layer-same-paragraph-anchor-composition`
         !wordPreservesLowerLayerSameParagraphComposition(
           movingVerticalOwnership,
           behavior.relativeHeight!,
@@ -5593,7 +5589,7 @@ function projectAcquiredParagraph(
 ): ParagraphLayout {
   const linePlan = projectAcquiredParagraphLines(paragraph, options, measured);
   let { lines } = linePlan;
-  const { planningContext, paragraphXPt, availableWidthPt, occurrences, numberingPlan } = linePlan;
+  const { paragraphXPt, availableWidthPt, occurrences, numberingPlan } = linePlan;
   const resources: InlineResourceLayout[] = [];
   const drawings: DrawingLayout[] = [];
   const textBoxes: TextBoxLayout[] = [];

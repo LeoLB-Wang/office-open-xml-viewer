@@ -553,7 +553,6 @@ export type {
   MathBorderBox,
   MathBox,
   MathDelimiter,
-  MathFormula,
   MathFraction,
   MathFunc,
   MathGroup,
@@ -772,7 +771,6 @@ export {
 // browser-selected face.
 export {
   normalizeFontMetricFamily,
-  openTypeDesignLineRatios,
   type ResolvedFontMetric,
 } from './fonts/resource-metrics';
 export {

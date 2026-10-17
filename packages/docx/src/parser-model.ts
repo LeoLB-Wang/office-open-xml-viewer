@@ -17,10 +17,8 @@ import type {
   DocxTextRun,
   FieldRun,
   HeadersFooters,
-  ImageRun,
   NumberingInfo,
   LineNumbering,
-  ChartRun,
   ShapeRun,
   DocTable,
   TextPath,
@@ -720,9 +718,9 @@ function publicTableRowHeight(row: TableLayoutSource['rows'][number]): TableRowH
   if (row.rowHeight === null || !Number.isFinite(row.rowHeight)) return null;
   // The stable public model predates authored-presence retention. Keep its
   // compatibility fallback at the model boundary, never in the layout solver.
-    // `word-authored-auto-row-height-floor`: an authored auto height is a floor.
   const normalized = normalizedTableHeightRule(row.rowHeightRule);
   return {
+    // `word-authored-auto-row-height-floor`: an authored auto height is a floor.
     rule: normalized === 'auto' ? 'atLeast' : normalized,
     valuePt: row.rowHeight,
   };
@@ -751,9 +749,9 @@ function wordTableMarginPt(
   scope: TableMarginScope,
   edge: TableMarginEdge,
 ): number | null {
-  // `word-table-margin-scope-shadow`
   if (!width) return null;
   const kind = effectiveTableWidthKind(width);
+  // `word-table-margin-scope-shadow`
   return wordTableMarginValuePt({
     kind,
     dxaValuePt: kind === 'dxa' ? tableTwipsValuePt(width.value ?? '0') : null,
@@ -909,9 +907,9 @@ export function tableFormatInput(table: TableLayoutSource): TableFormatInput {
     logicalRowOffset: acquisition.table?.logicalRowOffset ?? 0,
     logicalTotalRows: acquisition.table?.logicalTotalRows ?? 0,
     // Only the producer elects a grid owner; individual paragraph frame facts
-    // `word-cell-owned-grid-frame`: a cell-owned TAP frame positions the table.
     // never elect a nested OOXML table. Preserve authored TAP presence and
     // acquire bounded grid-frame policy at the table compatibility boundary.
+    // `word-cell-owned-grid-frame`: a cell-owned TAP frame positions the table.
     positioning: ordinaryFlow ? null : cellFrame ? cellOwnedGridFramePosition(cellFrame)
       : table.tblpPr == null ? null : floatingTablePositionInput(table.tblpPr),
     rows,

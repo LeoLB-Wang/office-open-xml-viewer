@@ -18,7 +18,7 @@ import { buildPivotStyleMap, type PivotCellFormat } from './pivot-style.js';
 import type {
   Worksheet, Styles, Cell, CellValue, CellFont, CellFill, Border, BorderEdge, CellXf,
   ViewportRange, RenderViewportOptions, XlsxTextRunInfo,
-  CfRule, CfStop, CfValue, Dxf, Hyperlink, DefinedName,
+  Dxf,
   Run, GradientFillSpec, ShapeInfo, ShapeAnchor, ImageAnchor, ChartAnchor,
   SlicerItem, SlicerStyle, SlicerElementStyle,
   PhoneticRun, PhoneticProperties, PhoneticAlignment, Duotone, PathInfo,
@@ -2162,7 +2162,6 @@ function renderQuadrant(
     ctx.fillStyle = textColor ? hexToRgba(textColor) : '#000000';
 
     const paddingX = 3, paddingY = 2;
-    const isNumeric = cell.value.type === 'number';
     const alignH = xf.alignH ?? generalHorizontalAlignment(cell.value.type);
     const alignV = xf.alignV ?? 'bottom';
     // Indent: ECMA-376 §18.8.1 alignment@indent — one level indents by 3
@@ -4933,8 +4932,6 @@ export function drawShapeText(
     lIns: txt.lIns, rIns: txt.rIns, tIns: txt.tIns, bIns: txt.bIns,
   }, cs / EMU_PER_PX);
   const padLeft = rect.left;
-  const padTop = rect.top;
-  const padBottom = (txt.bIns / EMU_PER_PX) * cs;
   const innerW = rect.width;
   const innerH = rect.height;
   if (innerW <= 0 || innerH <= 0) return;
