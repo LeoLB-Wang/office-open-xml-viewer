@@ -197,9 +197,13 @@ pub(super) fn project(
                 pictures.acquire_picture_bullet(formatting, bullet)?;
                 formatting.unsupported_character_properties = true;
             }
-            paragraph.numbering = Some(Box::new(
-                formatting.direct_numbering(numbering, reference, &marker, &paragraph)?,
-            ));
+            paragraph.numbering = Some(Box::new(formatting.direct_numbering(
+                numbering,
+                reference,
+                &marker,
+                &paragraph,
+                direct.numbering_revision_label.as_deref(),
+            )?));
         }
         budget.paragraph(&paragraph)?;
 
