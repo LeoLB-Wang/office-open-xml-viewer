@@ -9,7 +9,7 @@
 /// Bound expansions before allocating them. Non-repeating formats below do
 /// bounded work on at most ten decimal digits; their small result is checked
 /// after formatting. This is a caller-owned byte budget, not a numeric cutoff.
-pub(super) fn format_counter_bounded(n: u32, format: &str, limit: usize) -> Result<String, ()> {
+pub fn format_counter_bounded(n: u32, format: &str, limit: usize) -> Result<String, ()> {
     if n != 0 {
         let alphabet = match format {
             "arabicAlpha" => Some(ARABIC_ALPHA),

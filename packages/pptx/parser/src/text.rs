@@ -2327,7 +2327,13 @@ fn parse_bullet_marker<F: FnMut(&str) -> Option<String>>(
     // Auto-numbered bullet
     if let Some(bu_auto) = child(p_pr, "buAutoNum") {
         let num_type = attr(&bu_auto, "type").unwrap_or_else(|| "arabicPeriod".into());
-        let start_at = attr(&bu_auto, "startAt").and_then(|v| v.parse().ok());
+        // ST_TextBulletStartAtNum (dml-main.xsd) is 1..=32767. An
+        // out-of-range value is schema-invalid and is treated as absent
+        // (default 1); keeping it would let the renderer build a roman
+        // numeral millions of characters long per paragraph.
+        let start_at = attr(&bu_auto, "startAt")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| (1..=32_767).contains(v));
         return Some(BuMarker::AutoNum { num_type, start_at });
     }
 

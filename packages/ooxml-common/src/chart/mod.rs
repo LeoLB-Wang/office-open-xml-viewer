@@ -190,7 +190,83 @@ impl<'a> ChartParseContext<'a> {
 
 /// Parse an ECMA-376 DrawingML chart part into the shared wire model.
 pub fn parse_chart_part(root: Node, context: &ChartParseContext<'_>) -> Option<ChartModel> {
+    if let Err((limit, observed)) = classic_cache_preparse(root) {
+        // Fail closed with a typed hard-limit violation (the host turns the
+        // latched violation into its OOXML_RESOURCE_LIMIT error) instead of
+        // letting `vec![_; ptCount]` request an unbounded allocation.
+        use crate::resource::{observe_hard_limit, HardResourceLimitKind};
+        let kind = HardResourceLimitKind::ChartCachePoints;
+        if let Some(reporter) = context.limit_reporter {
+            let _ = reporter.observe_hard_limit(kind, None, limit, observed);
+        } else {
+            let _ = observe_hard_limit(kind, None, limit, observed);
+        }
+        return None;
+    }
     parse_part(root, context, parse_classic_impl)
+}
+
+/// Total cache slots one classic chart part may declare: four full-height
+/// worksheet columns of [`MAX_CHART_CACHE_POINTS`] each. Library resource
+/// policy, not an ECMA-376 rule.
+const MAX_CLASSIC_CHART_CACHE_SLOTS: usize = 4 * MAX_CHART_CACHE_POINTS;
+
+/// Bound the dense vectors the classic parser sizes from `<c:ptCount>` and
+/// `<c:pt idx>` before any of them is allocated.
+///
+/// Every numeric/string cache or literal (`numCache`, `numLit`, `strCache`,
+/// `strLit`) is materialized as up to `max(ptCount, max(idx) + 1)` slots, and
+/// a `multiLvlStrCache` as that width times its `lvl` count. A single cache
+/// wider than [`MAX_CHART_CACHE_POINTS`] (the worksheet row limit chart data
+/// comes from) or a part whose caches total more than
+/// [`MAX_CLASSIC_CHART_CACHE_SLOTS`] is rejected; `Err` carries the crossed
+/// limit and the observed (saturated) slot count.
+fn classic_cache_preparse(root: Node) -> Result<(), (u64, u64)> {
+    fn elements<'a, 'input>(
+        node: Node<'a, 'input>,
+        name: &'static str,
+    ) -> impl Iterator<Item = Node<'a, 'input>> {
+        node.children()
+            .filter(move |child| child.is_element() && child.tag_name().name() == name)
+    }
+    fn sparse_width(container: Node) -> u64 {
+        elements(container, "pt")
+            .filter_map(|point| point.attribute("idx"))
+            .filter_map(|value| value.trim().parse::<u64>().ok())
+            .map(|index| index.saturating_add(1))
+            .max()
+            .unwrap_or(0)
+    }
+    let mut total = 0u64;
+    for cache in root.descendants().filter(Node::is_element) {
+        let multi_level = match cache.tag_name().name() {
+            "numCache" | "numLit" | "strCache" | "strLit" => false,
+            "multiLvlStrCache" => true,
+            _ => continue,
+        };
+        let declared = elements(cache, "ptCount")
+            .next()
+            .and_then(|node| node.attribute("val"))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let (width, rows) = if multi_level {
+            let levels = elements(cache, "lvl");
+            let (count, sparse) = levels.fold((0u64, 0u64), |(count, sparse), level| {
+                (count + 1, sparse.max(sparse_width(level)))
+            });
+            (declared.max(sparse), count.max(1))
+        } else {
+            (declared.max(sparse_width(cache)), 1)
+        };
+        if width > MAX_CHART_CACHE_POINTS as u64 {
+            return Err((MAX_CHART_CACHE_POINTS as u64, width));
+        }
+        total = total.saturating_add(width.saturating_mul(rows));
+        if total > MAX_CLASSIC_CHART_CACHE_SLOTS as u64 {
+            return Err((MAX_CLASSIC_CHART_CACHE_SLOTS as u64, total));
+        }
+    }
+    Ok(())
 }
 
 /// Parse a Microsoft chartEx part into the shared wire model.

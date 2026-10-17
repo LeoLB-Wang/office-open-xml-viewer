@@ -135,6 +135,8 @@ const KNOWN_PAIR_RULES = new Map<string, KnownPairRule>([
   ['xml-context:bytes', { stage: 'parsing', part: 'optional', configurable: false }],
   ['chartex-allocation:elements', { stage: 'parsing', part: 'forbidden', configurable: false }],
   ['chartex-allocation:bytes', { stage: 'parsing', part: 'forbidden', configurable: false }],
+  ['chart-cache:points', { stage: 'parsing', part: 'forbidden', configurable: false }],
+  ['numbering-marker:bytes', { stage: 'parsing', part: 'forbidden', configurable: false }],
   ['chart-style-formats:entries', { stage: 'parsing', part: 'required', configurable: false }],
   ['chart-custom-number-formats:entries', { stage: 'parsing', part: 'required', configurable: false }],
   ['chart-number-format-bytes:bytes', { stage: 'parsing', part: 'required', configurable: false }],

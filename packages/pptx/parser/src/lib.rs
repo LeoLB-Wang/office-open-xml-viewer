@@ -4582,6 +4582,32 @@ mod tests {
         }
     }
 
+    /// `startAt` outside ST_TextBulletStartAtNum (1..=32767) is schema-invalid
+    /// and reads as absent, so the renderer never formats a counter in the
+    /// billions (a roman numeral millions of characters long).
+    #[test]
+    fn auto_number_start_outside_schema_range_reads_as_absent() {
+        let theme = HashMap::new();
+        let mut resolve_blip = |_: &str| None;
+        for (value, expected) in [
+            ("1", Some(1)),
+            ("32767", Some(32767)),
+            ("32768", None),
+            ("4294967295", None),
+            ("0", None),
+            ("-5", None),
+        ] {
+            let xml = format!(
+                r#"<a:pPr xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:buAutoNum type="romanUcPeriod" startAt="{value}"/></a:pPr>"#
+            );
+            let doc = roxmltree::Document::parse(&xml).expect("valid paragraph properties");
+            match parse_bullet(Some(doc.root_element()), &theme, &mut resolve_blip) {
+                Bullet::AutoNum { start_at, .. } => assert_eq!(start_at, expected, "{value}"),
+                other => panic!("expected AutoNum, got {other:?}"),
+            }
+        }
+    }
+
     /// PowerPoint serializes an unbound placeholder as idx=2^32-1. That value
     /// is a sentinel rather than a layout slot, so the paragraph still inherits
     /// its bullet marker from the master bodyStyle.

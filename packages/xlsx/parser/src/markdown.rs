@@ -5,25 +5,34 @@
 // styling, formatting (numFmt), charts, sparklines, drawings, slicers,
 // conditional formatting, and the formula text (cached value only).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use serde_json::Value;
 
 use crate::types::SharedString;
 
-pub(crate) fn render_sheet(sheet: &Value, shared_strings: &[SharedString], out: &mut String) {
+/// Append one sheet's table to `out`. `Err(projected)` reports that the
+/// projected output would exceed `limit` bytes; the caller then fails the
+/// whole projection, so the partial `out` is discarded.
+pub(crate) fn render_sheet(
+    sheet: &Value,
+    shared_strings: &[SharedString],
+    out: &mut String,
+    limit: u64,
+) -> Result<(), u64> {
     let name = sheet["name"].as_str().unwrap_or("(unnamed)");
     let _ = writeln!(out, "## {}\n", name);
 
     let Some(rows) = sheet["rows"].as_array() else {
-        return;
+        return Ok(());
     };
 
     // Find the populated bounding box. Rows are stored sparsely keyed by
-    // 1-based row index; cells likewise carry their 1-based col. We render
-    // the rectangle [min_row..=max_row] × [min_col..=max_col] dense, filling
-    // gaps with empty cells.
+    // 1-based row index; cells likewise carry their 1-based col. The table
+    // spans [min_row..=max_row] × [min_col..=max_col], with gaps rendered as
+    // empty cells. Cells are kept sparse: the bounding box of two cells at A1
+    // and XFD1048576 must not allocate a dense 1048576 × 16384 grid.
     let mut min_row = u32::MAX;
     let mut max_row = 0u32;
     let mut min_col = u32::MAX;
@@ -42,29 +51,19 @@ pub(crate) fn render_sheet(sheet: &Value, shared_strings: &[SharedString], out: 
             if row_idx == 0 || col == 0 {
                 continue;
             }
-            if row_idx < min_row {
-                min_row = row_idx;
-            }
-            if row_idx > max_row {
-                max_row = row_idx;
-            }
-            if col < min_col {
-                min_col = col;
-            }
-            if col > max_col {
-                max_col = col;
-            }
+            min_row = min_row.min(row_idx);
+            max_row = max_row.max(row_idx);
+            min_col = min_col.min(col);
+            max_col = max_col.max(col);
         }
     }
     if max_row == 0 || max_col == 0 {
         // Empty sheet — emit the heading only.
-        return;
+        return Ok(());
     }
 
-    // Build a dense grid of display strings indexed by [r - min_row][c - min_col].
-    let n_rows = (max_row - min_row + 1) as usize;
-    let n_cols = (max_col - min_col + 1) as usize;
-    let mut grid: Vec<Vec<String>> = vec![vec![String::new(); n_cols]; n_rows];
+    // Sparse grid of display strings keyed by (row, col) inside the bbox.
+    let mut grid: BTreeMap<(u32, u32), String> = BTreeMap::new();
     for row in rows {
         let row_idx = row["index"].as_u64().unwrap_or(0) as u32;
         if row_idx < min_row || row_idx > max_row {
@@ -78,37 +77,61 @@ pub(crate) fn render_sheet(sheet: &Value, shared_strings: &[SharedString], out: 
             if col < min_col || col > max_col {
                 continue;
             }
-            let r = (row_idx - min_row) as usize;
-            let c = (col - min_col) as usize;
-            grid[r][c] = cell_display(cell, shared_strings);
+            grid.insert((row_idx, col), cell_display(cell, shared_strings));
         }
     }
 
     // Apply merges: ECMA-376 §18.3.1.55 — the top-left cell carries the value,
     // continuation cells must render empty. We do this after grid population so
     // a value living at the top-left of a merge survives and the rest clear.
-    let merge_continuation = collect_merge_continuation_cells(&sheet["mergeCells"]);
-    for (row_idx, col) in merge_continuation {
-        if row_idx < min_row || row_idx > max_row || col < min_col || col > max_col {
-            continue;
+    clear_merge_continuation_cells(&sheet["mergeCells"], &mut grid);
+
+    // Every emitted row carries all `n_cols` cells, so bound the projected
+    // output before writing it: a few far-apart cells can otherwise expand
+    // into gigabytes of empty `|  |` columns.
+    let n_cols = u64::from(max_col - min_col + 1);
+    let mut emitted_rows = 2u64; // header + separator
+    let mut content = 0u64;
+    let mut previous_row = None;
+    for (&(row_idx, _), value) in &grid {
+        content = content.saturating_add(value.len() as u64 * 4);
+        if row_idx != min_row && !value.is_empty() && previous_row != Some(row_idx) {
+            emitted_rows += 1;
+            previous_row = Some(row_idx);
         }
-        grid[(row_idx - min_row) as usize][(col - min_col) as usize].clear();
+    }
+    let projected = (out.len() as u64)
+        .saturating_add(emitted_rows.saturating_mul(n_cols.saturating_mul(3).saturating_add(2)))
+        .saturating_add(content);
+    if projected > limit {
+        return Err(projected);
     }
 
+    let n_cols = n_cols as usize;
+    let row_cells = |row_idx: u32| -> Vec<String> {
+        let mut cells = vec![String::new(); n_cols];
+        for ((_, col), value) in grid.range((row_idx, min_col)..=(row_idx, max_col)) {
+            cells[(col - min_col) as usize] = value.clone();
+        }
+        cells
+    };
     // Header row: use the first row of the bbox. Markdown tables require a
     // header — if the first row is blank we still emit empty headers so
     // downstream renderers parse the rest correctly.
-    write_table_row(out, &grid[0], n_cols);
+    write_table_row(out, &row_cells(min_row), n_cols);
     let sep: Vec<&str> = (0..n_cols).map(|_| "---").collect();
     let _ = writeln!(out, "| {} |", sep.join(" | "));
-    for row in grid.iter().skip(1) {
+    let mut written_row = min_row;
+    for (&(row_idx, _), value) in &grid {
         // Skip fully-empty middle rows to keep output tight.
-        if row.iter().all(|c| c.is_empty()) {
+        if row_idx == written_row || value.is_empty() {
             continue;
         }
-        write_table_row(out, row, n_cols);
+        written_row = row_idx;
+        write_table_row(out, &row_cells(row_idx), n_cols);
     }
     out.push('\n');
+    Ok(())
 }
 
 fn write_table_row(out: &mut String, row: &[String], n_cols: usize) {
@@ -176,32 +199,80 @@ fn format_number(n: f64) -> String {
     }
 }
 
-/// Returns the set of (row, col) coordinates that are continuation cells of a
-/// merged range — i.e. every cell in `[top..=bottom] × [left..=right]` except
-/// the top-left, which keeps its value.
-fn collect_merge_continuation_cells(merge_cells: &Value) -> HashSet<(u32, u32)> {
-    let mut set = HashSet::new();
+/// SpreadsheetML grid maxima (ECMA-376 §18.3.1.4 / Excel's 16384 × 1048576).
+const MAX_COL: u32 = 16_384;
+const MAX_ROW: u32 = 1_048_576;
+
+/// Clear every populated cell that is a continuation cell of a merged range —
+/// any cell of `[top..=bottom] × [left..=right]` except that range's top-left.
+///
+/// A merge may cover the whole sheet, so its cells are never enumerated.
+/// Instead a row sweep keeps, in a Fenwick tree over columns, how many merges
+/// cover each column of the current row; a populated cell is a continuation
+/// cell exactly when more merges cover it than start at it. The work is
+/// O((cells + merges) · log columns) regardless of merge area.
+fn clear_merge_continuation_cells(merge_cells: &Value, grid: &mut BTreeMap<(u32, u32), String>) {
     let Some(arr) = merge_cells.as_array() else {
-        return set;
+        return;
     };
+    // (row, column-range add): +1 at `top`, -1 after `bottom`.
+    let mut events: Vec<(u32, u32, u32, i64)> = Vec::new();
+    let mut starts: HashMap<(u32, u32), i64> = HashMap::new();
     for m in arr {
-        let top = m["top"].as_u64().unwrap_or(0) as u32;
-        let left = m["left"].as_u64().unwrap_or(0) as u32;
-        let bottom = m["bottom"].as_u64().unwrap_or(0) as u32;
-        let right = m["right"].as_u64().unwrap_or(0) as u32;
-        if top == 0 || left == 0 || bottom < top || right < left {
+        let coord = |key: &str| {
+            m[key]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(0)
+        };
+        let (top, left, bottom, right) =
+            (coord("top"), coord("left"), coord("bottom"), coord("right"));
+        if top == 0
+            || left == 0
+            || bottom < top
+            || right < left
+            || bottom > MAX_ROW
+            || right > MAX_COL
+        {
             continue;
         }
-        for r in top..=bottom {
-            for c in left..=right {
-                if r == top && c == left {
-                    continue;
-                }
-                set.insert((r, c));
-            }
+        events.push((top, left, right, 1));
+        events.push((bottom + 1, left, right, -1));
+        *starts.entry((top, left)).or_default() += 1;
+    }
+    if events.is_empty() {
+        return;
+    }
+    events.sort_unstable_by_key(|event| event.0);
+    let mut tree = vec![0i64; MAX_COL as usize + 2];
+    let add = |tree: &mut [i64], index: u32, delta: i64| {
+        let mut i = index as usize;
+        while i < tree.len() {
+            tree[i] += delta;
+            i += i & i.wrapping_neg();
+        }
+    };
+    let covering = |tree: &[i64], index: u32| {
+        let (mut i, mut sum) = (index as usize, 0i64);
+        while i > 0 {
+            sum += tree[i];
+            i -= i & i.wrapping_neg();
+        }
+        sum
+    };
+    let mut next = 0;
+    for (&(row, col), value) in grid.iter_mut() {
+        while next < events.len() && events[next].0 <= row {
+            let (_, left, right, delta) = events[next];
+            add(&mut tree, left, delta);
+            add(&mut tree, right + 1, -delta);
+            next += 1;
+        }
+        let starting_here = starts.get(&(row, col)).copied().unwrap_or(0);
+        if covering(&tree, col) > starting_here {
+            value.clear();
         }
     }
-    set
 }
 
 pub(crate) fn render_sheet_comments(sheet: &Value, out: &mut String, has_comments: &mut bool) {
@@ -324,7 +395,7 @@ mod tests {
             ]
         });
         let mut out = String::new();
-        render_sheet(&sheet, &shared, &mut out);
+        render_sheet(&sheet, &shared, &mut out, u64::MAX).unwrap();
         assert!(
             out.contains("Beta"),
             "si=1 must resolve to shared[1] text, got:\n{out}"
@@ -348,7 +419,7 @@ mod tests {
             ]
         });
         let mut out = String::new();
-        render_sheet(&sheet, &shared, &mut out);
+        render_sheet(&sheet, &shared, &mut out, u64::MAX).unwrap();
         // No populated cells → only the heading is emitted (no table body).
         assert!(!out.contains('|'), "empty sheet must have no table: {out}");
     }
@@ -378,5 +449,82 @@ mod tests {
             "{out}"
         );
         assert!(out.contains(">> **Editor**\n>>\n>> Updated."), "{out}");
+    }
+
+    fn text_cell(row: u32, col: u32, text: &str) -> Value {
+        json!({ "col": col, "row": row, "value": { "type": "text", "text": text } })
+    }
+
+    fn sheet_of(cells: &[(u32, u32, &str)], merges: Value) -> Value {
+        let mut rows: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+        for &(row, col, text) in cells {
+            rows.entry(row).or_default().push(text_cell(row, col, text));
+        }
+        let rows: Vec<Value> = rows
+            .into_iter()
+            .map(|(index, cells)| json!({ "index": index, "cells": cells }))
+            .collect();
+        json!({ "name": "S", "rows": rows, "mergeCells": merges })
+    }
+
+    /// Continuation cells clear and top-left cells keep their value, including
+    /// for duplicated and overlapping merges; gaps and empty middle rows keep
+    /// their historical layout.
+    #[test]
+    fn merges_clear_continuation_cells_only() {
+        let sheet = sheet_of(
+            &[
+                (1, 1, "a"),
+                (1, 2, "b"),
+                (2, 1, "c"),
+                (2, 2, "d"),
+                (4, 3, "e"),
+                (6, 1, "f"),
+            ],
+            json!([
+                { "top": 1, "left": 1, "bottom": 2, "right": 2 },
+                { "top": 1, "left": 1, "bottom": 2, "right": 2 },
+                { "top": 4, "left": 3, "bottom": 4, "right": 3 },
+                { "top": 5, "left": 1, "bottom": 1048576, "right": 16384 }
+            ]),
+        );
+        let mut out = String::new();
+        render_sheet(&sheet, &[], &mut out, u64::MAX).unwrap();
+        assert_eq!(
+            out,
+            "## S\n\n| a |  |  |\n| --- | --- | --- |\n|  |  | e |\n\n"
+        );
+    }
+
+    /// Two far-apart cells span the whole grid without allocating it, and a
+    /// sheet-wide merge is applied without enumerating its cells.
+    #[test]
+    fn far_apart_cells_and_sheet_wide_merges_stay_sparse() {
+        let sheet = sheet_of(
+            &[(1, 1, "a"), (1_048_576, 16_384, "z")],
+            Value::Array(vec![
+                json!({ "top": 1, "left": 1, "bottom": 1048576, "right": 16384 });
+                1000
+            ]),
+        );
+        let mut out = String::new();
+        render_sheet(&sheet, &[], &mut out, u64::MAX).unwrap();
+        assert_eq!(
+            out.lines().count(),
+            5,
+            "heading, blank, header, separator, blank"
+        );
+        assert!(out.contains("| a |"));
+        assert!(!out.contains('z'), "continuation cell must clear");
+
+        let sheet = sheet_of(
+            &(1..=64)
+                .map(|row| (row, if row % 2 == 0 { 16_384 } else { 1 }, "x"))
+                .collect::<Vec<_>>(),
+            Value::Null,
+        );
+        let mut out = String::new();
+        let projected = render_sheet(&sheet, &[], &mut out, 1 << 20).expect_err("over budget");
+        assert!(projected > 1 << 20);
     }
 }
