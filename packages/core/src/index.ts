@@ -248,6 +248,8 @@ export { trackPaintPath, currentStrokeBounds } from './shape/paint-bounds';
 export { measurePaintBounds } from './shape/measure-paint-bounds';
 export type { FillOutline } from './shape/path-gradient';
 export { buildShapePath } from './shape/preset';
+export { EM_BOX_CENTER_FALLBACK_EM, emBoxCenterAboveBaseline } from './text/em-box-center';
+export { SYNTHETIC_ASCENT_EM, SYNTHETIC_DESCENT_EM } from './text/synthetic-em-box';
 export {
   paintDrawingMLShape,
   clipDrawingMLShape,
