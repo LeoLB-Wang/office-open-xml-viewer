@@ -160,13 +160,15 @@ window.addEventListener('message', async (event: MessageEvent) => {
   // viewers never touch the network — the matching CSP keeps the webview offline.
   const useGoogleFonts: boolean = msg.useGoogleFonts === true;
 
-  let buffer: ArrayBuffer;
-  try {
-    const res = await fetch(msg.url);
-    if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-    buffer = await res.arrayBuffer();
-  } catch (err) {
-    showError(`Error: ${err instanceof Error ? err.message : String(err)}`);
+  // The host reads the document and posts its bytes; the webview has no
+  // resource root that could fetch it (or its sibling files) directly.
+  if (typeof msg.error === 'string') {
+    showError(`Error: ${msg.error}`);
+    return;
+  }
+  const buffer = exactArrayBuffer(msg.data);
+  if (!buffer) {
+    showError('Error: the document bytes were not received');
     return;
   }
 
@@ -182,6 +184,17 @@ window.addEventListener('message', async (event: MessageEvent) => {
     showError(`Error: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
+
+/** The posted bytes as an exact-length ArrayBuffer. A revived typed array
+ *  may view only part of its underlying buffer, so copy in that case. */
+function exactArrayBuffer(data: unknown): ArrayBuffer | null {
+  if (data instanceof ArrayBuffer) return data;
+  if (!ArrayBuffer.isView(data)) return null;
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+    ? (bytes.buffer as ArrayBuffer)
+    : (bytes.slice().buffer as ArrayBuffer);
+}
 
 // ── XLSX ─────────────────────────────────────────────────────────────────────
 

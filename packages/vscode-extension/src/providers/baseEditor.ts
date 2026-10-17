@@ -83,12 +83,13 @@ export abstract class BaseEditorProvider
     document: vscode.CustomDocument,
     webviewPanel: vscode.WebviewPanel,
   ): Promise<void> {
+    // Only the bundled assets are webview-loadable. The document's bytes are
+    // read here and posted to the webview, so neither its directory nor the
+    // document itself is a resource root: `connect-src`/`img-src`
+    // `${cspSource}` therefore cannot reach sibling files.
     webviewPanel.webview.options = {
       enableScripts: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(this.context.extensionUri, 'dist'),
-        vscode.Uri.joinPath(document.uri, '..'),
-      ],
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')],
     };
 
     const selection = this.selectionContexts.track(
@@ -104,28 +105,39 @@ export abstract class BaseEditorProvider
       initializedSession: null,
     };
     openViews.add(view);
+    let disposed = false;
     webviewPanel.onDidDispose(() => {
+      disposed = true;
       openViews.delete(view);
       selection.dispose();
     });
 
     renderWebview(view);
 
-    const docUrl = webviewPanel.webview.asWebviewUri(document.uri).toString();
-
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
       if (msg.type === 'webview-ready') {
         if (msg.selectionSession !== view.selectionSession) return;
         if (view.initializedSession === view.selectionSession) return;
-        view.initializedSession = view.selectionSession;
+        const session = view.selectionSession;
+        view.initializedSession = session;
+        let data: Uint8Array | undefined;
+        let error: string | undefined;
+        try {
+          data = await vscode.workspace.fs.readFile(document.uri);
+        } catch (err) {
+          error = err instanceof Error ? err.message : String(err);
+        }
+        // A reload (new session) or close during the read supersedes it.
+        if (disposed || view.selectionSession !== session) return;
         const posted = await webviewPanel.webview.postMessage({
           type: 'ooxml-init',
           fileType: this.fileType,
-          url: docUrl,
+          data,
+          error,
           useGoogleFonts: shouldUseGoogleFonts(),
-          selectionSession: view.selectionSession,
+          selectionSession: session,
         });
-        if (!posted && view.initializedSession === view.selectionSession) {
+        if (!posted && view.initializedSession === session) {
           view.initializedSession = null;
         }
       } else if (msg.type === 'selection-context') {
