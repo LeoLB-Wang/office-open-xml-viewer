@@ -124,7 +124,7 @@ impl Store<'_> {
             return Ok(Some([width, height]));
         }
         Ok(marker_font_size_pt.map(|size| {
-            let displayed = (size - 2.0).max(2.0).min(MAX_DIMENSION_PT);
+            let displayed = (size - 2.0).clamp(2.0, MAX_DIMENSION_PT);
             [
                 (displayed * width / height).min(MAX_DIMENSION_PT),
                 displayed,

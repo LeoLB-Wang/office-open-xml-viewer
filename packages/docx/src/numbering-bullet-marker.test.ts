@@ -84,11 +84,11 @@ function run(text: string, fontFamily = 'Times New Roman'): DocxTextRun {
   } as DocxTextRun;
 }
 
-function bulletDoc(num: NumberingInfo): DocxDocumentModel {
+function bulletDoc(num: NumberingInfo, lineSpacing: DocParagraph['lineSpacing'] = null): DocxDocumentModel {
   const p: DocParagraph = {
     alignment: 'left',
     indentLeft: 36, indentRight: 0, indentFirst: -18, // hanging indent (marker in the margin)
-    spaceBefore: 0, spaceAfter: 0, lineSpacing: null,
+    spaceBefore: 0, spaceAfter: 0, lineSpacing,
     numbering: num, tabStops: [],
     runs: [{ type: 'text', ...run('body') } as DocParagraph['runs'][number]],
     defaultFontSize: 16, defaultFontFamily: 'Times New Roman',
@@ -110,10 +110,11 @@ function bulletDoc(num: NumberingInfo): DocxDocumentModel {
 async function render(
   num: NumberingInfo,
   fetchImage?: (path: string, mime: string) => Promise<Blob>,
+  lineSpacing: DocParagraph['lineSpacing'] = null,
 ) {
   const { canvas, fillTextCalls, drawImageCalls } = makeRecordingCanvas();
   const runs: DocxTextRunInfo[] = [];
-  await renderDocumentToCanvas(bulletDoc(num), canvas, 0, {
+  await renderDocumentToCanvas(bulletDoc(num, lineSpacing), canvas, 0, {
     dpr: 1,
     width: 400, // scale = 1 (px per pt)
     onTextRun: (r) => runs.push(r),
@@ -182,11 +183,11 @@ describe('picture bullet marker (§17.9.9 lvlPicBulletId → §17.9.20 numPicBul
     // picBulletWidthPt / picBulletHeightPt intentionally omitted (extent absent).
   });
 
-  async function renderPic(num: NumberingInfo = picNum()) {
+  async function renderPic(num: NumberingInfo = picNum(), lineSpacing: DocParagraph['lineSpacing'] = null) {
     const fetchImage = vi.fn(
       async (_path: string, mime: string) => new Blob([ONE_BY_ONE_GIF], { type: mime }),
     );
-    const out = await render(num, fetchImage);
+    const out = await render(num, fetchImage, lineSpacing);
     return { ...out, fetchImage };
   }
 
@@ -224,6 +225,13 @@ describe('picture bullet marker (§17.9.9 lvlPicBulletId → §17.9.20 numPicBul
     expect(tall.drawImageCalls[0].y).toBeCloseTo(0, 5);
     const bottom = (call: { y: number; h: number }) => call.y + call.h;
     expect(bottom(tall.drawImageCalls[0]) - bottom(short.drawImageCalls[0])).toBeCloseTo(40 - 12.8, 5);
+    // Like an inline picture, it also enlarges an atLeast line beyond its
+    // minimum instead of overflowing it.
+    const atLeast = await renderPic(
+      { ...picNum(), picBulletWidthPt: 40, picBulletHeightPt: 40 },
+      { value: 18, rule: 'atLeast', explicit: true } as DocParagraph['lineSpacing'],
+    );
+    expect(atLeast.drawImageCalls[0].y).toBeGreaterThanOrEqual(-1e-6);
   });
 
   it('(c) advances the body text past the marker (markerW = bullet width)', async () => {
