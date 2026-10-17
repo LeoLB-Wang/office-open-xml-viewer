@@ -1149,6 +1149,8 @@ mod tests {
         default_table_style_indent: bool,
         conditional_borders: u16,
         conditional_borders_second: u16,
+        /// The second condition's borders are 6 pt instead of 4 pt.
+        distinct_second_borders: bool,
         conditional_border_nil: bool,
         conditional_border_malformed: bool,
         repeated_conditional_borders: u8,
@@ -1253,6 +1255,10 @@ mod tests {
     }
 
     fn conditional_borders(condition: u16) -> Vec<u8> {
+        conditional_borders_with_width(condition, 32)
+    }
+
+    fn conditional_borders_with_width(condition: u16, width: u8) -> Vec<u8> {
         let mut properties = Vec::new();
         for (code, color) in [
             (0xd47f, [0xff, 0, 0]),
@@ -1263,7 +1269,7 @@ mod tests {
             (0xd684, [0, 0xff, 0xff]),
         ] {
             let mut operand = vec![8];
-            operand.extend(border_bytes(color, 32));
+            operand.extend(border_bytes(color, width));
             properties.extend(sprm(code, &operand));
         }
         cnf(0xd66a, condition, &properties)
@@ -1489,7 +1495,14 @@ mod tests {
             tapx.extend(conditional_borders(fixture.conditional_borders));
         }
         if fixture.conditional_borders_second != 0 {
-            tapx.extend(conditional_borders(fixture.conditional_borders_second));
+            tapx.extend(conditional_borders_with_width(
+                fixture.conditional_borders_second,
+                if fixture.distinct_second_borders {
+                    48
+                } else {
+                    32
+                },
+            ));
         }
         if fixture.conditional_border_nil {
             tapx.extend(conditional_border_nil(fixture.conditional_borders));
@@ -2845,6 +2858,7 @@ mod tests {
                     StyleFixture {
                         conditional_borders: first_condition,
                         conditional_borders_second: last_condition,
+                        distinct_second_borders: true,
                         ..StyleFixture::default()
                     },
                     std::array::from_fn(|_| row_cells(options, 3)),
@@ -2867,6 +2881,67 @@ mod tests {
                 assert!(both.borders[cell].iter().all(Option::is_none));
             }
         }
+    }
+
+    #[test]
+    fn a_single_first_and_last_row_or_column_shows_only_its_first_borders() {
+        // Both condition sets are present; a row (column) that is first and
+        // last must show exactly the first condition's projection, never the
+        // last condition's values that would otherwise follow it.
+        let fixture = |first, last| StyleFixture {
+            conditional_borders: first,
+            conditional_borders_second: last,
+            distinct_second_borders: true,
+            ..StyleFixture::default()
+        };
+        let one_row = |options: u16, first, last| {
+            try_project_table(
+                "a\u{7}b\u{7}c\u{7}\u{7}\r",
+                &[
+                    (0, 2, cell()),
+                    (2, 4, cell()),
+                    (4, 6, cell()),
+                    (6, 7, row_cells(options, 3)),
+                    (7, 8, Vec::new()),
+                ],
+                fixture(first, last),
+            )
+            .unwrap()
+        };
+        let rows = |options| {
+            one_row(
+                options,
+                table_style_condition::FIRST_ROW,
+                table_style_condition::LAST_ROW,
+            )
+        };
+        let both = rows((1 << 5) | (1 << 6));
+        assert!(!both.unsupported_table);
+        assert_eq!(both.borders, rows(1 << 5).borders);
+        assert_ne!(both.borders, rows(1 << 6).borders);
+        let one_column = |options: u16| {
+            try_project_table(
+                "a\u{7}\u{7}d\u{7}\u{7}g\u{7}\u{7}\r",
+                &[
+                    (0, 2, cell()),
+                    (2, 3, row_cells(options, 1)),
+                    (3, 5, cell()),
+                    (5, 6, row_cells(options, 1)),
+                    (6, 8, cell()),
+                    (8, 9, row_cells(options, 1)),
+                    (9, 10, Vec::new()),
+                ],
+                fixture(
+                    table_style_condition::FIRST_COLUMN,
+                    table_style_condition::LAST_COLUMN,
+                ),
+            )
+            .unwrap()
+        };
+        let both = one_column((1 << 7) | (1 << 8));
+        assert!(!both.unsupported_table);
+        assert_eq!(both.borders, one_column(1 << 7).borders);
+        assert_ne!(both.borders, one_column(1 << 8).borders);
     }
 
     #[test]
