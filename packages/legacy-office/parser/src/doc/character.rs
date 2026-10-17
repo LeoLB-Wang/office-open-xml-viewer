@@ -80,11 +80,7 @@ pub struct Properties {
 /// renderer approximation. MS-DOC 2.4.6 gives the last applied Prl ownership;
 /// 2.6.1 does not preserve Hresi across sprmCPlain or sprmCIstd resets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HresiOperand([u8; 2], bool);
-
-// The second field records an explicit library reading capability, not a
-// validated Word enum or a normalized replacement. It travels with the exact
-// operand through sparse overlays/resets so another owner cannot borrow it.
+struct HresiOperand([u8; 2]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct InsertionMark {
@@ -227,19 +223,7 @@ impl Default for Properties {
 
 impl Properties {
     pub(super) fn word_breaking_requires_consumer(&self) -> bool {
-        self.word_breaking
-            .is_some_and(|value| value.0 != [1, 0] && !value.1)
-    }
-
-    pub(super) fn native_reading_word_breaking(
-        &self,
-    ) -> Option<docx_model::NativeReadingWordBreakingWire> {
-        self.word_breaking
-            .filter(|value| value.1 && value.0 != [1, 0])
-            .map(|value| docx_model::NativeReadingWordBreakingWire {
-                raw_hres: value.0[0],
-                raw_ch_hres: value.0[1],
-            })
+        self.word_breaking.is_some_and(|value| value.0 != [1, 0])
     }
 
     /// A resolved style patch, without injecting the document's default size.
@@ -365,19 +349,6 @@ impl Properties {
     }
 
     pub fn apply(&mut self, code: u16, operand: &[u8], style: &Self) -> Result<bool, String> {
-        self.apply_with_word_breaking_reading(code, operand, style, false)
-    }
-
-    /// Native reading policy only: [MS-DOC] 2.9.118 still defines the strict
-    /// 1..6 domain. A bounded two-byte unsupported operand can instead remain
-    /// an unresolved layout fact; no dictionary/substitution is manufactured.
-    pub(super) fn apply_with_word_breaking_reading(
-        &mut self,
-        code: u16,
-        operand: &[u8],
-        style: &Self,
-        reading: bool,
-    ) -> Result<bool, String> {
         match code {
             0x6a03 => {
                 self.picture.location = Some(u32_at(operand, 0)? as i32);
@@ -467,11 +438,7 @@ impl Properties {
                 // ChHres zero. Strict keeps the conservative ASCII domain for
                 // other methods; a later normal value cannot forgive an
                 // invalid applied operand. Every mode requires exactly two
-                // correctly framed bytes. Explicit reading may retain values
-                // outside the normative domain as raw unresolved metadata,
-                // without interpreting Hresi transformations or changing
-                // literal logical text. Retained reading pages carry a visible
-                // warning in built-in viewers: line/page breaks may differ.
+                // correctly framed bytes.
                 if operand.len() != 2 {
                     return Err(unsupported("invalid Word word-breaking method"));
                 }
@@ -481,14 +448,12 @@ impl Properties {
                     } else {
                         (1..=0x7f).contains(&operand[1])
                     };
-                if !valid && !reading {
+                if !valid {
                     return Err(unsupported("invalid Word word-breaking method"));
                 }
-                self.word_breaking = Some(HresiOperand([operand[0], operand[1]], reading));
-                // In reading mode the exact raw owner remains metadata, while
-                // the renderer declines its unknown transformations. Strict
-                // custom values retain the existing unsupported-consumer gate.
-                return Ok(reading || operand == [1, 0]);
+                self.word_breaking = Some(HresiOperand([operand[0], operand[1]]));
+                // Custom values retain the unsupported-consumer gate.
+                return Ok(operand == [1, 0]);
             }
             0x485f => {
                 // MS-DOC 2.6.1 sprmCLidBi / 2.9.134 LID: this axis is used for
@@ -1259,85 +1224,6 @@ mod tests {
 
         let truncated = [0x16, 0x68, 0x12, 0x34, 0x56];
         assert!(Sprms::new(&truncated).next(&mut Budget::default()).is_err());
-    }
-
-    #[test]
-    fn reading_word_breaking_retains_exact_winning_style_direct_and_reset_owners() {
-        let base = Properties::default();
-        let mut style = Properties::sparse();
-        assert!(style
-            .apply_with_word_breaking_reading(0x484e, &[0, 1], &base, true)
-            .unwrap());
-        let mut effective = base.clone();
-        effective.overlay_visible(&style);
-        assert_eq!(
-            effective
-                .native_reading_word_breaking()
-                .unwrap()
-                .raw_ch_hres,
-            1
-        );
-        // A formatting-only sparse patch cannot discard the raw owner.
-        let mut bold = Properties::sparse();
-        bold.apply(0x0835, &[1], &base).unwrap();
-        effective.overlay_visible(&bold);
-        assert!(run(&effective, &[]).bold);
-        assert_eq!(
-            run_json(&effective)["__nativeReadingWordBreaking"],
-            serde_json::json!({"rawHres": 0, "rawChHres": 1})
-        );
-        // An explicit valid normal override is still a real winning owner.
-        effective
-            .apply_with_word_breaking_reading(0x484e, &[1, 0], &base, true)
-            .unwrap();
-        assert!(effective.native_reading_word_breaking().is_none());
-        effective.reset_to(&style, false);
-        assert_eq!(
-            effective.native_reading_word_breaking().unwrap().raw_hres,
-            0
-        );
-        effective.reset_to(&base, false);
-        assert!(effective.native_reading_word_breaking().is_none());
-        // Unknown/custom methods remain raw, including the exact authored ASCII
-        // character. Reading does not normalize them or synthesize break glyphs.
-        for raw in [[2, b'x'], [0, 0], [255, 255]] {
-            effective
-                .apply_with_word_breaking_reading(0x484e, &raw, &base, true)
-                .unwrap();
-            let owner = effective.native_reading_word_breaking().unwrap();
-            assert_eq!([owner.raw_hres, owner.raw_ch_hres], raw);
-            assert_eq!(
-                effective
-                    .direct_text_run("literal-hyphen".into(), &[])
-                    .unwrap()
-                    .unwrap()
-                    .text,
-                "literal-hyphen"
-            );
-        }
-        // Capability never weakens fixed-width framing or unrelated semantics.
-        for operand in [&[][..], &[0][..], &[0, 1, 0][..]] {
-            assert!(base
-                .clone()
-                .apply_with_word_breaking_reading(0x484e, operand, &base, true)
-                .is_err());
-        }
-        // sprmCPlain belongs to the formatting reset dispatcher. Exercise a
-        // property-owned unrelated domain here: MS-DOC 2.9.127 Kul.
-        let mut strict_underline = base.clone();
-        let mut reading_underline = base.clone();
-        assert!(strict_underline.apply(0x2a3e, &[1], &base).unwrap());
-        assert!(reading_underline
-            .apply_with_word_breaking_reading(0x2a3e, &[1], &base, true)
-            .unwrap());
-        assert_eq!(run_json(&strict_underline), run_json(&reading_underline));
-        let strict_error = base.clone().apply(0x2a3e, &[255], &base).unwrap_err();
-        let reading_error = base
-            .clone()
-            .apply_with_word_breaking_reading(0x2a3e, &[255], &base, true)
-            .unwrap_err();
-        assert_eq!(reading_error, strict_error);
-        assert!(strict_error.contains("invalid Word underline kind"));
     }
 
     #[test]

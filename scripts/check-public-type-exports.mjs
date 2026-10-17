@@ -114,7 +114,7 @@ for (const [entry, factory, options] of [
   const exports = moduleExports(path.join(legacyTypesDir, `${entry}.d.ts`));
   assert.deepEqual(
     [...exports.keys()].sort(),
-    [options, factory, ...(entry === 'doc' ? ['NativePictureBulletPolicy', 'NativeWordBreakingPolicy'] : [])].sort(),
+    [options, factory].sort(),
     `The ./${entry} declaration entry must preserve its model source factory and option types.`,
   );
 }

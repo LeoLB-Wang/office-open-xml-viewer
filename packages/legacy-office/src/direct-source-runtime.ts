@@ -43,16 +43,16 @@ export interface DirectSourceGlue {
   default(input: { module_or_path: unknown }): Promise<unknown>;
 }
 
-export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends DirectSourceArchive, C = undefined>(
+export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends DirectSourceArchive>(
   config: Readonly<{
     label: string;
     format?: LegacyFamily;
     loadGlue(): Promise<G>;
     resolveWasm(wasmUrl: string): Promise<unknown>;
-    construct(glue: G, bytes: Uint8Array, construction?: C): A;
+    construct(glue: G, bytes: Uint8Array): A;
     closeNative(archive: A): void;
   }>,
-): Readonly<{ open(bytes: Uint8Array, wasmUrl: string, signal?: AbortSignal, construction?: C): Promise<OwnedDirectSource<A>> }> {
+): Readonly<{ open(bytes: Uint8Array, wasmUrl: string, signal?: AbortSignal): Promise<OwnedDirectSource<A>> }> {
   let initialized: Promise<G> | undefined;
   let initializedUrl: string | undefined;
   let initializationPoison: WasmTrapError | undefined;
@@ -103,7 +103,7 @@ export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends 
   };
 
   return Object.freeze({
-    async open(bytes, wasmUrl, signal, construction) {
+    async open(bytes, wasmUrl, signal) {
       const poisoned = failure();
       if (poisoned) throw poisoned;
       const validatedUrl = validateDirectWasmUrl(wasmUrl, config.label);
@@ -120,7 +120,7 @@ export function createDirectSourceRuntime<G extends DirectSourceGlue, A extends 
       throwIfAborted(signal, config.label);
       let archive: A | undefined;
       try {
-        archive = runNative(() => construction === undefined ? config.construct(glue, bytes) : config.construct(glue, bytes, construction));
+        archive = runNative(() => config.construct(glue, bytes));
         throwIfAborted(signal, config.label);
       } catch (error) {
         if (archive) {

@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod direct;
 mod group;
-mod reading_picture;
 mod shape;
 pub(in crate::doc) mod textbox;
 pub(in crate::doc) use direct::DirectRun;
@@ -63,10 +62,6 @@ pub(super) struct Store<'a> {
     /// The CLX that maps textbox stories; empty when none was supplied.
     clx: &'a [u8],
     group_read: bool,
-    /// Default-strict library policy. Only the direct DOC constructor may opt
-    /// in; full native formatting/story/resource/omission gates remain intact.
-    reading_relocation: bool,
-    reading_picture_defaults: reading_picture::Defaults<'a>,
     header_container: Option<Record<'a>>,
     textboxes: [Option<textbox::Textboxes<'a>>; 2],
     images: BTreeMap<usize, Option<Image<'a>>>,
@@ -80,14 +75,6 @@ pub(super) struct Store<'a> {
 }
 
 impl<'a> Store<'a> {
-    pub(in crate::doc) fn set_reading_relocation(&mut self, enabled: bool) {
-        self.reading_relocation = enabled;
-    }
-
-    fn allows_reading_contour(&self, wrapping: u8) -> bool {
-        self.reading_relocation && matches!(wrapping, 4 | 5)
-    }
-
     /// Read the main document's drawing part. Header drawings are loaded only
     /// on request, so this subset never assigns them to the main story.
     #[cfg(test)]
@@ -117,8 +104,6 @@ impl<'a> Store<'a> {
             table,
             clx,
             group_read: false,
-            reading_relocation: false,
-            reading_picture_defaults: reading_picture::Defaults::default(),
             header_container: None,
             textboxes: [None, None],
             images: BTreeMap::new(),
@@ -198,7 +183,6 @@ impl<'a> Store<'a> {
         }
         let mut store_seen = false;
         for child in records(group.payload, &mut self.budget)? {
-            self.reading_picture_defaults.register(child);
             if child.kind != 0xf001 {
                 continue;
             }
@@ -517,19 +501,10 @@ impl<'a> Store<'a> {
             // SPA provides an explicit, host-defined coordinate origin; aligned
             // positions are accepted only through `direct_alignment`.
             || (align.is_none() && (placement.horizontal != 0 || placement.vertical != 0))
-            || (matches!(anchor.wrapping, 0 | 4 | 5)
-                && !self.allows_reading_contour(anchor.wrapping))
+            || matches!(anchor.wrapping, 0 | 4 | 5)
         {
             self.omitted = true;
             return Ok(None);
-        }
-        if self.allows_reading_contour(anchor.wrapping) {
-            if anchor.textbox_count != 0 {
-                return Err(unsupported(
-                    "reading picture has unacquired owned textbox content",
-                ));
-            }
-            reading_picture::acquire(shape, &self.reading_picture_defaults, &mut self.budget)?;
         }
         let Some(image_index) = picture.pib else {
             self.omitted = true;
@@ -561,12 +536,7 @@ impl<'a> Store<'a> {
             align.unwrap_or([None; 2]),
             content,
         )
-        .map(|mut drawing| {
-            if self.allows_reading_contour(anchor.wrapping) {
-                drawing.reading_picture_source = Some((part, anchor.shape_id));
-            }
-            Some(drawing)
-        })
+        .map(Some)
     }
 
     /// Load a shape's picture fill BLIP; `false` when it is not a supported
@@ -631,7 +601,6 @@ impl<'a> Store<'a> {
         self.occurrences += 1;
         Ok(ResolvedDrawing {
             content,
-            reading_picture_source: None,
             inline: false,
             shape_id: anchor.shape_id,
             extent,
@@ -667,7 +636,6 @@ enum Content {
 
 struct ResolvedDrawing {
     content: Content,
-    reading_picture_source: Option<(Part, u32)>,
     /// Projected in paragraph flow instead of anchored (pseudo-inline).
     inline: bool,
     shape_id: u32,
@@ -773,17 +741,6 @@ fn container_shapes<'a>(
         }
     }
     Ok(shapes)
-}
-
-/// Narrow automatic-picture class for explicit block relocation. Keep all
-/// existing picture parsing/budget gates; unlike the historical passive image
-/// projection, this route additionally classifies every property occurrence.
-/// [MS-ODRAW] picture crop/pib and group-shape positioning are represented by
-/// the retained image/anchor model. Stored contours and unrepresented effects
-/// cannot be relabelled automatic or silently lost.
-#[cfg(test)]
-fn verify_reading_picture_properties(shape: Record<'_>, budget: &mut usize) -> Result<(), String> {
-    reading_picture::acquire(shape, &reading_picture::Defaults::default(), budget).map(|_| ())
 }
 
 struct Placement {
@@ -932,8 +889,6 @@ fn direct_alignment(
 pub(super) struct Anchor {
     pub cp: usize,
     pub shape_id: u32,
-    /// [MS-DOC] Spa cTxbx: group-owned textbox content must not disappear.
-    pub textbox_count: i32,
     pub rect: [i32; 4],
     pub horizontal: &'static str,
     pub vertical: &'static str,
@@ -1024,7 +979,6 @@ fn anchors_in(
         result.push(Anchor {
             cp,
             shape_id,
-            textbox_count: u32_at(record, 22)? as i32,
             rect: [
                 u32_at(record, 4)? as i32,
                 u32_at(record, 8)? as i32,
@@ -1460,652 +1414,6 @@ mod tests {
             .append_direct_resources(&mut resources, &mut usize::MAX.clone())
             .unwrap();
         resources
-    }
-
-    fn reading_picture_with_options(options: &[(u16, u32)]) -> (Vec<u8>, Vec<u8>) {
-        let (word, mut table) = drawing_with_options(0xa00, 0, options);
-        // The fixture's PlcfSpa begins at table offset zero: CP array (8),
-        // spid/rectangle (20), then SPA flags. Select wrapTight so the strict
-        // reading-picture property gate is exercised before BLIP selection.
-        let flags = (1u16 << 1) | (1 << 3) | (4 << 5);
-        table[28..30].copy_from_slice(&flags.to_le_bytes());
-        (word, table)
-    }
-
-    #[test]
-    fn reading_picture_edit_locks_preserve_projection_and_resources() {
-        let project = |options: &[(u16, u32)]| {
-            let (word, table) = reading_picture_with_options(options);
-            let mut store = Store::read(&word, &table, 20).unwrap();
-            store.set_reading_relocation(true);
-            let picture = picture(&mut store).unwrap().unwrap();
-            assert_eq!(
-                picture
-                    .image
-                    .anchor_acquisition
-                    .as_ref()
-                    .unwrap()
-                    .wrap
-                    .authored_kinds,
-                ["wrapTight"]
-            );
-            assert!(!store.omitted);
-            (
-                serde_json::to_value(picture.image).unwrap(),
-                picture.occurrence_id,
-                resources(store),
-            )
-        };
-        let control = project(&[]);
-        // MS-ODRAW 2.3.20.1: zero, explicit editing locks, and all bits set
-        // (including ignored unused bits) cannot change the painted picture.
-        for value in [0, 0x01ff_01ff, u32::MAX] {
-            assert_eq!(project(&[(0x007f, value)]), control);
-        }
-    }
-
-    #[test]
-    fn reading_picture_edit_locks_do_not_admit_nonordinary_or_painting_properties() {
-        for property in [
-            (0x407f, 0), // fBid is forbidden for Protection Boolean Properties.
-            (0x807f, 0), // Even an empty complex payload is not this structure.
-            (0x007e, 0), // No neighboring protection-property range admission.
-            (0x0200, 1), // A shadow/effect is still outside the reading subset.
-            (0x01bf, 1), // Non-default fill painting remains unsupported.
-        ] {
-            let (word, table) = reading_picture_with_options(&[property]);
-            let mut store = Store::read(&word, &table, 20).unwrap();
-            store.set_reading_relocation(true);
-            assert!(picture(&mut store).is_err(), "property {property:?}");
-            assert!(
-                store.images.is_empty(),
-                "refusal must precede BLIP acquisition"
-            );
-            assert!(resources(store).is_empty());
-        }
-    }
-
-    #[test]
-    fn reading_picture_edit_locks_keep_table_and_budget_validation() {
-        let entry = [0x007fu16.to_le_bytes().as_slice(), &0u32.to_le_bytes()].concat();
-        for kind in [0xf00b, 0xf122] {
-            let verify = |options, body: &[u8], budget: &mut usize| {
-                let property_table = record(kind, options, body);
-                verify_reading_picture_properties(
-                    Record {
-                        version: 15,
-                        instance: 0,
-                        kind: 0xf004,
-                        payload: &property_table,
-                    },
-                    budget,
-                )
-            };
-            assert!(verify(0x13, &entry[..5], &mut 10)
-                .unwrap_err()
-                .contains("truncated OfficeArt properties"));
-            // Zero first exhausts the enclosing record walker. One permits
-            // the property table record and then exhausts its property visit.
-            assert!(verify(0x13, &entry, &mut 0)
-                .unwrap_err()
-                .contains("too many Word OfficeArt records"));
-            assert!(verify(0x13, &entry, &mut 1)
-                .unwrap_err()
-                .contains("OfficeArt property work budget exceeded"));
-            assert!(verify(0x12, &entry, &mut 10)
-                .unwrap_err()
-                .contains("invalid OfficeArt property table"));
-            let complex = [0x807fu16.to_le_bytes().as_slice(), &1u32.to_le_bytes()].concat();
-            assert!(verify(0x13, &complex, &mut 10)
-                .unwrap_err()
-                .contains("truncated OfficeArt complex shape property"));
-            let extra_tail = [entry.as_slice(), &[0]].concat();
-            assert!(verify(0x13, &extra_tail, &mut 10)
-                .unwrap_err()
-                .contains("unexpected OfficeArt property data"));
-        }
-        let (word, table) = reading_picture_with_options(&[(0x007f, 0)]);
-        let mut store = Store::read(&word, &table, 20).unwrap();
-        store.set_reading_relocation(true);
-        assert_eq!(
-            store.direct_picture(12, &mut 0).unwrap_err(),
-            "OUTPUT_TOO_LARGE"
-        );
-    }
-    // Independently authored FOPT entries. Values remain explicit so malformed
-    // length controls exercise the production property-table walker.
-    fn reading_metadata_fopt(entries: &[(u16, u32, &[u8])], kind: u16) -> Vec<u8> {
-        let mut entries = entries.to_vec();
-        entries.sort_by_key(|entry| entry.0 & 0x3fff);
-        let mut body = Vec::new();
-        for (opid, value, _) in &entries {
-            body.extend(opid.to_le_bytes());
-            body.extend(value.to_le_bytes());
-        }
-        for (opid, _, bytes) in &entries {
-            if opid & 0x8000 != 0 {
-                body.extend(*bytes);
-            }
-        }
-        record(kind, ((entries.len() as u16) << 4) | 3, &body)
-    }
-
-    fn reading_picture_with_metadata(
-        local: &[(u16, u32, &[u8])],
-        document: &[(u16, u32, &[u8])],
-        tertiary: &[(u16, u32, &[u8])],
-    ) -> (Vec<u8>, Vec<u8>) {
-        let (mut word, mut table) = reading_picture_with_options(&[]);
-        let art_start = u32::from_le_bytes(word[0x22a..0x22e].try_into().unwrap()) as usize;
-        let art = &table[art_start..];
-        let group_size = 8 + u32::from_le_bytes(art[4..8].try_into().unwrap()) as usize;
-        let group = records(&art[..group_size], &mut 1000).unwrap()[0];
-        let drawing = records(&art[group_size + 1..], &mut 1000).unwrap()[0];
-        let shape_group = records(drawing.payload, &mut 1000).unwrap()[0];
-        let shape = records(shape_group.payload, &mut 1000).unwrap()[0];
-        let mut entries = vec![(0x4104, 1, &[][..]), (0x03bf, 0, &[][..])];
-        entries.extend_from_slice(local);
-        let shape_body = records(shape.payload, &mut 1000)
-            .unwrap()
-            .into_iter()
-            .map(|child| {
-                if child.kind == 0xf00b {
-                    reading_metadata_fopt(&entries, 0xf00b)
-                } else {
-                    record(
-                        child.kind,
-                        (child.instance << 4) | u16::from(child.version),
-                        child.payload,
-                    )
-                }
-            })
-            .collect::<Vec<_>>()
-            .concat();
-        let mut group_body = group.payload.to_vec();
-        if !document.is_empty() {
-            group_body.extend(reading_metadata_fopt(document, 0xf00b));
-        }
-        if !tertiary.is_empty() {
-            group_body.extend(reading_metadata_fopt(tertiary, 0xf122));
-        }
-        let next_art = [
-            record(0xf000, 15, &group_body),
-            vec![0],
-            record(
-                0xf002,
-                15,
-                &record(0xf003, 15, &record(0xf004, 15, &shape_body)),
-            ),
-        ]
-        .concat();
-        word[0x22e..0x232].copy_from_slice(&(next_art.len() as u32).to_le_bytes());
-        table.truncate(art_start);
-        table.extend(next_art);
-        (word, table)
-    }
-
-    fn project_reading_metadata(
-        local: &[(u16, u32, &[u8])],
-        document: &[(u16, u32, &[u8])],
-        tertiary: &[(u16, u32, &[u8])],
-    ) -> (
-        serde_json::Value,
-        String,
-        Vec<super::super::pictures::DirectPictureResource>,
-    ) {
-        let (word, table) = reading_picture_with_metadata(local, document, tertiary);
-        let mut store = Store::read(&word, &table, 20).unwrap();
-        store.set_reading_relocation(true);
-        let projected = picture(&mut store).unwrap().unwrap();
-        assert!(!store.omitted);
-        (
-            serde_json::to_value(projected.image).unwrap(),
-            projected.occurrence_id,
-            resources(store),
-        )
-    }
-
-    fn assert_reading_metadata_refused(
-        local: &[(u16, u32, &[u8])],
-        document: &[(u16, u32, &[u8])],
-        tertiary: &[(u16, u32, &[u8])],
-    ) {
-        let (word, table) = reading_picture_with_metadata(local, document, tertiary);
-        let mut store = Store::read(&word, &table, 20).unwrap();
-        store.set_reading_relocation(true);
-        assert!(picture(&mut store).is_err());
-        assert!(
-            store.images.is_empty(),
-            "property refusal precedes required BLIP acquisition"
-        );
-        assert!(resources(store).is_empty());
-    }
-
-    fn without_reading_metadata(mut image: serde_json::Value) -> serde_json::Value {
-        image["__anchorAcquisition"]
-            .as_object_mut()
-            .unwrap()
-            .remove("nativePictureMetadata");
-        image
-    }
-
-    #[test]
-    fn reading_picture_metadata_retains_passive_names_without_changing_image_or_resources() {
-        let label = [b'L', 0, 0, 0];
-        let description = [b'D', 0, 0, 0];
-        let old = [b'O', 0, 0, 0];
-        let control = project_reading_metadata(&[], &[], &[]);
-        let projected = project_reading_metadata(
-            &[
-                (0xc105, 4, &label),
-                (0x0106, 0, &[]),
-                (0x8380, 4, &label),
-                (0xc381, 4, &description),
-            ],
-            &[(0x8380, 4, &old)],
-            &[],
-        );
-        let metadata = &projected.0["__anchorAcquisition"]["nativePictureMetadata"];
-        assert_eq!(metadata["blipName"]["text"], "L");
-        assert_eq!(metadata["shapeName"]["text"], "L");
-        assert_eq!(metadata["description"]["text"], "D");
-        assert_eq!(metadata["shapeName"]["scope"], "shape");
-        assert_eq!(
-            metadata["description"]["rawBytes"],
-            serde_json::json!([68, 0, 0, 0])
-        );
-        assert_eq!(without_reading_metadata(projected.0), control.0);
-        assert_eq!(projected.1, control.1);
-        assert_eq!(projected.2, control.2);
-        let empty_names = project_reading_metadata(
-            &[(0x0105, 0, &[]), (0x4380, 0, &[]), (0x0381, 0, &[])],
-            &[],
-            &[],
-        );
-        assert_eq!(
-            empty_names.0["__anchorAcquisition"]["nativePictureMetadata"]["shapeName"]["text"],
-            ""
-        );
-        assert_eq!(without_reading_metadata(empty_names.0), control.0);
-        assert_eq!(empty_names.2, control.2);
-    }
-
-    #[test]
-    fn reading_picture_metadata_resolves_document_boolean_members_before_accepting_picture() {
-        let control = project_reading_metadata(&[], &[], &[]);
-        // Raw unused local gray=true does not defeat the default-false contract.
-        assert_eq!(
-            project_reading_metadata(&[(0x013f, 4, &[])], &[], &[]),
-            control
-        );
-        // An authored local gray=false overrides an authored document gray=true.
-        assert_eq!(
-            project_reading_metadata(
-                &[(0x013f, 0x0004_0000, &[])],
-                &[(0x013f, 0x0004_0004, &[])],
-                &[]
-            ),
-            control
-        );
-        // Unused local bits do not override an active document owner.
-        assert_reading_metadata_refused(&[(0x013f, 0, &[])], &[(0x013f, 0x0004_0004, &[])], &[]);
-        // Primary and tertiary document properties are not guessed chronological owners.
-        assert_reading_metadata_refused(
-            &[],
-            &[(0x013f, 0x0004_0004, &[])],
-            &[(0x013f, 0x0004_0000, &[])],
-        );
-        // A local whole-property false cannot erase a different active member.
-        assert_reading_metadata_refused(
-            &[(0x013f, 0x0004_0000, &[])],
-            &[(0x013f, 0x0006_0006, &[])],
-            &[],
-        );
-        assert_reading_metadata_refused(&[(0x413f, 0, &[])], &[], &[]);
-        assert_reading_metadata_refused(&[(0x813f, 0, &[])], &[], &[]);
-    }
-
-    #[test]
-    fn reading_picture_metadata_retains_only_proved_inactive_opaque_or_index_carriers() {
-        let control = project_reading_metadata(&[], &[], &[]);
-        // Complete empty complex tails remain complex carriers, not zero indices.
-        for document in [false, true] {
-            let carriers = [(0x8186, 0, &[][..]), (0x81c5, 2, &[0x41, 0x42][..])];
-            let owners = [
-                (0x01bf, 0x0010_0000, &[][..]),
-                (0x01ff, 0x0008_0000, &[][..]),
-            ];
-            let all = [carriers.as_slice(), owners.as_slice()].concat();
-            let projected = if document {
-                project_reading_metadata(&owners, &carriers, &[])
-            } else {
-                project_reading_metadata(&all, &[], &[])
-            };
-            let metadata = &projected.0["__anchorAcquisition"]["nativePictureMetadata"];
-            assert_eq!(
-                metadata["inactiveFillCarrier"]["retention"],
-                "inactiveOpaqueNotDecoded"
-            );
-            assert_eq!(
-                metadata["inactiveLineCarrier"]["rawBytes"],
-                serde_json::json!([65, 66])
-            );
-            assert_eq!(
-                metadata["inactiveLineCarrier"]["scope"],
-                if document { "documentDefault" } else { "shape" }
-            );
-            assert_eq!(without_reading_metadata(projected.0), control.0);
-            assert_eq!(projected.1, control.1);
-            assert_eq!(projected.2, control.2);
-        }
-        let ignored = project_reading_metadata(&[(0x4186, 0, &[]), (0x41c5, 0, &[])], &[], &[]);
-        assert_eq!(
-            ignored.0["__anchorAcquisition"]["nativePictureMetadata"]["inactiveFillCarrier"]
-                ["retention"],
-            "ignoredZeroIndex"
-        );
-        let unresolved =
-            project_reading_metadata(&[(0x4186, 17, &[]), (0x01bf, 0x0010_0000, &[])], &[], &[]);
-        assert_eq!(
-            unresolved.0["__anchorAcquisition"]["nativePictureMetadata"]["inactiveFillCarrier"]
-                ["retention"],
-            "inactiveIndexNotResolved"
-        );
-        assert_eq!(without_reading_metadata(unresolved.0), control.0);
-        assert_eq!(unresolved.2, control.2);
-    }
-
-    #[test]
-    fn reading_picture_metadata_does_not_guess_inactive_paint_or_skip_other_effects() {
-        let empty = [(0x8186, 0, &[][..]), (0x81c5, 0, &[][..])];
-        assert_reading_metadata_refused(&[], &empty, &[]);
-        assert_reading_metadata_refused(&[(0x01bf, 0, &[]), (0x01ff, 0, &[])], &empty, &[]);
-        let inactive = [
-            (0x01bf, 0x0010_0000, &[][..]),
-            (0x01ff, 0x0008_0000, &[][..]),
-        ];
-        // Active document defaults are overridden only by the corresponding authored bits.
-        let active = [
-            (0x01bf, 0x0010_0010, &[][..]),
-            (0x01ff, 0x0008_0008, &[][..]),
-        ];
-        let defaults = [empty.as_slice(), active.as_slice()].concat();
-        assert!(
-            project_reading_metadata(&inactive, &defaults, &[]).0["__anchorAcquisition"]
-                ["nativePictureMetadata"]
-                .is_object()
-        );
-        assert_reading_metadata_refused(&[(0x01bf, 0x0010_0000, &[])], &defaults, &[]);
-        let dashed = [
-            empty.as_slice(),
-            &[
-                (0x01bf, 0x0010_0000, &[][..]),
-                (0x01ff, 0x0009_0001, &[][..]),
-            ],
-        ]
-        .concat();
-        assert_reading_metadata_refused(&dashed, &[], &[]);
-        let inherited_dash = [empty.as_slice(), &[(0x01ff, 0x0001_0001, &[][..])]].concat();
-        assert_reading_metadata_refused(&inactive, &inherited_dash, &[]);
-        let explicit_no_dash = [
-            (0x01bf, 0x0010_0000, &[][..]),
-            (0x01ff, 0x0009_0000, &[][..]),
-        ];
-        assert!(
-            project_reading_metadata(&explicit_no_dash, &inherited_dash, &[]).0
-                ["__anchorAcquisition"]["nativePictureMetadata"]
-                .is_object()
-        );
-        let reserved = [
-            empty.as_slice(),
-            &[
-                (0x01bf, 0x0010_0000, &[][..]),
-                (0x01ff, 0x0008_0080, &[][..]),
-            ],
-        ]
-        .concat();
-        assert_reading_metadata_refused(&reserved, &[], &[]);
-        for effect in [
-            (0x0180, 3, &[][..]),
-            (0x01c4, 1, &[][..]),
-            (0x0200, 1, &[][..]),
-            (0x0107, 1, &[][..]),
-            (0xc186, 1, &[0x41][..]),
-            (0x0186, 0, &[][..]),
-        ] {
-            let props = [empty.as_slice(), inactive.as_slice(), &[effect]].concat();
-            assert_reading_metadata_refused(&props, &[], &[]);
-        }
-    }
-
-    #[test]
-    fn reading_picture_metadata_rejects_links_invalid_names_and_late_tail_errors_atomically() {
-        for (opid, value, bytes) in [
-            (0x0106, 1, &[][..]),
-            (0x0106, 2, &[][..]),
-            (0x0106, 3, &[][..]),
-            (0x0106, 4, &[][..]),
-            (0x0106, 8, &[][..]),
-            (0x0106, 9, &[][..]),
-            (0x0105, 1, &[][..]),
-            (0x8380, 1, &[0][..]),
-            (0x8381, 2, &[0x41, 0][..]),
-            (0x8381, 4, &[0x00, 0xd8, 0, 0][..]),
-            (0x8381, 4, &[0, 0, 0, 0][..]),
-            (0x8381, 4, &[0, 0][..]),
-        ] {
-            assert_reading_metadata_refused(&[(opid, value, bytes)], &[], &[]);
-        }
-        assert_reading_metadata_refused(
-            &[(0x8380, 4, &[b'A', 0, 0, 0]), (0x8380, 4, &[b'B', 0, 0, 0])],
-            &[],
-            &[],
-        );
-        // A valid local picture cannot hide a malformed document-default tail.
-        assert_reading_metadata_refused(&[], &[(0x8186, 2, &[])], &[]);
-        assert_reading_metadata_refused(&[], &[(0x8380, 4, &[0, 0])], &[]);
-        assert_reading_metadata_refused(&[], &[(0x0200, 0, &[])], &[]);
-        // Duplicate Dgg primary tables are ambiguous even when their scalar
-        // values agree; exercise actual registration, not an injected flag.
-        let (mut word, mut table) = reading_picture_with_metadata(&[], &[], &[]);
-        let start = u32::from_le_bytes(word[0x22a..0x22e].try_into().unwrap()) as usize;
-        let art = &table[start..];
-        let group_size = 8 + u32::from_le_bytes(art[4..8].try_into().unwrap()) as usize;
-        let group = records(&art[..group_size], &mut 100).unwrap()[0];
-        let option = reading_metadata_fopt(&[(0x013f, 0, &[])], 0xf00b);
-        let next_art = [
-            record(0xf000, 15, &[group.payload, &option, &option].concat()),
-            art[group_size..].to_vec(),
-        ]
-        .concat();
-        word[0x22e..0x232].copy_from_slice(&(next_art.len() as u32).to_le_bytes());
-        table.truncate(start);
-        table.extend(next_art);
-        let mut store = Store::read(&word, &table, 20).unwrap();
-        store.set_reading_relocation(true);
-        assert!(picture(&mut store).is_err());
-        assert!(store.images.is_empty());
-        assert!(resources(store).is_empty());
-    }
-
-    #[test]
-    fn reading_picture_metadata_owned_projection_respects_output_budget_and_strict_policy() {
-        let name = [b'L', 0, 0, 0];
-        let props = [
-            (0x8380, 4, &name[..]),
-            (0x8186, 0, &[][..]),
-            (0x01bf, 0x0010_0000, &[][..]),
-        ];
-        let (word, table) = reading_picture_with_metadata(&props, &[], &[]);
-        let mut reading = Store::read(&word, &table, 20).unwrap();
-        reading.set_reading_relocation(true);
-        assert_eq!(
-            reading.direct_picture(12, &mut 0).unwrap_err(),
-            "OUTPUT_TOO_LARGE"
-        );
-        let mut strict = Store::read(&word, &table, 20).unwrap();
-        assert!(
-            picture(&mut strict).unwrap().is_none(),
-            "metadata does not authorize missing-contour strict projection"
-        );
-        assert!(strict.omitted);
-    }
-
-    #[test]
-    fn reading_picture_complex_bid_retains_raw_flag_without_changing_visible_projection() {
-        let control = project_reading_metadata(&[], &[], &[]);
-        let owners = [
-            (0x01bf, 0x0010_0000, &[][..]),
-            (0x01ff, 0x0008_0000, &[][..]),
-        ];
-        // MS-ODRAW 2.2.8: fBid is ignored when fComplex is set; op remains a length.
-        // Keep the authored flag in the sidecar, rather than rewriting the input.
-        for (id, field) in [
-            (0x0186, "inactiveFillCarrier"),
-            (0x01c5, "inactiveLineCarrier"),
-        ] {
-            for bytes in [&[][..], &[0x41, 0x42, 0x43][..]] {
-                for document in [false, true] {
-                    for bid in [0, 0x4000] {
-                        let opid = id | 0x8000 | bid;
-                        let carrier = [(opid, bytes.len() as u32, bytes)];
-                        let local = [owners.as_slice(), carrier.as_slice()].concat();
-                        let projected = if document {
-                            project_reading_metadata(&owners, &carrier, &[])
-                        } else {
-                            project_reading_metadata(&local, &[], &[])
-                        };
-                        let metadata =
-                            &projected.0["__anchorAcquisition"]["nativePictureMetadata"][field];
-                        assert_eq!(metadata["opid"], opid);
-                        assert_eq!(metadata["value"], bytes.len() as u32);
-                        assert_eq!(metadata["rawBytes"], serde_json::json!(bytes));
-                        assert_eq!(metadata["retention"], "inactiveOpaqueNotDecoded");
-                        assert_eq!(
-                            metadata["scope"],
-                            if document { "documentDefault" } else { "shape" }
-                        );
-                        assert_eq!(without_reading_metadata(projected.0), control.0);
-                        assert_eq!(projected.1, control.1);
-                        assert_eq!(projected.2, control.2);
-                    }
-                }
-            }
-        }
-        // Equivalent duplicates do not conflict merely because the ignored bit
-        // differs. Metadata preserves the last agreeing encoded representative.
-        for (id, field) in [
-            (0x0186, "inactiveFillCarrier"),
-            (0x01c5, "inactiveLineCarrier"),
-        ] {
-            for bytes in [&[][..], &[0x41, 0x42][..]] {
-                for flags in [[0, 0x4000], [0x4000, 0]] {
-                    let repeated = [
-                        (id | 0x8000 | flags[0], bytes.len() as u32, bytes),
-                        (id | 0x8000 | flags[1], bytes.len() as u32, bytes),
-                    ];
-                    let local = [owners.as_slice(), repeated.as_slice()].concat();
-                    let projected = project_reading_metadata(&local, &[], &[]);
-                    let metadata =
-                        &projected.0["__anchorAcquisition"]["nativePictureMetadata"][field];
-                    assert_eq!(metadata["opid"], id | 0x8000 | flags[1]);
-                    assert_eq!(metadata["rawBytes"], serde_json::json!(bytes));
-                    assert_eq!(metadata["retention"], "inactiveOpaqueNotDecoded");
-                    assert_eq!(without_reading_metadata(projected.0), control.0);
-                    assert_eq!(projected.1, control.1);
-                    assert_eq!(projected.2, control.2);
-                    let conflict = [(id | 0x8000, 1, &[0x58][..]), (id | 0xc000, 1, &[0x59][..])];
-                    assert_reading_metadata_refused(
-                        &[owners.as_slice(), conflict.as_slice()].concat(),
-                        &[],
-                        &[],
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn reading_picture_complex_bid_keeps_inactive_owner_and_scalar_index_guards() {
-        let control = project_reading_metadata(&[], &[], &[]);
-        for (id, owner, disabled, enabled, field) in [
-            (
-                0x0186,
-                0x01bf,
-                0x0010_0000,
-                0x0010_0010,
-                "inactiveFillCarrier",
-            ),
-            (
-                0x01c5,
-                0x01ff,
-                0x0008_0000,
-                0x0008_0008,
-                "inactiveLineCarrier",
-            ),
-        ] {
-            for bid in [0, 0x4000] {
-                let carrier = (id | 0x8000 | bid, 2, &[0x41, 0x42][..]);
-                assert_reading_metadata_refused(&[carrier], &[], &[]);
-                assert_reading_metadata_refused(&[carrier, (owner, enabled, &[])], &[], &[]);
-                assert_reading_metadata_refused(
-                    &[carrier, (owner, 0, &[])],
-                    &[(owner, enabled, &[])],
-                    &[],
-                );
-            }
-            // A scalar BLIP index still requires fBid; zero does not waive that rule.
-            for index in [0, 17] {
-                assert_reading_metadata_refused(
-                    &[(id, index, &[]), (owner, disabled, &[])],
-                    &[],
-                    &[],
-                );
-                let projected = project_reading_metadata(
-                    &[(id | 0x4000, index, &[]), (owner, disabled, &[])],
-                    &[],
-                    &[],
-                );
-                let metadata = &projected.0["__anchorAcquisition"]["nativePictureMetadata"][field];
-                assert_eq!(metadata["opid"], id | 0x4000);
-                assert_eq!(
-                    metadata["retention"],
-                    if index == 0 {
-                        "ignoredZeroIndex"
-                    } else {
-                        "inactiveIndexNotResolved"
-                    }
-                );
-                assert_eq!(without_reading_metadata(projected.0), control.0);
-                assert_eq!(projected.2, control.2);
-            }
-        }
-    }
-
-    #[test]
-    fn reading_picture_complex_bid_keeps_complete_tail_and_owned_output_budget() {
-        for (id, owner, disabled) in [(0x0186, 0x01bf, 0x0010_0000), (0x01c5, 0x01ff, 0x0008_0000)]
-        {
-            for bid in [0, 0x4000] {
-                let opid = id | 0x8000 | bid;
-                // Declared complex length is authoritative even though fBid is ignored.
-                assert_reading_metadata_refused(
-                    &[(opid, 3, &[0x41, 0x42]), (owner, disabled, &[])],
-                    &[],
-                    &[],
-                );
-                for bytes in [&[][..], &[0x41, 0x42, 0x43][..]] {
-                    let props = [(opid, bytes.len() as u32, bytes), (owner, disabled, &[])];
-                    let (word, table) = reading_picture_with_metadata(&props, &[], &[]);
-                    let mut store = Store::read(&word, &table, 20).unwrap();
-                    store.set_reading_relocation(true);
-                    assert_eq!(
-                        store.direct_picture(12, &mut 0).unwrap_err(),
-                        "OUTPUT_TOO_LARGE"
-                    );
-                }
-            }
-        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ import { cfbDirectoryNames } from '@silurus/ooxml-core/internal/cfb-directory-na
 import { assertCompanionRuntime, MODEL_SOURCE_MODULE_PROTOCOL } from '@silurus/ooxml/internal/companion';
 import { COMPANION_VERSION } from '../../../src/companion-version.js';
 
-import { readLegacyMaxInputBytes, readNativeDocReadingPolicies, type NativeDocReadingPolicies } from './source-module-config.js';
+import { readLegacyMaxInputBytes } from './source-module-config.js';
 
 export type LegacyFamily = 'doc' | 'xls' | 'ppt';
 
@@ -59,16 +59,11 @@ export function createLegacySource<T extends ModelSourceTarget>(
   family: LegacyFamily,
   options: LegacySourceOptions,
   defaults: Readonly<{ wasmUrl: string; moduleUrl: string }>,
-  docConfig?: NativeDocReadingPolicies,
 ): ModelSource<T> {
   // The installed viewer owns protocol and transport. Pin our compiled
   // expectation too: copying its current protocol would hide a stale add-on.
   assertCompanionRuntime(COMPANION_VERSION, 'ooxml-model-source-module/v2');
   const label = `legacy ${family.toUpperCase()} source`;
-  if (docConfig !== undefined) {
-    if (family !== 'doc') throw new TypeError('Native reading policies belong only to the DOC source');
-    readNativeDocReadingPolicies(docConfig);
-  }
   if (typeof options !== 'object' || options === null) {
     throw new TypeError(`${label} options must be an object`);
   }
@@ -80,7 +75,7 @@ export function createLegacySource<T extends ModelSourceTarget>(
     protocol: MODEL_SOURCE_MODULE_PROTOCOL,
     target,
     moduleUrl,
-    config: Object.freeze({ wasmUrl, ...(maxInputBytes === undefined ? {} : { maxInputBytes }), ...docConfig }),
+    config: Object.freeze({ wasmUrl, ...(maxInputBytes === undefined ? {} : { maxInputBytes }) }),
   });
   return Object.freeze({
     target,
