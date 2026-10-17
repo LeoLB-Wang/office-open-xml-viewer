@@ -465,6 +465,77 @@ function withoutDeclarations(text, ranges = []) {
   return result;
 }
 
+// Length of the Rust string, raw string or char literal starting at `index`,
+// or 0 when `index` does not start one. Lifetimes ('a) are not literals.
+function rustLiteralLength(text, index) {
+  const raw = /^b?r(#*)"/.exec(text.slice(index, index + 260));
+  if (raw) {
+    const close = text.indexOf(`"${raw[1]}`, index + raw[0].length);
+    return close < 0 ? text.length - index : close + 1 + raw[1].length - index;
+  }
+  const quote = text[index] === 'b' ? index + 1 : index;
+  if (text[quote] === '"') {
+    let cursor = quote + 1;
+    while (cursor < text.length && text[cursor] !== '"') cursor += text[cursor] === '\\' ? 2 : 1;
+    return cursor + 1 - index;
+  }
+  if (text[quote] === "'") {
+    const char = /^'(?:\\(?:u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|.)|[^\\'])'/.exec(text.slice(quote, quote + 12));
+    if (char) return quote - index + char[0].length;
+  }
+  return 0;
+}
+
+// End offset of the Rust item starting at `start`: the matching close brace
+// of its first block, or its terminating semicolon. Comments and literals are
+// skipped so braces inside them do not count.
+function rustItemEnd(text, start) {
+  let depth = 0;
+  let cursor = start;
+  while (cursor < text.length) {
+    if (text.startsWith('//', cursor)) {
+      const newline = text.indexOf('\n', cursor);
+      cursor = newline < 0 ? text.length : newline + 1;
+      continue;
+    }
+    if (text.startsWith('/*', cursor)) {
+      const close = text.indexOf('*/', cursor + 2);
+      cursor = close < 0 ? text.length : close + 2;
+      continue;
+    }
+    // A literal cannot start inside an identifier (for example `br` in `bar`).
+    const literal = /[A-Za-z0-9_]/.test(text[cursor - 1] ?? '') ? 0 : rustLiteralLength(text, cursor);
+    if (literal > 0) {
+      cursor += literal;
+      continue;
+    }
+    const char = text[cursor];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return cursor + 1;
+    }
+    if (char === ';' && depth === 0) return cursor + 1;
+    cursor += 1;
+  }
+  return text.length;
+}
+
+// Rust tests are not production citations: drop every `#[cfg(test)]` item
+// (test modules, helpers, impls) and every `#[test]` function.
+function withoutRustTestItems(text) {
+  const attribute = /#\[\s*(?:cfg\s*\(\s*test\s*\)|test)\s*\]/g;
+  let result = '';
+  let cursor = 0;
+  for (let match = attribute.exec(text); match; match = attribute.exec(text)) {
+    const end = rustItemEnd(text, match.index + match[0].length);
+    result += text.slice(cursor, match.index);
+    cursor = end;
+    attribute.lastIndex = end;
+  }
+  return result + text.slice(cursor);
+}
+
 function verifyRulesCited(root, rules, declarationRanges) {
   const sources = listFiles(resolve(root, DOCX_SOURCE))
     .filter(isProductionTypeScript)
@@ -478,7 +549,7 @@ function verifyRulesCited(root, rules, declarationRanges) {
     // in the DOCX Rust parser and cite their id there.
     .concat(listFiles(resolve(root, DOCX_PARSER_SOURCE))
       .filter((absolute) => absolute.endsWith('.rs'))
-      .map((absolute) => readFileSync(absolute, 'utf8')));
+      .map((absolute) => withoutRustTestItems(readFileSync(absolute, 'utf8'))));
   const uncited = [...rules].filter(([id, { name }]) => {
     const idPattern = new RegExp(`(?<![a-z0-9-])${escapeRegExp(id)}(?![a-z0-9-])`);
     const namePattern = new RegExp(`(?<![A-Za-z0-9_$])${name}(?![A-Za-z0-9_$])`);
