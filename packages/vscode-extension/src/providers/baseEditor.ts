@@ -123,7 +123,11 @@ export abstract class BaseEditorProvider
         let data: Uint8Array | undefined;
         let error: string | undefined;
         try {
-          data = await vscode.workspace.fs.readFile(document.uri);
+          // `readFile` may return a Node Buffer (often a view into a shared
+          // pool). The webview serializer JSON-encodes a Buffer as
+          // `{type:"Buffer",data:[...]}` instead of transferring it, so copy
+          // into a plain, exact-length Uint8Array that it transfers as bytes.
+          data = new Uint8Array(await vscode.workspace.fs.readFile(document.uri));
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
         }

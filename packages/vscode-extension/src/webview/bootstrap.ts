@@ -27,6 +27,7 @@ import { loadAtContainerFit, loadAtNaturalScale } from './naturalScale';
 import { captureUnhandledWheelZoom } from './wheelZoomFallback';
 import { FindPopupController, type FindableViewer } from './findPopup';
 import { fullRenderers } from './advancedChartRenderers';
+import { exactArrayBuffer } from './postedBytes';
 // Side-effect import: bundles the self-contained MathJax + STIX Two Math engine
 // into the webview and sets globalThis.__ooxmlStix2. The library renders OMML
 // equations only when handed a `math` engine; its built-in engine loads lazily
@@ -184,17 +185,6 @@ window.addEventListener('message', async (event: MessageEvent) => {
     showError(`Error: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
-
-/** The posted bytes as an exact-length ArrayBuffer. A revived typed array
- *  may view only part of its underlying buffer, so copy in that case. */
-function exactArrayBuffer(data: unknown): ArrayBuffer | null {
-  if (data instanceof ArrayBuffer) return data;
-  if (!ArrayBuffer.isView(data)) return null;
-  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
-    ? (bytes.buffer as ArrayBuffer)
-    : (bytes.slice().buffer as ArrayBuffer);
-}
 
 // ── XLSX ─────────────────────────────────────────────────────────────────────
 
