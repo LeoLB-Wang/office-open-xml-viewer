@@ -310,6 +310,31 @@ pub(crate) fn render_sheet_comments(
         } else {
             ""
         };
+        // Admit the whole entry (heading, root and replies) from an upper
+        // bound of its escaped size before allocating any of it, so a single
+        // oversized author or text cannot be expanded past the budget first.
+        let mut bound = 2 * (sheet_name.len() + cell.len()) as u64 + 32;
+        bound += quoted_comment_bound(
+            comment["author"].as_str().unwrap_or("(unknown)"),
+            comment["rootText"]
+                .as_str()
+                .or_else(|| comment["text"].as_str())
+                .unwrap_or(""),
+            ">",
+        );
+        if let Some(replies) = comment["replies"].as_array() {
+            for reply in replies {
+                bound = bound.saturating_add(quoted_comment_bound(
+                    reply["author"].as_str().unwrap_or("(unknown)"),
+                    reply["text"].as_str().unwrap_or(""),
+                    ">>",
+                ));
+            }
+        }
+        let admitted = (out.len() as u64).saturating_add(bound);
+        if admitted > limit {
+            return Err(admitted);
+        }
         let _ = writeln!(
             out,
             "### {} — {}{}\n",
@@ -353,6 +378,17 @@ pub(crate) fn render_sheet_comments(
         }
     }
     Ok(())
+}
+
+/// Upper bound of what [`write_quoted_comment`] appends: escaping at most
+/// doubles the author, and every text line gains the prefix, a space and a
+/// newline.
+fn quoted_comment_bound(author: &str, text: &str, prefix: &str) -> u64 {
+    let lines = text.bytes().filter(|&b| b == b'\n').count() as u64 + 1;
+    (2 * author.len() as u64)
+        .saturating_add(text.len() as u64)
+        .saturating_add(lines.saturating_mul(prefix.len() as u64 + 2))
+        .saturating_add(3 * prefix.len() as u64 + 32)
 }
 
 fn write_quoted_comment(author: &str, text: &str, prefix: &str, status: &str, out: &mut String) {
@@ -488,6 +524,22 @@ mod tests {
             .expect_err("over budget");
         assert!(observed > 1 << 20);
         assert!(out.len() < (1 << 20) + 64 * 1024, "{}", out.len());
+    }
+
+    /// One oversized comment is rejected from its size bound before any of
+    /// it is escaped or written.
+    #[test]
+    fn a_single_oversized_comment_is_admitted_before_writing() {
+        let sheet = json!({
+            "name": "S",
+            "comments": [{ "cellRef": "A1", "author": "*".repeat(1 << 20), "text": "c" }],
+        });
+        let mut out = String::new();
+        let mut has_comments = false;
+        let observed = render_sheet_comments(&sheet, &mut out, &mut has_comments, 1 << 20)
+            .expect_err("over budget");
+        assert!(observed > 1 << 20);
+        assert!(out.len() < 1024, "{}", out.len());
     }
 
     /// Many cells sharing one long shared string are admitted against the
