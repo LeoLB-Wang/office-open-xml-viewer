@@ -3735,10 +3735,13 @@ mod tests {
 
     #[test]
     fn numbering_revision_is_admitted_only_while_its_label_is_unchanged() {
-        for (prior, changed) in [(1, false), (2, true)] {
+        // An ordinal current level ("1st." in Word) formats through the
+        // shared decimal fallback as "1.": that label is not comparable.
+        for (prior, format, changed) in [(1, 0, false), (2, 0, true), (1, 5, true)] {
             let piece = [list_piece(1), numbering_revision(prior)].concat();
             let mut formatting = empty();
             formatting.numbering = level_bidi_formatting(0);
+            formatting.numbering.lists[0].levels[0].format = format;
             let direct = formatting
                 .direct_paragraph(0, None, 0, 1, &[&piece])
                 .unwrap();

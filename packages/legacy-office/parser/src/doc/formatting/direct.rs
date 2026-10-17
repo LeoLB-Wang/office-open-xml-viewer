@@ -58,9 +58,11 @@ impl Formatting<'_> {
     ) -> Result<NumberingInfo, String> {
         let numbering =
             store.activate(&self.numbering, reference, marker, paragraph, &self.fonts)?;
-        if revision_label.is_some_and(|prior| prior != numbering.text) {
+        if revision_label.is_some_and(|prior| prior != numbering.text || !store.last_label_exact())
+        {
             // MS-DOC 2.9.159: the label changed since revision tracking
-            // began; Word shows that change as revision markup.
+            // began; Word shows that change as revision markup. A current
+            // label in a format without an exact expansion cannot be compared.
             self.unsupported_paragraph_properties = true;
         }
         Ok(numbering)

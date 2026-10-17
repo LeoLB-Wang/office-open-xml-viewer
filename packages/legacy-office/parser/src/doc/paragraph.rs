@@ -444,7 +444,8 @@ impl Properties {
 /// MSONFC format rgnfc[i] ([MS-OSHARED] 2.2.1.3). As in an LVL (2.9.150) a
 /// zero entry ends the used placeholders, and a bullet or none format (0x17,
 /// 0xFF) displays no number. A placeholder unit names its level; only the
-/// form whose placeholder i names level i is interpreted.
+/// form whose placeholder i names level i, and only the number formats with
+/// an exact shared expansion, are interpreted.
 fn numbering_revision_label(operand: &[u8]) -> Result<String, String> {
     use ooxml_common::numbering::{NumberingTemplate, TemplatePart};
     fn invalid() -> String {
@@ -498,9 +499,18 @@ fn numbering_revision_label(operand: &[u8]) -> Result<String, String> {
         // pnbr holds LONG values; a negative number has no list label.
         values[level] =
             u32::try_from(super::u32_at(operand, 29 + level * 4)? as i32).map_err(|_| invalid())?;
-        if !matches!(operand[18 + level], 0x17 | 0xff) {
-            formats[level] = super::number_format::name(operand[18 + level])?;
+        if matches!(operand[18 + level], 0x17 | 0xff) {
+            continue;
         }
+        // Only an exactly expanded format can be compared with the current
+        // label; a decimal fallback could equal it while Word's differs.
+        let format = super::number_format::name(operand[18 + level])?;
+        if !super::number_format::expands_exactly(format) {
+            return Err(unsupported(
+                "unsupported Word numbering revision number format",
+            ));
+        }
+        formats[level] = format;
     }
     NumberingTemplate::new(parts)
         .and_then(|template| {
@@ -620,7 +630,9 @@ mod tests {
         assert_eq!(properties.numbering_revision_label(), None);
         // A placeholder that names another level, a gap in rgbxchNums, an
         // offset past xst and a negative number are not interpreted.
-        for (index, value) in [(69, 1), (9, 0), (10, 9), (32, 0x80)] {
+        // An ordinal ("1st") prior label has no exact shared expansion: the
+        // formatter's decimal fallback would compare equal to a current "1".
+        for (index, value) in [(69, 1), (9, 0), (10, 9), (32, 0x80), (18, 5)] {
             let mut bad = operand;
             bad[index] = value;
             assert!(
