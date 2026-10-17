@@ -4856,11 +4856,16 @@ fn to_markdown_from_archive(archive: &mut XlsxZip) -> Result<String, String> {
         if let Err(observed) = rendered {
             return Err(markdown_limit_error(archive, observed));
         }
-        markdown::render_sheet_comments(&sheet, &mut review_comments, &mut has_comments);
         // Comments are appended after every table; charge them to the same
-        // budget per sheet, before they can accumulate past it.
-        let projected = (out.len() as u64).saturating_add(review_comments.len() as u64);
-        if projected > MAX_XLSX_MARKDOWN_BYTES {
+        // budget as they are written, so they cannot accumulate past it.
+        let comment_budget = MAX_XLSX_MARKDOWN_BYTES.saturating_sub(out.len() as u64);
+        if let Err(observed) = markdown::render_sheet_comments(
+            &sheet,
+            &mut review_comments,
+            &mut has_comments,
+            comment_budget,
+        ) {
+            let projected = (out.len() as u64).saturating_add(observed);
             return Err(markdown_limit_error(archive, projected));
         }
     }

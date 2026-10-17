@@ -277,12 +277,22 @@ fn clear_merge_continuation_cells(merge_cells: &Value, grid: &mut BTreeMap<(u32,
     }
 }
 
-pub(crate) fn render_sheet_comments(sheet: &Value, out: &mut String, has_comments: &mut bool) {
+/// Append one sheet's review comments to `out`. `Err(len)` reports that `out`
+/// grew past `limit` bytes; it is checked after every comment and reply, so
+/// repeated per-comment headings (each carrying the sheet name) cannot grow
+/// the buffer by more than one entry beyond the budget.
+pub(crate) fn render_sheet_comments(
+    sheet: &Value,
+    out: &mut String,
+    has_comments: &mut bool,
+    limit: u64,
+) -> Result<(), u64> {
+    let over = |out: &String| (out.len() as u64 > limit).then_some(out.len() as u64);
     let Some(comments) = sheet["comments"].as_array() else {
-        return;
+        return Ok(());
     };
     if comments.is_empty() {
-        return;
+        return Ok(());
     }
     if !*has_comments {
         out.push_str("\n## Review comments\n\n");
@@ -328,10 +338,17 @@ pub(crate) fn render_sheet_comments(sheet: &Value, out: &mut String, has_comment
                     status,
                     out,
                 );
+                if let Some(observed) = over(out) {
+                    return Err(observed);
+                }
             }
         }
         out.push('\n');
+        if let Some(observed) = over(out) {
+            return Err(observed);
+        }
     }
+    Ok(())
 }
 
 fn write_quoted_comment(author: &str, text: &str, prefix: &str, status: &str, out: &mut String) {
@@ -442,7 +459,7 @@ mod tests {
         let mut out = String::new();
         let mut has_comments = false;
 
-        render_sheet_comments(&sheet, &mut out, &mut has_comments);
+        render_sheet_comments(&sheet, &mut out, &mut has_comments, u64::MAX).unwrap();
 
         assert!(out.starts_with("\n## Review comments\n"), "{out}");
         assert!(out.contains("### Review — B4 (resolved)"), "{out}");
@@ -451,6 +468,22 @@ mod tests {
             "{out}"
         );
         assert!(out.contains(">> **Editor**\n>>\n>> Updated."), "{out}");
+    }
+
+    /// Many comments on one sheet repeat its (possibly long) name in every
+    /// heading; the budget is enforced while they are written.
+    #[test]
+    fn comments_stop_at_the_budget_while_rendering() {
+        let comments: Vec<Value> = (1..=6000)
+            .map(|row| json!({ "cellRef": format!("A{row}"), "author": "a", "text": "c" }))
+            .collect();
+        let sheet = json!({ "name": "n".repeat(16_384), "comments": comments });
+        let mut out = String::new();
+        let mut has_comments = false;
+        let observed = render_sheet_comments(&sheet, &mut out, &mut has_comments, 1 << 20)
+            .expect_err("over budget");
+        assert!(observed > 1 << 20);
+        assert!(out.len() < (1 << 20) + 64 * 1024, "{}", out.len());
     }
 
     fn text_cell(row: u32, col: u32, text: &str) -> Value {
