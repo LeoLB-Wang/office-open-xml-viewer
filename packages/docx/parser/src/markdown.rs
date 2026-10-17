@@ -7,6 +7,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write as _};
 
+use ooxml_common::markdown::{escape_text, TextContext};
+
 use crate::types::{
     BodyElement, CellElement, DocParagraph, DocRun, DocTable, DocTableCell, Document, TextRun,
 };
@@ -92,7 +94,7 @@ pub(crate) fn render_document_with_limit(doc: &Document, limit: u64) -> Markdown
             if text.is_empty() {
                 continue;
             }
-            let _ = writeln!(out, "[^{}]: {}", note.id, text);
+            let _ = writeln!(out, "[^{}]: {}", escape_inline_md(&note.id), text);
         }
     }
     if !doc.endnotes.is_empty() {
@@ -103,7 +105,7 @@ pub(crate) fn render_document_with_limit(doc: &Document, limit: u64) -> Markdown
             if text.is_empty() {
                 continue;
             }
-            let _ = writeln!(out, "[^en{}]: {}", note.id, text);
+            let _ = writeln!(out, "[^en{}]: {}", escape_inline_md(&note.id), text);
         }
     }
     if !doc.comments.is_empty() {
@@ -165,7 +167,7 @@ fn render_comment_thread(
     let _ = writeln!(
         out,
         "### Comment {}{}\n",
-        escape_heading_label(&comment.id),
+        escape_text(&comment.id, TextContext::Heading),
         status
     );
     write_quoted_comment(
@@ -237,20 +239,13 @@ fn write_quoted_comment(
     } else {
         for line in text.lines() {
             if write_quote_prefix(depth, out)
-                .and_then(|()| writeln!(out, " {line}"))
+                .and_then(|()| writeln!(out, " {}", escape_inline_md(line)))
                 .is_err()
             {
                 break;
             }
         }
     }
-}
-
-fn escape_heading_label(value: &str) -> String {
-    value
-        .replace(['\r', '\n'], " ")
-        .replace('\\', "\\\\")
-        .replace('#', "\\#")
 }
 
 fn render_body(body: &[BodyElement], out: &mut MarkdownWriter) {
@@ -427,20 +422,11 @@ fn format_text_run(t: &TextRun) -> String {
     out
 }
 
-/// Minimal markdown escape: metacharacters that would otherwise be parsed as
-/// formatting (bold `*`, italic `_`, code `` ` ``, backslash) or open a link,
-/// image or raw HTML (`[`, `]`, `<`); see
-/// [`ooxml_common::markdown::is_inline_metachar`]. Pipes are handled
-/// separately inside table cells.
+/// Document text in running Markdown; see
+/// [`ooxml_common::markdown::escape_text`]. Pipes are handled separately
+/// inside table cells.
 fn escape_inline_md(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if ooxml_common::markdown::is_inline_metachar(c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
+    escape_text(s, TextContext::Inline)
 }
 
 fn render_table(t: &DocTable, out: &mut MarkdownWriter) {

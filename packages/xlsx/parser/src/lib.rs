@@ -6383,6 +6383,70 @@ mod threaded_comment_tests {
         );
     }
 
+    /// Sheet names, cell values and review comments are document text: they
+    /// reach the Markdown projection as literal text, while the converter's
+    /// own heading, table and quote syntax stays intact.
+    #[test]
+    fn markdown_sheet_names_cells_and_comments_cannot_inject_markup() {
+        const ATTACK: &str = "&lt;img src=x onerror=alert(1)&gt; [x](javascript:alert(1))";
+        let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="&lt;b&gt;_x_ #" sheetId="1" r:id="rSheet1"/></sheets></workbook>"#;
+        let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rSheet1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rPersons" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/></Relationships>"#;
+        let worksheet = format!(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{ATTACK}</t></is></c><c r="B1" t="inlineStr"><is><t xml:space="preserve">a|b&#13;c&#10;d, 50% done</t></is></c></row></sheetData></worksheet>"#
+        );
+        let worksheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rThread" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/></Relationships>"#;
+        let threaded_comments = format!(
+            r#"<ThreadedComments xmlns="{TC_NS}"><threadedComment ref="A1" personId="{{p1}}" id="thread-1"><text>{ATTACK}</text></threadedComment></ThreadedComments>"#,
+        );
+        let persons = r#"<personList><person id="{p1}" displayName="[a](javascript:alert(1))"/></personList>"#;
+
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            for (path, body) in [
+                ("xl/workbook.xml", workbook),
+                ("xl/_rels/workbook.xml.rels", workbook_rels),
+                ("xl/worksheets/sheet1.xml", worksheet.as_str()),
+                ("xl/worksheets/_rels/sheet1.xml.rels", worksheet_rels),
+                (
+                    "xl/threadedComments/threadedComment1.xml",
+                    threaded_comments.as_str(),
+                ),
+                ("xl/persons/person.xml", persons),
+            ] {
+                writer.start_file(path, options).unwrap();
+                writer.write_all(body.as_bytes()).unwrap();
+            }
+            crate::write_test_content_types(&mut writer);
+            writer.finish().unwrap();
+        }
+
+        let markdown = to_markdown_native(&bytes).expect("markdown projects");
+
+        let escaped = r"\<img src=x onerror=alert(1)> \[x\](javascript:alert(1))";
+        assert!(
+            markdown.starts_with(&format!(
+                "## \\<b>\\_x\\_ \\#\n\n| {escaped} | a\\|b<br>c<br>d, 50% done |\n| --- | --- |\n"
+            )),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("### \\<b>\\_x\\_ \\# — A1\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(&format!(
+                "> **\\[a\\](javascript:alert(1))**\n>\n> {escaped}\n"
+            )),
+            "{markdown}"
+        );
+        assert!(
+            !markdown.contains(" <img") && !markdown.contains("[x]("),
+            "{markdown}"
+        );
+    }
+
     #[test]
     fn ignores_unreferenced_conventional_persons_part_poison() {
         let package = workbook_with_threaded_comment(

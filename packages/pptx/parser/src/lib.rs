@@ -4084,6 +4084,99 @@ mod tests {
         );
     }
 
+    /// Slide titles, table cells, equations, speaker notes and review
+    /// comments carry document text into the Markdown projection too. It must
+    /// read as literal text while the converter's own heading, table and quote
+    /// syntax stays intact.
+    #[test]
+    fn markdown_titles_tables_notes_and_comments_cannot_inject_markup() {
+        use std::io::{Read, Write};
+        const ATTACK: &str = "&lt;img src=x onerror=alert(1)&gt; [x](javascript:alert(1))";
+        let text_shape = |id: u32, ph: &str, text: &str| {
+            format!(
+                r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="S{id}"/><p:cNvSpPr/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1000000" cy="1000000"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p>{text}</a:p></p:txBody></p:sp>"#
+            )
+        };
+        let cell = |text: &str| {
+            format!(
+                r#"<a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>"#
+            )
+        };
+        let slide_sp = [
+            text_shape(
+                2,
+                r#"<p:ph type="title"/>"#,
+                &format!("<a:r><a:t>{ATTACK} #</a:t></a:r>"),
+            ),
+            format!(
+                r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="3" name="T"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="0" y="0"/><a:ext cx="1000000" cy="1000000"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblGrid><a:gridCol w="500000"/><a:gridCol w="500000"/></a:tblGrid><a:tr h="100000">{}{}</a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#,
+                cell(ATTACK),
+                cell("a|b, 50% done"),
+            ),
+            text_shape(
+                4,
+                "",
+                r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><mc:Choice Requires="a14"><a14:m><m:oMath><m:r><m:t>&lt;img src=x onerror=alert(2)&gt;</m:t></m:r></m:oMath></a14:m></mc:Choice><mc:Fallback/></mc:AlternateContent>"#,
+            ),
+        ]
+        .concat();
+        let rels = r#"<Relationship Id="rNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/><Relationship Id="rComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments/comment1.xml"/>"#;
+        let base = build_align_pptx_with_rels(&slide_sp, "", "", rels, "", "");
+        let notes = format!(
+            r#"<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><a:p><a:r><a:t>{ATTACK}</a:t></a:r></a:p></p:spTree></p:cSld></p:notes>"#
+        );
+        let comments = format!(
+            r#"<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cm authorId="0"><p:text>{ATTACK}</p:text></p:cm></p:cmLst>"#
+        );
+        let mut source = zip::ZipArchive::new(Cursor::new(base)).unwrap();
+        let mut data = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut data));
+            let options = zip::write::SimpleFileOptions::default();
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_owned();
+                let mut body = Vec::new();
+                entry.read_to_end(&mut body).unwrap();
+                writer.start_file(name, options).unwrap();
+                writer.write_all(&body).unwrap();
+            }
+            for (name, xml) in [
+                ("ppt/notesSlides/notesSlide1.xml", &notes),
+                ("ppt/comments/comment1.xml", &comments),
+            ] {
+                writer.start_file(name, options).unwrap();
+                writer.write_all(xml.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let markdown = to_markdown_native(&data).expect("markdown projects");
+
+        let escaped = r"\<img src=x onerror=alert(1)> \[x\](javascript:alert(1))";
+        assert!(
+            markdown.starts_with(&format!("# {escaped} \\# (slide 1)\n")),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(&format!("| {escaped} | a\\|b, 50% done |\n| --- | --- |\n")),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(r"\<img src=x onerror=alert(2)>"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(&format!("## Speaker notes\n\n{escaped}\n")),
+            "{markdown}"
+        );
+        assert!(markdown.contains(&format!("> {escaped}\n")), "{markdown}");
+        assert!(
+            !markdown.contains(" <img") && !markdown.contains("[x]("),
+            "{markdown}"
+        );
+    }
+
     fn build_align_pptx(slide_sp: &str, layout_extra_sp: &str, master_txstyles: &str) -> Vec<u8> {
         build_align_pptx_with_rels(slide_sp, layout_extra_sp, master_txstyles, "", "", "")
     }

@@ -1,4 +1,4 @@
-//! Markdown projection helpers shared by the DOCX and PPTX converters.
+//! Markdown projection helpers shared by the DOCX, PPTX and XLSX converters.
 //!
 //! Markdown output is consumed by renderers and LLM chat UIs that may turn it
 //! into HTML, so document data must not become live markup: link
@@ -71,9 +71,86 @@ pub fn is_inline_metachar(c: char) -> bool {
     matches!(c, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '!')
 }
 
+/// Where projected document text is placed; selects the extra handling on top
+/// of the inline escaping every context shares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextContext {
+    /// Running text (paragraphs, list items, quoted comment lines). Line
+    /// breaks are kept.
+    Inline,
+    /// An ATX heading label: line breaks become spaces (a heading is one
+    /// line) and `#` is escaped so the text cannot form a closing sequence.
+    Heading,
+    /// A GFM table cell: `|` is escaped and line breaks become `<br>` so the
+    /// text stays inside its cell and row.
+    TableCell,
+}
+
+/// Escape document text for the Markdown projection so it reads as literal
+/// text: every [`is_inline_metachar`] is backslash-escaped, plus the
+/// [`TextContext`]-specific handling. Markdown the converter emits itself
+/// (heading markers, quote prefixes, `<br>` between paragraphs, link syntax
+/// for an allowed destination) is written around the result, never through
+/// it. The output is at most four bytes per input byte (a lone `\n` becoming
+/// `<br>`), which projection size bounds rely on.
+pub fn escape_text(text: &str, context: TextContext) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if context != TextContext::Inline && matches!(c, '\r' | '\n') {
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push_str(if context == TextContext::Heading {
+                " "
+            } else {
+                "<br>"
+            });
+            continue;
+        }
+        if is_inline_metachar(c)
+            || (context == TextContext::Heading && c == '#')
+            || (context == TextContext::TableCell && c == '|')
+        {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_text_cannot_form_links_images_or_html() {
+        let attack = "<img src=x onerror=alert(1)> [x](javascript:alert(1)) ![i](y)";
+        let escaped = r"\<img src=x onerror=alert(1)> \[x\](javascript:alert(1)) \!\[i\](y)";
+        assert_eq!(escape_text(attack, TextContext::Inline), escaped);
+        assert_eq!(escape_text(attack, TextContext::Heading), escaped);
+        assert_eq!(escape_text(attack, TextContext::TableCell), escaped);
+        // Ordinary punctuation is untouched.
+        let plain = "Q3 revenue: $1,200 (+5%) - see p. 4; a/b & c.";
+        for context in [
+            TextContext::Inline,
+            TextContext::Heading,
+            TextContext::TableCell,
+        ] {
+            assert_eq!(escape_text(plain, context), plain);
+        }
+    }
+
+    #[test]
+    fn contexts_keep_text_inside_its_construct() {
+        let text = "a|b #1\r\nc\rd\ne";
+        assert_eq!(escape_text(text, TextContext::Inline), text);
+        assert_eq!(escape_text(text, TextContext::Heading), r"a|b \#1 c d e");
+        assert_eq!(
+            escape_text(text, TextContext::TableCell),
+            r"a\|b #1<br>c<br>d<br>e"
+        );
+    }
 
     #[test]
     fn link_destinations_follow_the_viewer_scheme_policy() {

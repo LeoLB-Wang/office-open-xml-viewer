@@ -2,6 +2,7 @@
 //! feed canonical slides through this one bounded writer and renderer.
 
 use crate::types::*;
+use ooxml_common::markdown::{escape_text, TextContext};
 use ooxml_common::math::nodes_to_text;
 use std::cell::Cell;
 use std::fmt;
@@ -97,7 +98,12 @@ pub(crate) fn render_slide_md(slide: &Slide, out: &mut MarkdownWriter) {
     use std::fmt::Write as _;
     let title = slide_title_md(slide);
     if let Some(t) = title {
-        let _ = writeln!(out, "# {} (slide {})\n", t, slide.slide_number);
+        let _ = writeln!(
+            out,
+            "# {} (slide {})\n",
+            escape_text(&t, TextContext::Heading),
+            slide.slide_number
+        );
     } else {
         let _ = writeln!(out, "# Slide {}\n", slide.slide_number);
     }
@@ -107,7 +113,11 @@ pub(crate) fn render_slide_md(slide: &Slide, out: &mut MarkdownWriter) {
     if let Some(notes) = &slide.notes {
         let trimmed = notes.trim();
         if !trimmed.is_empty() {
-            let _ = writeln!(out, "## Speaker notes\n\n{}\n", trimmed);
+            let _ = writeln!(
+                out,
+                "## Speaker notes\n\n{}\n",
+                escape_text(trimmed, TextContext::Inline)
+            );
         }
     }
 }
@@ -255,7 +265,7 @@ pub(crate) fn render_runs_md(runs: &[TextRun], out: &mut MarkdownWriter) {
             // (two trailing spaces + newline).
             TextRun::Break { .. } => out.push_str("  \n"),
             // Equations have no faithful markdown form; emit their flattened text.
-            TextRun::Math { nodes, .. } => out.push_str(&nodes_to_text(nodes)),
+            TextRun::Math { nodes, .. } => write_escaped_inline_md(&nodes_to_text(nodes), out),
             TextRun::Text(t) => {
                 let raw = &t.text;
                 // Empty / whitespace-only runs (separators between formatted
@@ -309,19 +319,11 @@ pub(crate) fn render_runs_md(runs: &[TextRun], out: &mut MarkdownWriter) {
     }
 }
 
-/// Escape the markdown inline metacharacters that would otherwise be parsed as
-/// formatting or open a link, image or raw HTML
-/// ([`ooxml_common::markdown::is_inline_metachar`]). We deliberately don't escape every potential metachar — pptx
-/// body text contains so much punctuation that aggressive escaping makes the
-/// output noisier than the structure it's trying to expose. Pipe is handled
-/// separately in `render_table_cell_md` since it only matters inside tables.
+/// Write document text into running Markdown
+/// ([`ooxml_common::markdown::escape_text`]). Pipe is handled in
+/// `render_table_cell_md` since it only matters inside tables.
 fn write_escaped_inline_md(value: &str, out: &mut MarkdownWriter) {
-    for character in value.chars() {
-        if ooxml_common::markdown::is_inline_metachar(character) {
-            out.push('\\');
-        }
-        out.push(character);
-    }
+    out.push_str(&escape_text(value, TextContext::Inline));
 }
 
 pub(crate) fn render_table_md(t: &TableElement, out: &mut MarkdownWriter) {
@@ -360,20 +362,29 @@ pub(crate) fn render_table_cell_md(cell: &TableCell) -> String {
         }
         for run in &para.runs {
             if let TextRun::Text(t) = run {
-                buf.push_str(&t.text);
+                buf.push_str(&escape_text(&t.text, TextContext::TableCell));
             }
         }
     }
-    buf.trim().replace('|', "\\|")
+    buf.trim().to_string()
 }
 
 pub(crate) fn render_chart_md(c: &ChartElement, out: &mut MarkdownWriter) {
     use std::fmt::Write as _;
     let chart = &c.chart;
-    let title = chart.title.as_deref().unwrap_or("(untitled)");
-    let _ = writeln!(out, "**Chart ({}): {}**\n", chart.chart_type, title);
+    let title = chart
+        .title
+        .as_deref()
+        .map_or_else(|| "(untitled)".to_string(), escape_inline);
+    let _ = writeln!(
+        out,
+        "**Chart ({}): {}**\n",
+        escape_inline(&chart.chart_type),
+        title
+    );
     if !chart.categories.is_empty() {
-        let _ = writeln!(out, "- Categories: {}", chart.categories.join(", "));
+        let categories: Vec<String> = chart.categories.iter().map(|c| escape_inline(c)).collect();
+        let _ = writeln!(out, "- Categories: {}", categories.join(", "));
     }
     for s in &chart.series {
         let values: Vec<String> = s
@@ -384,9 +395,13 @@ pub(crate) fn render_chart_md(c: &ChartElement, out: &mut MarkdownWriter) {
                 None => "—".to_string(),
             })
             .collect();
-        let _ = writeln!(out, "- {}: {}", s.name, values.join(", "));
+        let _ = writeln!(out, "- {}: {}", escape_inline(&s.name), values.join(", "));
     }
     out.push('\n');
+}
+
+fn escape_inline(value: &str) -> String {
+    escape_text(value, TextContext::Inline)
 }
 
 /// Append slide review metadata to one presentation-level section. Comments
@@ -439,7 +454,7 @@ pub(crate) fn render_review_comments_md(
 fn review_status(status: Option<&str>) -> String {
     match status {
         Some("active") | None => String::new(),
-        Some(status) => format!(" ({status})"),
+        Some(status) => format!(" ({})", escape_text(status, TextContext::Heading)),
     }
 }
 
@@ -460,7 +475,10 @@ fn write_quoted_comment_md(
         let _ = writeln!(out, "{prefix}");
     } else {
         for line in text.lines() {
-            let _ = writeln!(out, "{prefix} {line}");
+            out.push_str(prefix);
+            out.push(' ');
+            write_escaped_inline_md(line, out);
+            let _ = writeln!(out);
         }
     }
 }
@@ -491,6 +509,7 @@ pub(crate) fn render_presentation_md(pres: &Presentation) -> String {
 mod tests {
     use super::*;
     use crate::types::{PptxComment, PptxCommentReply};
+    use ooxml_common::chart::ChartSeries;
 
     #[test]
     fn writer_counts_utf8_bytes_and_stops_retaining_at_the_first_crossing() {
@@ -514,6 +533,43 @@ mod tests {
         assert_eq!(body.observed(), 7);
         assert_eq!(body.into_string(), "body");
         assert_eq!(comments.into_string(), "ok");
+    }
+
+    #[test]
+    fn chart_summaries_escape_document_text() {
+        let attack = "<img src=x onerror=alert(1)> [x](javascript:alert(1))";
+        let chart = ChartElement {
+            id: None,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            rotation: 0.0,
+            flip_h: false,
+            flip_v: false,
+            chart: ChartModel {
+                chart_type: "bar".to_string(),
+                title: Some(attack.to_string()),
+                categories: vec![attack.to_string(), "Q1 (est.)".to_string()],
+                series: vec![ChartSeries {
+                    name: attack.to_string(),
+                    values: vec![Some(1.0), None],
+                    ..ChartSeries::default()
+                }],
+                ..ChartModel::default()
+            },
+        };
+        let mut out = MarkdownWriter::new(u64::MAX);
+
+        render_chart_md(&chart, &mut out);
+
+        let escaped = r"\<img src=x onerror=alert(1)> \[x\](javascript:alert(1))";
+        assert_eq!(
+            out.into_string(),
+            format!(
+                "**Chart (bar): {escaped}**\n\n- Categories: {escaped}, Q1 (est.)\n- {escaped}: 1, —\n\n"
+            )
+        );
     }
 
     #[test]

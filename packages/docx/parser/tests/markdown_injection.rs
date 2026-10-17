@@ -24,19 +24,24 @@ fn docx_with_links(links: &[(&str, &str)], body: &str) -> Vec<u8> {
     let rels = format!(
         r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{relationships}</Relationships>"#
     );
+    package(&[
+        ("word/document.xml", document),
+        ("word/_rels/document.xml.rels", rels),
+    ])
+}
+
+fn package(parts: &[(&str, String)]) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(Cursor::new(&mut bytes));
-        for (name, text) in [
-            (
-                "[Content_Types].xml",
-                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#
-                    .to_string(),
-            ),
-            ("word/document.xml", document),
-            ("word/_rels/document.xml.rels", rels),
-        ] {
-            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.start_file("[Content_Types].xml", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(
+            br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#,
+        )
+        .unwrap();
+        for (name, text) in parts {
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
             zip.write_all(text.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
@@ -93,6 +98,54 @@ fn hyperlinks_and_text_cannot_inject_markdown_links_or_html() {
     );
     assert!(
         markdown.contains(r"\!\[p\](https://t.example/p.png)"),
+        "{markdown}"
+    );
+}
+
+/// Review comments and note labels carry document text too; they reach the
+/// output as literal text while the converter's own quote and heading syntax
+/// stays intact.
+#[test]
+fn review_comments_and_note_labels_cannot_inject_markdown_links_or_html() {
+    const ATTACK: &str = "&lt;img src=x onerror=alert(1)&gt; [x](javascript:alert(1))";
+    let document = format!(
+        r#"<w:document xmlns:w="{W_NS}"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#
+    );
+    let rels = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="c" Type="{R_NS}/comments" Target="comments.xml"/><Relationship Id="f" Type="{R_NS}/footnotes" Target="footnotes.xml"/></Relationships>"#
+    );
+    let comments = format!(
+        r#"<w:comments xmlns:w="{W_NS}"><w:comment w:id="&lt;b&gt;#" w:author="[a](javascript:alert(1))"><w:p><w:r><w:t xml:space="preserve">{ATTACK} Plain line, 50% done.</w:t></w:r></w:p></w:comment></w:comments>"#
+    );
+    let footnotes = format!(
+        r#"<w:footnotes xmlns:w="{W_NS}"><w:footnote w:id="]&lt;img src=x onerror=alert(1)&gt;"><w:p><w:r><w:t>note</w:t></w:r></w:p></w:footnote></w:footnotes>"#
+    );
+    let bytes = package(&[
+        ("word/document.xml", document),
+        ("word/_rels/document.xml.rels", rels),
+        ("word/comments.xml", comments),
+        ("word/footnotes.xml", footnotes),
+    ]);
+
+    let markdown = to_markdown_native(&bytes).expect("markdown projects");
+
+    assert!(markdown.contains("### Comment \\<b>\\#\n"), "{markdown}");
+    assert!(
+        markdown.contains("> **\\[a\\](javascript:alert(1))**\n"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains(
+            "> \\<img src=x onerror=alert(1)> \\[x\\](javascript:alert(1)) Plain line, 50% done.\n"
+        ),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("[^\\]\\<img src=x onerror=alert(1)>]: note"),
+        "{markdown}"
+    );
+    assert!(
+        !markdown.contains(" <img") && !markdown.contains("[x]("),
         "{markdown}"
     );
 }
