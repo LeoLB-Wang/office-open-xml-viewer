@@ -183,4 +183,3 @@ export function isMathNode(v: unknown): v is MathNode {
     KINDS.has((v as { kind?: string }).kind ?? '')
   );
 }
-
