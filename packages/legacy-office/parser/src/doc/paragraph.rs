@@ -441,11 +441,12 @@ impl Properties {
 /// MS-DOC 2.9.159: the label a NumRM records. xst (cch, then at most 31
 /// UTF-16 units) holds literal text and level placeholders; rgbxchNums[i] is
 /// the one-based xst position of placeholder i, whose text is pnbr[i] in the
-/// MSONFC format rgnfc[i] ([MS-OSHARED] 2.2.1.3). As in an LVL (2.9.150) a
-/// zero entry ends the used placeholders, and a bullet or none format (0x17,
-/// 0xFF) displays no number. A placeholder unit names its level; only the
-/// form whose placeholder i names level i, and only the number formats with
-/// an exact shared expansion, are interpreted.
+/// MSONFC format rgnfc[i] ([MS-OSHARED] 2.2.1.3). A zero entry marks a level
+/// not in use, and a bullet or none format (0x17, 0xFF) displays no number.
+/// Implementation restriction: only contiguous used entries (as an LVL's
+/// rgbxchNums, 2.9.150), placeholders whose unit names their own level i,
+/// and number formats with an exact shared expansion are interpreted; any
+/// other NumRM is refused.
 fn numbering_revision_label(operand: &[u8]) -> Result<String, String> {
     use ooxml_common::numbering::{NumberingTemplate, TemplatePart};
     fn invalid() -> String {
