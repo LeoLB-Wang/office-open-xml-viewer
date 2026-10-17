@@ -1,6 +1,6 @@
 import {
   layoutStackedText, paintStackedRotated, paintStackedVerticalForm, STACKED_CELL_FACTOR, stackedClusters,
-  stackedFaceBox, stackedUprightBaseline, stackedVerticalForm,
+  stackedFaceBox, stackedUprightBaseline, stackedVerticalGlyphText,
   type DrawingMlInputRun, type DrawingMlTextRect, type StackedGlyph, type StackedParagraph,
 } from '@silurus/ooxml-core/internal/drawingml-text';
 import { excelShapeSpacing } from './shape-office-line.js';
@@ -14,7 +14,7 @@ export interface StackedEquation {
 }
 
 type Style = { equation?: StackedEquation; font: string; px: number; face?: string; color: string; spacing: number; bold: boolean; italic: boolean };
-type Glyph = StackedGlyph<Style> & { cell: number; ascent: number; descent: number };
+type Glyph = StackedGlyph<Style> & { cell: number; ascent: number; descent: number; nominal?: true };
 
 /**
  * ECMA-376 §20.1.10.83: letters stacked top-to-bottom; Rtl reverses columns.
@@ -52,8 +52,8 @@ export function drawShapeStackedText(
     const face = { family: style.face ?? '', bold: style.bold, italic: style.italic };
     return stackedClusters(text, face, {
       upright: cell, verticalGlyph: style.px, rotated: (ch) => ctx.measureText(ch).width,
-    }).map(({ text: ch, kind, advance }) => ({ text: ch, style, kind, advance: advance + style.spacing,
-      thickness: cell, space: ch === ' ', cell, ascent, descent }));
+    }).map(({ text: ch, kind, advance, nominal }) => ({ text: ch, style, kind, advance: advance + style.spacing,
+      thickness: cell, space: ch === ' ', cell, ascent, descent, ...(nominal ? { nominal } : {}) }));
   };
   const sameStyle = (a: Style, b: Style) => !a.equation && !b.equation && a.font === b.font && a.color === b.color && a.spacing === b.spacing;
   const paragraphs: StackedParagraph<Style>[] = body.paragraphs.map((para) => {
@@ -130,7 +130,7 @@ export function drawShapeStackedText(
       // Library policy: a vertical glyph without a presentation form turns
       // like a rotated one from the cell top (PPTX centres it in its 1 em
       // cell instead; the PowerPoint controls do not cover Excel).
-      const form = glyph.kind === 'verticalGlyph' ? stackedVerticalForm(glyph.text) : null;
+      const form = glyph.kind === 'verticalGlyph' ? stackedVerticalGlyphText(glyph) : null;
       if (form !== null) paintStackedVerticalForm(ctx, form, glyph.axisX, glyph.cellTop, glyph, 1);
       else paintStackedRotated(ctx, glyph.text, glyph.axisX, glyph.cellTop, glyph, 1);
     }

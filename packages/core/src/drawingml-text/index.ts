@@ -23,6 +23,7 @@ export {
   STACKED_CELL_FACTOR, stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph,
 } from './stacked-faces.js';
 export {
-  stackedClusters, stackedVerticalForm, stackedUprightBaseline, paintStackedVerticalForm, paintStackedRotated,
+  stackedClusters, stackedVerticalGlyphText, stackedUprightBaseline, paintStackedVerticalForm,
+  paintStackedRotated,
 } from './stacked-glyphs.js';
 export type { StackedFace, StackedCluster, StackedClusterAdvances } from './stacked-glyphs.js';

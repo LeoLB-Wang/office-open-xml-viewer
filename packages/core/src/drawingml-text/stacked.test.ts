@@ -4,7 +4,7 @@ import { layoutStackedText, type StackedParagraph, type StackedLayoutOptions } f
 import {
   stackedFaceBox, stackedVerticalGlyph, STACKED_CELL_FACTOR, STACKED_SIDEWAYS,
 } from './stacked-faces.js';
-import { stackedClusters, stackedVerticalForm } from './stacked-glyphs.js';
+import { stackedClusters, stackedVerticalGlyphText } from './stacked-glyphs.js';
 
 // Arial 24 pt at 1 px/pt: cell = 7/6 × usWin (1.1172 em) × 24 = 31.28.
 const CELL = STACKED_CELL_FACTOR * (2288 / 2048) * 24;
@@ -189,13 +189,18 @@ describe('stacked face and character tables', () => {
 
   it('measures only the measured set sideways, upright in faces with vert glyphs', () => {
     const advances = { upright: 10, verticalGlyph: 20, rotated: (ch: string) => 30 + ch.length };
-    const kinds = (family: string, text: string) =>
-      stackedClusters(text, { family, bold: false, italic: false }, advances).map((c) => c.kind[0]).join('');
-    // u = upright, v = verticalGlyph (vert coverage), r = rotated.
+    const kinds = (family: string, text: string, bold = false) =>
+      stackedClusters(text, { family, bold, italic: false }, advances)
+        .map((c) => (c.nominal ? 'n' : c.kind[0])).join('');
+    // u = upright, v = vertical glyph (vert), n = unturned nominal glyph in a
+    // 1 em cell (vrt2 only, outside Basic Latin), r = rotated.
     expect(kinds('ＭＳ ゴシック', '(（「、ー…∥，．：-!—ぁ〜A日')).toBe('rvvvvvv' + 'u'.repeat(10));
-    // Yu Gothic/Meiryo cover ( and ∥ in vrt2 only: the vrt2-only rule rotates them.
-    expect(kinds('Yu Gothic', '(（∥')).toBe('rvr');
-    expect(kinds('Meiryo', '(（∥')).toBe('rvr');
+    // #1827 PowerPoint controls: ∥ is vrt2-only in Yu Gothic, Meiryo and Yu
+    // Mincho and stood unturned; the vrt2-only ASCII brackets still turned.
+    for (const family of ['Yu Gothic', 'Yu Gothic Medium', 'Yu Gothic UI', 'Meiryo', 'Meiryo UI', 'Yu Mincho']) {
+      for (const bold of [false, true]) expect(kinds(family, '(<[{（∥', bold), family).toBe('rrrrvn');
+    }
+    expect(kinds('ＭＳ 明朝', '(∥')).toBe('rv');
     expect(kinds('Arial', '(（')).toBe('rr');
     expect(kinds('Yu Mincho Light', '（')).toBe('v');
     expect(kinds('Arial Unicode MS', '(')).toBe('v');
@@ -212,11 +217,12 @@ describe('stacked face and character tables', () => {
       .toBe('upright');
   });
 
-  it('draws a lone vertical glyph as its presentation form, never a cluster', () => {
-    expect(stackedVerticalForm('（')).toBe('︵');
-    expect(stackedVerticalForm('、')).toBe('︑');
-    expect(stackedVerticalForm('（́')).toBeNull();
-    expect(stackedVerticalForm('ー')).toBeNull();
+  it('draws a lone vert glyph as its presentation form and a nominal glyph as itself', () => {
+    expect(stackedVerticalGlyphText({ text: '（' })).toBe('︵');
+    expect(stackedVerticalGlyphText({ text: '、' })).toBe('︑');
+    expect(stackedVerticalGlyphText({ text: '（́' })).toBeNull();
+    expect(stackedVerticalGlyphText({ text: 'ー' })).toBeNull();
+    expect(stackedVerticalGlyphText({ text: '∥', nominal: true })).toBe('∥');
   });
 });
 

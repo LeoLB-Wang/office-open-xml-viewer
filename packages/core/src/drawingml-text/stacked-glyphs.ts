@@ -1,7 +1,7 @@
 import { graphemeClusterOffsets } from '../text/sea-break.js';
 import { verticalBracketFormSubstitute, verticalFormSubstitute } from '../text/vertical-orientation.js';
 import type { StackedGlyphKind } from './stacked.js';
-import { stackedSidewaysCharacter, stackedVerticalGlyph } from './stacked-faces.js';
+import { stackedSidewaysCharacter, stackedVerticalGlyphSource } from './stacked-faces.js';
 
 /**
  * Glyph primitives of stacked vertical text (`a:bodyPr@vert` `wordArtVert` /
@@ -27,6 +27,9 @@ export interface StackedCluster {
   kind: StackedGlyphKind;
   /** Advance down the column, before rPr@spc. */
   advance: number;
+  /** A vertical glyph drawn as its unturned horizontal glyph (vrt2-only
+   * coverage outside Basic Latin; see `stackedVerticalGlyphSource`). */
+  nominal?: true;
 }
 
 export interface StackedClusterAdvances {
@@ -60,10 +63,12 @@ export function stackedClusters(
     start = end;
     if (!ch) continue;
     const cp = ch.codePointAt(0) ?? 0;
+    const source = upright ? undefined : stackedVerticalGlyphSource(face.family, cp, face.bold, face.italic);
     if (upright || !stackedSidewaysCharacter(cp)) {
       out.push({ text: ch, kind: 'upright', advance: advances.upright });
-    } else if (stackedVerticalGlyph(face.family, cp, face.bold, face.italic)) {
-      out.push({ text: ch, kind: 'verticalGlyph', advance: advances.verticalGlyph });
+    } else if (source) {
+      out.push({ text: ch, kind: 'verticalGlyph', advance: advances.verticalGlyph,
+        ...(source === 'nominal' ? { nominal: true } : {}) });
     } else {
       out.push({ text: ch, kind: 'rotated', advance: advances.rotated(ch) });
     }
@@ -72,11 +77,19 @@ export function stackedClusters(
 }
 
 /**
- * Canvas cannot select a face's `vert` glyph portably, so a vertical glyph is
- * drawn as its Unicode vertical presentation form where one exists (、。 and
- * the fullwidth brackets). A form replaces a lone character only; a cluster
- * with a mark keeps its own glyphs. Null when no form applies.
+ * The text a vertical glyph paints in the vertical-form frame
+ * ({@link paintStackedVerticalForm}), or null when the host turns it instead.
+ * A `nominal` glyph paints its own text unturned. Canvas cannot select a
+ * face's `vert` glyph portably, so a `vert` glyph is drawn as its Unicode
+ * vertical presentation form where one exists (、。 and the fullwidth
+ * brackets). A form replaces a lone character only; a cluster with a mark
+ * keeps its own glyphs.
  */
+export function stackedVerticalGlyphText(glyph: { text: string; nominal?: true }): string | null {
+  return glyph.nominal ? glyph.text : stackedVerticalForm(glyph.text);
+}
+
+/** The Unicode vertical presentation form of a lone character, or null. */
 export function stackedVerticalForm(text: string): string | null {
   const cp = text.codePointAt(0) ?? 0;
   if (String.fromCodePoint(cp) !== text) return null;

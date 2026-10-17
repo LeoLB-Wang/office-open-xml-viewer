@@ -18,7 +18,9 @@
 // drawn as its Unicode vertical presentation form where one exists (、。 and
 // the fullwidth brackets) and otherwise as the character turned 90° clockwise
 // inside its 1 em cell, which is how those faces design the remaining forms
-// (ー ～ ＝ ＿ ￣ ｜ … ‥ ‐ arrows ― ∥).
+// (ー ～ ＝ ＿ ￣ ｜ … ‥ ‐ arrows ― ∥). A vertical glyph from vrt2-only coverage
+// (`nominal`, e.g. Yu Gothic / Meiryo ∥) stands unturned as its horizontal
+// glyph in the presentation-form frame (#1827 controls; see stacked-faces.ts).
 //
 // §20.1.10.82 names decoration styles but does not place them in stacked text.
 // PowerPoint electronic PDF controls (Arial 18/24/32pt, both modes, mixed sizes
@@ -38,7 +40,7 @@ import {
   stackedClusters,
   stackedFaceBox,
   stackedUprightBaseline,
-  stackedVerticalForm,
+  stackedVerticalGlyphText,
   type DrawingMlInputRun,
   type DrawingMlLineSpacing,
   type DrawingMlTextRect,
@@ -143,6 +145,8 @@ function faceBox(ctx: Ctx2D, style: StackedSegmentStyle): { ascent: number; desc
 interface Measured<T> extends StackedGlyph<T> {
   box: { ascent: number; descent: number };
   cell: number;
+  /** A vertical glyph drawn unturned as its horizontal glyph. */
+  nominal?: true;
 }
 
 function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
@@ -174,8 +178,8 @@ function makeMeasurer<T extends StackedSegmentStyle>(ctx: Ctx2D) {
         ctx.font = style.font;
         return ctx.measureText(ch).width;
       },
-    }, upright).map(({ text: ch, kind, advance }) => (
-      { text: ch, style, kind, advance: advance + spc, thickness, space: ch === ' ', box, cell }));
+    }, upright).map(({ text: ch, kind, advance, nominal }) => (
+      { text: ch, style, kind, advance: advance + spc, thickness, space: ch === ' ', box, cell, ...(nominal ? { nominal } : {}) }));
   };
 }
 
@@ -295,9 +299,9 @@ export function renderStackedText<T extends StackedSegmentStyle>(
       strike(g.text, axisX, baseline, true);
       if (!g.space) ctx.fillText(g.text, axisX, baseline);
     } else if (g.kind === 'verticalGlyph') {
-      // A cluster with a mark has no presentation form and takes the turned
-      // fallback.
-      const form = stackedVerticalForm(g.text);
+      // A `vert` cluster with a mark has no presentation form and takes the
+      // turned fallback.
+      const form = stackedVerticalGlyphText(g);
       if (form !== null) {
         paintStackedVerticalForm(ctx, form, axisX, cellTop, box, size, (left, baseline) => strike(form, left, baseline));
       } else {

@@ -75,32 +75,53 @@ export function stackedSidewaysCharacter(cp: number): boolean {
 }
 
 /**
- * Library policy for sideways characters a face covers in GSUB `vrt2` but not
- * in `vert` (generated `stackedVrt2OnlyGlyphs`). Office faces with this class:
- * Meiryo, Meiryo UI, Yu Gothic, Yu Gothic UI and Yu Mincho cover the ASCII
- * brackets ()<>[]{} and U+2225 ∥ this way; Yu Gothic UI Bold/Semibold only ∥.
- * false: such a character rotates like an uncovered one.
- *
- * TODO(#1827): one PowerPoint observation (wordartvert-supp slide 7) showed Yu
- * Gothic ∥ upright, which this rule does not reproduce. The synthetic control
- * deck stacked-vrt2-controls.pptx (regular and bold stacked boxes per face
- * above; MS Gothic and MS Mincho as no-vrt2 controls) is pending a Windows PowerPoint
- * electronic-distribution PDF export. Settle this single rule from that
- * evidence; do not add per-family exceptions.
+ * Where a stacked vertical glyph comes from: `vert`, the face's GSUB `vert`
+ * substitute (drawn as the face designs it for vertical text); `nominal`, the
+ * character's own horizontal glyph, standing unturned in the 1 em cell.
  */
-const STACKED_VRT2_ONLY_IS_VERTICAL = false;
+export type StackedVerticalGlyphSource = 'vert' | 'nominal';
 
 /**
- * Whether the requested face covers a sideways character with a GSUB `vert`
- * single substitution (all scripts/languages), or with `vrt2` alone when
- * {@link STACKED_VRT2_ONLY_IS_VERTICAL} admits that class. Covered glyphs
- * stand upright in a 1 em cell; uncovered/unknown faces rotate by their horizontal
- * advance. Coverage comes from reference metadata, not the host's selected font.
+ * How the requested face renders a sideways character as a vertical glyph,
+ * or undefined when it rotates by its horizontal advance. Coverage comes from
+ * the generated reference metadata (all scripts/languages), not the host's
+ * selected font.
+ *
+ * - `vert` coverage: the vertical glyph.
+ * - `vrt2` coverage that `vert` lacks, outside Basic Latin (U+0080 and
+ *   above): the nominal glyph, upright in a 1 em cell. Basic Latin uses
+ *   `vert` only.
+ *
+ * Evidence (#1827): PowerPoint for Microsoft 365 16.0.20430 on Windows,
+ * electronic-distribution tagged PDF (SaveAs ppSaveAsPDF), of a synthetic
+ * wordArtVert deck at 32 pt, regular and bold, in Yu Gothic (Regular,
+ * Medium, Light), Yu Gothic UI (Regular, Semibold), Meiryo, Meiryo UI and
+ * Yu Mincho, with MS Gothic and MS Mincho as controls; text A ∥ （ ー and
+ * ASCII ()[]<>{}. In every Yu Gothic / Meiryo / Yu Mincho cut, whose ∥
+ * (U+2225) is covered by vrt2 only, ∥ stood unturned as its horizontal glyph
+ * (as wide as its horizontal advance), advanced 1 em and shared the left
+ * edge of the （ vertical form; it did not take the turned vrt2 design.
+ * MS Gothic and MS Mincho cover ∥ in vert and drew that turned vertical
+ * design. The ASCII brackets, vrt2-only in Yu Gothic, Meiryo and Yu Mincho,
+ * were turned in every face. The Basic Latin bound is the smallest font-data
+ * rule consistent with these controls. Consequence, unverified (macOS fonts
+ * outside the Office set): Hiragino cuts whose U+2010 ‐ is vrt2-only draw it
+ * upright too.
  */
-export function stackedVerticalGlyph(family: string, cp: number, bold = false, italic = false): boolean {
-  if (!STACKED_SIDEWAYS.has(cp)) return false;
+export function stackedVerticalGlyphSource(
+  family: string,
+  cp: number,
+  bold = false,
+  italic = false,
+): StackedVerticalGlyphSource | undefined {
+  if (!STACKED_SIDEWAYS.has(cp)) return undefined;
   const profile = stackedProfile(family, bold, italic);
   const ch = String.fromCodePoint(cp);
-  if (profile?.stackedVerticalGlyphs?.includes(ch)) return true;
-  return STACKED_VRT2_ONLY_IS_VERTICAL && (profile?.stackedVrt2OnlyGlyphs?.includes(ch) ?? false);
+  if (profile?.stackedVerticalGlyphs?.includes(ch)) return 'vert';
+  return cp >= 0x80 && profile?.stackedVrt2OnlyGlyphs?.includes(ch) ? 'nominal' : undefined;
+}
+
+/** Whether a sideways character stands as a vertical glyph (1 em cell) rather than rotating. */
+export function stackedVerticalGlyph(family: string, cp: number, bold = false, italic = false): boolean {
+  return stackedVerticalGlyphSource(family, cp, bold, italic) !== undefined;
 }
