@@ -340,7 +340,16 @@ function noteSeparatorInput(value: unknown): NoteSeparatorInput {
  * paragraph/run payloads keep the producer's shared schema and are copied,
  * private keys included, by the single snapshot of the settings input; full
  * validation happens once at normalization (layout/reserved-note-separators). */
+function isWireRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function reservedNoteSeparatorStoryInput(story: ReservedNoteSeparatorStoryInput): void {
+  // Only records reach the spacing pass; the closed record shape is
+  // validated at normalization.
+  if (!isWireRecord(story) || (story.rule !== undefined && !isWireRecord(story.rule))) {
+    throw new Error('Unsupported reserved note separator story');
+  }
   const mark = story.rule?.mark;
   if (mark !== undefined && mark !== 'short' && mark !== 'full') {
     throw new Error('Unsupported reserved note separator story');
@@ -352,6 +361,7 @@ function reservedNoteSeparatorsInput(
   fixedParagraphAutoSpacing: boolean,
 ): Readonly<{ reservedSeparators?: ReservedNoteSeparatorsInput }> {
   if (value === undefined) return {};
+  if (!isWireRecord(value as unknown)) throw new Error('Unsupported reserved note separator story');
   // Reserved stories are not ordinary numbered-note bodies and do not enter
   // normalizeBody. Resolve their effective automatic spacing flags here with
   // the same document setting and paragraph-base em as other stories,
@@ -360,7 +370,7 @@ function reservedNoteSeparatorsInput(
   const normalizeStory = (story: ReservedNoteSeparatorStoryInput): ReservedNoteSeparatorStoryInput => {
     reservedNoteSeparatorStoryInput(story);
     const authored = story.paragraph;
-    if (!authored) return story;
+    if (!isWireRecord(authored) || !isWireRecord(authored.paragraph)) return story;
     const paragraph = authored.paragraph;
     if (paragraph.beforeAutospacing !== true && paragraph.afterAutospacing !== true) return story;
     const spacing = resolveAutomaticParagraphMarginsPt(
@@ -370,7 +380,8 @@ function reservedNoteSeparatorsInput(
     return { ...story, paragraph: { ...authored, paragraph: { ...paragraph, ...spacing } } };
   };
   const normalizeKind = (kind: ReservedNoteSeparatorStoriesInput | undefined): ReservedNoteSeparatorStoriesInput | undefined => {
-    if (!kind) return kind;
+    if (kind === undefined) return kind;
+    if (!isWireRecord(kind)) throw new Error('Unsupported reserved note separator story');
     const separator = normalizeStory(kind.separator);
     const continuationSeparator = normalizeStory(kind.continuationSeparator);
     const continuationNotice = normalizeStory(kind.continuationNotice);

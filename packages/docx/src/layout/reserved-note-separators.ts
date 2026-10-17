@@ -107,6 +107,58 @@ function reject(reason: string): never {
   throw new Error(`Unsupported reserved note separator story: ${reason}`);
 }
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** A closed wire record: a plain object whose keys are all known. Absent
+ * optional fields are `undefined` (the producer omits them); any other value,
+ * including `null`, must have the field's own shape. */
+function requireRecord(value: unknown, keys: readonly string[], label: string): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) reject(`${label} is not a record`);
+  for (const key of Object.keys(value)) {
+    if (!keys.includes(key)) reject(`${label} has unknown field ${key}`);
+  }
+  return value;
+}
+
+function optionalRecord(
+  value: unknown, keys: readonly string[], label: string,
+): Readonly<Record<string, unknown>> | undefined {
+  return value === undefined ? undefined : requireRecord(value, keys, label);
+}
+
+function optionalBoolean(value: unknown, label: string): void {
+  if (value !== undefined && typeof value !== 'boolean') reject(`${label} is not a boolean`);
+}
+
+function validateCharacterShape(value: unknown, label: string): void {
+  const character = requireRecord(value, ['run', 'insertion'], label);
+  if (character.run !== undefined && !isRecord(character.run)) reject(`${label} run is not a record`);
+  optionalBoolean(character.insertion, `${label} insertion`);
+}
+
+/** Closed shape of one story record, before its semantic validation. */
+function validateStoryShape(value: unknown, label: string): void {
+  const story = requireRecord(value, ['rule', 'paragraph'], label);
+  const rule = optionalRecord(story.rule, ['mark', 'control'], `${label} rule`);
+  if (rule) {
+    if (rule.mark !== undefined && typeof rule.mark !== 'string') reject(`${label} rule mark is not a string`);
+    validateCharacterShape(rule.control, `${label} rule control`);
+  }
+  const paragraph = optionalRecord(
+    story.paragraph, ['paragraph', 'contentMark', 'numbered', 'framed'], `${label} paragraph`,
+  );
+  if (paragraph) {
+    if (!isRecord(paragraph.paragraph)) reject(`${label} paragraph properties are not a record`);
+    if (paragraph.contentMark !== undefined) {
+      validateCharacterShape(paragraph.contentMark, `${label} content mark`);
+    }
+    optionalBoolean(paragraph.numbered, `${label} numbered flag`);
+    optionalBoolean(paragraph.framed, `${label} framed flag`);
+  }
+}
+
 function validateCharacter(
   character: ReservedNoteSeparatorCharacterInput | undefined,
   label: string,
@@ -212,13 +264,19 @@ export function normalizeReservedNoteSeparators(
   acquire: ReservedNoteSeparatorParagraphAcquirer,
 ): NormalizedReservedNoteSeparators | undefined {
   if (raw === undefined) return undefined;
+  // Fail closed on any producer's malformed wire: a non-record or unknown
+  // field must never seal as an empty story, which would suppress the scalar
+  // separator of its note kind.
+  requireRecord(raw, ['footnote', 'endnote'], 'separator set');
   const stories: { source: SourceRef; body: readonly ParagraphAcquisitionInput[] }[] = [];
   const roles: { footnote?: ReservedNoteSeparatorDefinitionsInput; endnote?: ReservedNoteSeparatorDefinitionsInput } = {};
   for (const kind of ['footnote', 'endnote'] as const) {
     const kindStories = raw[kind];
-    if (!kindStories) continue;
+    if (kindStories === undefined) continue;
+    requireRecord(kindStories, ROLES, `${kind} stories`);
     const definitions = {} as Record<ReservedNoteSeparatorRole, ReservedNoteSeparatorDefinitionInput>;
     for (const role of ROLES) {
+      validateStoryShape(kindStories[role], `${kind} ${role}`);
       const normalized = normalizeStory(kind, role, kindStories[role], acquire);
       definitions[role] = normalized.definition;
       stories.push(Object.freeze({ source: normalized.definition.root, body: normalized.body }));

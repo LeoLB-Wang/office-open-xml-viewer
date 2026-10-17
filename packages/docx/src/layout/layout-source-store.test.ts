@@ -649,6 +649,35 @@ describe('LayoutSourceStore', () => {
       edit(document.__noteLayoutSettings.reservedSeparators.footnote);
       return () => layoutSourceStore(document);
     };
+    // Malformed records fail closed instead of sealing as empty stories,
+    // which would suppress the scalar separator of their note kind.
+    for (const [label, edit] of [
+      ['number story', (stories) => { stories.separator = 42 as never; }],
+      ['array story', (stories) => { stories.separator = [] as never; }],
+      ['null rule', (stories) => { stories.separator!.rule = null; }],
+      ['null paragraph', (stories) => { stories.continuationNotice!.paragraph = null; }],
+      ['missing role', (stories) => { delete stories.continuationNotice; }],
+      ['unknown story field', (stories) => { stories.continuationNotice!.guardCp = 7; }],
+      ['non-record control', (stories) => {
+        (stories.separator!.rule as Record<string, unknown>).control = 'x';
+      }],
+      ['non-boolean flag', (stories) => {
+        (stories.separator!.paragraph as Record<string, unknown>).numbered = 0;
+      }],
+    ] as const satisfies readonly (readonly [string, (stories: Record<string, Record<string, unknown>>) => void])[]) {
+      expect(mutate(edit), label).toThrow('Unsupported reserved note separator story');
+    }
+    const kind = (value: unknown) => {
+      const document = reservedSeparatorDocument() as DocxDocumentModel & {
+        __noteLayoutSettings: { reservedSeparators: Record<string, unknown> };
+      };
+      document.__noteLayoutSettings.reservedSeparators.endnote = value;
+      return () => layoutSourceStore(document);
+    };
+    expect(kind(null)).toThrow('Unsupported reserved note separator story');
+    expect(kind([])).toThrow('Unsupported reserved note separator story');
+    // An absent kind is not a malformed one.
+    expect(kind(undefined)).not.toThrow();
     // A rule always comes with the paragraph whose mark ends it.
     expect(mutate((stories) => { delete stories.separator!.paragraph; }))
       .toThrow('Unsupported reserved note separator story');
