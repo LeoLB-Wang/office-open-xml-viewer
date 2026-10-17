@@ -4847,14 +4847,14 @@ fn to_markdown_from_archive(archive: &mut XlsxZip) -> Result<String, String> {
             })?;
         let sheet: serde_json::Value =
             serde_json::from_slice(&sheet_json).map_err(|e| e.to_string())?;
-        let rendered = markdown::render_sheet(
-            &sheet,
-            &shared.shared_strings,
-            &mut out,
-            MAX_XLSX_MARKDOWN_BYTES,
-        );
+        // Comments are retained for the end of the document, so they share
+        // the budget every later table is checked against.
+        let table_budget = MAX_XLSX_MARKDOWN_BYTES.saturating_sub(review_comments.len() as u64);
+        let rendered =
+            markdown::render_sheet(&sheet, &shared.shared_strings, &mut out, table_budget);
         if let Err(observed) = rendered {
-            return Err(markdown_limit_error(archive, observed));
+            let projected = observed.saturating_add(review_comments.len() as u64);
+            return Err(markdown_limit_error(archive, projected));
         }
         // Comments are appended after every table; charge them to the same
         // budget as they are written, so they cannot accumulate past it.
@@ -4868,6 +4868,10 @@ fn to_markdown_from_archive(archive: &mut XlsxZip) -> Result<String, String> {
             let projected = (out.len() as u64).saturating_add(observed);
             return Err(markdown_limit_error(archive, projected));
         }
+    }
+    let total = (out.len() as u64).saturating_add(review_comments.len() as u64);
+    if total > MAX_XLSX_MARKDOWN_BYTES {
+        return Err(markdown_limit_error(archive, total));
     }
     out.push_str(&review_comments);
     Ok(out)
@@ -7999,14 +8003,30 @@ mod rb7_partial_degradation_tests {
             r#"<sheet name="Sheet1" sheetId="1" r:id="rId1"/>"#,
             sheet,
             None,
+            None,
         )
     }
 
-    fn build_workbook_with_parts(sheets: &str, sheet: &str, comments: Option<&str>) -> Vec<u8> {
+    /// `sheets` may reference `rId1` (sheet1.xml, with the optional comments
+    /// part) and, when `second_sheet` is given, `rId2` (sheet2.xml).
+    fn build_workbook_with_parts(
+        sheets: &str,
+        sheet: &str,
+        comments: Option<&str>,
+        second_sheet: Option<&str>,
+    ) -> Vec<u8> {
         let workbook = format!(
             r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{sheets}</sheets></workbook>"#
         );
-        let wb_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+        let second_rel = if second_sheet.is_some() {
+            r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>"#
+        } else {
+            ""
+        };
+        let wb_rels = format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>{second_rel}</Relationships>"#
+        );
+        let wb_rels = wb_rels.as_str();
         let sheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdC" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/></Relationships>"#;
         let mut parts: Vec<(&str, &str)> = vec![
             ("xl/workbook.xml", workbook.as_str()),
@@ -8016,6 +8036,9 @@ mod rb7_partial_degradation_tests {
         if let Some(comments) = comments {
             parts.push(("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels));
             parts.push(("xl/comments1.xml", comments));
+        }
+        if let Some(second) = second_sheet {
+            parts.push(("xl/worksheets/sheet2.xml", second));
         }
         let mut buf = Vec::new();
         {
@@ -8093,8 +8116,36 @@ mod rb7_partial_degradation_tests {
             Some(&format!(
                 r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>a</author></authors><commentList><comment ref="A1" authorId="0"><text><t>{comment}</t></text></comment></commentList></comments>"#
             )),
+            None,
         );
         let error = to_markdown_native(&package).expect_err("oversized comments rejected");
+        assert!(error.contains("xlsx-markdown"), "{error}");
+
+        // Comments retained from earlier sheets count against a later table
+        // (and the final document) even when that sheet has no comments:
+        // ~60 MiB of comments plus a ~10 MiB table must fail, although each
+        // part alone fits.
+        let wide_rows: String = (1..=200)
+            .map(|row| {
+                format!(
+                    r#"<row r="{row}"><c r="A{row}"><v>1</v></c><c r="XFD{row}"><v>2</v></c></row>"#
+                )
+            })
+            .collect();
+        let comment_sheets: String = (1..=60)
+            .map(|i| format!(r#"<sheet name="C{i}" sheetId="{i}" r:id="rId1"/>"#))
+            .collect();
+        let package = build_workbook_with_parts(
+            &format!(r#"{comment_sheets}<sheet name="Wide" sheetId="99" r:id="rId2"/>"#),
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#,
+            Some(&format!(
+                r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>a</author></authors><commentList><comment ref="A1" authorId="0"><text><t>{comment}</t></text></comment></commentList></comments>"#
+            )),
+            Some(&format!(
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{wide_rows}</sheetData></worksheet>"#
+            )),
+        );
+        let error = to_markdown_native(&package).expect_err("combined size rejected");
         assert!(error.contains("xlsx-markdown"), "{error}");
 
         let small = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>2</v></c></row></sheetData></worksheet>"#;

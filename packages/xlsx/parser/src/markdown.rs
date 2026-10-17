@@ -23,6 +23,9 @@ pub(crate) fn render_sheet(
 ) -> Result<(), u64> {
     let name = sheet["name"].as_str().unwrap_or("(unnamed)");
     let _ = writeln!(out, "## {}\n", name);
+    if out.len() as u64 > limit {
+        return Err(out.len() as u64);
+    }
 
     let Some(rows) = sheet["rows"].as_array() else {
         return Ok(());
@@ -486,6 +489,20 @@ mod tests {
         assert!(out.len() < (1 << 20) + 64 * 1024, "{}", out.len());
     }
 
+    /// A long sheet name on an otherwise empty sheet is charged before the
+    /// empty-sheet early return.
+    #[test]
+    fn empty_sheet_headings_are_charged_to_the_budget() {
+        let sheet = json!({ "name": "n".repeat(4096) });
+        let mut out = String::new();
+        assert_eq!(
+            render_sheet(&sheet, &[], &mut out, 1024),
+            Err(out.len() as u64)
+        );
+        let mut out = String::new();
+        assert_eq!(render_sheet(&sheet, &[], &mut out, u64::MAX), Ok(()));
+    }
+
     fn text_cell(row: u32, col: u32, text: &str) -> Value {
         json!({ "col": col, "row": row, "value": { "type": "text", "text": text } })
     }
@@ -568,7 +585,8 @@ mod tests {
         let mut probe = String::new();
         render_sheet(&sheet, &[], &mut probe, u64::MAX).unwrap();
         let mut out = String::new();
-        let projected = render_sheet(&sheet, &[], &mut out, 0).expect_err("over budget");
+        let heading = "## S\n\n".len() as u64;
+        let projected = render_sheet(&sheet, &[], &mut out, heading).expect_err("over budget");
         assert!(
             projected >= probe.len() as u64,
             "{projected} < {}",
