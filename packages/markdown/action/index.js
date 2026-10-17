@@ -7,7 +7,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, mkdirSync, realpathSync } from 'node:fs';
-import { resolve, join, extname, dirname, basename, relative, isAbsolute } from 'node:path';
+import { resolve, join, extname, dirname, basename, relative, isAbsolute, sep } from 'node:path';
 
 const INPUT_FILES = process.env.INPUT_FILES ?? '';
 const INPUT_OUT_DIR = process.env['INPUT_OUT-DIR'] ?? '';
@@ -30,7 +30,8 @@ function insideWorkspace(path) {
     return false;
   }
   const offset = relative(WORKSPACE, real);
-  return offset === '' || (!offset.startsWith('..') && !isAbsolute(offset));
+  // `..drafts` is a valid child name; only a `..` path segment leaves.
+  return offset === '' || (offset !== '..' && !offset.startsWith('..' + sep) && !isAbsolute(offset));
 }
 
 // Tiny glob: supports `**/*.ext` and direct paths. For anything fancier,

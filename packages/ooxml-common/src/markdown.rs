@@ -10,10 +10,17 @@
 /// `DEFAULT_ALLOWED_HYPERLINK_SCHEMES`.
 const ALLOWED_LINK_SCHEMES: [&str; 4] = ["http", "https", "mailto", "tel"];
 
-/// The lowercased RFC 3986 scheme of `url`, ignoring the ASCII whitespace and
-/// C0 controls browsers strip (so `java\tscript:` is seen as `javascript`).
+/// Characters a URL consumer may strip or trim before resolving the scheme:
+/// ASCII controls and space (browsers drop embedded TAB/LF/CR), Unicode
+/// whitespace such as U+00A0 (Markdown renderers trim it), and U+FEFF.
+fn is_ignorable(c: char) -> bool {
+    c <= ' ' || c.is_whitespace() || c.is_control() || c == '\u{feff}'
+}
+
+/// The lowercased RFC 3986 scheme of `url`, ignoring the characters in
+/// [`is_ignorable`] (so `java\tscript:` or a leading U+00A0 cannot hide it).
 fn link_scheme(url: &str) -> Option<String> {
-    let cleaned: String = url.chars().filter(|&c| c > ' ').collect();
+    let cleaned: String = url.chars().filter(|&c| !is_ignorable(c)).collect();
     let (scheme, _) = cleaned.split_once(':')?;
     let mut chars = scheme.chars();
     let first = chars.next()?;
@@ -27,7 +34,7 @@ fn link_scheme(url: &str) -> Option<String> {
 /// allowlist, such as `javascript:` or `data:`); the caller then emits the link
 /// text alone. A scheme-less (relative) reference cannot name a dangerous
 /// scheme and is kept. Characters that would end or restructure the
-/// destination (whitespace, controls, `(`, `)`, `<`, `>`, `\`) are
+/// destination (any whitespace, controls, U+FEFF, `(`, `)`, `<`, `>`, `\`) are
 /// percent-encoded so the target cannot break out into further Markdown, and
 /// `&` is written as `&amp;` so CommonMark entity decoding (`&colon;`,
 /// `&#58;`) reproduces the checked target instead of forming a new scheme.
@@ -42,7 +49,7 @@ pub fn link_destination(url: &str) -> Option<String> {
     }
     let mut out = String::with_capacity(url.len());
     for c in url.chars() {
-        if c <= ' ' || c == '\u{7f}' || matches!(c, '(' | ')' | '<' | '>' | '\\') {
+        if is_ignorable(c) || matches!(c, '(' | ')' | '<' | '>' | '\\') {
             let mut buf = [0u8; 4];
             for byte in c.encode_utf8(&mut buf).bytes() {
                 out.push_str(&format!("%{byte:02X}"));
@@ -88,6 +95,8 @@ mod tests {
             "data:text/html,x",
             "vbscript:x",
             "file:///etc/passwd",
+            "\u{a0}vscode://example.com/x",
+            "\u{feff}javascript:alert(1)",
             "",
         ] {
             assert_eq!(link_destination(blocked), None, "{blocked:?}");
@@ -96,6 +105,10 @@ mod tests {
         assert_eq!(
             link_destination("javascript&colon;alert(1)").as_deref(),
             Some("javascript&amp;colon;alert%281%29")
+        );
+        assert_eq!(
+            link_destination("https://e.example/a\u{a0}b").as_deref(),
+            Some("https://e.example/a%C2%A0b")
         );
         assert_eq!(
             link_destination("https://e.example/?a=1&b=2").as_deref(),
