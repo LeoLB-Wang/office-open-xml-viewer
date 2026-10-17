@@ -412,8 +412,9 @@ impl<'a> Formatting<'a> {
                 });
             }
 
-            let paragraph_mark =
-                self.run_properties_with_table(style, table_style, fc, prm, prcs)?;
+            // The numbered mark's enabled picture bullet has its consumer:
+            // the marker projection (see `run_properties_with_table`).
+            let paragraph_mark = self.run_properties_cascade(style, table_style, fc, prm, prcs)?;
             let mut marker = paragraph_mark.clone();
             let mut baseline = self.paragraph_base_with_table(style, table_style)?;
             if linked != 0xfff {
@@ -869,6 +870,25 @@ impl<'a> Formatting<'a> {
     }
 
     fn run_properties_with_table(
+        &mut self,
+        paragraph_style: usize,
+        table_style: Option<TableFormattingKey>,
+        fc: usize,
+        prm: u16,
+        prcs: &[&[u8]],
+    ) -> Result<Properties, String> {
+        let props = self.run_properties_cascade(paragraph_style, table_style, fc, prm, prcs)?;
+        // MS-DOC 2.6.1: a picture bullet is displayed only through a numbered
+        // paragraph's marker. A winning enabled fPicBullet on any other
+        // character (a text run, or the mark of a paragraph without
+        // numbering) has no consumer and keeps the model unsupported.
+        if props.picture_bullet().picture_enabled() {
+            self.unsupported_character_properties = true;
+        }
+        Ok(props)
+    }
+
+    fn run_properties_cascade(
         &mut self,
         paragraph_style: usize,
         table_style: Option<TableFormattingKey>,
@@ -4308,7 +4328,12 @@ mod tests {
             Some((5, BulletOrigin::Piece { fc: 100, prm: 1 }))
         );
         assert_eq!(mark.picture_bullet().enabled(), Ok(None));
-        // The enabled level flag keeps the existing atomic refusal.
+        // The enabled level flag belongs to the marker, whose consumer
+        // decides; it is not a refusal of the paragraph's formatting.
+        assert!(!f.unsupported_character_properties);
+        // A winning enabled flag on any other character has no consumer.
+        let run = [index(5), grf(1)].concat();
+        f.run_properties(0, 100, 1, &[&run]).unwrap();
         assert!(f.unsupported_character_properties);
     }
 

@@ -3250,11 +3250,33 @@ mod tests {
         bookmarks: &[(&str, u32, u32)],
         shape: u16,
     ) -> Vec<u8> {
+        picture_bullet_source_with(level_chpx, bookmarks, shape, false)
+    }
+
+    /// `picture_bullet_source`, optionally keeping the shared picture
+    /// fixture's rotation and flips.
+    fn picture_bullet_source_with(
+        level_chpx: &[u8],
+        bookmarks: &[(&str, u32, u32)],
+        shape: u16,
+        transformed: bool,
+    ) -> Vec<u8> {
         let source = picture_source("\u{1}\r", true);
         let cfb = CompoundFile::open(&source).unwrap();
         let mut data = cfb.stream("Data").unwrap();
         // PICF (68) + OfficeArtSpContainer header (8): the FSP record options.
         data[76..78].copy_from_slice(&((shape << 4) | 2).to_le_bytes());
+        if !transformed {
+            // Clear the shared fixture's FSP fFlipH/fFlipV and its 90-degree
+            // rotation property (opid 4).
+            data[88..92].copy_from_slice(&0x800u32.to_le_bytes());
+            let rotation = [&4u16.to_le_bytes()[..], &(90u32 * 65536).to_le_bytes()].concat();
+            let at = data
+                .windows(rotation.len())
+                .position(|window| window == rotation)
+                .unwrap();
+            data[at + 2..at + 6].fill(0);
+        }
         let source = build_scoped_cfb(&[
             ("WordDocument", cfb.stream("WordDocument").unwrap()),
             ("0Table", cfb.stream("0Table").unwrap()),
@@ -3288,17 +3310,94 @@ mod tests {
     }
 
     #[test]
-    fn enabled_picture_bullets_resolve_their_source_and_stay_atomically_unsupported() {
-        // AUTO (fNoAutoSize 0) and FIXED (fNoAutoSize 1) with fUnused bits.
-        for flags in [0x01, 0x03, 0xfd] {
-            let bytes = picture_bullet_source(
-                &picture_bullet_level(0, flags),
-                &[("_PictureBullets", 0, 1)],
-                100,
+    fn enabled_picture_bullets_resolve_their_source_and_display_at_their_box() {
+        let projected = |level_chpx: &[u8]| {
+            let bytes = picture_bullet_source(level_chpx, &[("_PictureBullets", 0, 1)], 100);
+            picture_bullet_result(&bytes).map(|result| {
+                let BodyElement::Paragraph(paragraph) = &result.document.body[0] else {
+                    panic!("paragraph")
+                };
+                let numbering = paragraph.numbering.as_ref().unwrap();
+                assert_eq!(
+                    numbering.pic_bullet_image_path.as_deref(),
+                    Some("legacy-doc/bullet/0")
+                );
+                assert_eq!(numbering.pic_bullet_mime_type.as_deref(), Some("image/png"));
+                let transform = numbering.pic_bullet_transform.as_ref().unwrap();
+                assert!(transform.src_rect.is_none());
+                assert_eq!(result.resources.len(), 1);
+                assert_eq!(result.resources[0].key, "legacy-doc/bullet/0");
+                [
+                    numbering.pic_bullet_width_pt.unwrap(),
+                    numbering.pic_bullet_height_pt.unwrap(),
+                ]
+            })
+        };
+        let sized = |flags: u8, half_points: u16| {
+            [
+                picture_bullet_level(0, flags),
+                vec![0x43, 0x4a],
+                half_points.to_le_bytes().to_vec(),
+            ]
+            .concat()
+        };
+        // FIXED displays the BLIP at dxaGoal x dyaGoal (1440 x 720 twips),
+        // without the fixture's 5% x 20% PICMID scale or its OfficeArt crop,
+        // whatever the marker size.
+        assert_eq!(
+            projected(&picture_bullet_level(0, 0x03)).unwrap(),
+            [72.0, 36.0]
+        );
+        assert_eq!(projected(&sized(0x03, 6)).unwrap(), [72.0, 36.0]);
+        // AUTO (fNoAutoSize 0, also with fUnused bits) is the marker size
+        // minus 2 pt high with the goal's 2:1 aspect, whatever the PICMID
+        // scale: the fixture's 10 pt default marker and a 72 pt level marker.
+        for flags in [0x01, 0xfd] {
+            assert_eq!(
+                projected(&picture_bullet_level(0, flags)).unwrap(),
+                [16.0, 8.0]
             );
-            let error = picture_bullet_result(&bytes).unwrap_err();
-            assert!(error.contains("unsupported formatting"), "{flags}: {error}");
+            assert_eq!(projected(&sized(flags, 144)).unwrap(), [140.0, 70.0]);
         }
+        // Never less than 2 pt high, and no dimension above 32767 twips.
+        assert_eq!(projected(&sized(0x01, 2)).unwrap(), [4.0, 2.0]);
+        assert_eq!(projected(&sized(0x01, 3276)).unwrap(), [1638.35, 1636.0]);
+        // A complex-script marker uses its sprmCHpsBi size (24 pt), not
+        // sprmCHps (12 pt).
+        let complex = [
+            sized(0x01, 24),
+            vec![0x82, 0x08, 1, 0x61, 0x4a],
+            48u16.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        assert_eq!(projected(&complex).unwrap(), [44.0, 22.0]);
+        // Without any sprmCHpsBi, a complex-script marker is 10 pt (MS-DOC's
+        // 20 half-point default), whatever its 24 pt sprmCHps.
+        let complex_default = [sized(0x01, 48), vec![0x82, 0x08, 1]].concat();
+        assert_eq!(projected(&complex_default).unwrap(), [16.0, 8.0]);
+        // A rotation does not apply; both flips mirror the bullet in its box.
+        let bytes = picture_bullet_source_with(
+            &picture_bullet_level(0, 0x03),
+            &[("_PictureBullets", 0, 1)],
+            100,
+            true,
+        );
+        let result = picture_bullet_result(&bytes).unwrap();
+        let BodyElement::Paragraph(paragraph) = &result.document.body[0] else {
+            panic!("paragraph")
+        };
+        let numbering = paragraph.numbering.as_ref().unwrap();
+        let transform = numbering.pic_bullet_transform.as_ref().unwrap();
+        assert_eq!(transform.rotation, 0.0);
+        assert!(transform.flip_h && transform.flip_v);
+        assert!(transform.src_rect.is_none());
+        assert_eq!(
+            [
+                numbering.pic_bullet_width_pt,
+                numbering.pic_bullet_height_pt
+            ],
+            [Some(72.0), Some(36.0)]
+        );
         for (bookmarks, relative_cp, expected) in [
             (&[][..], 0, "lacks its bookmark"),
             (&[("_PictureBullet", 0, 1)][..], 0, "lacks its bookmark"),
@@ -3366,10 +3465,8 @@ mod tests {
                     [projected.picture.width_pt, projected.picture.height_pt],
                     display_box
                 );
-                assert_eq!(projected.picture.rotation, 90.0);
-                assert!(projected.picture.flip_h && projected.picture.flip_v);
-                let crop = projected.picture.crop.unwrap();
-                assert_eq!([crop.t, crop.b, crop.l, crop.r], [0.125, 0.25, 0.375, 0.5]);
+                // The authored crop does not apply to a picture bullet.
+                assert_eq!(projected.picture.crop, None);
                 if key.is_empty() {
                     key = projected.picture.resource_key.clone();
                 } else {
@@ -3403,8 +3500,8 @@ mod tests {
                 assert_eq!(numbering.pic_bullet_width_pt, Some(display_box[0]));
                 assert_eq!(numbering.pic_bullet_height_pt, Some(display_box[1]));
                 let transform = numbering.pic_bullet_transform.as_ref().unwrap();
-                assert_eq!(transform.rotation, 90.0);
-                assert!(transform.flip_h && transform.flip_v);
+                assert_eq!(transform.rotation, 0.0);
+                assert!(!transform.flip_h && !transform.flip_v);
                 let paragraph = docx_model::DocParagraph {
                     numbering: Some(Box::new(numbering)),
                     ..docx_model::DocParagraph::default()

@@ -25,6 +25,21 @@ impl Properties {
             .ok_or_else(|| unsupported("Word resolved font size is absent"))
     }
 
+    /// The size that sizes an automatic picture bullet for this marker.
+    /// Observed Windows Word (16.0) behavior: a complex-script or
+    /// right-to-left marker (sprmCFComplexScripts / sprmCFBiDi) uses its
+    /// sprmCHpsBi size, and with no sprmCHpsBi anywhere in its cascade the
+    /// MS-DOC 2.6.1 default of 20 half-points (a 24 pt sprmCHps marker shows
+    /// an 8 pt bullet); the script-dependent sprmCHpsBi defaults have no text
+    /// to apply to. Any other marker uses its sprmCHps size.
+    pub(in crate::doc) fn picture_bullet_marker_size_pt(&self) -> Result<f64, String> {
+        let flag = |key: &str| self.values.get(key).is_some_and(|value| value == "1");
+        if flag("rtl") || flag("cs") {
+            return Ok(self.half_points("szCs")?.unwrap_or(10.0));
+        }
+        self.direct_font_size_pt()
+    }
+
     /// Project one visible text span. Hidden text is absent from the
     /// normal/print DOC model.
     pub(in crate::doc) fn direct_text_run(

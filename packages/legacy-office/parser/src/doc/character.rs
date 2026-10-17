@@ -619,8 +619,8 @@ impl Properties {
                 // Bullet Pictures document; 2.9.176 PbiGrfOperand fPicBullet
                 // enables it. Both are retained as typed facts. A clear
                 // fPicBullet leaves the text bullet in place; an enabled one
-                // stays unsupported because picture-bullet display is not
-                // implemented.
+                // is displayed or refused by its consumer (see
+                // `picture_bullet`).
                 return Ok(self
                     .picture_bullet
                     .apply(code, operand)?
@@ -1081,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn picture_bullet_operands_are_typed_facts_and_only_enabled_ones_are_unsupported() {
+    fn picture_bullet_operands_are_typed_facts() {
         let base = Properties::default();
         let mut value = base.clone();
         assert!(value.apply(0x6887, &[2, 0, 0, 0], &base).unwrap());
@@ -1105,7 +1105,7 @@ mod tests {
             format!("{:?}", base.direct_text_run("x".into(), &[]).unwrap())
         );
 
-        assert!(!value.apply(0x4888, &[3, 0x80], &base).unwrap());
+        assert!(value.apply(0x4888, &[3, 0x80], &base).unwrap());
         value.stamp_picture_bullet(
             0x4888,
             BulletOrigin::ListLevel {
@@ -1140,7 +1140,7 @@ mod tests {
 
         // An enabled bullet MUST be located; there is no text fallback.
         let mut unlocated = base.clone();
-        assert!(!unlocated.apply(0x4888, &[1, 0], &base).unwrap());
+        assert!(unlocated.apply(0x4888, &[1, 0], &base).unwrap());
         assert!(unlocated.picture_bullet().enabled().is_err());
 
         // sprmCPlain/sprmCIstd do not preserve either operand.

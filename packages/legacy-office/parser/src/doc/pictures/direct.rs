@@ -15,14 +15,9 @@ pub(in crate::doc) struct DirectInlinePicture {
     pub flip_v: bool,
 }
 
-/// Occurrence geometry is distinct from the shared carrier. PbiGrf chooses
-/// whether a consumer resizes to following text; it does not specify that
-/// metric. Neither AUTO nor FIXED is inferred from PICMID goal/scale here.
+/// Occurrence geometry is distinct from the shared carrier: the display box
+/// comes from `picture_bullet_display_box`, never from the stored extent.
 #[derive(Debug, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "native marker sizing consumer remains unsupported"
-)]
 pub(in crate::doc) struct DirectPictureBullet {
     pub picture: DirectInlinePicture,
     pub no_auto_size: bool,
@@ -31,10 +26,6 @@ pub(in crate::doc) struct DirectPictureBullet {
 impl DirectPictureBullet {
     /// Attach a resolved occurrence to the shared model without modifying the
     /// numbering cascade's font facts. Layout and paint then use the same box.
-    #[allow(
-        dead_code,
-        reason = "native marker sizing consumer remains unsupported"
-    )]
     pub(in crate::doc) fn install(
         self,
         numbering: &mut docx_model::NumberingInfo,
@@ -84,15 +75,70 @@ impl Store<'_> {
         !self.part_offsets.is_empty() || !self.bullet_offsets.is_empty()
     }
 
-    /// Project an acquired carrier using an explicitly resolved occurrence
-    /// box. This boundary preserves OfficeArt transforms and selects media;
-    /// it cannot establish the native AUTO metric or a FIXED display size.
-    /// The story consumer must retain its atomic refusal until it can supply
-    /// a source-justified box, rather than passing stored or nominal-font size.
-    #[allow(
-        dead_code,
-        reason = "native marker sizing consumer remains unsupported"
-    )]
+    /// The display box of a picture bullet, in points.
+    ///
+    /// Observed Windows Word (16.0) behavior, measured on Word's PDFs of
+    /// same-length patches of one Word-saved DOC (zero two-export noise):
+    /// - fNoAutoSize=1 displays the BLIP at PICF dxaGoal x dyaGoal (MS-DOC
+    ///   2.9.193 PICMID). PICMID mx/my scaling does not apply: changing mx
+    ///   from 150% to 300% leaves the PDF pixel-identical in both modes.
+    /// - An OfficeArt crop (MS-ODRAW 2.3.23 cropFromTop 25%) does not apply
+    ///   to a picture bullet either: pixel-identical in both modes. The
+    ///   projection therefore carries no crop.
+    /// - Automatic size (fNoAutoSize=0) follows the marker's own character
+    ///   size (the list level's CHPX over the paragraph mark), not the
+    ///   following text: changing only the following text from 12 pt to 8 or
+    ///   24 pt leaves the bullet unchanged. A complex-script or right-to-left
+    ///   marker (sprmCFComplexScripts / sprmCFBiDi) uses its sprmCHpsBi size,
+    ///   or 10 pt with none (`picture_bullet_marker_size_pt`), and bold or
+    ///   italic markers are unaffected. The displayed height is
+    ///   the marker size minus 2 pt, never less than 2 pt, and the width keeps
+    ///   the goal aspect ratio; the goal size itself does not matter. Each
+    ///   dimension is limited to 32767 twips (1638.35 pt), which only a very
+    ///   wide picture at a very large marker reaches.
+    ///   Measured marker sizes and displayed heights (to Word's 0.05 pt output
+    ///   rounding): 1, 2, 3 and 4 pt -> 2 pt; 5 -> 3; 6 -> 4; 7.5 -> 5.5;
+    ///   8 -> 6; 9 -> 7; 10 -> 8; 10.5 -> 8.5; 11 -> 9; 11.5 -> 9.5; 12 -> 10;
+    ///   13.5 -> 11.5; 14 -> 12; 16 -> 14; 18 -> 16; 20 -> 18; 24 -> 22;
+    ///   28 -> 26; 36 -> 34; 48 -> 46; 72 -> 70; 96 -> 94; 144 -> 142;
+    ///   288 -> 286; 720 -> 718; 1638 (the largest) -> 1636. Goals 12x6, 6x12
+    ///   and 12x12 pt at a 12 pt marker display 20x10, 5x10 and 10x10 pt; a
+    ///   12x6 goal displays 4x2 pt at 1 and 3 pt markers, 284x142 at 144 pt
+    ///   and 1638.35x1636 at 1638 pt; a 6x12 goal displays 1x2 at 3 pt and
+    ///   359x718 at 720 pt. This is an observed Office rule, not an MS-DOC
+    ///   one.
+    pub(in crate::doc) fn picture_bullet_display_box(
+        &mut self,
+        formatting: &mut super::super::formatting::Formatting<'_>,
+        bullet: super::super::character::EnabledPictureBullet,
+        marker_font_size_pt: Option<f64>,
+    ) -> Result<Option<[f64; 2]>, String> {
+        /// 32767 twips.
+        const MAX_DIMENSION_PT: f64 = 1638.35;
+        let picture = self.acquire_picture_bullet(formatting, bullet)?;
+        let [width, height] = picture.goal;
+        if width <= 0 || height <= 0 {
+            return Err(unsupported("invalid Word picture bullet goal size"));
+        }
+        let [width, height] = [f64::from(width) / 20.0, f64::from(height) / 20.0];
+        if bullet.flags.no_auto_size {
+            return Ok(Some([width, height]));
+        }
+        Ok(marker_font_size_pt.map(|size| {
+            let displayed = (size - 2.0).clamp(2.0, MAX_DIMENSION_PT);
+            [
+                (displayed * width / height).min(MAX_DIMENSION_PT),
+                displayed,
+            ]
+        }))
+    }
+
+    /// Project an acquired carrier using the occurrence box from
+    /// `picture_bullet_display_box`. Observed Windows Word (16.0) behavior
+    /// for the picture's own OfficeArt transform, by pixel-identical PDFs of
+    /// patched controls: neither a crop (cropFromTop 25%) nor a rotation
+    /// (90 degrees) applies to a picture bullet, in either sizing mode, while
+    /// the FSP fFlipH and fFlipV flags mirror the bullet in its unchanged box.
     pub(in crate::doc) fn direct_picture_bullet(
         &mut self,
         formatting: &mut super::super::formatting::Formatting<'_>,
@@ -112,11 +158,6 @@ impl Store<'_> {
             ));
         }
         let picture = self.acquire_picture_bullet(formatting, bullet)?;
-        if picture.crop[0] + picture.crop[1] >= 100_000
-            || picture.crop[2] + picture.crop[3] >= 100_000
-        {
-            return Err(unsupported("empty Word picture bullet crop"));
-        }
         let offset = picture.offset;
         let resource_key = bullet_key(offset);
         let mime_type = mime(picture.image.extension)?;
@@ -127,21 +168,14 @@ impl Store<'_> {
         remaining_bytes
             .checked_sub(required)
             .ok_or("OUTPUT_TOO_LARGE")?;
-        let [top, bottom, left, right] = picture.crop;
-        let crop = (picture.crop != [0; 4]).then_some(ooxml_common::blip::SrcRect {
-            l: left as f64 / 100_000.0,
-            t: top as f64 / 100_000.0,
-            r: right as f64 / 100_000.0,
-            b: bottom as f64 / 100_000.0,
-        });
         let result = DirectPictureBullet {
             picture: DirectInlinePicture {
                 resource_key,
                 mime_type,
                 width_pt: display_box[0],
                 height_pt: display_box[1],
-                crop,
-                rotation: picture.rotation as f64 / 60_000.0,
+                crop: None,
+                rotation: 0.0,
                 flip_h: picture.flip[0],
                 flip_v: picture.flip[1],
             },
