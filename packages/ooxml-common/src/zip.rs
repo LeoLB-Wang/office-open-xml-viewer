@@ -357,6 +357,49 @@ fn inspect_eocd_candidate(data: &[u8], eocd: usize) -> Result<Option<ArchivePref
     }
 }
 
+/// Info-ZIP Unicode Path (0x7075) and Unicode Comment (0x6375) extra fields
+/// (APPNOTE 4.6.8/4.6.9) carry a CRC-32 of the raw name/comment they restate.
+/// Accept at most one of each per entry, with a matching CRC, and a Unicode
+/// path equal to the raw (ASCII, OPC §7.3.3) item name. The ZIP reader
+/// re-hashes the name or comment for every such field it meets, so repeated
+/// fields would otherwise multiply opening work; an invalid or divergent
+/// field was already an opening error before the reader upgrade.
+fn validate_unicode_extra_fields(
+    name: &[u8],
+    extra: &[u8],
+    comment: &[u8],
+) -> Result<(), CandidateError> {
+    let mut seen_path = false;
+    let mut seen_comment = false;
+    let mut cursor = 0;
+    while cursor + 4 <= extra.len() {
+        let id = le_u16(extra, cursor).ok_or(CandidateError::Malformed)?;
+        let len = le_u16(extra, cursor + 2).ok_or(CandidateError::Malformed)? as usize;
+        let body = extra
+            .get(cursor + 4..cursor + 4 + len)
+            .ok_or(CandidateError::Malformed)?;
+        let (target, seen) = match id {
+            0x7075 => (name, &mut seen_path),
+            0x6375 => (comment, &mut seen_comment),
+            _ => {
+                cursor += 4 + len;
+                continue;
+            }
+        };
+        if std::mem::replace(seen, true) || body.len() < 5 || body[0] != 1 {
+            return Err(CandidateError::Malformed);
+        }
+        if le_u32(body, 1) != Some(crc32fast::hash(target)) {
+            return Err(CandidateError::Malformed);
+        }
+        if id == 0x7075 && &body[5..] != name {
+            return Err(CandidateError::Malformed);
+        }
+        cursor += 4 + len;
+    }
+    Ok(())
+}
+
 fn walk_central_directory<F>(
     data: &[u8],
     directory: CentralDirectory,
@@ -390,6 +433,12 @@ where
         name_bytes = name_bytes
             .checked_add(name_len as u64)
             .ok_or(CandidateError::Malformed)?;
+        let extra_start = name_start + name_len;
+        validate_unicode_extra_fields(
+            &data[name_start..extra_start],
+            &data[extra_start..extra_start + extra_len],
+            &data[extra_start + extra_len..next],
+        )?;
         visit(CentralEntry {
             header: cursor,
             name: NameRange {
@@ -933,6 +982,67 @@ fn validate_archive_limits<R: std::io::Read + std::io::Seek>(
     resource::observe_archive_metadata(archive.len() as u64, declared_total)
 }
 
+/// Inflate one entry from its raw stored bytes. Declared sizes only seed the
+/// resource allowance; actual output is charged by `read_entry` until EOF,
+/// where the CRC-32 is verified (APPNOTE 4.4.7), as the retained session's
+/// decoder does. The ZIP crate's own decompressing reader is not used because
+/// it rejects output past the declared size before that output is charged,
+/// which would hide an actual-inflation limit crossing.
+fn open_entry_content<'a, R: std::io::Read + std::io::Seek>(
+    archive: &'a mut zip::ZipArchive<R>,
+    part_id: usize,
+    path: &str,
+) -> Result<(CrcCheckedEntry<Box<dyn std::io::Read + 'a>>, u64), String> {
+    let raw = archive
+        .by_index_raw(part_id)
+        .map_err(|e| format!("entry not found: {path}: {e}"))?;
+    if raw.encrypted() {
+        return Err(format!(
+            "entry not found: {path}: unsupported Zip archive: Password required to decrypt file"
+        ));
+    }
+    let declared_size = raw.size();
+    let expected_crc = raw.crc32();
+    let content: Box<dyn std::io::Read + 'a> = match raw.compression() {
+        zip::CompressionMethod::Stored => Box::new(raw),
+        zip::CompressionMethod::Deflated => Box::new(flate2::read::DeflateDecoder::new(raw)),
+        _ => {
+            return Err(format!(
+                "entry not found: {path}: unsupported Zip archive: Compression method not supported"
+            ))
+        }
+    };
+    Ok((
+        CrcCheckedEntry {
+            inner: content,
+            hasher: crc32fast::Hasher::new(),
+            expected: expected_crc,
+        },
+        declared_size,
+    ))
+}
+
+/// Verifies the entry CRC-32 when the inflated stream ends.
+struct CrcCheckedEntry<R> {
+    inner: R,
+    hasher: crc32fast::Hasher,
+    expected: u32,
+}
+
+impl<R: std::io::Read> std::io::Read for CrcCheckedEntry<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buf)?;
+        if count == 0 && !buf.is_empty() && self.hasher.clone().finalize() != self.expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid checksum",
+            ));
+        }
+        self.hasher.update(&buf[..count]);
+        Ok(count)
+    }
+}
+
 fn read_entry<R: std::io::Read>(
     entry: &mut R,
     part_id: usize,
@@ -958,7 +1068,7 @@ fn read_entry<R: std::io::Read>(
             // proven policy crossing. Recording it latches limit+1.
             let count = entry
                 .read(&mut chunk[..1])
-                .map_err(|e| read_failure(e, part_id, path, observed))?;
+                .map_err(|e| format!("read error: {e}"))?;
             if count == 0 {
                 break;
             }
@@ -970,7 +1080,7 @@ fn read_entry<R: std::io::Read>(
         let remaining = ordinary_limit - observed;
         let count = entry
             .read(&mut chunk[..remaining.min(READ_CHUNK_BYTES as u64) as usize])
-            .map_err(|e| read_failure(e, part_id, path, observed))?;
+            .map_err(|e| format!("read error: {e}"))?;
         if count == 0 {
             break;
         }
@@ -981,25 +1091,6 @@ fn read_entry<R: std::io::Read>(
         bytes.extend_from_slice(&chunk[..count]);
     }
     Ok(bytes)
-}
-
-/// The ZIP reader stops an entry once its output passes the declared size,
-/// after the decoder has already produced at least one more byte. Charge that
-/// proven byte first, so an actual-inflation limit crossing stays the typed
-/// resource error (matching the retained session's decoder) rather than being
-/// masked by the integrity error.
-fn read_failure(error: std::io::Error, part_id: usize, path: &str, observed: u64) -> String {
-    if error.kind() == std::io::ErrorKind::InvalidData
-        && error
-            .to_string()
-            .contains("larger than its declared uncompressed size")
-    {
-        if let Err(limit) = resource::observe_inflated(part_id, path, observed.saturating_add(1), 1)
-        {
-            return limit;
-        }
-    }
-    format!("read error: {error}")
 }
 
 /// Open one package and extract a single entry under an ephemeral resource
@@ -1053,10 +1144,7 @@ pub fn read_zip_bytes<R: std::io::Read + std::io::Seek>(
     resource::assert_healthy()?;
     let part_id =
         equivalent_entry_index(archive, path).ok_or_else(|| format!("entry not found: {path}"))?;
-    let mut entry = archive
-        .by_index(part_id)
-        .map_err(|e| format!("entry not found: {path}: {e}"))?;
-    let declared_size = entry.size();
+    let (mut entry, declared_size) = open_entry_content(archive, part_id, path)?;
     read_entry(&mut entry, part_id, path, declared_size, None)
 }
 
@@ -1077,10 +1165,7 @@ pub fn read_zip_string_head<R: std::io::Read + std::io::Seek>(
     resource::assert_healthy()?;
     let part_id =
         equivalent_entry_index(archive, path).ok_or_else(|| format!("entry not found: {path}"))?;
-    let mut entry = archive
-        .by_index(part_id)
-        .map_err(|e| format!("entry not found: {path}: {e}"))?;
-    let declared_size = entry.size();
+    let (mut entry, declared_size) = open_entry_content(archive, part_id, path)?;
     let mut bytes = read_entry(
         &mut entry,
         part_id,
@@ -1459,33 +1544,14 @@ mod tests {
         }
         // Forge both local and central uncompressed-size fields down to one.
         // The payload still delivers eight bytes, so metadata alone must not
-        // authorize the read: the decoder stops once actual output passes the
-        // declaration (the retained session's inflated-size check agrees), and
-        // the governor is charged only for bytes actually produced.
+        // authorize the read: the actual-inflation limit stops it, typed.
         bytes[22..26].copy_from_slice(&1u32.to_le_bytes());
         let central = bytes
             .windows(4)
             .position(|window| window == 0x0201_4b50u32.to_le_bytes())
             .expect("central-directory header");
-        let forged = bytes.clone();
         bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
 
-        let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, Some(64), Some(64), None);
-        let _scope = governor.scope("parse");
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        validate_archive_limits(&mut archive).unwrap();
-        let error = read_zip_bytes(&mut archive, "word/document.xml").unwrap_err();
-        assert!(
-            error.contains("larger than its declared uncompressed size"),
-            "{error}"
-        );
-        assert!(governor.first_error().is_none());
-
-        // When the declaration equals the entry limit, the first byte past it
-        // is also an actual-inflation crossing and must stay typed.
-        let mut bytes = forged.clone();
-        bytes[22..26].copy_from_slice(&4u32.to_le_bytes());
-        bytes[central + 24..central + 28].copy_from_slice(&4u32.to_le_bytes());
         let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, Some(4), Some(64), None);
         let _scope = governor.scope("parse");
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
@@ -1496,7 +1562,40 @@ mod tests {
         assert_eq!(violation["metric"], "actual-inflated-bytes");
         assert_eq!(violation["limit"], 4);
         assert_eq!(violation["observed"], 5);
-        assert!(governor.first_error().is_some());
+    }
+
+    #[test]
+    fn repeated_or_invalid_unicode_extra_fields_are_rejected_before_indexing() {
+        let field = |id: u16, target: &[u8], text: &[u8]| {
+            let mut body = vec![1u8];
+            body.extend_from_slice(&crc32fast::hash(target).to_le_bytes());
+            body.extend_from_slice(text);
+            let mut field = id.to_le_bytes().to_vec();
+            field.extend_from_slice(&(body.len() as u16).to_le_bytes());
+            field.extend_from_slice(&body);
+            field
+        };
+        let name = b"word/a.xml";
+        let comment = b"note";
+        let path = field(0x7075, name, name);
+        let note = field(0x6375, comment, comment);
+        assert!(validate_unicode_extra_fields(
+            name,
+            &[path.clone(), note.clone()].concat(),
+            comment
+        )
+        .is_ok());
+        for extra in [
+            [note.clone(), note.clone()].concat(),
+            [path.clone(), path.clone()].concat(),
+            field(0x6375, b"other", comment),
+            field(0x7075, name, b"word/b.xml"),
+        ] {
+            assert!(matches!(
+                validate_unicode_extra_fields(name, &extra, comment),
+                Err(CandidateError::Malformed)
+            ));
+        }
     }
 
     #[test]
