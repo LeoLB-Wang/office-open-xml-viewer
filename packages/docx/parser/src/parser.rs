@@ -6539,6 +6539,9 @@ struct FieldFrame {
     substitute: bool,
     /// True when this frame's instruction is a TOC field (§17.16.5.69).
     is_toc: bool,
+    /// Incremental first-token state for `is_toc`, so each instruction byte
+    /// is examined once however many `instrText` runs the field has.
+    toc_scan: FirstTokenScan,
     /// Classified when `separate` closes the instruction region.
     field_type: String,
     /// REF/PAGEREF bookmark when the field-specific `\\h` switch is authored.
@@ -6551,11 +6554,63 @@ struct FieldFrame {
     legacy_checkbox_nested: bool,
 }
 
+/// Library resource policy, not an ECMA-376 rule: §17.16.18 does not bound
+/// complex-field nesting, and `begin` fldChars are flat run siblings, so the
+/// XML depth guard does not apply. Real nesting (TOC → HYPERLINK → PAGEREF,
+/// nested IF/REF) stays in single digits; unclosed `begin`s of a damaged
+/// document also accumulate here. More open frames fail closed with a typed
+/// resource error instead of retaining unbounded field state.
+const MAX_OPEN_COMPLEX_FIELDS: usize = 256;
+
+/// The first whitespace-delimited token of a field instruction (§17.16.5.69
+/// TOC), matched ASCII case-insensitively against the accumulated text
+/// without rescanning it.
+#[derive(Default)]
+struct FirstTokenScan {
+    started: bool,
+    ended: bool,
+    len: usize,
+    prefix: [char; 3],
+}
+
+impl FirstTokenScan {
+    /// Feed the next instruction chunk; return whether the first token of the
+    /// instruction so far is `TOC` (ASCII case-insensitive).
+    fn feed_is_toc(&mut self, chunk: &str) -> bool {
+        for c in chunk.chars() {
+            if self.ended {
+                break;
+            }
+            if c.is_whitespace() {
+                self.ended = self.started;
+            } else {
+                if self.len < self.prefix.len() {
+                    self.prefix[self.len] = c;
+                }
+                self.started = true;
+                self.len += 1;
+            }
+        }
+        self.started
+            && self.len == 3
+            && self
+                .prefix
+                .iter()
+                .zip(['T', 'O', 'C'])
+                .all(|(c, expected)| c.eq_ignore_ascii_case(&expected))
+    }
+}
+
 /// Stack of open field frames for the current paragraph content walk.
 #[derive(Default)]
 struct FieldState {
     stack: Vec<FieldFrame>,
     next_occurrence_id: u32,
+    /// Open frames whose instruction is a TOC field; keeps `in_toc` O(1).
+    open_toc_frames: usize,
+    /// `(stack index, anchor)` of every open frame past `separate` whose
+    /// rendered result is a REF/PAGEREF `\h` hyperlink, innermost last.
+    result_anchors: Vec<(usize, String)>,
 }
 
 impl FieldState {
@@ -6574,15 +6629,28 @@ impl FieldState {
     /// on the stack being a TOC field counts, so the nested PAGEREF result is
     /// covered too; instruction-phase runs never reach the render path.
     fn in_toc(&self) -> bool {
-        self.stack.iter().any(|f| f.is_toc)
+        self.open_toc_frames != 0
     }
 
+    /// The innermost open frame past `separate`, rendering its stored result,
+    /// that carries a hyperlink anchor.
     fn result_hyperlink_anchor(&self) -> Option<String> {
-        self.stack
-            .iter()
-            .rev()
-            .filter(|frame| frame.past_separate && !frame.substitute)
-            .find_map(|frame| frame.hyperlink_anchor.clone())
+        self.result_anchors.last().map(|(_, anchor)| anchor.clone())
+    }
+
+    fn pop_frame(&mut self) -> Option<FieldFrame> {
+        let frame = self.stack.pop()?;
+        if frame.is_toc {
+            self.open_toc_frames -= 1;
+        }
+        if self
+            .result_anchors
+            .last()
+            .is_some_and(|(index, _)| *index == self.stack.len())
+        {
+            self.result_anchors.pop();
+        }
+        Some(frame)
     }
 }
 
@@ -6902,6 +6970,16 @@ fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run
         });
     let legacy_checkbox_checked = legacy_checkbox.map(|(checked, _)| checked);
     let legacy_checkbox_size_pt = legacy_checkbox.and_then(|(_, size)| size);
+    if field.stack.len() >= MAX_OPEN_COMPLEX_FIELDS {
+        // Latch the typed resource error; the operation fails at its boundary.
+        let _ = ooxml_common::resource::observe_hard_limit(
+            ooxml_common::resource::HardResourceLimitKind::DocxComplexFieldDepth,
+            None,
+            MAX_OPEN_COMPLEX_FIELDS as u64,
+            field.stack.len() as u64 + 1,
+        );
+        return;
+    }
     let legacy_checkbox_nested = legacy_checkbox.is_some() && !field.stack.is_empty();
     // Legacy form fields keep their visible control formatting on the fldChar
     // begin run. Other complex fields use the first instruction run.
@@ -6929,6 +7007,7 @@ fn separate_complex_field(
     runs: &[DocRun],
     complex_field_boundaries: &mut Vec<ComplexFieldBoundaryWire>,
 ) {
+    let index = field.stack.len().wrapping_sub(1);
     if let Some(frame) = field.top_mut() {
         frame.past_separate = true;
         // Only locally-computed fields swallow their stored result. Other
@@ -6941,6 +7020,21 @@ fn separate_complex_field(
         if !frame.substitute {
             complex_field_boundaries.push(complex_field_boundary(frame, "start", runs.len()));
         }
+        let anchor = (!frame.substitute)
+            .then(|| frame.hyperlink_anchor.clone())
+            .flatten();
+        // A repeated `separate` re-derives the same facts; replace this
+        // frame's entry rather than indexing it twice.
+        if field
+            .result_anchors
+            .last()
+            .is_some_and(|(top, _)| *top == index)
+        {
+            field.result_anchors.pop();
+        }
+        if let Some(anchor) = anchor {
+            field.result_anchors.push((index, anchor));
+        }
     }
 }
 
@@ -6952,7 +7046,7 @@ fn end_complex_field(
     runs: &mut Vec<DocRun>,
     complex_field_boundaries: &mut Vec<ComplexFieldBoundaryWire>,
 ) {
-    if let Some(mut frame) = field.stack.pop() {
+    if let Some(mut frame) = field.pop_frame() {
         // `separate` can be absent when no stored result exists. Locally
         // computed fields are still complete at `end`.
         if !frame.past_separate {
@@ -7088,16 +7182,22 @@ fn handle_run_in_para(
                 if field.top().is_some_and(|frame| !frame.past_separate) {
                     let needs_fmt = field.top().and_then(|frame| frame.fmt.as_ref()).is_none();
                     let fmt = needs_fmt.then(|| field_control_run_fmt(r_node, base_run));
+                    let mut became_toc = false;
                     if let Some(frame) = field.top_mut() {
-                        frame.instruction.push_str(child.text().unwrap_or(""));
+                        let text = child.text().unwrap_or("");
+                        frame.instruction.push_str(text);
                         // Classify incrementally so enclosing TOC result runs
                         // receive their display semantics before `separate`.
-                        if classify_toc(&frame.instruction) {
+                        if frame.toc_scan.feed_is_toc(text) && !frame.is_toc {
                             frame.is_toc = true;
+                            became_toc = true;
                         }
                         if let Some(fmt) = fmt {
                             frame.fmt = Some(fmt);
                         }
+                    }
+                    if became_toc {
+                        field.open_toc_frames += 1;
                     }
                 }
                 continue;
@@ -7212,16 +7312,6 @@ fn handle_run_in_para(
         true,
         None,
     );
-}
-
-/// §17.16.5.69 — true when the field instruction's leading token is `TOC`
-/// (case-insensitive). The instruction may still be partially accumulated; we
-/// only need the first whitespace-delimited token.
-fn classify_toc(instr: &str) -> bool {
-    instr
-        .split_whitespace()
-        .next()
-        .is_some_and(|tok| tok.eq_ignore_ascii_case("TOC"))
 }
 
 struct ComplexFieldSemantics {
@@ -13931,7 +14021,7 @@ fn resolve_wps_line_ref(
     let StyleMatrixLookup::Entry(entry) = theme.format_scheme.lookup_line_ref(index) else {
         return None;
     };
-    let entry_xml = entry.to_xml();
+    let entry_xml = entry.to_xml().ok()?;
     let document = roxmltree::Document::parse(&entry_xml).ok()?;
     let line = document.root_element().children().find(|node| {
         node.is_element()
@@ -14112,7 +14202,7 @@ fn resolve_fill_ref(fill_ref: roxmltree::Node, theme: &ThemeColors) -> Option<Sh
     let StyleMatrixLookup::Entry(entry) = theme.format_scheme.lookup_fill_ref(idx) else {
         return None;
     };
-    let entry_xml = entry.to_xml();
+    let entry_xml = entry.to_xml().ok()?;
     let doc = parse_guarded(&entry_xml).ok()?;
     let fill = doc
         .root_element()

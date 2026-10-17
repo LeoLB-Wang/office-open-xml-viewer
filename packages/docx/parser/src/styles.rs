@@ -460,6 +460,59 @@ pub struct StyleMap {
     default_table_style_id: Option<String>,
 }
 
+/// Library resource policy, not an ECMA-376 rule: §17.7.4.3 `basedOn` chains
+/// have no normative length limit, but every paragraph, run and table
+/// resolves its whole chain, so a long chain multiplies parse work by the
+/// number of resolutions. Word-authored documents in the private corpus stay
+/// at five or fewer levels; 64 leaves ample headroom while bounding each
+/// resolution. A longer chain fails closed with a typed resource error.
+pub(crate) const MAX_STYLE_INHERITANCE_DEPTH: usize = 64;
+
+/// The largest number of distinct styles any one `basedOn` chain applies,
+/// counted exactly as [`StyleMap::apply_style_chain`] walks it (a cycle stops
+/// at the first revisited style; a missing parent ends the chain). Each style
+/// is resolved once, so this is linear in the number of styles.
+fn max_style_inheritance_depth(styles: &HashMap<String, StyleDef>) -> usize {
+    let mut depth: HashMap<&str, usize> = HashMap::with_capacity(styles.len());
+    let mut deepest = 0;
+    let mut path: Vec<&str> = Vec::new();
+    let mut on_path: HashMap<&str, usize> = HashMap::new();
+    for start in styles.keys() {
+        path.clear();
+        on_path.clear();
+        let mut current = Some(start.as_str());
+        // Depth of the style that ends the walk's unresolved suffix.
+        let mut tail = 0;
+        while let Some(id) = current {
+            if let Some(&known) = depth.get(id) {
+                tail = known;
+                break;
+            }
+            let Some(def) = styles.get(id) else {
+                break;
+            };
+            if let Some(&cycle_start) = on_path.get(id) {
+                // Every style on the cycle walks the whole cycle once.
+                let cycle_len = path.len() - cycle_start;
+                for member in path.drain(cycle_start..) {
+                    depth.insert(member, cycle_len);
+                }
+                tail = cycle_len;
+                break;
+            }
+            on_path.insert(id, path.len());
+            path.push(id);
+            current = def.based_on.as_deref();
+        }
+        for member in path.drain(..).rev() {
+            tail += 1;
+            depth.insert(member, tail);
+        }
+        deepest = deepest.max(tail);
+    }
+    deepest
+}
+
 impl StyleMap {
     /// Style ID of the paragraph style marked `w:default="1"` in styles.xml.
     /// International templates may use non-English IDs (e.g. "a", "標準").
@@ -598,6 +651,19 @@ impl StyleMap {
                     based_on,
                 },
             );
+        }
+
+        let depth = max_style_inheritance_depth(&styles);
+        if depth > MAX_STYLE_INHERITANCE_DEPTH {
+            // Latches the typed resource error for the package operation; the
+            // unbounded cascade is never resolved.
+            let _ = ooxml_common::resource::observe_hard_limit(
+                ooxml_common::resource::HardResourceLimitKind::DocxStyleInheritanceDepth,
+                Some("word/styles.xml"),
+                MAX_STYLE_INHERITANCE_DEPTH as u64,
+                depth as u64,
+            );
+            return Self::empty();
         }
 
         StyleMap {

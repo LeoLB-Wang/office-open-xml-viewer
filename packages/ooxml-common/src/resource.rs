@@ -43,6 +43,9 @@ struct GovernorState {
     operations: HashMap<u64, LogicalOperationState>,
     hard_limit_totals: HashMap<HardResourceLimitKind, u64>,
     retained_instance_bytes: HashMap<(HardResourceLimitKind, String, String), u64>,
+    /// Repeatable parser work charged to the outermost active scope of this
+    /// governor (see [`charge_scope_work`]). Nested scopes keep accumulating.
+    scope_work: HashMap<HardResourceLimitKind, u64>,
     first_error: Option<String>,
 }
 
@@ -112,6 +115,9 @@ pub enum HardResourceLimitKind {
     WorksheetReferenceStringBytes,
     WorksheetReferenceIndexCells,
     WorksheetReferenceIndexStringBytes,
+    ThemeStyleReparseBytes,
+    DocxStyleInheritanceDepth,
+    DocxComplexFieldDepth,
 }
 
 impl HardResourceLimitKind {
@@ -176,6 +182,9 @@ impl HardResourceLimitKind {
             Self::WorksheetJsonBytes => ("serialization", "worksheet-json", "bytes"),
             Self::WorksheetCacheRows => ("parsing", "worksheet-cache", "rows"),
             Self::WorksheetCacheCells => ("parsing", "worksheet-cache", "cells"),
+            Self::ThemeStyleReparseBytes => ("parsing", "theme-style-reparse", "bytes"),
+            Self::DocxStyleInheritanceDepth => ("parsing", "style-inheritance", "depth"),
+            Self::DocxComplexFieldDepth => ("parsing", "complex-field", "depth"),
         }
     }
 }
@@ -249,6 +258,8 @@ pub struct ResourceScope {
     previous_operation_bytes: u64,
     restore_parent_operation: bool,
     logical_operation_id: Option<u64>,
+    /// Outer scope's work ledger, restored when this outermost scope ends.
+    previous_scope_work: Option<HashMap<HardResourceLimitKind, u64>>,
 }
 
 impl Drop for ResourceScope {
@@ -271,6 +282,9 @@ impl Drop for ResourceScope {
                     .unwrap_or(self.previous_operation_bytes);
             }
             state.scoped_operation_id = self.previous_logical_operation_id;
+            if let Some(previous) = self.previous_scope_work.take() {
+                state.scope_work = previous;
+            }
         }
         ACTIVE_GOVERNOR.with(|active| {
             *active.borrow_mut() = self.previous_active.take();
@@ -318,6 +332,7 @@ impl ResourceGovernor {
             operations: HashMap::new(),
             hard_limit_totals: HashMap::new(),
             retained_instance_bytes: HashMap::new(),
+            scope_work: HashMap::new(),
             first_error: None,
         })))
     }
@@ -380,7 +395,12 @@ impl ResourceGovernor {
         let restore_parent_operation = previous_active
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.0, &self.0));
+        // Only an outermost scope of this governor starts a fresh work ledger,
+        // so a nested entry read cannot reset the enclosing operation's budget.
+        let previous_scope_work = (!restore_parent_operation)
+            .then(|| std::mem::take(&mut self.0.borrow_mut().scope_work));
         ResourceScope {
+            previous_scope_work,
             governor: self.clone(),
             previous_active,
             previous_operation,
@@ -616,6 +636,42 @@ fn observe_limit(
         limit,
         observed,
         configurable,
+    }))
+}
+
+/// Charge repeatable, non-retained parser work (for example re-parsing a
+/// theme style-matrix entry for every reference) to the outermost active
+/// scope. The budget bounds CPU for one operation; it is not an input-size
+/// admission rule. Without an active scope this is a no-op.
+pub fn charge_scope_work(
+    kind: HardResourceLimitKind,
+    limit: u64,
+    amount: u64,
+) -> Result<(), String> {
+    let Some(governor) = active_governor() else {
+        return Ok(());
+    };
+    let mut state = governor.0.borrow_mut();
+    state.assert_healthy()?;
+    let total = state
+        .scope_work
+        .get(&kind)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(amount);
+    state.scope_work.insert(kind, total);
+    if total <= limit {
+        return Ok(());
+    }
+    let (stage, resource, metric) = kind.wire_fields();
+    Err(state.fail(LimitCrossing {
+        stage,
+        resource,
+        metric,
+        part: None,
+        limit,
+        observed: total,
+        configurable: false,
     }))
 }
 

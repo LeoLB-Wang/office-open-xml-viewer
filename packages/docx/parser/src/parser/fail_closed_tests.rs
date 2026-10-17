@@ -140,3 +140,101 @@ fn optional_styles_distinguish_lexical_depth_from_shallow_content_errors() {
         }
     }
 }
+
+fn assert_hard_limit(error: &str, resource: &str, limit: u64) {
+    let payload: serde_json::Value =
+        serde_json::from_str(error.strip_prefix("OOXML_RESOURCE_LIMIT:").expect(error)).unwrap();
+    let violation = &payload["details"]["violation"];
+    assert_eq!(violation["resource"], resource, "{error}");
+    assert_eq!(violation["metric"], "depth");
+    assert_eq!(violation["limit"], limit);
+    assert_eq!(violation["observed"], limit + 1);
+    assert_eq!(violation["configurable"], false);
+}
+
+/// `basedOn` chains of `levels` distinct paragraph styles; the body uses the
+/// most-derived one so every paragraph resolves the whole chain.
+fn chained_styles_package(levels: usize) -> Vec<u8> {
+    let mut styles = format!(r#"<w:styles xmlns:w="{W_NS}">"#);
+    for level in 0..levels {
+        let based_on = if level == 0 {
+            String::new()
+        } else {
+            format!(r#"<w:basedOn w:val="S{}"/>"#, level - 1)
+        };
+        styles.push_str(&format!(
+            r#"<w:style w:type="paragraph" w:styleId="S{level}">{based_on}</w:style>"#
+        ));
+    }
+    styles.push_str("</w:styles>");
+    let body = format!(
+        r#"<w:p><w:pPr><w:pStyle w:val="S{}"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>"#,
+        levels - 1
+    );
+    package(&body, &[("word/styles.xml", &styles)])
+}
+
+#[test]
+fn style_inheritance_depth_fails_closed_above_the_hop_limit() {
+    let limit = crate::styles::MAX_STYLE_INHERITANCE_DEPTH;
+    parse_from_bytes(&chained_styles_package(limit)).expect("a chain at the limit parses");
+    let bytes = chained_styles_package(limit + 1);
+    let error = parse_from_bytes(&bytes).expect_err("an over-long chain must reject the document");
+    assert_hard_limit(&error, "style-inheritance", limit as u64);
+    let error = parse_from_bytes_streamed_with_limits(&bytes, None, None, "style-depth-test")
+        .expect_err("streamed document must reject the over-long chain");
+    assert_hard_limit(&error, "style-inheritance", limit as u64);
+}
+
+/// `count` unclosed complex fields; `begin` fldChars are flat run siblings,
+/// so XML depth limits never see them.
+fn open_fields_package(count: usize) -> Vec<u8> {
+    let runs = r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>REF a</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>"#
+        .repeat(count);
+    package(&format!("<w:p>{runs}<w:r><w:t>x</w:t></w:r></w:p>"), &[])
+}
+
+#[test]
+fn open_complex_field_count_fails_closed_above_the_limit() {
+    parse_from_bytes(&open_fields_package(MAX_OPEN_COMPLEX_FIELDS))
+        .expect("fields at the limit parse");
+    let bytes = open_fields_package(MAX_OPEN_COMPLEX_FIELDS + 1);
+    let error = parse_from_bytes(&bytes).expect_err("too many open fields must reject");
+    assert_hard_limit(&error, "complex-field", MAX_OPEN_COMPLEX_FIELDS as u64);
+    let error = parse_from_bytes_streamed_with_limits(&bytes, None, None, "field-depth-test")
+        .expect_err("streamed document must reject too many open fields");
+    assert_hard_limit(&error, "complex-field", MAX_OPEN_COMPLEX_FIELDS as u64);
+}
+
+#[test]
+fn incremental_toc_scan_matches_whole_instruction_classification() {
+    // Oracle: the previous whole-text predicate, re-run after every chunk.
+    fn classify_toc(instruction: &str) -> bool {
+        instruction
+            .split_whitespace()
+            .next()
+            .is_some_and(|token| token.eq_ignore_ascii_case("TOC"))
+    }
+    let cases: &[&[&str]] = &[
+        &[" TOC \\o \"1-3\""],
+        &["T", "O", "C", " \\h"],
+        &["  ", "\u{3000}toc", "X"],
+        &["TO", "CX"],
+        &["TOCX"],
+        &["", " ", "PAGEREF _Toc1 \\h"],
+        &["ＴOC"],
+        &["\ttoc\n"],
+    ];
+    for chunks in cases {
+        let mut scan = FirstTokenScan::default();
+        let mut text = String::new();
+        for chunk in *chunks {
+            text.push_str(chunk);
+            assert_eq!(
+                scan.feed_is_toc(chunk),
+                classify_toc(&text),
+                "{chunks:?} at {text:?}"
+            );
+        }
+    }
+}
