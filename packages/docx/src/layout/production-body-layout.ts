@@ -3747,6 +3747,7 @@ function resolveAnchorBox(
   const db = img.distBottom ?? 0;
   // ECMA-376 §20.4.3.1 wp:align — when positionH/V carry <wp:align>, the
   // renderer aligns the image within its relativeFrom container instead of
+  // `word-page-level-float-prescan`
   // using the (discarded) posOffset. Mirrors resolveShapeBox (the ShapeRun
   // equivalent): we route X/Y through resolveAnchorX/Y with the image's own
   // box size as the align size. The raw §20.4.3.2/§20.4.3.5

@@ -436,6 +436,7 @@ function processTextSegment(context: BreakOpportunityIteratorContext, seg: Layou
   // §17.3.1.21 permits paragraph-edge hanging, not intrusion into a
   // DrawingML exclusion (§20.4.2.17). A narrowed float gap owns its full ink.
   const admitsTrailingOverflowPunctuation =
+    // `word-overflow-punctuation-latin-parent-run`: classify by the parent run.
     overflowPunct &&
     breakerState.gapTransaction?.endsAtExclusion !== true &&
     trailingOverflowCharacter !== undefined &&

@@ -687,7 +687,8 @@ function trimTerminalUnderline(
  * clearance below every glyph in the contiguous span; acquiring each run in
  * isolation instead creates stepped solid rules and restarts dash/wave phase
  * at source seams. Normalize the span before paint while keeping authored
- * style, color, and thickness boundaries intact. */
+ * style, color, and thickness boundaries intact.
+ * `word-contiguous-underline-geometry` */
 function coalesceAdjacentDecorations(placements: ParagraphPlacement[]): void {
   type ActiveDecoration = Readonly<{
     placementIndex: number;
@@ -797,6 +798,7 @@ export function planLine(input: PlanLineInput): LineLayout {
     }
   }
   const lastDrawnIndex = visual.order.at(-1) ?? -1;
+  // `word-justification-leading-indent-exclusion`
   let firstContentIndex = 0;
   if (!bidi) {
     const found = segments.findIndex((segment) => segment.kind !== 'text' || /\S/.test(segment.text));
@@ -975,6 +977,7 @@ export function planLine(input: PlanLineInput): LineLayout {
             .filter((cluster) => cluster.range.start >= segment.range.start + trailingWhitespaceStart)
             .reduce((sum, cluster) => sum + cluster.advancePt, 0)
         : 0;
+      // `word-run-decoration-justified-advance`
       const ownedTrailingSlackPt = stretch?.trailingGap ? stretch.trailingDelta ?? perGapPt : 0;
       const origin = { xPt: xPt + rtlLeadingGapPt, yPt: line.baselinePt };
       const baselineOffsetPt = textGeometry.paintOps[0]?.offset.yPt ?? 0;
@@ -1062,6 +1065,7 @@ export function planLine(input: PlanLineInput): LineLayout {
           },
         } : {}),
       };
+      // `word-snap-to-chars-terminal-underline`
       const terminalDecorationTrimPt = decorationTerminalAdvancePt === undefined
         ? 0
         : Math.max(
@@ -1656,6 +1660,7 @@ function plannedBaselinePt(
   context: ParagraphLayoutContext,
 ): number {
   const raw = measuredLine.layout;
+  // `word-mixed-anchor-visible-line-metrics`
   const visibleAscentPt = raw.visibleAscent ?? raw.ascent;
   const visibleDescentPt = raw.visibleDescent ?? raw.descent;
   const visibleNaturalPt = visibleAscentPt + visibleDescentPt;
@@ -1806,6 +1811,7 @@ function retainEffectiveTextBackground(
     ...line,
     placements: line.placements.map((placement) => {
       if (placement.kind !== 'text') return placement;
+      // `word-auto-text-contrast-effective-background`
       const effectiveBackground = placement.background
         ?? paragraphBackground
         ?? containerBackground;
@@ -1849,6 +1855,7 @@ function paragraphDecorationBox(
   const borders = paragraph.borders;
   const topEdge = borderEdges.top === 'none' ? null : borders?.[borderEdges.top] ?? null;
   const bottomEdge = borderEdges.bottom === 'none' ? null : borders?.bottom ?? null;
+  // `word-paragraph-shading-border-box`
   const leftSpacePt = visibleParagraphBorder(borders?.left ?? null) ? borders!.left!.space ?? 0 : 0;
   const rightSpacePt = visibleParagraphBorder(borders?.right ?? null) ? borders!.right!.space ?? 0 : 0;
   const topSpacePt = visibleParagraphBorder(topEdge) ? topEdge.space ?? 0 : 0;
@@ -2485,6 +2492,7 @@ function planMeasuredLines(
   const hasExplicitTab = measured.lines.some((line) => line.layout.segments.some((segment) => 'isTab' in segment));
   const earliestTab = paragraph.tabStops?.reduce<(typeof paragraph.tabStops)[number] | undefined>(
     (earliest, stop) => !earliest || stop.pos < earliest.pos ? stop : earliest,
+  // `word-numeric-decimal-tab-inference`
     undefined,
   );
   const visibleText = measured.lines.flatMap((line) => line.layout.segments.flatMap((segment) =>
@@ -3374,6 +3382,7 @@ function acquireAnchorOccurrence(
                   lines[0]?.bounds.heightPt ?? 0,
                 ),
               }
+        // `word-paragraph-anchor-pre-spacing-origin`
             : baseFrames.column
         : null,
       paragraph: {
@@ -3554,6 +3563,7 @@ function acquireAnchorOccurrence(
       // retains its authored position. Cross-paragraph entries remain blockers.
       const movingVerticalOwnership = anchorAxisOwnership(
         placedResult,
+        // `word-lower-layer-same-paragraph-anchor-composition`
         'vertical',
         layoutInCell && options.anchorCellBounds !== undefined,
       );

@@ -1002,47 +1002,6 @@ export function wordDegenerateLineSpacingIsSingle(
   return (rule === 'exact' || rule === 'auto') && value <= 0;
 }
 
-export function wordAutoMultipleCenterBoxPx(
-  autoMultiple: boolean,
-  compressedAuto: boolean,
-  glyphNaturalPx: number,
-  intendedSinglePx: number,
-  lineHeightPx: number,
-): number {
-  return autoMultiple && !compressedAuto
-    ? Math.max(glyphNaturalPx, intendedSinglePx)
-    : lineHeightPx;
-}
-
-export function wordVisibleLineMetricPx(
-  reservedMetricPx: number,
-  visibleMetricPx: number | undefined,
-): number {
-  return visibleMetricPx ?? reservedMetricPx;
-}
-
-export function wordFirstJustifiedContentSegment(
-  segments: readonly object[],
-  bidi: boolean,
-): number {
-  if (bidi) return 0;
-  for (let index = 0; index < segments.length; index += 1) {
-    const segment = segments[index];
-    const text = 'text' in segment && typeof segment.text === 'string'
-      ? segment.text
-      : undefined;
-    if (text === undefined || /\S/.test(text)) return index;
-  }
-  return 0;
-}
-
-export function wordRubyUniformLineHeightPx(
-  hasRuby: boolean,
-  lineHeightsPx: readonly number[],
-): number {
-  return hasRuby ? Math.max(0, ...lineHeightsPx) : 0;
-}
-
 export const WORD_LATIN_DESIGN_GRID_CELLS = defineCompatibilityRule({
   id: 'word-latin-design-grid-cells',
   evidence: { kind: 'office-observation', syntheticFixtureId: 'float-grid-picture-origin',

@@ -556,15 +556,6 @@ export function wordTableRowHeightRule(
   return authored ? normalizedRule : 'atLeast';
 }
 
-export function wordAuthoredAutoRowHeightUsesFloor(
-  rule: string | null | undefined,
-  authoredHeight: number | null | undefined,
-): boolean {
-  return rule === 'auto'
-    && authoredHeight !== null
-    && authoredHeight !== undefined;
-}
-
 export function wordTableCellSpacingValuePt(
   kind: string,
   dxaValuePt: number | null,
@@ -585,18 +576,6 @@ export function wordTableMarginValuePt(input: Readonly<{
     if (input.kind === 'pct' || input.kind === 'auto' || input.kind === 'nil') return 0;
   }
   return null;
-}
-
-export function wordDropsTrailingStructuralCellMarker(input: Readonly<{
-  contentLength: number;
-  previousKind: string | undefined;
-  lastKind: string | undefined;
-  lastParagraphRunCount: number | undefined;
-}>): boolean {
-  return input.contentLength >= 2
-    && input.lastKind === 'paragraph'
-    && input.previousKind !== 'paragraph'
-    && input.lastParagraphRunCount === 0;
 }
 
 /** ECMA-376 §17.4.50 and WORD_TABLE_ORIGIN_COMPATIBILITY: measured

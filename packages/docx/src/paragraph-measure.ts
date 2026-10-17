@@ -327,6 +327,7 @@ export function measureParagraph(
   // Resolve the complete physical unions before querying floats: a per-fragment
   // reserve cannot determine either a probe band or the next physical origin.
   const specifiedParagraph = specifiedTextParagraphIsHomogeneous(paragraph);
+    // `word-ruby-paragraph-uniform-line-advance`
   const allocateLines = (lines: readonly LayoutLine[]) => {
     let uniformRubyAdvancePt = context.hasRuby
       ? snapParagraphLineToGrid(

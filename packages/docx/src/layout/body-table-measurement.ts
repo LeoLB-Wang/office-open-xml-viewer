@@ -120,6 +120,7 @@ export function bodyTableAcquisitionState(
   table: TableLayoutSource,
   effectiveTablePositioning: BodyTableMeasurementContext['effectiveTablePositioning'],
 ): BodyAcquisitionState {
+  // `word-vertical-section-upright-block-table`
   const upright = state.verticalPhys !== undefined
     && !state.acquisitionInputs.tableFormatInput(table).positioning
     && !effectiveTablePositioning(table);
