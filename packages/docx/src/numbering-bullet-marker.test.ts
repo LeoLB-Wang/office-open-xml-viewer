@@ -215,6 +215,17 @@ describe('picture bullet marker (§17.9.9 lvlPicBulletId → §17.9.20 numPicBul
     expect(drawImageCalls[0].h).toBeCloseTo(12, 5);
   });
 
+  it('(b3) a bullet taller than the text ascent raises the first line by its height', async () => {
+    // The bullet sits on the baseline like an inline picture: its height is
+    // the line's ascent once it exceeds the 16px text's 12.8px ascent.
+    const short = await renderPic({ ...picNum(), picBulletWidthPt: 8, picBulletHeightPt: 8 });
+    const tall = await renderPic({ ...picNum(), picBulletWidthPt: 40, picBulletHeightPt: 40 });
+    expect(short.drawImageCalls[0].y).toBeGreaterThanOrEqual(0);
+    expect(tall.drawImageCalls[0].y).toBeCloseTo(0, 5);
+    const bottom = (call: { y: number; h: number }) => call.y + call.h;
+    expect(bottom(tall.drawImageCalls[0]) - bottom(short.drawImageCalls[0])).toBeCloseTo(40 - 12.8, 5);
+  });
+
   it('(c) advances the body text past the marker (markerW = bullet width)', async () => {
     const { runs } = await renderPic();
     const body = runs.find((r) => r.text === 'body');

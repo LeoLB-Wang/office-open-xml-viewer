@@ -188,22 +188,41 @@ pub(super) fn project(
             _ => {}
         }
         if let Some((reference, marker)) = direct.numbering {
-            if let Some(bullet) = marker.picture_bullet().enabled()? {
-                // Validate and retain the source picture (Bullet Pictures
-                // bookmark, PICF and BLIP) as store-owned facts. Picture-bullet
-                // display, fixed or automatic size, is not implemented: the
-                // model stays atomically unsupported and never falls back to
-                // the text bullet or selects the image as a resource.
-                pictures.acquire_picture_bullet(formatting, bullet)?;
-                formatting.unsupported_character_properties = true;
-            }
-            paragraph.numbering = Some(Box::new(formatting.direct_numbering(
+            // MS-DOC 2.6.1 sprmCPbiIBullet/sprmCPbiGrf: the marker is the
+            // Bullet Pictures document's picture (bookmark, PICF and BLIP),
+            // displayed in the box `picture_bullet_display_box` establishes.
+            // A box it cannot establish keeps the model atomically
+            // unsupported; it never falls back to the text bullet.
+            let mut numbering_info = formatting.direct_numbering(
                 numbering,
                 reference,
                 &marker,
                 &paragraph,
                 direct.numbering_revision_label.as_deref(),
-            )?));
+            )?;
+            if let Some(bullet) = marker.picture_bullet().enabled()? {
+                // The resolved marker size: a complex-script or right-to-left
+                // marker uses its complex-script size.
+                let marker_size = numbering_info.font_facts.as_ref().and_then(|facts| {
+                    if facts.rtl == Some(true) || facts.cs == Some(true) {
+                        facts.font_size_cs.or(facts.font_size)
+                    } else {
+                        facts.font_size
+                    }
+                });
+                match pictures.picture_bullet_display_box(formatting, bullet, marker_size)? {
+                    Some(display_box) => pictures
+                        .direct_picture_bullet(
+                            formatting,
+                            bullet,
+                            display_box,
+                            &mut budget.remaining_bytes,
+                        )?
+                        .install(&mut numbering_info, &mut budget.remaining_bytes)?,
+                    None => formatting.unsupported_character_properties = true,
+                }
+            }
+            paragraph.numbering = Some(Box::new(numbering_info));
         }
         budget.paragraph(&paragraph)?;
 

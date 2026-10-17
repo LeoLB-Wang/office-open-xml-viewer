@@ -10,9 +10,10 @@
 //! and sprmCIstd do not list them among their preserved properties, so either
 //! reset returns them to the paragraph (or character) style value.
 //!
-//! These are acquisition facts only. Picture-bullet display is not
-//! implemented: an enabled fPicBullet keeps the existing atomic unsupported
-//! model refusal, and no size is derived from fNoAutoSize.
+//! These are acquisition facts. A numbered paragraph's marker displays an
+//! enabled picture bullet in the box `pictures::Store::
+//! picture_bullet_display_box` establishes for its fNoAutoSize mode; an
+//! enabled flag anywhere else has no consumer and is refused.
 
 use super::super::{u32_at, unsupported};
 
@@ -63,9 +64,11 @@ pub(in crate::doc) struct PictureBullet {
 }
 
 impl PictureBullet {
-    /// Decode one operand. Returns `None` for other codes, otherwise whether
-    /// the write leaves the run displayable by the current consumer: an
-    /// enabled fPicBullet is not.
+    /// Decode one operand. Returns `None` for other codes, otherwise
+    /// `Some(true)`: the operand is a retained fact. Whether an enabled
+    /// picture bullet is displayable is decided by its consumer, the numbered
+    /// paragraph's marker (`Formatting::run_properties_with_table` refuses a
+    /// winning enabled flag anywhere else).
     pub(super) fn apply(&mut self, code: u16, operand: &[u8]) -> Result<Option<bool>, String> {
         match code {
             0x6887 => {
@@ -85,7 +88,7 @@ impl PictureBullet {
                     no_auto_size: operand[0] & 2 != 0,
                 };
                 self.flags = Some((flags, BulletOrigin::Decoded));
-                Ok(Some(!flags.picture))
+                Ok(Some(true))
             }
             _ => Ok(None),
         }
@@ -122,6 +125,11 @@ impl PictureBullet {
     )]
     pub(in crate::doc) fn flags(&self) -> Option<(PbiGrf, BulletOrigin)> {
         self.flags
+    }
+
+    /// Whether the winning fPicBullet is enabled, from any layer.
+    pub(in crate::doc) fn picture_enabled(&self) -> bool {
+        self.flags.is_some_and(|(flags, _)| flags.picture)
     }
 
     /// Whether the winning fPicBullet is an enabled style-placed value.

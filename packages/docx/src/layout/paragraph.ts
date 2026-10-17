@@ -5059,7 +5059,7 @@ export function acquireParagraphResult(
     {
       ...options.environment,
       paragraphMarkShapeInput: paragraph.paragraphMarkShapeInput,
-      ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
+      ...(numberingPlan?.lineBox && (numberingPlan.markerText || paragraph.numbering?.picBulletImagePath) ? {
         firstLineNumberingMarkerBox: numberingPlan.lineBox,
       } : {}),
     },

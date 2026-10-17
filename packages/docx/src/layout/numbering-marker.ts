@@ -234,5 +234,10 @@ export function resolveNumberingMarkerGeometry(
     markerShiftPt,
     shape: markerShape,
     ...(markerLayout ? { lineBox: markerLayout.lineBox } : {}),
+    // A picture bullet sits on the baseline like an inline picture, so its
+    // height is the marker's ascent; the marker font does not size the line.
+    ...(numbering.picBulletImagePath && numbering.picBulletHeightPt != null
+      ? { lineBox: { ascentPt: numbering.picBulletHeightPt, descentPt: 0, intendedSinglePt: 0 } }
+      : {}),
   };
 }
