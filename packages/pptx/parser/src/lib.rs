@@ -1235,13 +1235,7 @@ struct ResolvedTableCellStyle {
 //  XML helpers (roxmltree)
 // ===========================
 
-pub(crate) fn child<'a, 'i>(
-    node: roxmltree::Node<'a, 'i>,
-    local: &str,
-) -> Option<roxmltree::Node<'a, 'i>> {
-    node.children()
-        .find(|n| n.is_element() && n.tag_name().name() == local)
-}
+pub(crate) use ooxml_common::xml_node::{attr, attr_f64, attr_i64, child};
 
 pub(crate) fn children_vec<'a, 'i>(
     node: roxmltree::Node<'a, 'i>,
@@ -1252,26 +1246,12 @@ pub(crate) fn children_vec<'a, 'i>(
         .collect()
 }
 
-pub(crate) fn attr(node: &roxmltree::Node<'_, '_>, local: &str) -> Option<String> {
-    node.attributes()
-        .find(|a| a.name() == local && a.namespace().is_none())
-        .map(|a| a.value().to_owned())
-}
-
 /// Attribute in the r: (relationships) namespace — e.g. r:id, r:embed. Accepts
 /// both the Transitional and Strict (ISO/IEC 29500) relationships URIs.
 pub(crate) fn attr_r(node: &roxmltree::Node<'_, '_>, local: &str) -> Option<String> {
     node.attributes()
         .find(|a| a.name() == local && is_r_ns(a.namespace()))
         .map(|a| a.value().to_owned())
-}
-
-pub(crate) fn attr_i64(node: &roxmltree::Node<'_, '_>, local: &str) -> Option<i64> {
-    attr(node, local)?.parse().ok()
-}
-
-pub(crate) fn attr_f64(node: &roxmltree::Node<'_, '_>, local: &str) -> Option<f64> {
-    attr(node, local)?.parse().ok()
 }
 
 // ===========================
@@ -1286,10 +1266,9 @@ pub(crate) fn parse_rels(xml: &str) -> HashMap<String, String> {
     let Ok(doc) = parse_preflighted_pptx_xml(xml) else {
         return HashMap::new();
     };
-    doc.root_element()
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Relationship")
-        .filter_map(|node| Some((attr(&node, "Id")?, attr(&node, "Target")?)))
+    ooxml_common::rels::parse_rels_document(&doc)
+        .into_iter()
+        .map(|(id, relationship)| (id, relationship.target))
         .collect()
 }
 
@@ -1432,15 +1411,7 @@ fn find_internal_rel_target_by_types(
     relationship_types: &[&str],
 ) -> Option<String> {
     let doc = parse_preflighted_pptx_xml(rels_xml).ok()?;
-    doc.root_element()
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Relationship")
-        .filter(|node| matches!(attr(node, "TargetMode").as_deref(), None | Some("Internal")))
-        .find_map(|node| {
-            attr(&node, "Type")
-                .filter(|rel_type| relationship_types.contains(&rel_type.as_str()))
-                .and_then(|_| attr(&node, "Target"))
-        })
+    ooxml_common::rels::find_internal_rel_target_by_types(&doc, relationship_types)
 }
 
 const FONT_RELATIONSHIP_TYPES: &[&str] = &[
