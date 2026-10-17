@@ -735,9 +735,14 @@ export function performFlush(
         : contentAscent + desc),
     breakerState.lineMarkerAscent,
   );
-  const inlinePictureTextSingle = breakerState.lineHasInlinePicture
-    ? Math.max(breakerState.lineIntendedSingle, breakerState.linePictureMarkSingle)
-    : 0;
+  // A line whose only content is a picture-bullet marker metric beside a
+  // break keeps the break's synthesized single line as its text leading; the
+  // paragraph-mark fallback serves only lines without any content metric.
+  const inlinePictureTextSingle = !breakerState.lineHasInlinePicture
+    ? 0
+    : hasContent
+      ? Math.max(breakerState.lineIntendedSingle, breakerState.linePictureMarkSingle)
+      : Math.max(breakerState.lineIntendedSingle, contentAscent + desc);
   // Only project that registered rule when every metric-bearing item is
   // visible text in one admitted face tuple. Canvas fallback geometry does
   // not reveal hhea descent, and mixed styles cannot share one descent

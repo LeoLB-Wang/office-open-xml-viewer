@@ -219,4 +219,42 @@ describe('picture-bullet line height', () => {
     expect(advancePt).toBeCloseTo(advance, 6);
     expect(baselinePt).toBeCloseTo(advance - 2, 6);
   });
+
+  it.each([[undefined, 36], [1, 36], [30, 46.8]] as const)(
+    'keeps a leading break\'s own leading under an automatic multiple (bullet %s pt)',
+    (height, advance) => {
+      const item = paragraph('Item', auto(1.5), height === undefined ? null : bullet(height)) as
+        BodyElement & { runs: { fontSize?: number }[] };
+      // 24 pt text and break, 10 pt paragraph mark.
+      item.runs[0]!.fontSize = 24;
+      item.runs.unshift({ type: 'break', breakType: 'line' } as never);
+      (item as { paragraphMarkFontFacts?: unknown }).paragraphMarkFontFacts = { fontSize: 10 };
+      if (height === undefined) {
+        expect(firstAdvance(item)).toBeCloseTo(advance, 6);
+      } else {
+        expect(layout(item).advancePt).toBeCloseTo(advance, 6);
+      }
+    },
+  );
 });
+
+function firstAdvance(item: BodyElement): number {
+  const model = {
+    section: {
+      pageWidth: 400, pageHeight: 4000,
+      marginTop: 0, marginRight: 0, marginBottom: 0, marginLeft: 0,
+      headerDistance: 0, footerDistance: 0, titlePage: false, evenAndOddHeaders: false,
+    } as SectionProps,
+    body: [item],
+    headers: { default: null, first: null, even: null },
+    footers: { default: null, first: null, even: null },
+    fontFamilyClasses: { [TEST_FONT]: 'roman' },
+  } as unknown as DocxDocumentModel;
+  const services = createLayoutServices(model, {
+    localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+    measureContext: measureContext(),
+  });
+  const [first] = layoutDocument(model, services).pages[0]!.layers.body;
+  if (first?.kind !== 'paragraph') throw new Error('expected a paragraph');
+  return first.lines[0]!.advancePt;
+}
