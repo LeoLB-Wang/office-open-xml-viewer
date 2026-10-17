@@ -348,3 +348,9 @@ jobs:
       # compared between engines.
       - name: DOCX synthetic conformance (all browser engines)
         run: pnpm --filter @silurus/ooxml-docx conformance
+
+      # Focused browser fixtures (pattern fills, text effects, run inheritance,
+      # DOCX watermark and PPTX transform phases) on main and worker canvases.
+      # Chrome only, reusing the Google Chrome and WASM above.
+      - name: Pattern browser tests
+        run: pnpm test:pattern-browser
