@@ -98,7 +98,7 @@ fn png(bytes: &[u8]) -> Option<(u32, u32, f64, f64)> {
     while at + 8 <= bytes.len() {
         let length = be32(bytes, at)? as usize;
         let kind = bytes.get(at + 4..at + 8)?;
-        let data = bytes.get(at + 8..at + 8 + length)?;
+        let data = bytes.get(at + 8..(at + 8).checked_add(length)?)?;
         match kind {
             b"IHDR" if data.len() >= 8 => size = Some((be32(data, 0)?, be32(data, 4)?)),
             b"pHYs" if data.len() >= 9 && data[8] == 1 => {
@@ -110,7 +110,7 @@ fn png(bytes: &[u8]) -> Option<(u32, u32, f64, f64)> {
             b"IDAT" | b"IEND" => break,
             _ => {}
         }
-        at += 12 + length;
+        at = at.checked_add(12)?.checked_add(length)?;
     }
     let (width, height) = size?;
     Some((width, height, dpi.0, dpi.1))
@@ -201,6 +201,12 @@ mod tests {
         assert!((w - 15.36).abs() < 0.001);
         assert_eq!(natural_size_pt(&jfif(0, 1)), Some((24.0, 24.0)));
         assert_eq!(natural_size_pt(b"BM...."), None);
+        // A chunk length past the end of the data (or of usize) is rejected.
+        let mut huge = b"\x89PNG\r\n\x1a\n".to_vec();
+        huge.extend(0xffff_fff0u32.to_be_bytes());
+        huge.extend(b"tEXt");
+        huge.extend([0; 8]);
+        assert_eq!(natural_size_pt(&huge), None);
     }
 
     #[test]
