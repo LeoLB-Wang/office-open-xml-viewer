@@ -157,11 +157,11 @@ describe('plain layout data snapshots', () => {
   });
 
   it('freezes and checks a numeric-looking non-index array property', () => {
-    const list: unknown[] & Record<string, unknown> = Object.assign([1], { '-1': { value: 1 } });
+    const list = Object.assign([1], { '-1': { value: 1 } });
     deepFreezePlainData(list);
     expect(Object.isFrozen(list['-1'])).toBe(true);
 
-    const invalid: unknown[] & Record<string, unknown> = Object.assign([1], { '-1': { value: Number.NaN } });
+    const invalid = Object.assign([1], { '-1': { value: Number.NaN } });
     expect(() => deepFreezePlainData(invalid)).toThrow(/finite/);
   });
 
