@@ -28,7 +28,9 @@ fn link_scheme(url: &str) -> Option<String> {
 /// text alone. A scheme-less (relative) reference cannot name a dangerous
 /// scheme and is kept. Characters that would end or restructure the
 /// destination (whitespace, controls, `(`, `)`, `<`, `>`, `\`) are
-/// percent-encoded so the target cannot break out into further Markdown.
+/// percent-encoded so the target cannot break out into further Markdown, and
+/// `&` is written as `&amp;` so CommonMark entity decoding (`&colon;`,
+/// `&#58;`) reproduces the checked target instead of forming a new scheme.
 pub fn link_destination(url: &str) -> Option<String> {
     if url.is_empty() {
         return None;
@@ -45,6 +47,8 @@ pub fn link_destination(url: &str) -> Option<String> {
             for byte in c.encode_utf8(&mut buf).bytes() {
                 out.push_str(&format!("%{byte:02X}"));
             }
+        } else if c == '&' {
+            out.push_str("&amp;");
         } else {
             out.push(c);
         }
@@ -54,9 +58,10 @@ pub fn link_destination(url: &str) -> Option<String> {
 
 /// True for inline characters escaped in projected text: formatting
 /// metacharacters (`\ * _ \``) plus the characters that would open a link,
-/// image or raw HTML from document text (`[`, `]`, `<`).
+/// image or raw HTML from document text (`[`, `]`, `<`, and `!`, which would
+/// turn a following projected link into an image).
 pub fn is_inline_metachar(c: char) -> bool {
-    matches!(c, '\\' | '*' | '_' | '`' | '[' | ']' | '<')
+    matches!(c, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '!')
 }
 
 #[cfg(test)]
@@ -87,6 +92,15 @@ mod tests {
         ] {
             assert_eq!(link_destination(blocked), None, "{blocked:?}");
         }
+        // Entity forms stay literal after CommonMark decoding.
+        assert_eq!(
+            link_destination("javascript&colon;alert(1)").as_deref(),
+            Some("javascript&amp;colon;alert%281%29")
+        );
+        assert_eq!(
+            link_destination("https://e.example/?a=1&b=2").as_deref(),
+            Some("https://e.example/?a=1&amp;b=2")
+        );
         assert_eq!(
             link_destination("https://e.example/x) [y](https://evil.example/").as_deref(),
             Some("https://e.example/x%29%20[y]%28https://evil.example/")

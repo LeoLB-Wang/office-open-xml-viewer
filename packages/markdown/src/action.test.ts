@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -17,6 +17,10 @@ describe('ooxml-to-markdown GitHub Action', () => {
       for (const name of ['a$(touch PWNED).docx', 'b`touch PWNED`.docx', 'c";touch PWNED;".docx']) {
         writeFileSync(join(root, name), 'not a package');
       }
+      // A symlink (here to a file outside the walked tree) is never followed.
+      const outside = mkdtempSync(join(tmpdir(), 'ooxml-md-outside-'));
+      writeFileSync(join(outside, 'secret.docx'), 'not a package');
+      symlinkSync(join(outside, 'secret.docx'), join(root, 'link.docx'));
       const run = spawnSync(process.execPath, [ACTION], {
         cwd: root,
         env: { ...process.env, INPUT_FILES: `${root}/**/*.docx`, INPUT_COMMIT: 'false' },
@@ -27,5 +31,5 @@ describe('ooxml-to-markdown GitHub Action', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });

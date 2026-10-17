@@ -23,11 +23,12 @@ if (!INPUT_FILES) {
 function walk(root, predicate, out = []) {
   for (const name of readdirSync(root)) {
     const full = join(root, name);
-    // lstat: a symlinked directory is not followed, so a link cycle cannot
-    // recurse forever and a link cannot pull files from outside the tree.
+    // lstat: symlinks (to directories or files) are never followed, so a link
+    // cycle cannot recurse forever and a link cannot pull a file from outside
+    // the walked tree into the conversion.
     const st = lstatSync(full);
     if (st.isDirectory()) walk(full, predicate, out);
-    else if (predicate(full)) out.push(full);
+    else if (st.isFile() && predicate(full)) out.push(full);
   }
   return out;
 }
@@ -39,7 +40,7 @@ function match(filesGlob) {
     const ext = rest.split('.').pop();
     return walk(resolve(base || '.'), (f) => f.toLowerCase().endsWith('.' + ext.toLowerCase()));
   }
-  if (existsSync(filesGlob)) return [resolve(filesGlob)];
+  if (existsSync(filesGlob) && lstatSync(filesGlob).isFile()) return [resolve(filesGlob)];
   console.error(`::warning::Pattern "${filesGlob}" matched no files`);
   return [];
 }
@@ -69,7 +70,9 @@ for (const src of matched) {
 }
 
 if (INPUT_COMMIT && written.length > 0) {
-  execFileSync('git', ['add', '--', ...written]);
+  // --literal-pathspecs: an output name such as `report*.md` must stage only
+  // that file, not every path the glob would match.
+  execFileSync('git', ['--literal-pathspecs', 'add', '--', ...written]);
   execFileSync('git', [
     '-c', 'user.email=action@github.com',
     '-c', 'user.name=ooxml-to-markdown action',

@@ -4079,7 +4079,7 @@ mod tests {
         );
         assert!(markdown.contains(r"\<img src=x"), "{markdown}");
         assert!(
-            markdown.contains(r"!\[p\](https://t.example/p.png)"),
+            markdown.contains(r"\!\[p\](https://t.example/p.png)"),
             "{markdown}"
         );
     }

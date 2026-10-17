@@ -53,16 +53,19 @@ fn link(id: &str, text: &str) -> String {
 #[test]
 fn hyperlinks_and_text_cannot_inject_markdown_links_or_html() {
     let body = format!(
-        "<w:p>{}{}{}</w:p><w:p><w:r><w:t>&lt;img src=x onerror=alert(1)&gt; ![p](https://t.example/p.png)</w:t></w:r></w:p>",
+        "<w:p>{}{}{}</w:p><w:p><w:r><w:t>&lt;img src=x onerror=alert(1)&gt; ![p](https://t.example/p.png)</w:t></w:r></w:p><w:p><w:r><w:t>!</w:t></w:r>{}</w:p><w:p>{}</w:p>",
         link("rJs", "script"),
         link("rBreak", "safe"),
         link("rOk", "ok"),
+        link("rOk", "pic"),
+        link("rEntity", "entity"),
     );
     let bytes = docx_with_links(
         &[
             ("rJs", "javascript:alert(document.domain)"),
             ("rBreak", "https://e.example/x) [y](https://evil.example/"),
             ("rOk", "https://example.com/a?b=c"),
+            ("rEntity", "javascript&amp;colon;alert(1)"),
         ],
         &body,
     );
@@ -78,8 +81,18 @@ fn hyperlinks_and_text_cannot_inject_markdown_links_or_html() {
         "{markdown}"
     );
     assert!(markdown.contains(r"\<img src=x"), "{markdown}");
+    // A preceding `!` run cannot turn the projected link into an image.
     assert!(
-        markdown.contains(r"!\[p\](https://t.example/p.png)"),
+        markdown.contains(r"\![pic](https://example.com/a?b=c)"),
+        "{markdown}"
+    );
+    // CommonMark decodes entities in destinations; `&` stays literal.
+    assert!(
+        markdown.contains("[entity](javascript&amp;colon;alert%281%29)"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains(r"\!\[p\](https://t.example/p.png)"),
         "{markdown}"
     );
 }
