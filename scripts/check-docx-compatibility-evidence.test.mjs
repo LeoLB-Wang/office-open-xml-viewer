@@ -435,3 +435,39 @@ test('rejects a Microsoft catalog section that no rule cites', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /COMPATIBILITY_MICROSOFT_CATALOG_UNUSED: no rule cites MS-OI29500 2\.1\.120/);
 });
+
+test('counts Rust parser citations only outside test items', () => {
+  const root = fixture();
+  const owner = readFileSync(
+    resolve(root, 'packages/docx/src/layout/compatibility.ts'),
+    'utf8',
+  );
+  const [first, ...rest] = [...owner.matchAll(/\bid: '([a-z0-9-]+)'/g)]
+    .map((match) => match[1]);
+  cite(root, rest);
+  const testOnly = `
+fn production() { let brace = '{'; let text = "}"; }
+
+#[cfg(test)]
+mod tests {
+    // \`${first}\`
+    #[test]
+    fn cites() { let fixture = r#"{ } }"#; }
+}
+
+#[test]
+fn stray() {
+    // \`${first}\`
+}
+`;
+  const rustPath = 'packages/docx/parser/src/chart_compatibility.rs';
+  write(root, rustPath, testOnly);
+  const rejected = run(root);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, new RegExp(`COMPATIBILITY_RULE_UNCITED: .*${first}`));
+
+  write(root, rustPath, `${testOnly}\n/// \`${first}\`\npub(crate) fn implementation() {}\n`);
+  const accepted = run(root);
+  assert.equal(accepted.status, 0, accepted.stderr);
+});
+
