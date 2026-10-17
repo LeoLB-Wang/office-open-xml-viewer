@@ -75,13 +75,32 @@ export function stackedSidewaysCharacter(cp: number): boolean {
 }
 
 /**
+ * Library policy for sideways characters a face covers in GSUB `vrt2` but not
+ * in `vert` (generated `stackedVrt2OnlyGlyphs`). Office faces with this class:
+ * Meiryo, Meiryo UI, Yu Gothic, Yu Gothic UI and Yu Mincho cover the ASCII
+ * brackets ()<>[]{} and U+2225 ∥ this way; Yu Gothic UI Bold/Semibold only ∥.
+ * false: such a character rotates like an uncovered one.
+ *
+ * TODO(#1827): one PowerPoint observation (wordartvert-supp slide 7) showed Yu
+ * Gothic ∥ upright, which this rule does not reproduce. The synthetic control
+ * deck stacked-vrt2-controls.pptx (regular and bold stacked boxes per face
+ * above; MS Gothic and MS Mincho as no-vrt2 controls) is pending a Windows PowerPoint
+ * electronic-distribution PDF export. Settle this single rule from that
+ * evidence; do not add per-family exceptions.
+ */
+const STACKED_VRT2_ONLY_IS_VERTICAL = false;
+
+/**
  * Whether the requested face covers a sideways character with a GSUB `vert`
- * single substitution (all scripts/languages). Library policy uses `vert` only,
- * excluding `vrt2`: Yu Gothic's U+2225 therefore rotates (#1827). Covered glyphs
+ * single substitution (all scripts/languages), or with `vrt2` alone when
+ * {@link STACKED_VRT2_ONLY_IS_VERTICAL} admits that class. Covered glyphs
  * stand upright in a 1 em cell; uncovered/unknown faces rotate by their horizontal
  * advance. Coverage comes from reference metadata, not the host's selected font.
  */
 export function stackedVerticalGlyph(family: string, cp: number, bold = false, italic = false): boolean {
   if (!STACKED_SIDEWAYS.has(cp)) return false;
-  return stackedProfile(family, bold, italic)?.stackedVerticalGlyphs?.includes(String.fromCodePoint(cp)) ?? false;
+  const profile = stackedProfile(family, bold, italic);
+  const ch = String.fromCodePoint(cp);
+  if (profile?.stackedVerticalGlyphs?.includes(ch)) return true;
+  return STACKED_VRT2_ONLY_IS_VERTICAL && (profile?.stackedVrt2OnlyGlyphs?.includes(ch) ?? false);
 }
