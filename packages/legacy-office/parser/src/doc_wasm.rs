@@ -13,19 +13,12 @@ const MAX_DIRECT_DOC_MODEL_BYTES: usize = 256 * 1024 * 1024;
 #[wasm_bindgen]
 pub struct LegacyDocDocument {
     cursor: DirectCursor,
-    picture_bullet_reading_requested: bool,
 }
 
 #[wasm_bindgen]
 impl LegacyDocDocument {
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        data: js_sys::Uint8Array,
-        max_model_bytes: Option<u32>,
-        reading_relocation: Option<bool>,
-        word_breaking_reading: Option<bool>,
-        stored_picture_bullets_for_reading: Option<bool>,
-    ) -> Result<Self, JsValue> {
+    pub fn new(data: js_sys::Uint8Array, max_model_bytes: Option<u32>) -> Result<Self, JsValue> {
         console_error_panic_hook::set_once();
         let data = crate::source_bytes::copy(data)?;
         let maximum = max_model_bytes
@@ -41,30 +34,10 @@ impl LegacyDocDocument {
         }
         let cfb =
             CompoundFile::open(&data).map_err(|e| error(&crate::rejection::unsupported(e)))?;
-        let stored_size_for_reading = stored_picture_bullets_for_reading.unwrap_or(false);
-        let result = doc::direct_model_with_policies(
-            &cfb,
-            maximum,
-            doc::ReadingPolicies {
-                relocate_drawings: reading_relocation.unwrap_or(false),
-                simplify_word_breaking: word_breaking_reading.unwrap_or(false),
-                stored_picture_bullets: stored_size_for_reading,
-            },
-        )
-        .map_err(|e| error(&e))?;
-        // Only a finalized selected marker resource owns the capability.
-        let picture_bullet_reading_requested = stored_size_for_reading
-            && result
-                .resources
-                .iter()
-                .any(|resource| resource.key.starts_with("legacy-doc/bullet/"));
+        let result = doc::direct_model(&cfb, maximum).map_err(|e| error(&e))?;
         Ok(Self {
             cursor: DirectCursor::new(result).map_err(|e| error(&e))?,
-            picture_bullet_reading_requested,
         })
-    }
-    pub fn native_picture_bullet_reading_requested(&self) -> bool {
-        self.picture_bullet_reading_requested
     }
     pub fn open_document_cursor(
         &mut self,

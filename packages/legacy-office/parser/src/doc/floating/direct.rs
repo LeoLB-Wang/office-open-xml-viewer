@@ -7,7 +7,7 @@ use docx_model::{
     AnchorAcquisitionWire, AnchorAxisChoiceWire, AnchorAxisWire, AnchorBehaviorWire,
     AnchorEdgesWire, AnchorExtentWire, AnchorGroupWire, AnchorResolvedChildFrameWire,
     AnchorSimplePositionWire, AnchorValueStatusWire, AnchorWrapKindWire, AnchorWrapWire, ImageRun,
-    LineEnd, NativeReadingRelocationWire, PathCmd, ShapeFill, ShapeRun,
+    LineEnd, PathCmd, ShapeFill, ShapeRun,
 };
 
 #[cfg(test)]
@@ -56,8 +56,6 @@ fn wrap_mode(wrapping: u8) -> &'static str {
         1 => "topAndBottom",
         2 => "square",
         3 => "none",
-        4 => "tight",
-        5 => "through",
         _ => unreachable!("unsupported wrap modes are rejected during resolution"),
     }
 }
@@ -247,20 +245,7 @@ impl Store<'_> {
     ) -> Result<ImageRun, String> {
         let mime_type = mime(extension)?.to_string();
         let image_path = format!("legacy-doc/float/{image_index}");
-        let mut acquisition = acquisition(facts, occurrence_id.into(), placed);
-        if let Some((part, spid)) = facts.reading_picture_source {
-            let shape = self.parts[part as usize]
-                .shapes
-                .get(&spid)
-                .map(|(_, _, shape)| *shape)
-                .ok_or_else(|| unsupported("reading picture metadata owner is absent"))?;
-            let acquired = super::reading_picture::acquire(
-                shape,
-                &self.reading_picture_defaults,
-                &mut self.budget,
-            )?;
-            acquisition.native_picture_metadata = acquired.into_wire(*remaining_bytes)?;
-        }
+        let acquisition = acquisition(facts, occurrence_id.into(), placed);
         let [top, bottom, left, right] = crop;
         let image = ImageRun {
             image_path,
@@ -492,15 +477,11 @@ fn acquisition(
             kind: match f.wrapping {
                 1 => AnchorWrapKindWire::TopAndBottom,
                 2 => AnchorWrapKindWire::Square,
-                4 => AnchorWrapKindWire::Tight,
-                5 => AnchorWrapKindWire::Through,
                 _ => AnchorWrapKindWire::None,
             },
             authored_kinds: vec![match f.wrapping {
                 1 => "wrapTopAndBottom",
                 2 => "wrapSquare",
-                4 => "wrapTight",
-                5 => "wrapThrough",
                 _ => "wrapNone",
             }
             .into()],
@@ -537,8 +518,6 @@ fn acquisition(
                 flip_v: placed.flip[1],
             },
         }),
-        native_reading_relocation: matches!(f.wrapping, 4 | 5)
-            .then_some(NativeReadingRelocationWire::CompleteScene),
         occurrence_id,
         ..AnchorAcquisitionWire::default()
     }
@@ -585,22 +564,6 @@ impl Payload {
                 .ok_or("OUTPUT_TOO_LARGE")?,
         )?;
         self.strings(facts.wrap.authored_kinds.iter().map(Some))?;
-        if let Some(metadata) = &facts.native_picture_metadata {
-            self.add(std::mem::size_of::<docx_model::NativePictureMetadataWire>())?;
-            for property in [
-                metadata.blip_name.as_ref(),
-                metadata.shape_name.as_ref(),
-                metadata.description.as_ref(),
-                metadata.inactive_fill_carrier.as_ref(),
-                metadata.inactive_line_carrier.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.add(property.raw_bytes.capacity())?;
-                self.strings([property.text.as_ref()])?;
-            }
-        }
         if let Some(group) = &facts.group {
             self.add(group.child_source_id.capacity())?;
         }
@@ -841,8 +804,6 @@ mod tests {
             table: &[],
             clx: &[],
             group_read: false,
-            reading_relocation: false,
-            reading_picture_defaults: super::super::reading_picture::Defaults::default(),
             header_container: None,
             textboxes: [None, None],
             images: BTreeMap::from([(

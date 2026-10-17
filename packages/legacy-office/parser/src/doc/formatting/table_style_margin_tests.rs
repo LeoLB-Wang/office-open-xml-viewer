@@ -8,7 +8,6 @@ use super::*;
 
 fn empty<'a>() -> Formatting<'a> {
     Formatting {
-        word_breaking_reading: false,
         characters: Default::default(),
         paragraphs: Default::default(),
         fonts: vec![],
@@ -23,7 +22,6 @@ fn empty<'a>() -> Formatting<'a> {
         data: &[],
         budget: Default::default(),
         numbering: Default::default(),
-        picture_bullet_reading: false,
         unsupported_character_properties: false,
         unsupported_paragraph_properties: false,
         unsupported_piece_properties: false,

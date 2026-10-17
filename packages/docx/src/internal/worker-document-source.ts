@@ -1,5 +1,4 @@
 import { withWasmResourceErrors } from '@silurus/ooxml-core/worker';
-export { installNativeReadingWorkerRuntime } from './native-reading-worker-runtime.js';
 import { isWasmTrap, type WasmParserHost } from '@silurus/ooxml-core';
 import {
   copyModelSourceBytes,

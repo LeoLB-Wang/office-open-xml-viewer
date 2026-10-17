@@ -128,8 +128,8 @@ describe('Node sessions with a model source', () => {
     expect(invalid.release).toHaveBeenCalledOnce();
   });
 
-  it('streams and renders a reading DOCX source with only the required archive methods', async () => {
-    const minimal = fakeSource('docx', { minimal: true, readingWordBreaking: true });
+  it('streams and renders a DOCX source with only the required archive methods', async () => {
+    const minimal = fakeSource('docx', { minimal: true });
     const session = await openDocxDocument(docxSample, { factory, currentDate: 0, modelSources: [minimal.source] });
     expect(session.resourceUsage).toBeUndefined();
     expect(session.pageCount).toBeGreaterThan(0);

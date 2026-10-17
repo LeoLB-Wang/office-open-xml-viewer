@@ -1,6 +1,5 @@
 import type {
   PaintResourceDescriptorKind,
-  NativeReadingImagePlan,
   LayoutRect,
   PaintResourceKind,
   Matrix2DData,
@@ -49,7 +48,6 @@ export type CanvasPaintResourceHandler<K extends PaintResourceDescriptorKind> = 
   resource: ResolvedPaintResource<K>,
   bounds: LayoutRect,
   ctx: PaintCanvas2D,
-  nativeImagePlan?: NativeReadingImagePlan,
   coverageBounds?: LayoutRect,
 ) => void;
 
@@ -63,7 +61,6 @@ export interface CanvasPaintResourcePainter {
     kind: PaintResourceKind,
     bounds: LayoutRect,
     ctx: PaintCanvas2D,
-    nativeImagePlan?: NativeReadingImagePlan,
     coverageBounds?: LayoutRect,
   ): void;
 }

@@ -1,4 +1,3 @@
-import { readingHooks } from '../internal/reading-hooks.js';
 import { requireResolvedDrawingMLGeometry } from '@silurus/ooxml-core';
 import { LayoutInvariantError } from './diagnostics.js';
 import {
@@ -574,19 +573,6 @@ function requireDrawingGeometry(node: DrawingLayout, path: string): void {
       return;
     }
     requireRect(command.rect, `${commandPath}.rect`);
-    if (command.kind === 'resource' && command.nativeImagePlan) {
-      if (command.resourceKind !== 'image' || command.resourceKey !== command.nativeImagePlan.source.resourceKey
-        || command.orientation !== undefined || node.clip || node.clipBounds) {
-        throw new LayoutInvariantError('INVALID_GEOMETRY', `${commandPath} has an unacquired image orientation/clip/resource`);
-      }
-      try {
-        const local = readingHooks.imageFrame(command.nativeImagePlan, command.rect);
-        const frame = node.transform ? transformRect(node.transform, local) : local;
-        if (!contains(node.flowBounds, frame)) throw new Error('image projection exceeds allocation');
-      } catch (error) {
-        throw new LayoutInvariantError('INVALID_GEOMETRY', `${commandPath}: ${error instanceof Error ? error.message : 'invalid image plan'}`);
-      }
-    }
     if (command.kind === 'stroke-rect') {
       requireFinite(command.lineWidthPt, `${commandPath}.lineWidthPt`);
       command.dashPt.forEach((dash, dashIndex) =>

@@ -59,21 +59,6 @@ describe('direct DOC source engine', () => {
     expect(documents.map(d => [d.close.mock.calls.length, d.released.mock.calls.length])).toEqual([[1, 1], [1, 1]]);
   });
 
-  it('keeps explicit reading placement local to each concurrent native open', async () => {
-    const argumentsSeen: Array<readonly [number, number | undefined, boolean | undefined]> = [];
-    const documents: FakeDocument[] = [];
-    const init = vi.fn(async () => undefined);
-    const glue = { default: init, LegacyDocDocument: function(bytes: Uint8Array, budget?: number, reading?: boolean) {
-      argumentsSeen.push([bytes[0], budget, reading]); const document = new FakeDocument(bytes, budget); documents.push(document); return document;
-    } } as unknown as LegacyDocGlue;
-    const engine = createLegacyDocSourceEngine(async () => glue, async () => new Uint8Array(), 4096);
-    const [reading, strict] = await Promise.all([engine.open(new Uint8Array([1]), wasmUrl, undefined, 'relocateForReading'), engine.open(new Uint8Array([2]), wasmUrl)]);
-    expect(argumentsSeen).toEqual([[1, 4096, true], [2, 4096, undefined]]);
-    expect(init).toHaveBeenCalledTimes(1);
-    reading.closeArchive(); strict.closeArchive();
-    expect(documents.map(document => [document.close.mock.calls.length, document.released.mock.calls.length])).toEqual([[1, 1], [1, 1]]);
-  });
-
   it('rejects an invalid URL and pre-abort before loading', async () => {
     const load = vi.fn();
     const engine = createLegacyDocSourceEngine(load, vi.fn());
@@ -108,24 +93,6 @@ describe('direct DOC source engine', () => {
   });
 });
 
-describe('explicit DOC word-breaking reading construction', () => {
-  it('selects the fourth native argument and keeps relocation strict on every open', async () => {
-    const calls: unknown[][] = [];
-    class Archive extends FakeDocument {
-      constructor(bytes: Uint8Array, budget?: number, relocation?: boolean, reading?: boolean) {
-        super(bytes, budget); calls.push([budget, relocation, reading]);
-      }
-    }
-    const glue = { default: async () => undefined, LegacyDocDocument: Archive } satisfies LegacyDocGlue;
-    const engine = createLegacyDocSourceEngine(async () => glue, async () => new Uint8Array(), 4096);
-    const a = await engine.open(new Uint8Array(), wasmUrl);
-    const b = await engine.open(new Uint8Array(), wasmUrl, undefined, 'simplifyForReading');
-    const c = await engine.open(new Uint8Array(), wasmUrl, undefined, 'strict');
-    expect(calls).toEqual([[4096, undefined, undefined], [4096, false, true], [4096, undefined, undefined]]);
-    a.closeArchive(); b.closeArchive(); c.closeArchive();
-  });
-});
-
 describe('legacyDocViewDefaults', () => {
   const document = (inPrint?: boolean, marks?: boolean) => ({
     ...(inPrint === undefined ? {} : { revision_markup_in_print: () => inPrint }),
@@ -138,30 +105,5 @@ describe('legacyDocViewDefaults', () => {
     for (const [inPrint, marks] of [[true, false], [false, true], [undefined, true], [true, undefined]] as const) {
       expect(legacyDocViewDefaults(document(inPrint, marks))).toEqual({});
     }
-  });
-});
-
-describe('DOC picture-bullet constructor capability slot', () => {
-  it('uses only the fifth argument for stored-size reading, preserving strict construction', async () => {
-    const calls: unknown[][] = [];
-    class Document implements LegacyDocNativeDocument {
-      constructor(...args: [Uint8Array, number?, boolean?, boolean?, boolean?]) { calls.push(args); }
-      free(): void {}
-      open_document_cursor(): void {}
-      pull_document_chunk(): Uint8Array { return new Uint8Array(); }
-      document_chunk_done(): boolean { return true; }
-      acknowledge_document_chunk(): void {}
-      cancel_document_cursor(): void {}
-      close_document_session(): void {}
-      assert_healthy(): void {}
-      extract_image(): Uint8Array { return new Uint8Array(); }
-    }
-    const glue: LegacyDocGlue = { default: async () => undefined, LegacyDocDocument: Document };
-    const strict = createLegacyDocSourceEngine(async () => glue, async () => new Uint8Array(), 4096);
-    const reading = createLegacyDocSourceEngine(async () => glue, async () => new Uint8Array(), 4096, 'storedSizeForReading');
-    (await strict.open(new Uint8Array([1]), wasmUrl)).closeArchive();
-    (await reading.open(new Uint8Array([2]), wasmUrl)).closeArchive();
-    expect(calls[0]).toEqual([new Uint8Array([1]), 4096]);
-    expect(calls[1]).toEqual([new Uint8Array([2]), 4096, false, false, true]);
   });
 });

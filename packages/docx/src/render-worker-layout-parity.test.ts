@@ -1,5 +1,3 @@
-import { installNativeReadingRuntime } from './internal/native-reading-runtime.js';
-installNativeReadingRuntime();
 import { describe, expect, it, vi } from 'vitest';
 import type { BodyElement, DocParagraph, DocxDocumentModel, SectionProps } from './types.js';
 import {
@@ -368,8 +366,6 @@ describe('render worker canonical layout parity', () => {
     expect(meta.bookmarkPages).toEqual([]);
     expect(meta.commentAnchorRanges).toEqual([]);
     expect(meta.revisionAnchorRanges).toEqual([]);
-    expect(meta.nativeReadingRequested).toBeUndefined();
-    expect(meta.readingNotices).toBeUndefined();
   });
 
   it('withholds future review anchors inside a split paragraph until its final fragment', () => {

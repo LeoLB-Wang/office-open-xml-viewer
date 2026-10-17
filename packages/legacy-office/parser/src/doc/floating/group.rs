@@ -210,7 +210,6 @@ fn check_group_flags(flags: u32, nested: bool) -> Result<(), String> {
 
 struct GroupRead {
     part: Part,
-    reading_contour: bool,
     nested_solver: bool,
     line_connector: bool,
     group_ids: Vec<u32>,
@@ -246,24 +245,13 @@ impl Store<'_> {
             .ok_or_else(|| unsupported("Word drawing group lacks its coordinate system"))?;
         let map = Map::new(system, [0.0, 0.0, extent[0] as f64, extent[1] as f64])?;
         let align = direct_alignment(anchor, &head.placement)?;
-        if matches!(anchor.wrapping, 0 | 4 | 5) && !self.allows_reading_contour(anchor.wrapping) {
+        if matches!(anchor.wrapping, 0 | 4 | 5) {
             return Err(unsupported(
                 "Word drawing group uses an unsupported wrap contour",
             ));
         }
-        if self.allows_reading_contour(anchor.wrapping)
-            && (anchor.textbox_count != 0
-                || records(head.record.payload, &mut self.budget)?
-                    .iter()
-                    .any(|record| record.kind == 0xf00d))
-        {
-            return Err(unsupported(
-                "reading group has unacquired outer textbox content",
-            ));
-        }
         let mut context = GroupRead {
             part,
-            reading_contour: self.allows_reading_contour(anchor.wrapping),
             nested_solver: head.nested_solver,
             line_connector: false,
             group_ids: vec![head.spid],
@@ -377,15 +365,6 @@ impl Store<'_> {
                     }
                     context.nested_solver |= head.nested_solver;
                     context.group_ids.push(head.spid);
-                    if context.reading_contour
-                        && records(head.record.payload, &mut self.budget)?
-                            .iter()
-                            .any(|record| record.kind == 0xf00d)
-                    {
-                        return Err(unsupported(
-                            "reading group has unacquired nested textbox content",
-                        ));
-                    }
                     if group_properties(head.record, &mut self.budget)? != 0.0 {
                         return Err(unsupported(
                             "rotated nested Word drawing groups are not supported",
@@ -550,7 +529,6 @@ mod tests {
         let mut store = Store::read(&word, &[], 0).unwrap();
         let mut context = GroupRead {
             part: Part::Main,
-            reading_contour: false,
             nested_solver: false,
             line_connector: false,
             group_ids: vec![],

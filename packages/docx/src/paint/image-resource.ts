@@ -1,8 +1,7 @@
 import { isVmlImageBrush } from './vml-image-brush.js';
 import { drawImageCropped, paintOptionalImagePlaceholder } from '@silurus/ooxml-core';
-import type { ImagePaintResourceDescriptor, LayoutRect, NativeReadingImagePlan } from '../layout/types.js';
+import type { ImagePaintResourceDescriptor, LayoutRect } from '../layout/types.js';
 import { isUnavailablePaintResourceHandle, type ResolvedPaintResource } from './resource-session.js';
-import { readingPaintHooks } from './reading-hooks.js';
 import type { PaintCanvas2D } from './types.js';
 
 type DrawablePaintResource =
@@ -22,19 +21,15 @@ export function drawableHandle(
   return resource.handle as CanvasImageSource;
 }
 
-/** Thin canonical image adapter. The shared core primitive owns ordinary and
- * retained crop/transform execution; layout supplies a sealed reading plan.
- * Preserve this helper/re-export for image and picture-bullet callers. */
+/** Thin canonical image adapter. The shared core primitive owns crop and
+ * transform execution. Preserve this helper/re-export for image and
+ * picture-bullet callers. */
 export function paintImageResource(
   resource: ResolvedPaintResource<'image'> | ResolvedPaintResource<'picture-bullet'>,
-  bounds: LayoutRect, ctx: PaintCanvas2D, nativeImagePlan?: NativeReadingImagePlan,
+  bounds: LayoutRect, ctx: PaintCanvas2D,
   coverageBounds: LayoutRect = bounds,
 ): void {
   const descriptor = resource.descriptor as ImagePaintResourceDescriptor;
-  if (nativeImagePlan) {
-    if (descriptor.kind !== 'image') throw new Error('Reading plan requires an image resource');
-    readingPaintHooks.assertNativeReadingImageBinding(resource as ResolvedPaintResource<'image'>, nativeImagePlan, bounds);
-  }
   if (isVmlImageBrush(resource.handle)) {
     const brush = resource.handle;
     const width = brush.width * bounds.widthPt, height = brush.height * bounds.heightPt;
@@ -60,13 +55,11 @@ export function paintImageResource(
   const image = drawableHandle(resource);
   const placeholder = isUnavailablePaintResourceHandle(resource.handle) ? resource.handle.placeholder : undefined;
   if (!image && !placeholder) return;
-  const options = nativeImagePlan ? { projection: nativeImagePlan.projection }
-    : { transform: { rotation: descriptor.rotation, flipH: descriptor.flipH, flipV: descriptor.flipV, alpha: descriptor.alpha } };
+  const options = { transform: { rotation: descriptor.rotation, flipH: descriptor.flipH, flipV: descriptor.flipV, alpha: descriptor.alpha } };
   if (image) {
     drawImageCropped(ctx as CanvasRenderingContext2D, image, descriptor.srcRect,
       bounds.xPt, bounds.yPt, bounds.widthPt, bounds.heightPt, options);
   } else if (placeholder === 'tiff') {
-    if (nativeImagePlan) throw new Error('Reading image cannot use a placeholder');
     paintOptionalImagePlaceholder(ctx as CanvasRenderingContext2D, 'tiff', {
       x: bounds.xPt, y: bounds.yPt, width: bounds.widthPt, height: bounds.heightPt,
     }, options);

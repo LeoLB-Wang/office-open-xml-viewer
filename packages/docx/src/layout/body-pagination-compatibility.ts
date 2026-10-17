@@ -128,7 +128,7 @@ const GRID_PLAIN_PARAGRAPH_KEYS = new Set([
   'flowBounds', 'inkBounds', 'clipBounds', 'advancePt', 'diagnostics',
   'paragraphId', 'styleId', 'bookmarkStarts', 'spacing', 'contextualSpacing',
   'lines', 'resources', 'events', 'exclusions', 'cellContainmentBounds', 'anchorCollisions',
-  'anchorFrames', 'nativeReadingRelocations', 'nativeReadingInactivePictureData',
+  'anchorFrames',
   'continuation',
 ]);
 const GRID_PLAIN_LINE_KEYS = new Set([

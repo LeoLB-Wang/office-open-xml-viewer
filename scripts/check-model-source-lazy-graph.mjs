@@ -168,21 +168,6 @@ export function assertLazySourceOwner(entry, owner) {
   if (modules.has(resolve(owner))) throw new Error(`${entry} statically reaches ${owner}`);
 }
 
-/** The URL-loaded DOCX sidecar cannot share emitted chunks with its worker.
- * Bind ordinary layout/paint implementations from the worker instead of
- * bundling them again. Reading-only modules and the tiny hook contracts stay
- * local; type-only owner contracts do not add runtime edges. */
-export function assertInjectedReadingOwners(entry = 'packages/docx/src/internal/worker-document-source.ts') {
-  for (const module of eagerModules(entry)) {
-    const path = relative(process.cwd(), module).replaceAll('\\', '/');
-    if ((path.startsWith('packages/docx/src/layout/')
-      && !/\/(?:native-reading-[^/]+|native-wrap-paint-bounds|reading-scene-error)\.ts$/.test(path))
-      || path === 'packages/docx/src/paint/resource-session.ts') {
-      throw new Error(`${entry} duplicates renderer implementation ${path}; inject its owner`);
-    }
-  }
-}
-
 function bundleGraph(entry) {
   const visited = new Set();
   const pending = [resolve(entry)];
@@ -254,10 +239,7 @@ function withDisabledBuild(check) {
 }
 
 export function assertNoSourceRuntime(code, name) {
-  if (code.includes('ooxml-model-source-module/v2') || code.includes('model source view default')
-    || code.includes('Native reading scene ')
-    || code.includes('Invalid native reading word-breaking owner')
-    || code.includes('DRAWINGS_RELOCATED_FOR_READING')) {
+  if (code.includes('ooxml-model-source-module/v2') || code.includes('model source view default')) {
     throw new Error(`${name} includes optional source runtime in its eager OOXML code`);
   }
 }
@@ -321,7 +303,7 @@ export function assertEagerSourceEntries(entries, forbidden = []) {
     for (const module of eagerModules(entry)) {
       // Match future model-source owners as well as today's explicit list.
       // A type-only import is absent from eagerModules, as it should be.
-      if (forbiddenPaths.has(module) || /(?:^|\/)(?:[^/]*model-source[^/]*|worker-source|render-worker-source|native-reading-[^/]+)\.[cm]?[jt]sx?$/.test(module)) {
+      if (forbiddenPaths.has(module) || /(?:^|\/)(?:[^/]*model-source[^/]*|worker-source|render-worker-source)\.[cm]?[jt]sx?$/.test(module)) {
         throw new Error(`${entry} statically reaches ${module}`);
       }
     }
@@ -330,7 +312,6 @@ export function assertEagerSourceEntries(entries, forbidden = []) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   checkSourceDispatchImports(trackedSourceFiles());
-  assertInjectedReadingOwners();
   const forbidden = [
     'packages/core/src/source/model-source.ts',
     ...['docx', 'xlsx', 'pptx'].map((format) => `packages/${format}/src/internal/worker-${format === 'docx' ? 'document' : format === 'xlsx' ? 'worksheet' : 'presentation'}-source.ts`),

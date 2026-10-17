@@ -242,7 +242,7 @@ test('companion builds reject viewer runtimes in entries and URL-loaded source m
     const entry = join(root, 'entry.ts');
     const reader = join(root, 'reader.ts');
     for (const path of [
-      'packages/docx/src/internal/native-reading-runtime.ts',
+      'packages/docx/src/internal/document-model-source.ts',
       'packages/xlsx/src/internal/worker-worksheet-source.ts',
       'packages/pptx/src/render-worker.ts',
       'packages/node/src/docx-model-source.ts',
@@ -252,7 +252,7 @@ test('companion builds reject viewer runtimes in entries and URL-loaded source m
       const owner = join(root, path);
       mkdirSync(join(owner, '..'), { recursive: true });
       writeFileSync(owner, 'export const runtime = 1;');
-      writeFileSync(reader, path.includes('native-reading-runtime')
+      writeFileSync(reader, path.includes('document-model-source')
         ? `export const runtime = () => import('./${path}');`
         : `export { runtime } from './${path}';`);
       for (const asset of [false, true]) {

@@ -1,5 +1,4 @@
 import type { LayoutDiagnostic } from './layout/types.js';
-import type { DocxReadingNotice } from './native-reading-notice.js';
 import type { DocComment, DocNote, DocRevision, RenderPageOptions, WorkerResponse } from './types';
 import type { CommentAnchorRange } from './comments';
 import type { RevisionAnchorRange } from './revisions';
@@ -21,10 +20,6 @@ import type { DocxElementContext, DocxPagePoint } from './selection-context';
 export interface DocumentMeta {
   diagnostics?: readonly LayoutDiagnostic[];
   resourceDiagnostics?: readonly LayoutDiagnostic[];
-  /** Document-level source requests own publication even when this view has no relocated scenes. */
-  nativeReadingRequested?: true;
-  /** Changed-layout disclosure for this exact retained variant. */
-  readingNotices?: readonly DocxReadingNotice[];
   pageCount: number;
   revisions: DocRevision[];
   comments: DocComment[];
@@ -63,8 +58,6 @@ export type DocumentLayoutMeta = Pick<
   | 'bookmarkPages'
   | 'commentAnchorRanges'
   | 'revisionAnchorRanges'
-  | 'readingNotices'
-  | 'nativeReadingRequested'
 >;
 
 /**
