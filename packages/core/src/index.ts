@@ -602,7 +602,7 @@ export { doubleRailGeometry, fillDoubleBorder } from './draw/double-border';
 // of truth for underline geometry across the pptx / docx renderers; docx
 // normalizes its §17.18.99 ST_Underline vocabulary to this DrawingML vocabulary
 // before calling in.
-export { drawUnderline } from './text/underline';
+export { drawUnderline, DECORATION_LINE_WIDTH_EM, STRIKE_RISE_EM } from './text/underline';
 export {
   WorkerBridge,
   type WorkerLike,

@@ -132,6 +132,8 @@ import {
   symbolFontToUnicode,
   isSymbolFontFamily,
   drawUnderline,
+  DECORATION_LINE_WIDTH_EM,
+  STRIKE_RISE_EM,
   hasTextWarp,
   buildWarpEnvelope,
   warpGlyphTransform,
@@ -732,11 +734,11 @@ function paintRunUnderline(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
     // Office PDF shows a separately chosen underline pattern on the
     // same slide-aligned grid.
     const underlinePaint = seg.underlineFill
-      ? resolveFillCore(seg.underlineFill, ctx, x, baseline, width, drawSizePx * 0.05,
+      ? resolveFillCore(seg.underlineFill, ctx, x, baseline, width, drawSizePx * DECORATION_LINE_WIDTH_EM,
           0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
       : seg.underlineLine?.fill
         ? resolveFillCore(seg.underlineLine.fill, ctx, x, baseline, width,
-            drawSizePx * 0.05, 0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
+            drawSizePx * DECORATION_LINE_WIDTH_EM, 0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
         : seg.underlineColor ?? glyphPaint;
     drawUnderline(ctx, x, baseline, width, drawSizePx,
       underlinePaint, seg.underlineStyle, dpr,
@@ -749,7 +751,7 @@ function paintRunStrike(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
   dpr: number): void {
   const drawSizePx = seg.drawSizePx ?? seg.sizePx;
   if (seg.strikethrough && !seg.noFill) {
-    const lineW = Math.max(1, drawSizePx * 0.05);
+    const lineW = Math.max(1, drawSizePx * DECORATION_LINE_WIDTH_EM);
     ctx.strokeStyle = glyphPaint;
     ctx.lineWidth = lineW;
     ctx.setLineDash([]);
@@ -757,11 +759,13 @@ function paintRunStrike(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
     // an odd device-pixel width is centered on one device row by snapping its
     // y onto the nearest crisp device position (otherwise it straddles two
     // rows → blurry). Snap each line from its own y.
-    const yMid = baseline - drawSizePx * 0.32;
+    // Strike rise and width: core library policy (see text/underline.ts).
+    const yMid = baseline - drawSizePx * STRIKE_RISE_EM;
     if (seg.strikeDouble) {
-      // Two parallel lines straddling the standard strike position,
-      // separated by ~ 1.5× the line weight (visually distinct yet
-      // staying inside the glyph's central band).
+      // Two parallel lines straddling the standard strike position, each
+      // 0.9 line widths from it (library policy; ST_TextStrikeType
+      // §20.1.10.79 `dblStrike` gives no spacing and no Office measurement
+      // is recorded).
       const offset = lineW * 0.9;
       const yUp = yMid - offset;
       const yDn = yMid + offset;
@@ -3437,7 +3441,7 @@ function renderWarpedText(
           ctx.strokeStyle = underlinePaint;
           ctx.lineWidth = seg.underlineLine?.width
             ? emuToPx(seg.underlineLine.width, scale)
-            : Math.max(1, seg.sizePx * 0.05);
+            : Math.max(1, seg.sizePx * DECORATION_LINE_WIDTH_EM);
           ctx.beginPath();
           const samples = Math.max(2, Math.ceil((penW - segmentStartW) / 8));
           for (let sample = 0; sample <= samples; sample++) {
