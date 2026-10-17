@@ -187,6 +187,11 @@ directories it may read:
   Anything else fails with `path_outside_allowed_roots` before the file is
   opened. The same error is returned for paths that do not exist, so the scope
   does not reveal which files exist outside it.
+- On Windows, UNC paths (`\\server\share\...`, `//server/share/...`,
+  `\\?\UNC\...`) and device namespaces (`\\.\...`, `\\?\` forms other than a
+  drive, `\??\...`) are rejected before any file-system access, so a request
+  cannot make the server open an SMB connection. A UNC path is accepted only
+  when it lies inside a configured root on that same share.
 - Roots must be absolute paths. A relative root, or one that cannot be
   resolved at startup, is skipped with a warning; the
   scope stays in force, so if no root is valid every path is rejected.
