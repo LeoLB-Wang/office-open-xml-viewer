@@ -205,8 +205,8 @@ export function runLineBreakerPass(input: LineBreakerPassInput): LayoutLine[] {
     asc: number,
     desc: number,
   ) => performAddToLine(operationState, s, w, h, asc, desc);
-  const admitLineMetric = (s: LayoutImageSeg, h: number, asc: number, desc: number) =>
-    performAdmitLineMetric(operationState, s, h, asc, desc);
+  const admitLineMetric = (s: LayoutImageSeg, h: number, asc: number) =>
+    performAdmitLineMetric(operationState, s, h, asc);
 
   const measurement = new LineMeasurementAdapter(
     ctx,

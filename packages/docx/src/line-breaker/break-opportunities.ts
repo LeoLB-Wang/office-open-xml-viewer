@@ -553,7 +553,7 @@ function processImageSegment(context: BreakOpportunityIteratorContext, seg: Layo
   }
   if (seg.markerMetric) {
     seg.measuredWidth = 0;
-    context.admitLineMetric(seg, seg.heightPt, seg.heightPt * scale, 0);
+    context.admitLineMetric(seg, seg.heightPt, seg.heightPt * scale);
     return;
   }
   const w = seg.widthPt * scale;

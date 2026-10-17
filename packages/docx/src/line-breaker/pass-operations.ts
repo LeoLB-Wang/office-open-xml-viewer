@@ -97,7 +97,7 @@ export interface PassOperationState extends LineBreakerPassInput {
   ) => void;
   /** Join a metric-only marker's height to the current line (see
    * `LayoutImageSeg.markerMetric`). */
-  readonly admitLineMetric: (s: LayoutImageSeg, h: number, asc: number, desc: number) => void;
+  readonly admitLineMetric: (s: LayoutImageSeg, h: number, asc: number) => void;
   readonly measurement: LineMeasurementAdapter;
   readonly effectiveFontPx: (s: LayoutTextSeg) => number;
   readonly measureText: (s: LayoutTextSeg, clusterGeometry?: boolean) => TextMetrics;
@@ -297,6 +297,8 @@ function resetPhysicalLineMetrics({ breakerState }: PassOperationState): void {
   breakerState.lineVisibleDescent = 0;
   breakerState.lineVisibleIntendedSingle = 0;
   breakerState.lineHasVisibleMetrics = false;
+  breakerState.lineMarkerHeight = 0;
+  breakerState.lineMarkerAscent = 0;
   breakerState.lineHasRuby = false;
   breakerState.lineEastAsian = false;
   breakerState.positionReferencePt = undefined;
@@ -703,7 +705,7 @@ export function performFlush(
   const linePositionReferencePt = breakerState.positionReferencePt ?? 0;
   // §17.3.3.1 — the break is one run among the line's runs: its own size
   // participates in the line height but must not override a taller peer.
-  const h =
+  const contentHeight =
     forceHeight !== undefined
       ? Math.max(breakerState.lineHeight, forceHeight)
       : breakerState.lineHeight || 10;
@@ -711,20 +713,28 @@ export function performFlush(
   // stable ascent/descent from the effective font size so wrap/baseline math
   // stays consistent with non-empty lines.
   const hasContent = breakerState.lineAscent > 0 || breakerState.lineDescent > 0;
-  const asc = hasContent ? breakerState.lineAscent : h * scale * 0.8;
-  const desc = hasContent ? breakerState.lineDescent : h * scale * 0.2;
-  const visibleAscent = breakerState.lineHasVisibleMetrics ? breakerState.lineVisibleAscent : asc;
+  const contentAscent = hasContent ? breakerState.lineAscent : contentHeight * scale * 0.8;
+  const desc = hasContent ? breakerState.lineDescent : contentHeight * scale * 0.2;
+  // A picture-bullet marker metric joins that box (its own or synthesized)
+  // as a minimum ascent above the baseline.
+  const asc = Math.max(contentAscent, breakerState.lineMarkerAscent);
+  const h = Math.max(contentHeight, breakerState.lineMarkerHeight);
+  const visibleAscent = breakerState.lineHasVisibleMetrics
+    ? Math.max(breakerState.lineVisibleAscent, breakerState.lineMarkerAscent)
+    : asc;
   const visibleDescent = breakerState.lineHasVisibleMetrics
     ? breakerState.lineVisibleDescent
     : desc;
   const visibleIntendedSingle = breakerState.lineHasVisibleMetrics
     ? breakerState.lineVisibleIntendedSingle
     : breakerState.lineIntendedSingle;
-  const gridCountSingle =
+  const gridCountSingle = Math.max(
     breakerState.lineGridCountSingle ||
-    (breakerState.lineEastAsian
-      ? eastAsianGridCountSinglePx(breakerState.lineIntendedSingle, h * scale)
-      : asc + desc);
+      (breakerState.lineEastAsian
+        ? eastAsianGridCountSinglePx(breakerState.lineIntendedSingle, contentHeight * scale)
+        : contentAscent + desc),
+    breakerState.lineMarkerAscent,
+  );
   const inlinePictureTextSingle = breakerState.lineHasInlinePicture
     ? Math.max(breakerState.lineIntendedSingle, breakerState.linePictureMarkSingle)
     : 0;
@@ -1061,30 +1071,25 @@ export function performAddToLine(
     breakerState.lineGridCountSingle = segGridCount;
 }
 
-/** The vertical accounting `performAddToLine` gives an inline picture, for a
- * metric-only picture-bullet marker that takes no width or segment slot: the
- * line's height, ascent, descent, visible box, inline-picture leading and
- * line-grid cell count include it exactly as they would the picture. */
+/** Admit a metric-only picture-bullet marker that takes no width or segment
+ * slot: `performFlush` unions its height into the line's ascent, visible box
+ * and line-grid cell count, and the line takes inline-picture leading. */
 export function performAdmitLineMetric(
   operationState: PassOperationState,
   s: LayoutImageSeg,
   h: number,
   asc: number,
-  desc: number,
 ): void {
   const { breakerState, scale } = operationState;
-  if (h > breakerState.lineHeight) breakerState.lineHeight = h;
+  // Held apart from the content box so that a line without other content
+  // (a leading break) keeps its synthesized font box; `performFlush` unions it.
+  breakerState.lineMarkerHeight = Math.max(breakerState.lineMarkerHeight, h);
+  breakerState.lineMarkerAscent = Math.max(breakerState.lineMarkerAscent, asc);
   breakerState.lineHasInlinePicture = true;
   breakerState.linePictureMarkSingle = Math.max(
     breakerState.linePictureMarkSingle,
     (s.paragraphMarkSinglePx ?? 0) * scale,
   );
-  if (asc > breakerState.lineAscent) breakerState.lineAscent = asc;
-  if (desc > breakerState.lineDescent) breakerState.lineDescent = desc;
-  breakerState.lineHasVisibleMetrics = true;
-  if (asc > breakerState.lineVisibleAscent) breakerState.lineVisibleAscent = asc;
-  if (desc > breakerState.lineVisibleDescent) breakerState.lineVisibleDescent = desc;
-  if (asc + desc > breakerState.lineGridCountSingle) breakerState.lineGridCountSingle = asc + desc;
 }
 
 export function performSegNaturalAdvance(

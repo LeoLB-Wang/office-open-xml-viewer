@@ -211,4 +211,12 @@ describe('picture-bullet line height', () => {
     expect(baselinePt).toBeCloseTo(40, 6);
     expect(box.yPt).toBeCloseTo(0, 6);
   });
+
+  it.each([[1, 10], [30, 32]])('keeps a leading break line\'s font box beside a %s pt bullet', (height, advance) => {
+    const item = paragraph('Item', null, bullet(height)) as BodyElement & { runs: unknown[] };
+    item.runs.unshift({ type: 'break', breakType: 'line' });
+    const { advancePt, baselinePt } = layout(item);
+    expect(advancePt).toBeCloseTo(advance, 6);
+    expect(baselinePt).toBeCloseTo(advance - 2, 6);
+  });
 });
