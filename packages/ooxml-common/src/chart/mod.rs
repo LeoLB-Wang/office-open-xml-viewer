@@ -217,8 +217,8 @@ const MAX_CLASSIC_CHART_CACHE_SLOTS: usize = 4 * MAX_CHART_CACHE_POINTS;
 /// The cache collectors size one vector per cache from whichever `ptCount`
 /// they meet (some take the first child, others the last descendant of a
 /// series container) or from the largest `pt idx`, so admission does not
-/// mirror one collector. Every element's width is the largest `ptCount` value
-/// or `pt idx + 1` among its children; each width is bounded by
+/// mirror one collector. Every element's width is the largest `ptCount` value,
+/// `pt idx + 1` or number of `pt` among its children; each width is bounded by
 /// [`MAX_CHART_CACHE_POINTS`] (the worksheet row limit chart data comes from)
 /// and their sum over the part by [`MAX_CLASSIC_CHART_CACHE_SLOTS`]. Every
 /// `ptCount` and `pt` is some element's child, so this covers every vector the
@@ -232,16 +232,21 @@ fn classic_cache_preparse(root: Node) -> Result<(), (u64, u64)> {
     let parse = |value: Option<&str>| value.and_then(|v| v.trim().parse::<u64>().ok());
     let mut total = 0u64;
     for node in root.descendants().filter(Node::is_element) {
-        let width = node
-            .children()
-            .filter(Node::is_element)
-            .filter_map(|child| match child.tag_name().name() {
+        // Collectors without a usable `ptCount` fall back to the number of
+        // `pt` elements, so that count is a width too.
+        let (mut width, mut point_elements) = (0u64, 0u64);
+        for child in node.children().filter(Node::is_element) {
+            let child_width = match child.tag_name().name() {
                 "ptCount" => parse(child.attribute("val")),
-                "pt" => parse(child.attribute("idx")).map(|index| index.saturating_add(1)),
+                "pt" => {
+                    point_elements += 1;
+                    parse(child.attribute("idx")).map(|index| index.saturating_add(1))
+                }
                 _ => None,
-            })
-            .max()
-            .unwrap_or(0);
+            };
+            width = width.max(child_width.unwrap_or(0));
+        }
+        let width = width.max(point_elements);
         if width > single {
             return Err((single, width));
         }

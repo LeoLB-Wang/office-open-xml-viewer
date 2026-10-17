@@ -2884,6 +2884,14 @@ mod tests {
                 )),
                 MAX_CHART_CACHE_POINTS as u64,
             ),
+            // Without a ptCount, collectors size by the number of points.
+            (
+                chart(&format!(
+                    r#"<c:ser><c:idx val="0"/><c:val><c:numLit>{}</c:numLit></c:val></c:ser>"#,
+                    r#"<c:pt idx="0"/>"#.repeat(MAX_CHART_CACHE_POINTS + 1)
+                )),
+                MAX_CHART_CACHE_POINTS as u64,
+            ),
             (
                 chart(&num(&wide).repeat(5)),
                 MAX_CLASSIC_CHART_CACHE_SLOTS as u64,
