@@ -735,14 +735,15 @@ export function performFlush(
         : contentAscent + desc),
     breakerState.lineMarkerAscent,
   );
-  // A line whose only content is a picture-bullet marker metric beside a
-  // break keeps the break's synthesized single line as its text leading; the
-  // paragraph-mark fallback serves only lines without any content metric.
-  const inlinePictureTextSingle = !breakerState.lineHasInlinePicture
-    ? 0
-    : hasContent
-      ? Math.max(breakerState.lineIntendedSingle, breakerState.linePictureMarkSingle)
-      : Math.max(breakerState.lineIntendedSingle, contentAscent + desc);
+  // A picture-bullet marker metric takes its line's own text leading: the
+  // natural single line of the content (or of a break's synthesized box),
+  // never the paragraph mark's. An inline picture keeps its established union
+  // with the paragraph mark.
+  const inlinePictureTextSingle = breakerState.lineHasInlinePicture
+    ? Math.max(breakerState.lineIntendedSingle, breakerState.linePictureMarkSingle)
+    : breakerState.lineMarkerAscent > 0
+      ? Math.max(breakerState.lineIntendedSingle, contentAscent + desc)
+      : 0;
   // Only project that registered rule when every metric-bearing item is
   // visible text in one admitted face tuple. Canvas fallback geometry does
   // not reveal hhea descent, and mixed styles cannot share one descent
@@ -1078,7 +1079,8 @@ export function performAddToLine(
 
 /** Admit a metric-only picture-bullet marker that takes no width or segment
  * slot: `performFlush` unions its height into the line's ascent, visible box
- * and line-grid cell count, and the line takes inline-picture leading. */
+ * and line-grid cell count, and the line takes inline-picture leading from
+ * its own text single line. */
 export function performAdmitLineMetric(
   operationState: PassOperationState,
   s: LayoutImageSeg,
@@ -1090,7 +1092,6 @@ export function performAdmitLineMetric(
   // (a leading break) keeps its synthesized font box; `performFlush` unions it.
   breakerState.lineMarkerHeight = Math.max(breakerState.lineMarkerHeight, h);
   breakerState.lineMarkerAscent = Math.max(breakerState.lineMarkerAscent, asc);
-  breakerState.lineHasInlinePicture = true;
   breakerState.linePictureMarkSingle = Math.max(
     breakerState.linePictureMarkSingle,
     (s.paragraphMarkSinglePx ?? 0) * scale,

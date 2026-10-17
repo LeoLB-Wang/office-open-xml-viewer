@@ -236,6 +236,15 @@ describe('picture-bullet line height', () => {
       }
     },
   );
+
+  it.each([[1, 15], [30, 37]] as const)(
+    'takes the text line\'s own leading beside a larger paragraph mark (bullet %s pt)',
+    (height, advance) => {
+      const item = paragraph('Item', auto(1.5), bullet(height));
+      (item as { paragraphMarkFontFacts?: unknown }).paragraphMarkFontFacts = { fontSize: 40 };
+      expect(layout(item).advancePt).toBeCloseTo(advance, 6);
+    },
+  );
 });
 
 function firstAdvance(item: BodyElement): number {
