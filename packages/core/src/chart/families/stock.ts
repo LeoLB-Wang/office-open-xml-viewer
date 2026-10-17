@@ -116,7 +116,7 @@ export function renderStockChart(
   const titleFontPx = titleBand.fontPx;
   const titleTopPad = titleBand.topPad;
   const titleH = titleBand.bandH;
-  const leg = measuredLegendReserve(ctx, chart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, chart, w, h, ptToPx);
   const { legRightW, legLeftW, legBottomH, legTopH } = chartLegendBands(
     leg, chart.legendOverlay === true,
   );
@@ -174,7 +174,6 @@ export function renderStockChart(
 
   const stockFrame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
-    legendSideReserveFrac: 0.22,
     legendReserve: leg,
     pad,
     honorPlotAreaManualLayout: true,

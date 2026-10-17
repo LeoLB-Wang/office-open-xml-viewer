@@ -216,53 +216,48 @@ export function chartTitleBand(
 // ─── Legend reserve ──────────────────────────────────────────────────────────
 
 /** Resolve legend placement from `<c:legendPos>`. Returns null when hidden.
- *  Verbatim from renderer.ts `legendLayout`, except the side reserve FRACTION
- *  is a parameter (`sideReserveFrac`) so pie can request its wider 0.28 band
- *  while every other family keeps 0.22. When measured metrics are supplied,
- *  top/bottom reserve complete packed rows (bounded to 30% of chart height)
- *  and sides reserve the measured entry width within the same 30% bound. */
+ *  Sizes the automatic legend band from measured Canvas text metrics: top/bottom
+ *  reserve complete packed rows and sides reserve the widest measured entry.
+ *
+ *  ECMA-376 defines no automatic legend geometry (§21.2.2.93 legend,
+ *  §21.2.2.88 layout: without `<c:manualLayout>` placement is
+ *  application-defined). The 80 px minimum side width and the 30 % caps of the
+ *  chart width/height are library policy (from the shared measured-legend
+ *  layout, #1243) that keep the majority of the frame for the plot; no Office
+ *  measurement is recorded for them. */
 export function chartLegendReserve(
   chart: ChartModel,
   w: number,
   h: number,
-  sideReserveFrac: number,
-  metrics?: ChartLegendMetrics,
+  metrics: ChartLegendMetrics,
 ): ChartLegendReserve | null {
   if (!chart.showLegend) return null;
   const pos = chart.legendPos ?? 'r';
   const side: ChartLegendSide = pos === 'l' ? 'l' : pos === 't' ? 't' : pos === 'b' ? 'b' : 'r';
   if (side === 'r' || side === 'l') {
-    if (metrics) {
-      const minWidth = Math.min(80, w * 0.3);
-      // Once Canvas metrics are available, size the band from the content
-      // rather than reusing the legacy family fraction as an upper bound. The
-      // 30% safety cap still leaves the majority of the frame to the plot, but
-      // permits a long authored series name to wrap into complete words.
-      const maxWidth = w * 0.3;
-      const measuredWidth = Math.max(0, ...metrics.itemWidths) + metrics.horizontalPadding;
-      return {
-        side,
-        reserveW: Math.min(maxWidth, Math.max(minWidth, measuredWidth)),
-        reserveH: 0,
-      };
-    }
-    return { side, reserveW: Math.max(80, w * sideReserveFrac), reserveH: 0 };
-  }
-  if (metrics) {
-    const availableWidth = Math.max(1, w - metrics.horizontalPadding);
-    const rowCount = packLegendRows(
-      metrics.itemWidths,
-      availableWidth,
-      metrics.itemGap,
-    ).length;
-    const desiredHeight = rowCount * metrics.rowHeight + metrics.verticalPadding;
+    const minWidth = Math.min(80, w * 0.3);
+    // The 30% cap leaves the majority of the frame to the plot, but permits a
+    // long authored series name to wrap into complete words.
+    const maxWidth = w * 0.3;
+    const measuredWidth = Math.max(0, ...metrics.itemWidths) + metrics.horizontalPadding;
     return {
       side,
-      reserveW: 0,
-      reserveH: Math.min(h * 0.3, desiredHeight),
+      reserveW: Math.min(maxWidth, Math.max(minWidth, measuredWidth)),
+      reserveH: 0,
     };
   }
-  return { side, reserveW: 0, reserveH: Math.max(18, h * 0.08) };
+  const availableWidth = Math.max(1, w - metrics.horizontalPadding);
+  const rowCount = packLegendRows(
+    metrics.itemWidths,
+    availableWidth,
+    metrics.itemGap,
+  ).length;
+  const desiredHeight = rowCount * metrics.rowHeight + metrics.verticalPadding;
+  return {
+    side,
+    reserveW: 0,
+    reserveH: Math.min(h * 0.3, desiredHeight),
+  };
 }
 
 /** Split a legend reserve into the four per-side bands (three of which are 0).
@@ -569,7 +564,6 @@ export interface ChartPad {
  *  `computeChartFrame` build the frac-based {@link chartTitleBand}). `titleBand`
  *  wins when both are set.
  *
- *  - `legendSideReserveFrac`: side (l/r) legend reserve fraction of `w`.
  *  - `pad`: fully-resolved cartesian plot pad. Its presence means "cartesian".
  *  - `plotAreaManualLayout`: honored (overrides `pad`) when present with w/h,
  *    matching the `<c:plotArea><c:manualLayout>` handling inline today.
@@ -582,10 +576,9 @@ export interface FrameParams {
   titleBand?: ChartTitleBand;
   titleTopPadFrac?: number;
   titleBottomPadFrac?: number;
-  legendSideReserveFrac: number;
-  /** Pre-measured automatic legend reserve. Canvas callers pass this so the
-   * pure frame uses the same measured bands the painter consumes. */
-  legendReserve?: ChartLegendReserve | null;
+  /** Measured automatic legend reserve (null when the legend is hidden), the
+   * same bands the painter consumes. */
+  legendReserve: ChartLegendReserve | null;
   pad?: ChartPad;
   radialGapFrac?: number;
   honorPlotAreaManualLayout?: boolean;
@@ -675,9 +668,7 @@ export function computeChartFrame(
   const title =
     params.titleBand ??
     chartTitleBand(chart, h, ptToPx, params.titleTopPadFrac ?? 0, params.titleBottomPadFrac ?? 0);
-  const legend = params.legendReserve !== undefined
-    ? params.legendReserve
-    : chartLegendReserve(chart, w, h, params.legendSideReserveFrac);
+  const legend = params.legendReserve;
   const legendBands = chartLegendBands(legend, chart.legendOverlay === true);
   const axisTitles = chartAxisTitleBands(chart, w, h, ptToPx);
 

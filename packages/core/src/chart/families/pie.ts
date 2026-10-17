@@ -121,11 +121,10 @@ export function renderOfPieChart(
   }
 
   const legendChart: ChartModel = { ...chart, chartType: 'pie' };
-  const legend = measuredLegendReserve(ctx, legendChart, r.w, r.h, 0.28, ptToPx);
+  const legend = measuredLegendReserve(ctx, legendChart, r.w, r.h, ptToPx);
   const frame = computeChartFrame(chart, r.x, r.y, r.w, r.h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,
-    legendSideReserveFrac: 0.28,
     legendReserve: legend,
     radialGapFrac: 0.02,
     honorPlotAreaManualLayout: true,
@@ -309,11 +308,10 @@ export function renderPieChart(
   // labels categories (one row per slice) so it reserves a wider 0.28 side band
   // (vs the default 0.22). The h*0.02 gap below the title/legend before centring
   // is the shared radial gap. Params keep pixels unchanged.
-  const pieLeg = measuredLegendReserve(ctx, legendChart, w, h, 0.28, ptToPx);
+  const pieLeg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,
-    legendSideReserveFrac: 0.28,
     legendReserve: pieLeg,
     radialGapFrac: 0.02,
     honorPlotAreaManualLayout: true,

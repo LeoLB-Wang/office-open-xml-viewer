@@ -936,7 +936,6 @@ export function measuredLegendReserve(
   chart: ChartModel,
   w: number,
   h: number,
-  sideReserveFrac: number,
   ptToPx: number,
 ): MeasuredLegendLayout | null {
   if (!chart.showLegend) return null;
@@ -968,7 +967,7 @@ export function measuredLegendReserve(
   ctx.restore();
   const pos = chart.legendPos ?? 'r';
   const horizontal = pos === 't' || pos === 'b';
-  const reserve = chartLegendReserve(chart, w, h, sideReserveFrac, {
+  const reserve = chartLegendReserve(chart, w, h, {
     itemWidths,
     rowHeight: Math.max(0, ...fontSizes) + LEGEND_ROW_EXTRA_PX,
     itemGap: LEGEND_ITEM_GAP,

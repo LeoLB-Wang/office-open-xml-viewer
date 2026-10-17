@@ -1666,7 +1666,7 @@ function titleAndPlot(
       ctx.font = legendStyles[index].font;
       return 7 * ptToPx + 4 + ctx.measureText(entry.label).width;
     });
-  const legendReserve = chartLegendReserve(chart, rect.w, rect.h, 0.23, {
+  const legendReserve = chartLegendReserve(chart, rect.w, rect.h, {
     itemWidths,
     rowHeight: Math.max(legendFontPx * 1.45, 12),
     itemGap: 12,
@@ -1694,7 +1694,6 @@ function titleAndPlot(
     : orientation === 'vertical' ? axisBands.catBandH : 0;
   const frame = computeChartFrame(chart, rect.x, rect.y, rect.w, rect.h, ptToPx, {
     titleBand: band,
-    legendSideReserveFrac: 0.23,
     legendReserve,
     pad: {
       t: band.bandH + legendBands.legTopH + rect.h * 0.04,

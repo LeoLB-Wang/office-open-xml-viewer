@@ -359,7 +359,7 @@ export function renderBarChart(
   const hasDataTable = chartHasDataTable(chart);
   const dataTableBaseH = chartDataTableBaseHeight(chart, ptToPx);
   const dataTableHeaderW = chartDataTableHeaderWidth(ctx, chart, ptToPx);
-  const leg = measuredLegendReserve(ctx, legendChart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
   const { legRightW, legLeftW, legTopH, legBottomH } = chartLegendBands(
     leg, chart.legendOverlay === true,
   );
@@ -790,7 +790,6 @@ export function renderBarChart(
     // The cartesian title band is already folded into `pad.t`; pass it so
     // `frame.title` (if read) matches the reserved band instead of a stale frac.
     titleBand,
-    legendSideReserveFrac: 0.22,
     legendReserve: leg,
     pad,
     honorPlotAreaManualLayout: true,
@@ -815,7 +814,6 @@ export function renderBarChart(
     );
     frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
       titleBand,
-      legendSideReserveFrac: 0.22,
       legendReserve: leg,
       pad,
       honorPlotAreaManualLayout: true,

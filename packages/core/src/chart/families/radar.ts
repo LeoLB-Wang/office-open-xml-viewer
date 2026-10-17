@@ -54,11 +54,10 @@ export function renderRadarChart(
   // Shared frame (radial form). Radar uses title pads 0.035 / 0.035 and the
   // default 0.22 side-legend reserve (unlike pie's 0.28). Params keep pixels
   // unchanged.
-  const leg = measuredLegendReserve(ctx, chart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, chart, w, h, ptToPx);
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,
-    legendSideReserveFrac: 0.22,
     legendReserve: leg,
     radialGapFrac: 0.02,
     honorPlotAreaManualLayout: true,

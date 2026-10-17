@@ -512,7 +512,7 @@ function renderWaterfallChart(
       ),
     ],
   });
-  const leg = measuredLegendReserve(ctx, legendChart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
   const { legRightW, legLeftW, legTopH, legBottomH } = chartLegendBands(
     leg, chart.legendOverlay === true,
   );
@@ -530,7 +530,6 @@ function renderWaterfallChart(
   };
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
-    legendSideReserveFrac: 0,
     legendReserve: leg,
     pad,
     honorPlotAreaManualLayout: true,
@@ -851,7 +850,7 @@ function renderFunnelChart(
       color,
     )],
   };
-  const leg = measuredLegendReserve(ctx, legendChart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
   const { legRightW, legLeftW, legTopH, legBottomH } = chartLegendBands(
     leg, chart.legendOverlay === true,
   );
@@ -878,7 +877,6 @@ function renderFunnelChart(
   };
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
-    legendSideReserveFrac: 0.22,
     legendReserve: leg,
     pad,
     honorPlotAreaManualLayout: true,
@@ -1371,7 +1369,7 @@ function renderBoxWhiskerChart(
     ...chart,
     series: boxLegendSeries,
   };
-  const leg = measuredLegendReserve(ctx, legendChart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
   const { legRightW, legLeftW, legTopH, legBottomH } = chartLegendBands(
     leg, chart.legendOverlay === true,
   );
@@ -1383,7 +1381,6 @@ function renderBoxWhiskerChart(
   };
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
-    legendSideReserveFrac: 0.22,
     legendReserve: leg,
     pad,
     honorPlotAreaManualLayout: true,
@@ -1866,11 +1863,10 @@ function renderSunburstChart(
   });
   // Reuse the radial frame so an authored top legend reserves space above the
   // rings instead of being painted over the circle.
-  const leg = measuredLegendReserve(ctx, legendChart, w, h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,
-    legendSideReserveFrac: 0,
     legendReserve: leg,
     radialGapFrac: 0.02,
     honorPlotAreaManualLayout: true,
@@ -2195,11 +2191,10 @@ function renderTreemapChart(
       );
     }),
   });
-  const leg = measuredLegendReserve(ctx, legendChart, r.w, r.h, 0.22, ptToPx);
+  const leg = measuredLegendReserve(ctx, legendChart, r.w, r.h, ptToPx);
   const frame = computeChartFrame(chart, r.x, r.y, r.w, r.h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,
-    legendSideReserveFrac: 0,
     legendReserve: leg,
     radialGapFrac: 0.015,
     honorPlotAreaManualLayout: true,
