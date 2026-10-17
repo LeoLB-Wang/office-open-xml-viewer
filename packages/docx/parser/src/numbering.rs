@@ -818,12 +818,11 @@ impl NumberingMap {
                 if word_zero && (index == level || live.is_none()) {
                     Some(format_word_synthetic_zero(format))
                 } else {
-                    ooxml_common::numbering::format_counter_bounded(
+                    ooxml_common::numbering::format_counter_within(
                         live.unwrap_or_else(|| start_at(index)),
                         format,
                         ooxml_common::numbering::MAX_MARKER_BYTES,
                     )
-                    .ok()
                 }
             },
         )

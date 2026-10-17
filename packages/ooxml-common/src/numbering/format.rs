@@ -6,10 +6,16 @@
 // touch a format here, mirror it there (and vice versa); the TS unit tests are
 // the reference values. `bullet` is a list-only concern (no §17.18.59 numeric
 // meaning) and stays Rust-only.
+/// [`format_counter_bounded`] for adapters: `None` when the rendered counter
+/// would exceed `limit` bytes (nothing larger is ever allocated).
+pub fn format_counter_within(n: u32, format: &str, limit: usize) -> Option<String> {
+    format_counter_bounded(n, format, limit).ok()
+}
+
 /// Bound expansions before allocating them. Non-repeating formats below do
 /// bounded work on at most ten decimal digits; their small result is checked
 /// after formatting. This is a caller-owned byte budget, not a numeric cutoff.
-pub fn format_counter_bounded(n: u32, format: &str, limit: usize) -> Result<String, ()> {
+pub(super) fn format_counter_bounded(n: u32, format: &str, limit: usize) -> Result<String, ()> {
     if n != 0 {
         let alphabet = match format {
             "arabicAlpha" => Some(ARABIC_ALPHA),

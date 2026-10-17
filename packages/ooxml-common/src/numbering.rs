@@ -9,7 +9,7 @@ use std::hash::Hash;
 
 mod format;
 #[doc(hidden)]
-pub use format::{format_counter, format_counter_bounded};
+pub use format::{format_counter, format_counter_within};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CounterError {
@@ -278,12 +278,11 @@ where
             counter,
             effective_level,
             |index, live, format| {
-                format::format_counter_bounded(
+                format::format_counter_within(
                     live.unwrap_or_else(|| start_at(index)),
                     format,
                     MAX_MARKER_BYTES,
                 )
-                .ok()
             },
         )
     }
