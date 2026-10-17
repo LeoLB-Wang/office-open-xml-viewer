@@ -5505,26 +5505,6 @@ mod tests {
         }
     }
 
-    /// ECMA-376 §20.1.8.21 — innerShdw shares the field shape of outerShdw
-    /// (blurRad, dist, dir, color child). parse_inner_shadow should round-trip
-    /// all of them, including the alphaModFix encoded as 8-char hex.
-    #[test]
-    fn test_parse_inner_shadow_extracts_fields() {
-        let xml = r#"<effectLst xmlns="http://schemas.openxmlformats.org/drawingml/2006/main">
-            <innerShdw blurRad="50800" dist="38100" dir="2700000">
-                <srgbClr val="000000"><alphaModFix amt="50000"/></srgbClr>
-            </innerShdw>
-        </effectLst>"#;
-        let doc = roxmltree::Document::parse(xml).unwrap();
-        let theme = HashMap::new();
-        let s = parse_inner_shadow(doc.root_element(), &theme).expect("innerShdw should resolve");
-        assert_eq!(s.blur, 50_800);
-        assert_eq!(s.dist, 38_100);
-        assert!((s.dir - 45.0).abs() < 0.001);
-        assert!((s.alpha - 0.5).abs() < 0.01);
-        assert_eq!(s.color.to_lowercase(), "000000");
-    }
-
     /// ECMA-376 §20.1.8.14 + §20.1.8.58 + §20.1.8.30 — a `bgPr > blipFill`
     /// with a `stretch > fillRect` (incl. negative overscan edges) parses into
     /// `Fill::Image` carrying the resolved zip path + mime, the fractional
@@ -6583,34 +6563,6 @@ mod tests {
         assert!(r.font_family_ea.is_none());
     }
 
-    /// ECMA-376 §20.1.8.17 — glow has a single rad attribute and a colour
-    /// child. parse_glow should preserve the radius and resolve alphaModFix.
-    #[test]
-    fn test_parse_glow_extracts_radius_and_color() {
-        let xml = r#"<effectLst xmlns="http://schemas.openxmlformats.org/drawingml/2006/main">
-            <glow rad="38100">
-                <srgbClr val="FF0000"><alphaModFix amt="80000"/></srgbClr>
-            </glow>
-        </effectLst>"#;
-        let doc = roxmltree::Document::parse(xml).unwrap();
-        let theme = HashMap::new();
-        let g = parse_glow(doc.root_element(), &theme).expect("glow should resolve");
-        assert_eq!(g.radius, 38_100);
-        assert_eq!(g.color.to_uppercase(), "FF0000");
-        assert!((g.alpha - 0.8).abs() < 0.01);
-    }
-
-    /// ECMA-376 §20.1.8.31 — softEdge has a single `rad` attribute in EMU.
-    #[test]
-    fn test_parse_soft_edge_extracts_radius() {
-        let xml = r#"<effectLst xmlns="http://schemas.openxmlformats.org/drawingml/2006/main">
-            <softEdge rad="63500"/>
-        </effectLst>"#;
-        let doc = roxmltree::Document::parse(xml).unwrap();
-        let s = parse_soft_edge(doc.root_element()).expect("softEdge should resolve");
-        assert_eq!(s.radius, 63_500);
-    }
-
     /// ECMA-376 §20.1.8.27 — reflection: blur, dist, dir, stA/stPos/endA/endPos
     /// (1000ths of percent), sx/sy (1000ths of percent, sy negative for mirror).
     #[test]
@@ -6645,7 +6597,7 @@ mod tests {
                     <srgbClr val="000000"><alpha val="40000"/></srgbClr>
                 </outerShdw>
                 <innerShdw blurRad="63500" dist="50800" dir="5400000"><srgbClr val="111111"/></innerShdw>
-                <glow rad="63500"><srgbClr val="FFCC00"/></glow>
+                <glow rad="63500"><srgbClr val="FFCC00"><alphaModFix amt="80000"/></srgbClr></glow>
                 <softEdge rad="25400"/>
                 <reflection blurRad="12700" stA="38000" endPos="28000" dist="5000" dir="5400000" sy="-100000" algn="bl" rotWithShape="0"/>
             </effectLst>
@@ -6668,10 +6620,13 @@ mod tests {
 
         let inner = eff.inner_shadow.expect("innerShdw should resolve");
         assert_eq!(inner.blur, 63_500);
+        assert_eq!(inner.dist, 50_800);
+        assert!((inner.dir - 90.0).abs() < 0.001);
 
         let glow = eff.glow.expect("glow should resolve");
         assert_eq!(glow.radius, 63_500);
         assert_eq!(glow.color, "FFCC00");
+        assert!((glow.alpha - 0.8).abs() < 0.01);
 
         let soft = eff.soft_edge.expect("softEdge should resolve");
         assert_eq!(soft.radius, 25_400);

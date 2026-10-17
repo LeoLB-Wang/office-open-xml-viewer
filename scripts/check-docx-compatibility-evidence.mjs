@@ -15,6 +15,7 @@ const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript-compiler-api');
 
 const DOCX_SOURCE = 'packages/docx/src';
+const DOCX_PARSER_SOURCE = 'packages/docx/parser/src';
 const COMPATIBILITY_OWNER = `${DOCX_SOURCE}/layout/compatibility.ts`;
 const OBSERVATION_BASELINE =
   'scripts/docx-compatibility-observation-baseline.json';
@@ -283,7 +284,7 @@ function microsoftEvidenceCatalog(root) {
   return documents;
 }
 
-function verifyEvidence(root, file, ruleId, evidence, microsoftCatalog) {
+function verifyEvidence(root, file, ruleId, evidence, microsoftCatalog, citedMicrosoftSections) {
   const kind = stringValue(evidence, 'kind', file);
   // A library policy carries no Office measurement; like a regression-test
   // record it must name the concrete DOCX test that pins the behaviour.
@@ -336,6 +337,7 @@ function verifyEvidence(root, file, ruleId, evidence, microsoftCatalog) {
         `${ruleId} references an uncatalogued Microsoft section: ${reference}`,
       );
     }
+    for (const sectionId of sectionIds) citedMicrosoftSections.add(`${match[1]} ${sectionId}`);
     return;
   }
   if (kind === 'office-observation') {
@@ -354,7 +356,14 @@ function verifyEvidence(root, file, ruleId, evidence, microsoftCatalog) {
   fail('COMPATIBILITY_EVIDENCE_KIND', `${ruleId} has unknown evidence kind ${kind}`);
 }
 
-function inspectSource(root, absolute, rules, microsoftCatalog) {
+function inspectSource(
+  root,
+  absolute,
+  rules,
+  microsoftCatalog,
+  citedMicrosoftSections,
+  declarationRanges,
+) {
   const file = posixPath(relative(root, absolute));
   const source = ts.createSourceFile(
     absolute,
@@ -402,12 +411,84 @@ function inspectSource(root, absolute, rules, microsoftCatalog) {
       id,
       objectValue(object, 'evidence', file),
       microsoftCatalog,
+      citedMicrosoftSections,
     );
     const prior = rules.get(id);
     if (prior) {
-      fail('COMPATIBILITY_DUPLICATE_ID', `${id} is declared by ${prior} and ${file}`);
+      fail('COMPATIBILITY_DUPLICATE_ID', `${id} is declared by ${prior.file} and ${file}`);
     }
-    rules.set(id, file);
+    rules.set(id, { file, name });
+  }
+  // Rule declarations (including descriptions that mention sibling rules)
+  // never count as a citation of a rule.
+  declarationRanges.set(file, calls.map((call) => {
+    const statement = call.parent.parent.parent;
+    return [statement.getStart(source), statement.getEnd()];
+  }));
+}
+
+// A catalog entry is evidence only while a rule cites it. Reject entries that
+// no rule cites so the catalog cannot accumulate unreviewed claims.
+function verifyMicrosoftCatalogCited(microsoftCatalog, citedMicrosoftSections) {
+  const unused = [...microsoftCatalog].flatMap(([document, sections]) =>
+    sections.size === 0
+      ? [document]
+      : [...sections]
+        .map((section) => `${document} ${section}`)
+        .filter((key) => !citedMicrosoftSections.has(key)));
+  if (unused.length > 0) {
+    fail(
+      'COMPATIBILITY_MICROSOFT_CATALOG_UNUSED',
+      `no rule cites ${unused.join(', ')}`,
+    );
+  }
+}
+
+function isCitationSource(file) {
+  return !file.includes('/test-support/')
+    && !file.includes('/testing/')
+    && !/\.test-support\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// "Rendering logic must consume the ID" (compatibility.ts): every rule must be
+// cited, by its kebab-case id or its exported name, from at least one
+// non-test production source other than its own declaration.
+function withoutDeclarations(text, ranges = []) {
+  let result = text;
+  for (const [start, end] of [...ranges].sort((a, b) => b[0] - a[0])) {
+    result = result.slice(0, start) + result.slice(end);
+  }
+  return result;
+}
+
+function verifyRulesCited(root, rules, declarationRanges) {
+  const sources = listFiles(resolve(root, DOCX_SOURCE))
+    .filter(isProductionTypeScript)
+    .map((absolute) => posixPath(relative(root, absolute)))
+    .filter(isCitationSource)
+    .map((file) => withoutDeclarations(
+      readFileSync(resolve(root, file), 'utf8'),
+      declarationRanges.get(file),
+    ))
+    // Parser-owned rules (for example chart-space defaults) are implemented
+    // in the DOCX Rust parser and cite their id there.
+    .concat(listFiles(resolve(root, DOCX_PARSER_SOURCE))
+      .filter((absolute) => absolute.endsWith('.rs'))
+      .map((absolute) => readFileSync(absolute, 'utf8')));
+  const uncited = [...rules].filter(([id, { name }]) => {
+    const idPattern = new RegExp(`(?<![a-z0-9-])${escapeRegExp(id)}(?![a-z0-9-])`);
+    const namePattern = new RegExp(`(?<![A-Za-z0-9_$])${name}(?![A-Za-z0-9_$])`);
+    return !sources.some((text) => idPattern.test(text) || namePattern.test(text));
+  }).map(([id]) => id);
+  if (uncited.length > 0) {
+    fail(
+      'COMPATIBILITY_RULE_UNCITED',
+      `no production source cites ${uncited.join(', ')}`,
+    );
   }
 }
 
@@ -458,14 +539,25 @@ function verifyObservationBaseline(root, observations) {
 export function checkDocxCompatibilityEvidence(root) {
   const rules = new Map();
   const microsoftCatalog = microsoftEvidenceCatalog(root);
+  const citedMicrosoftSections = new Set();
+  const declarationRanges = new Map();
   const sourceRoot = resolve(root, DOCX_SOURCE);
   for (const file of listFiles(sourceRoot).filter(isProductionTypeScript)) {
-    inspectSource(root, file, rules, microsoftCatalog);
+    inspectSource(
+      root,
+      file,
+      rules,
+      microsoftCatalog,
+      citedMicrosoftSections,
+      declarationRanges,
+    );
   }
   if (rules.size === 0) fail('COMPATIBILITY_REGISTRY_EMPTY', DOCX_SOURCE);
+  verifyMicrosoftCatalogCited(microsoftCatalog, citedMicrosoftSections);
+  verifyRulesCited(root, rules, declarationRanges);
   const observations = observationKeys(root);
   verifyObservationBaseline(root, observations);
-  return Object.freeze([...rules].map(([id, file]) => Object.freeze({ id, file })));
+  return Object.freeze([...rules].map(([id, { file }]) => Object.freeze({ id, file })));
 }
 
 if (process.argv[1]

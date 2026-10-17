@@ -47,7 +47,7 @@ import {
   rebaseSeaBreaks,
 } from './text-runs.js';
 import { fitCJKPrefix, hasEastAsianVisiblePredecessor } from './fit-search.js';
-import { LineGapRejection, fitJustifiedCompression, justifiedCompressionApplies, type PassOperationState } from './pass-operations.js';
+import { LineGapRejection, fitJustifiedCompression, type PassOperationState } from './pass-operations.js';
 
 /** The iterator reads only its declared slice of the explicit pass state. */
 export type BreakOpportunityIteratorContext = Pick<
@@ -237,15 +237,12 @@ function processTextSegment(context: BreakOpportunityIteratorContext, seg: Layou
     breakerState,
     flush,
     addToLine,
-    maxWidth,
     characterGrid,
     availW,
     textSegmentBox,
     prospectiveSnapAdvance,
     segAdvance,
     strAdvance,
-    isJustified,
-    stretchLastLine,
     overflowPunct,
     sameLatinSpaceFace,
   } = context;
@@ -376,7 +373,6 @@ function processTextSegment(context: BreakOpportunityIteratorContext, seg: Layou
       mixedLineHasVisibleText(breakerState));
   s.mixedNaturalTrailingSpacePx = mixedSpaces ? trailingSpaceW : undefined;
   s.mixedNaturalTrailingSpaceCount = mixedSpaces ? s.text.length - trimmed.length : undefined;
-  const interwordCompression = justifiedCompressionApplies(context);
   // Library containment policy: an RTL line is anchored at its right edge,
   // so even an invisible trailing-space advance shifts visible LTR cells left.
   // Count that advance during fitting instead of admitting glyphs past the band.
@@ -442,6 +438,7 @@ function processTextSegment(context: BreakOpportunityIteratorContext, seg: Layou
     breakerState.gapTransaction?.endsAtExclusion !== true &&
     trailingOverflowCharacter !== undefined &&
     (breakerState.currentLine.length > 0 || textBeforeTrailingOverflow.length > 0) &&
+    // `word-overflow-punctuation-latin-parent-run`: classify by the parent run.
     wordIsOverflowPunctuation(
       trailingOverflowCharacter,
       s.eastAsiaLanguage,
@@ -983,7 +980,6 @@ function placeOrSplitText(context: BreakOpportunityIteratorContext, frame: TextF
     asc,
     desc,
     wForFit,
-    paragraphFinalIdeographicSpaceTail,
     admitsTrailingOverflowPunctuation,
   } = frame;
   if (
@@ -1253,13 +1249,10 @@ function splitCjkOverflow(context: BreakOpportunityIteratorContext, frame: TextF
   } = context;
   const {
     s,
-    w,
     h,
     asc,
     desc,
-    wForFit,
     paragraphFinalIdeographicSpaceTail,
-    admitsTrailingOverflowPunctuation,
   } = frame;
 
   // CJK overflow: split at the maximum prefix that fits, re-queue the tail.
@@ -1573,13 +1566,9 @@ function splitSeaOverflow(context: BreakOpportunityIteratorContext, frame: TextF
   } = context;
   const {
     s: segment,
-    w,
     h,
     asc,
     desc,
-    wForFit,
-    paragraphFinalIdeographicSpaceTail,
-    admitsTrailingOverflowPunctuation,
   } = frame;
   const s = segment as LayoutTextSeg & { seaBreaks: readonly number[] };
 

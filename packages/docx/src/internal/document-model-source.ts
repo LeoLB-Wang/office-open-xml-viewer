@@ -1,106 +1,35 @@
 import { loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from '../host-font-line-metrics.js';
 import { recordResourceDiagnostics } from '../resource-diagnostics.js';
 import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-asset-url';
-import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
+import { resolveCjkFallback } from '@silurus/ooxml-core';
 import {
   preloadGoogleFonts,
   unloadOfficeFontFallbacks,
-  releaseOwnedBitmap,
   unloadGoogleFonts,
   unregisterEmbeddedFonts,
-  WorkerBridge,
-  defaultDpr,
-  dropSvgImageCache,
-  dropDecodedBitmapCache,
-  resolveOoxmlContainer,
-  toArrayBuffer,
   type AdmittedModelSourceLoad,
-  type LoadOptions as CoreLoadOptions,
-  type ProgressiveLayoutPartial,
-  type ProgressiveLayoutProgress,
-  type MathRenderer,
-  type ChartThreeDRenderer,
-  type ChartRegionMapRenderer,
-  type ChartExRenderer,
-  type OoxmlResourceMetrics,
   workerRendererDescriptors,
 } from '@silurus/ooxml-core';
 import {
-  deserializeWorkerError,
   disposeRejectedLoad,
-  HARD_MAX_RAW_PART_CACHE_BYTES,
-  HARD_MAX_RAW_PART_CACHE_ENTRIES,
   normalizeLoadResourceOptions,
   OOXML_RESOURCE_METRICS_PROBE_TIMEOUT_MS,
   OoxmlResourceMetricsSession,
-  readLatestOoxmlResourceMetrics,
-  PULL_SESSION_PROTOCOL,
-  respondToWorkerSvgDecodeRequest,
-  type NormalizedOoxmlResourcePolicy,
-  type WorkerRendererDescriptors,
 } from '@silurus/ooxml-core/worker';
-import { BoundedRawPartCache } from '@silurus/ooxml-core/internal/bounded-raw-part-cache';
-import { ProgressiveLayoutLifecycle } from '@silurus/ooxml-core/internal/progressive-layout-lifecycle';
-import { ProgressiveLayoutObserverNotifier } from '@silurus/ooxml-core/internal/progressive-layout-observers';
-import type { DocxDocumentModel, RenderPageOptions, WorkerRequest, WorkerResponse, DocComment, DocNote, DocRevision } from '../types';
-import { renderLayoutSourceToCanvas, documentHasMath, prepareMathRuns, type DocxTextRunInfo } from '../renderer';
+import { documentHasMath, prepareMathRuns } from '../renderer';
 import { createLayoutServices } from '../layout-runtime.js';
-import { buildBookmarkPageMap } from '../bookmark-nav';
 import { DOCX_GOOGLE_FONTS, docxGoogleFontPlan, docxOfficeFontFallbackRequests } from '../google-fonts';
 import { loadEmbeddedFonts } from '../embedded-fonts';
 import {
-  attachDocumentLayoutRuntime,
   documentLayoutRuntimeOf,
-  layoutVariantStoreOf,
 } from '../layout/runtime-state.js';
-import {
-  type LayoutSourceStore,
-} from '../layout/layout-source-store.js';
 import type { DeepReadonly, DocumentLayout } from '../layout/types.js';
-import { snapshotPlainData } from '../layout/plain-data.js';
-import type {
-  DocumentLayoutPartial,
-  DocumentMeta,
-  RenderWorkerRequest,
-  RenderWorkerResponse,
-  WireRenderPageOptions,
-} from '../worker-protocol';
 import { retainRenderWorkerDocumentLayout } from '../render-worker-layout.js';
-import { textRunsForSelectedPage } from '../text-run-projection.js';
-import {
-  reviewProjectionIndexForDocument,
-  type ReviewProjectionIndex,
-} from '../layout/text-index.js';
-import {
-  hitTestSelectedDocxElementContext,
-  type DocxElementContextOptions,
-} from '../element-context.js';
-import type { DocxElementContext, DocxPagePoint } from '../selection-context.js';
-import {
-  collectLayoutSourceCommentRangesIfPresent,
-  resolveDocxCommentThreads,
-  type CommentAnchorRange,
-  type ResolvedDocxCommentThread,
-  type ResolveDocxCommentThreadsOptions,
-} from '../comments.js';
-import {
-  collectLayoutSourceRevisionRangesIfPresent,
-  type RevisionAnchorRange,
-} from '../revisions.js';
-import {
-  isDocumentPullResponse,
-  materializeDocumentPullAdapterSession,
-} from '../document-pull-client.js';
 import { layoutDocumentInputAsync } from '../layout/document.js';
 import { layoutDocumentProgressively } from '../layout/progressive.js';
 import { PaginationAbortError } from '../layout/pagination-scheduler.js';
 import { normalizeLayoutOptions, type LayoutOptions } from '../layout/options.js';
-import type { LayoutVariantStore } from '../layout/variant-store.js';
 import { publishDocxLayout } from '../document-layout-events.js';
-import {
-  docxLayoutViewRequester,
-  publishDocxLayoutView,
-} from '../document-layout-view.js';
 
 
 import { DocxDocument, type DocxViewerLoadControl, type LoadOptions } from '../document.js';

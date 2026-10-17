@@ -27,8 +27,6 @@ import type {
   Stroke,
   TextBody,
   Paragraph,
-  TextRun,
-  PathCmd,
   Shadow,
   Glow,
   RenderOptions,
@@ -67,7 +65,6 @@ import {
   renderPresetShape,
   pathFillModeOverlay,
   hasPreset,
-  buildPresetGeometryPath,
   buildPresetGeometryFillPath,
   getPresetGeometryBounds,
   getCustomGeometryBounds,
@@ -101,15 +98,8 @@ import {
   cjkFallbackChain,
   NON_CJK_SANS_FALLBACKS,
   NON_CJK_SERIF_FALLBACKS,
-  DEFAULT_KINSOKU_RULES,
   isCjkBreakChar,
   isComplexScriptCodePoint,
-  isUax14NoBreakPair,
-  lineBreakClass,
-  containsSeaScript,
-  isGraphemeFillText,
-  seaMixedBreakOffsets,
-  fitSeaWordPrefix,
   graphemeClusterOffsets,
   getCachedSvgImageByPath,
   getCachedBitmapByPath,
@@ -127,7 +117,6 @@ import {
   isBrowserResizableRasterMimeType,
   isDecodeTargetResizableRasterFormat,
   peekCachedBitmapByPath,
-  dropDecodedBitmapCache,
   preferVectorBlip,
   drawImageCropped,
   metafileRasterSize,
@@ -180,12 +169,11 @@ import {
   computeLineVisualOrder,
   type LineVisualOrder,
 } from './bidi-line';
-import { fitCjkLine, type MeasuredChar } from './cjk-wrap.js';
 import { justifyLine, type Justified } from './text-justify';
 import { justifiedPiecePositions } from '@silurus/ooxml-core';
 import { resolveTableBorderConflict } from './table-border-conflict.js';
 import { isSmartArtFallbackShape, smartArtFallbackTextColor } from './smartart-fallback-contrast';
-import { resolveTabWidths, type TabItem, type TabStopPx } from './tab-layout.js';
+import { resolveTabWidths } from './tab-layout.js';
 import {
   powerPointCompatOffNaturalLine, powerPointExactLinePoints, powerPointFaceMetrics, officeFaceWeight,
   powerPointNaturalLine, type PowerPointFaceMetrics,
@@ -698,21 +686,6 @@ export function paintHighlight(
   ctx.fillStyle = highlight;
   ctx.fillRect(x, top, width, height);
   ctx.fillStyle = glyphPaint;
-}
-
-/** Simple fill resolver that returns a CSS color string.
- *  For gradient/pattern fills, returns a flat colour (used by table cells etc.,
- *  where we don't have ctx scope to build a CanvasPattern). */
-function resolveFill(fill: Fill | null): string | null {
-  if (!fill || fill.fillType === 'none') return null;
-  if (fill.fillType === 'solid') return hexToRgba(fill.color);
-  if (fill.fillType === 'gradient') {
-    return fill.stops.length > 0 ? hexToRgba(fill.stops[0].color) : null;
-  }
-  // Pattern fills degrade to their foreground colour outside the canvas-aware
-  // path; full bitmap rendering happens via resolveShapeFill (core resolveFill).
-  if (fill.fillType === 'pattern') return hexToRgba(fill.fg);
-  return null;
 }
 
 /** Context-aware fill resolver that creates a CanvasGradient for gradient
@@ -1454,70 +1427,9 @@ function firstLineIndentPxFor(hasBullet: boolean, indentPx: number): number {
   return hasBullet ? 0 : indentPx;
 }
 
-/**
- * Whether the seam is the explicit hyphen boundary of an alphabetic compound.
- *
- * UAX #14 gives HY (U+002D) and HH (for example U+2010) a break opportunity
- * AFTER the hyphen. Keep this helper deliberately narrower than a full UAX #14
- * implementation: it accepts only Latin-letter–hyphen–Latin-letter compounds,
- * rejecting the numeric-range case covered by LB25 and leaving other scripts
- * (including LB21a's Hebrew exception) to their dedicated layout paths.
- * DrawingML `latinLnBrk="0"` forbids splitting a Latin word without adding a
- * hyphen; it does not erase a break opportunity supplied by an authored hyphen.
- */
-const LATIN_SCALAR_RE = /^\p{Script_Extensions=Latin}$/u;
 // The core predicate covers the RTL cs axis. DrawingML also routes Indic and
 // Southeast Asian shaping scripts through a:cs when that font slot is present.
 const INDIC_CS_GLYPH_RE = /[\p{Script=Devanagari}\p{Script=Thai}\p{Script=Bengali}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Gujarati}\p{Script=Gurmukhi}\p{Script=Oriya}\p{Script=Sinhala}\p{Script=Khmer}\p{Script=Lao}\p{Script=Myanmar}\p{Script=Tibetan}]/u;
-const LETTER_SCALAR_RE = /^\p{L}$/u;
-const ASCII_SCALARS_RE = /^[\u0000-\u007f]*$/u;
-
-function isLatinCompoundHyphenBoundary(before: string, hyphen: string, after: string): boolean {
-  const hyphenCp = hyphen.codePointAt(0) as number;
-  // All ASCII scalars other than U+002D are permanently outside HY/HH. Most
-  // tokens take this constant-time path without searching the Unicode table.
-  if (hyphenCp <= 0x7f && hyphenCp !== 0x2d) return false;
-  // HY/HH are punctuation classes, so non-ASCII letters cannot be candidates.
-  if (LETTER_SCALAR_RE.test(hyphen)) return false;
-  const hyphenClass = lineBreakClass(hyphenCp);
-  if (hyphenClass !== 'HY' && hyphenClass !== 'HH') return false;
-  return LATIN_SCALAR_RE.test(before) && LATIN_SCALAR_RE.test(after);
-}
-
-/** Split one non-whitespace Latin token at its authored compound hyphens. */
-function splitLatinCompoundToken(text: string): { text: string; breakBefore: boolean }[] {
-  // The overwhelmingly common ASCII token without U+002D cannot contain an
-  // HY/HH scalar. Avoid a scalar array and per-boundary classification there.
-  if (!text.includes('-') && ASCII_SCALARS_RE.test(text)) {
-    return [{ text, breakBefore: false }];
-  }
-  const chars = [...text];
-  const pieces: { text: string; breakBefore: boolean }[] = [];
-  let start = 0;
-  for (let i = 1; i + 1 < chars.length; i++) {
-    if (!isLatinCompoundHyphenBoundary(chars[i - 1], chars[i], chars[i + 1])) {
-      continue;
-    }
-    const end = i + 1;
-    pieces.push({ text: chars.slice(start, end).join(''), breakBefore: pieces.length > 0 });
-    start = end;
-  }
-  pieces.push({ text: chars.slice(start).join(''), breakBefore: pieces.length > 0 });
-  return pieces;
-}
-
-/** Last two painted text scalars, without joining the whole line. */
-function trailingTextScalars(line: LayoutLine): string[] {
-  const tail: string[] = [];
-  for (let i = line.segments.length - 1; i >= 0 && tail.length < 2; i--) {
-    const segment = line.segments[i];
-    if (segment.isTab || segment.math) continue;
-    const chars = [...segment.text];
-    for (let j = chars.length - 1; j >= 0 && tail.length < 2; j--) tail.unshift(chars[j]);
-  }
-  return tail;
-}
-
 /** PowerPoint paints non-zero DrawingML baseline runs at about 65% of their
  * authored size. The authored size still owns line height and baseline offset;
  * this helper is only for the glyph font used by measure and paint. */
@@ -1587,15 +1499,6 @@ export function naturalWidthExceedsBbox(
       previous = item.style;
       if (lineW > textMaxW) return true;
     }
-  }
-  return false;
-}
-
-/** True when any character of `s` is a CJK / ideographic glyph that allows a
- *  per-character line break (see core's `isCjkBreakChar` for the ranges). */
-function tokenHasCjk(s: string): boolean {
-  for (const ch of s) {
-    if (isCjkBreakChar(ch.codePointAt(0) ?? 0)) return true;
   }
   return false;
 }
@@ -5507,7 +5410,7 @@ export function renderTextBody(
     }
     return layout;
   };
-  let { allLines, totalHeight, requiredHeight } = layoutAt(1.0);
+  let { allLines, requiredHeight } = layoutAt(1.0);
 
   // ── normAutoFit ──────────────────────────────────────────────────────────
   // ECMA-376 §21.1.2.1.3 gives an omitted fontScale the value 100% and an
@@ -5521,7 +5424,7 @@ export function renderTextBody(
   // Therefore our own text metrics must not manufacture a new scale here.
   if (body.autoFit === 'norm') {
     if (body.fontScale != null && body.fontScale > 0) {
-      if (body.fontScale < 1.0) ({ allLines, totalHeight, requiredHeight } = layoutAt(body.fontScale));
+      if (body.fontScale < 1.0) ({ allLines, requiredHeight } = layoutAt(body.fontScale));
     }
   }
 

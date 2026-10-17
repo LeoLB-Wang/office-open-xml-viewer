@@ -1529,7 +1529,7 @@ function drawPieCalloutLabels(
   ctx.restore();
 }
 
-export function paintClassicPiePointOutline(
+function paintClassicPiePointOutline(
   ctx: CanvasRenderingContext2D,
   chart: ChartModel,
   series: ChartSeries,
@@ -1574,7 +1574,7 @@ export function paintClassicPiePointOutline(
   ctx.restore();
 }
 
-export function dataLabelRectIntersection(a: DataLabelRect, b: DataLabelRect): DataLabelRect | null {
+function dataLabelRectIntersection(a: DataLabelRect, b: DataLabelRect): DataLabelRect | null {
   const x = Math.max(a.x, b.x);
   const y = Math.max(a.y, b.y);
   const right = Math.min(a.x + a.w, b.x + b.w);

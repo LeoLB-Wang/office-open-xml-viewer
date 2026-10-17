@@ -88,6 +88,7 @@ export function wordTrailingEmptyMarkAdmissionAllowancePt(input: Readonly<{
     && input.pageBottomIsUnreserved
     && input.physicalRegionBottomIsActive;
   if (!eligible) return 0;
+  // `word-section-mark-blank-page-suppression`
   if (input.followsNextPageSectionBoundary) return Math.max(0, input.markExtentPt);
   // Windows trr3 family D contradicts the earlier full-cell empty-mark
   // inference. Keep the centered natural/authored content box inside the body,

@@ -34,12 +34,9 @@ const DOUBLE_WAVE_OFFSET_AMPLITUDES = 2.5;
  * Canvas dash pattern + line-weight pair; "wavy*" is approximated by a sine
  * curve traced as a polyline so the glyph stays legibly distinct from "dotted".
  *
- * This is the single source of truth for run-underline geometry across the
- * pptx / docx renderers (hoisted from the pptx renderer verbatim). The word-only
- * WordprocessingML ST_Underline vocabulary (§17.18.99: single/wave/wavyDouble/…)
- * is normalized to this DrawingML vocabulary by the docx renderer before it
- * calls in, so both formats share one dispatch. `undefined` style renders the
- * default single (`sng`) rule.
+ * This is the shared run-underline dispatch for DrawingML text (hoisted from
+ * the pptx renderer verbatim). `undefined` style renders the default single
+ * (`sng`) rule.
  *
  * @param dpr device-pixel ratio; horizontal strokes snap onto the nearest crisp
  *   device row via {@link crispOffset} so an odd-device-width rule stays crisp

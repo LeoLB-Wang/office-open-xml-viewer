@@ -530,6 +530,7 @@ export function paragraphMarkLineMetrics(
       )
     : ordinaryAdvancePx;
   const advancePx = useFeLayout
+    // `word-use-fe-layout-empty-mark-grid-allocation`
     ? wordUseFeLayoutParagraphMarkGridAdvancePx({
         ordinaryAdvancePx,
         allocatedGridAdvancePx,

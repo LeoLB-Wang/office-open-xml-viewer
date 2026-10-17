@@ -1,5 +1,4 @@
 import { normalizeXlsxWorksheetPolicy } from './worksheet-policy.js';
-import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import {
   normalizeLoadResourceOptions,
   OoxmlResourceMetricsSession,

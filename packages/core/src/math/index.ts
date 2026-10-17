@@ -10,7 +10,6 @@ export {
   type MathRenderer,
 } from './mathjax';
 export {
-  MATH_RASTER_PX_PER_EM,
   rasterizeMathSvg,
   sizeMathSvgForRaster,
   tintMathRaster,

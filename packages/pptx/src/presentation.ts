@@ -39,7 +39,6 @@ import {
   type ImageResourceOptions,
   type OoxmlResourceMetrics,
   type LoadedOfficeFontFallbacks,
-  type OfficeFontFallbackRoute,
   workerRendererDescriptors,
 } from '@silurus/ooxml-core';
 import {

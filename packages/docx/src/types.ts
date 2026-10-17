@@ -1250,9 +1250,8 @@ export interface DocxTextRun {
   underline: boolean;
   /** ECMA-376 §17.3.2.40 `<w:u w:val>` — the raw ST_Underline (§17.18.99) style
    *  value (`double` / `thick` / `dotted` / `wave` / `dashLong` / …). Absent for
-   *  the plain single rule (or no underline). The renderer normalizes this
-   *  WordprocessingML vocabulary to the shared DrawingML ST_TextUnderlineType
-   *  (§20.1.10.82) that `core.drawUnderline` dispatches on. */
+   *  the plain single rule (or no underline). Layout resolves this
+   *  WordprocessingML vocabulary into retained decoration geometry. */
   underlineStyle?: string;
   /** ECMA-376 §17.3.2.40 `<w:u w:color>` — underline-only colour (hex 6, or the
    *  literal `auto`). Absent ⇒ the underline follows the glyph colour. */

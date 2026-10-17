@@ -16,7 +16,7 @@ import {
 } from './layout-source-model-adapter.js';
 import type { LayoutSourceStore } from './layout/layout-source-store.js';
 
-export const DOCX_INITIAL_BODY_PULL_BYTES = 1024 * 1024;
+const DOCX_INITIAL_BODY_PULL_BYTES = 1024 * 1024;
 const MAX_DOCUMENT_UNIT_BYTES = Math.max(
   HARD_MAX_DOCX_BODY_CHUNK_JSON_BYTES,
   HARD_MAX_DOCX_BOOTSTRAP_JSON_BYTES,
