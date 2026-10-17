@@ -431,7 +431,9 @@ describe('render worker canonical layout parity', () => {
     expect(markupMeta.pageCount).not.toBe(finalMeta.pageCount);
     expect(markupMeta.pageSizes).toHaveLength(markupMeta.pageCount);
     expect(finalMeta.pageSizes).toHaveLength(finalMeta.pageCount);
-  });
+    // Two complete layouts of a 120-paragraph tracked document (~2.7 s on an
+    // idle machine); the default 5 s budget times out on loaded CI runners.
+  }, 30_000);
 
   it('exposes identical review metadata in main and worker modes', () => {
     const model = realModel();
