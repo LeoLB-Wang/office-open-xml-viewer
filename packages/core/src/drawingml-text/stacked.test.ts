@@ -2,8 +2,9 @@ import referenceData from '../fonts/reference-font-metrics-data.json';
 import { describe, expect, it } from 'vitest';
 import { layoutStackedText, type StackedParagraph, type StackedLayoutOptions } from './stacked.js';
 import {
-  stackedFaceBox, stackedSidewaysCharacter, stackedVerticalGlyph, STACKED_CELL_FACTOR, STACKED_SIDEWAYS,
+  stackedFaceBox, stackedVerticalGlyph, STACKED_CELL_FACTOR, STACKED_SIDEWAYS,
 } from './stacked-faces.js';
+import { stackedClusters, stackedVerticalForm } from './stacked-glyphs.js';
 
 // Arial 24 pt at 1 px/pt: cell = 7/6 × usWin (1.1172 em) × 24 = 31.28.
 const CELL = STACKED_CELL_FACTOR * (2288 / 2048) * 24;
@@ -186,19 +187,36 @@ describe('stacked face and character tables', () => {
     }
   });
 
-  it('turns only the measured set sideways and knows which faces have vertical glyphs', () => {
-    const cp = (c: string) => c.codePointAt(0) as number;
-    for (const c of '(（「、ー…∥') expect(stackedSidewaysCharacter(cp(c)), c).toBe(true);
-    for (const c of '，．：-!—ぁ〜A日') expect(stackedSidewaysCharacter(cp(c)), c).toBe(false);
-    // U+2225 is covered by Yu Gothic's vrt2 only, excluded by the vert policy.
-    expect(stackedVerticalGlyph('Yu Gothic', cp('∥'))).toBe(false);
-    expect(stackedVerticalGlyph('Meiryo', cp('∥'))).toBe(false);
-    expect(stackedVerticalGlyph('ＭＳ ゴシック', cp('（'))).toBe(true);
-    expect(stackedVerticalGlyph('Yu Gothic', cp('('))).toBe(false);
-    expect(stackedVerticalGlyph('Arial', cp('（'))).toBe(false);
-    expect(stackedVerticalGlyph('Yu Mincho Light', cp('（'))).toBe(true);
-    expect(stackedVerticalGlyph('Arial Unicode MS', cp('('))).toBe(true);
-    expect(stackedVerticalGlyph('No Such Face', cp('（'))).toBe(false);
+  it('measures only the measured set sideways, upright in faces with vert glyphs', () => {
+    const advances = { upright: 10, verticalGlyph: 20, rotated: (ch: string) => 30 + ch.length };
+    const kinds = (family: string, text: string) =>
+      stackedClusters(text, { family, bold: false, italic: false }, advances).map((c) => c.kind[0]).join('');
+    // u = upright, v = verticalGlyph (vert coverage), r = rotated.
+    expect(kinds('ＭＳ ゴシック', '(（「、ー…∥，．：-!—ぁ〜A日')).toBe('rvvvvvv' + 'u'.repeat(10));
+    // Yu Gothic/Meiryo cover ( and ∥ in vrt2 only: the vrt2-only rule rotates them.
+    expect(kinds('Yu Gothic', '(（∥')).toBe('rvr');
+    expect(kinds('Meiryo', '(（∥')).toBe('rvr');
+    expect(kinds('Arial', '(（')).toBe('rr');
+    expect(kinds('Yu Mincho Light', '（')).toBe('v');
+    expect(kinds('Arial Unicode MS', '(')).toBe('v');
+    expect(kinds('No Such Face', '（')).toBe('r');
+    // One cell per grapheme cluster, classed by its base; advances by class.
+    expect(stackedClusters('（́A(', { family: 'MS Gothic', bold: false, italic: false }, advances))
+      .toEqual([
+        { text: '（́', kind: 'verticalGlyph', advance: 20 },
+        { text: 'A', kind: 'upright', advance: 10 },
+        { text: '(', kind: 'rotated', advance: 31 },
+      ]);
+    // Paragraph markers stand upright whatever their characters.
+    expect(stackedClusters('（', { family: 'MS Gothic', bold: false, italic: false }, advances, true)[0].kind)
+      .toBe('upright');
+  });
+
+  it('draws a lone vertical glyph as its presentation form, never a cluster', () => {
+    expect(stackedVerticalForm('（')).toBe('︵');
+    expect(stackedVerticalForm('、')).toBe('︑');
+    expect(stackedVerticalForm('（́')).toBeNull();
+    expect(stackedVerticalForm('ー')).toBeNull();
   });
 });
 
