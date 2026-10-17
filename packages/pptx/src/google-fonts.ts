@@ -181,12 +181,12 @@ export function pptxFontPreloadNames(
   return accumulator.names();
 }
 
-/** Calibri tuples actually painted by this slide. DrawingML run properties
+const CSS_GENERIC_FAMILY_NAMES = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui']);
+
+/** Authored face tuples actually painted by this slide. DrawingML run properties
  * inherit through paragraph/body defaults (§21.1.2.3.9); theme tokens resolve
  * against the same major/minor values used by the renderer. Loading is delayed
  * until the slide is requested, so unused slides and styles fetch no assets. */
-const CSS_GENERIC_FAMILY_NAMES = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui']);
-
 export function pptxSlideOfficeFontRequests(
   slide: Slide,
   majorFont: string | null,

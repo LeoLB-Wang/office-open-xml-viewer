@@ -740,44 +740,6 @@ export function reviewProjectionIndexForDocument(
   return Object.freeze({ renderedRunIndex, completedSourceKeys });
 }
 
-/** Canonical paragraph sources that have an occurrence in the supplied layout.
- * Unlike the rendered-run index this includes empty and final-state-hidden
- * paragraphs, so a provisional review projection can distinguish content that
- * is already paginated from content that belongs to a future prefix. */
-export function completedParagraphSourceKeysForDocument(
-  layout: DocumentLayout,
-): ReadonlySet<string> {
-  const result = new Set<string>();
-  for (let pageIndex = 0; pageIndex < layout.pages.length; pageIndex += 1) {
-    const pageSources = pageGeometryIndex(layout, pageIndex, {
-      collectTextRuns: false,
-      collectTextRunSources: false,
-      collectCompletedParagraphSources: true,
-      collectDrawings: false,
-    }).completedParagraphSources;
-    for (const key of pageSources) result.add(key);
-  }
-  return result;
-}
-
-/**
- * Index retained drawings in page paint order. The projection is shared with
- * text-box painting, including vertical-page and page-owned anchor transforms.
- */
-export function drawingGeometryForPage(
-  layout: DocumentLayout,
-  pageIndex: number,
-): readonly DrawingGeometry[] {
-  const drawings = pageGeometryIndex(layout, pageIndex, {
-    collectTextRuns: false,
-    collectTextRunSources: false,
-    collectDrawings: true,
-  }).drawings;
-  drawings.sort((left, right) => left.paintOrderIndex - right.paintOrderIndex ||
-    left.sourceOrder - right.sourceOrder);
-  return Object.freeze(drawings);
-}
-
 /** Index selectable drawings and inline image/chart placements in page paint order. */
 export function elementGeometryForPage(
   layout: DocumentLayout,

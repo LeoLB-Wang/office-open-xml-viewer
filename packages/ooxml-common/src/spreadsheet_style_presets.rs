@@ -66,31 +66,6 @@ pub struct PresetElement {
     pub dxf: PresetDxf,
 }
 
-impl PresetDxf {
-    /// Theme indices this format references.
-    pub fn theme_indices(&self) -> impl Iterator<Item = u32> + '_ {
-        let font = self.font.and_then(|font| font.color);
-        let fill = self.fill.into_iter().flat_map(|fill| [fill.fg, fill.bg]);
-        let border = self.border.into_iter().flat_map(|border| {
-            [
-                border.left,
-                border.right,
-                border.top,
-                border.bottom,
-                border.horizontal,
-                border.vertical,
-            ]
-            .into_iter()
-            .map(|edge| edge.and_then(|edge| edge.color))
-        });
-        std::iter::once(font)
-            .chain(fill)
-            .chain(border)
-            .flatten()
-            .map(|color| color.theme)
-    }
-}
-
 // Small component dictionaries avoid repeating Option/f64 and string-pointer
 // padding in WASM for every Annex G Dxf. Zero denotes absence and
 // positive indices denote present components (including empty, style-less
