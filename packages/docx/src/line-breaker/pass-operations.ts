@@ -95,6 +95,9 @@ export interface PassOperationState extends LineBreakerPassInput {
     asc: number,
     desc: number,
   ) => void;
+  /** Join a metric-only marker's height to the current line (see
+   * `LayoutImageSeg.markerMetric`). */
+  readonly admitLineMetric: (s: LayoutImageSeg, h: number, asc: number, desc: number) => void;
   readonly measurement: LineMeasurementAdapter;
   readonly effectiveFontPx: (s: LayoutTextSeg) => number;
   readonly measureText: (s: LayoutTextSeg, clusterGeometry?: boolean) => TextMetrics;
@@ -1056,6 +1059,32 @@ export function performAddToLine(
   }
   if (segGridCount > breakerState.lineGridCountSingle)
     breakerState.lineGridCountSingle = segGridCount;
+}
+
+/** The vertical accounting `performAddToLine` gives an inline picture, for a
+ * metric-only picture-bullet marker that takes no width or segment slot: the
+ * line's height, ascent, descent, visible box, inline-picture leading and
+ * line-grid cell count include it exactly as they would the picture. */
+export function performAdmitLineMetric(
+  operationState: PassOperationState,
+  s: LayoutImageSeg,
+  h: number,
+  asc: number,
+  desc: number,
+): void {
+  const { breakerState, scale } = operationState;
+  if (h > breakerState.lineHeight) breakerState.lineHeight = h;
+  breakerState.lineHasInlinePicture = true;
+  breakerState.linePictureMarkSingle = Math.max(
+    breakerState.linePictureMarkSingle,
+    (s.paragraphMarkSinglePx ?? 0) * scale,
+  );
+  if (asc > breakerState.lineAscent) breakerState.lineAscent = asc;
+  if (desc > breakerState.lineDescent) breakerState.lineDescent = desc;
+  breakerState.lineHasVisibleMetrics = true;
+  if (asc > breakerState.lineVisibleAscent) breakerState.lineVisibleAscent = asc;
+  if (desc > breakerState.lineVisibleDescent) breakerState.lineVisibleDescent = desc;
+  if (asc + desc > breakerState.lineGridCountSingle) breakerState.lineGridCountSingle = asc + desc;
 }
 
 export function performSegNaturalAdvance(

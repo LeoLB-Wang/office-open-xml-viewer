@@ -1047,7 +1047,17 @@ fn load_document_parse_environment(zip: &mut Zip) -> DocumentParseEnvironment {
     if word_ilvl_error.is_none() {
         word_ilvl_error = validate_referenced_story_ilvls(zip, &rels_xml);
     }
-    let num_map = NumberingMap::parse(&numbering_xml, &numbering_media_map);
+    let mut num_map = NumberingMap::parse(&numbering_xml, &numbering_media_map);
+    // Picture bullets are sized from their picture's natural size
+    // (`picture_bullet`); read each distinct media part once.
+    let mut natural_sizes: HashMap<String, Option<(f64, f64)>> = HashMap::new();
+    num_map.resolve_picture_bullet_natural_sizes(|path| {
+        *natural_sizes.entry(path.to_string()).or_insert_with(|| {
+            read_zip_bytes(zip, path)
+                .ok()
+                .and_then(|bytes| crate::picture_bullet::natural_size_pt(&bytes))
+        })
+    });
     // §17.9.23 — fold each `<w:lvl><w:pStyle>` backlink into its style's
     // numbering level, now that both parts exist (see the method doc).
     style_map.resolve_numbering_level_backlinks(&num_map);
@@ -6123,14 +6133,43 @@ fn resolve_numbering_marker(
     };
     let (pic_bullet_image_path, pic_bullet_mime_type, pic_bullet_width_pt, pic_bullet_height_pt) =
         match picture_bullet {
-            // §17.9.20 defines no default size; absence stays absent so layout can
-            // resolve it against the retained marker font geometry.
-            Some(picture) => (
-                Some(picture.image_path),
-                Some(picture.mime_type),
-                picture.width_pt,
-                picture.height_pt,
-            ),
+            Some(picture) => {
+                // Word sizes a picture bullet automatically from its marker run
+                // (`picture_bullet::display_box`); a complex-script or
+                // right-to-left marker uses its complex-script size. A picture
+                // without a measured natural size keeps the VML extent, and
+                // §17.9.20 defines no default when that is absent too, so layout
+                // then resolves it against the marker font geometry.
+                let marker_size = font_facts.as_ref().map(|facts| {
+                    let complex = facts.rtl == Some(true) || facts.cs == Some(true);
+                    let size = if complex {
+                        facts.font_size_cs.or(facts.font_size)
+                    } else {
+                        facts.font_size
+                    };
+                    size.unwrap_or(10.0)
+                });
+                let sized = marker_size
+                    .zip(picture.natural_size_pt)
+                    .and_then(|(size, natural)| {
+                        crate::picture_bullet::display_box(
+                            size,
+                            picture.width_pt,
+                            picture.height_pt,
+                            natural,
+                        )
+                    });
+                let (width_pt, height_pt) = match sized {
+                    Some((width, height)) => (Some(width), Some(height)),
+                    None => (picture.width_pt, picture.height_pt),
+                };
+                (
+                    Some(picture.image_path),
+                    Some(picture.mime_type),
+                    width_pt,
+                    height_pt,
+                )
+            }
             None => (None, None, None, None),
         };
 

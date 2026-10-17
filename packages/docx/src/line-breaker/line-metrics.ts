@@ -314,6 +314,8 @@ export interface MarkLineMetrics {
   readonly gridAfterLeadingPx: number;
   readonly ascentPx: number;
   readonly descentPx: number;
+  /** The mark face's intended single-line height. */
+  readonly intendedSinglePx: number;
 }
 
 
@@ -330,6 +332,9 @@ export function paragraphMarkLineMetrics(
   textLayoutService?: TextLayoutService,
   markShapeInput?: NumberingMarkerShapeInput,
   useFeLayout = false,
+  // px — a picture bullet on an empty list item stands on the mark line's
+  // baseline: its height is a minimum ascent of the mark line.
+  minimumAscentPx = 0,
 ): MarkLineMetrics {
   const effectiveMarkShapeInput = markShapeInput;
   // ECMA-376 §17.3.2.26 `w:rFonts@w:hint`: an empty paragraph has no code
@@ -337,7 +342,12 @@ export function paragraphMarkLineMetrics(
   // the face used to measure the mark. It does NOT make an otherwise Latin-only
   // paragraph occupy East-Asian docGrid cells: grid-cell classification remains
   // content/document based, independently of font routing.
-  const markUsesEastAsianFace = eastAsian || effectiveMarkShapeInput?.fontHint === 'eastAsia';
+  // Observed Windows Word (16.0): beside a picture bullet the empty mark keeps
+  // its own (non-East-Asian) face in an East Asian document: a 15 pt bullet
+  // over a 10.5 pt Arial/MS Mincho mark fills one 18 pt grid cell with the
+  // Arial descent (baseline 87.35 pt), where the East Asian box would take two.
+  const markUsesEastAsianFace = (eastAsian && minimumAscentPx <= 0)
+    || effectiveMarkShapeInput?.fontHint === 'eastAsia';
   const forceCs = effectiveMarkShapeInput?.complexScript === true;
   const fs = effectiveMarkShapeInput?.fontSizePt ?? getDefaultFontSize(para);
   const authoredFamily = getDefaultFontFamily(para, markUsesEastAsianFace);
@@ -457,6 +467,14 @@ export function paragraphMarkLineMetrics(
     asc = designSides.designAscentRatio! * fs * scale;
     desc = designSides.designDescentRatio! * fs * scale;
   }
+  // Observed Windows Word (16.0): an empty list item's picture bullet makes
+  // the mark line max(mark ascent, picture height) high above the baseline,
+  // and that whole box then follows the paragraph's line rule: an automatic
+  // multiple multiplies it (40 pt bullet, 10 pt mark: 42.1, 63.3 and 84.3 pt
+  // at 1, 1.5 and 2), atLeast keeps the larger of the two (42.1 at 18 pt,
+  // 60 at 60 pt) and a line grid counts cells from it (3 cells of 18 pt).
+  // Exact spacing ignores the picture (the caller passes no minimum).
+  asc = Math.max(asc, minimumAscentPx);
   const resourceRatio = markUsesEastAsianFace
     ? resolvedLocalFont?.eastAsianLineHeightRatio ?? resolvedLocalFont?.lineHeightRatio
     : resolvedLocalFont?.lineHeightRatio;
@@ -470,7 +488,10 @@ export function paragraphMarkLineMetrics(
   // Keep an untabled mark on the same 1.3em grid fallback as visible text.
   const intendedSingle = Math.max(designIntendedSingle, (nativeMarkRatio ?? 0) * fs * scale);
   const gridCountSingle = eastAsian
-    ? eastAsianGridCountSinglePx(designIntendedSingle, fs * scale)
+    ? Math.max(
+        eastAsianGridCountSinglePx(designIntendedSingle, fs * scale),
+        minimumAscentPx > 0 ? asc + desc : 0,
+      )
     : undefined;
   const ordinaryAdvancePx = lineBoxHeight(
     effectiveLineSpacing,
@@ -535,7 +556,7 @@ export function paragraphMarkLineMetrics(
     ? Math.max(0, Math.min((advancePx - ownAdvancePx) / 2,
         lineBelowBaselinePx(advancePx, asc, desc) - desc))
     : 0;
-  return { advancePx, gridAfterLeadingPx, ascentPx: asc, descentPx: desc };
+  return { advancePx, gridAfterLeadingPx, ascentPx: asc, descentPx: desc, intendedSinglePx: intendedSingle };
 }
 
 

@@ -18,6 +18,7 @@ mod markdown;
 mod math;
 mod numbering;
 mod parser;
+mod picture_bullet;
 mod ref_bookmark_flow;
 mod styles;
 mod types;

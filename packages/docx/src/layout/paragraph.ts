@@ -2849,7 +2849,9 @@ function numberingMarkerHostLine(
     line: {
       range: { start: 0, end: 0 },
       topPt: measured.contentStartYPt,
-      baselinePt: measured.contentEndYPt - measured.lastLineBelowBaselinePt,
+      baselinePt: measured.markPictureBaselineOffsetPt === undefined
+        ? measured.contentEndYPt - measured.lastLineBelowBaselinePt
+        : measured.contentStartYPt + measured.markPictureBaselineOffsetPt,
       advancePt,
       xOffsetPt: 0,
       availableWidthPt,
@@ -5061,6 +5063,9 @@ export function acquireParagraphResult(
       paragraphMarkShapeInput: paragraph.paragraphMarkShapeInput,
       ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
         firstLineNumberingMarkerBox: numberingPlan.lineBox,
+      } : {}),
+      ...(paragraph.numbering?.picBulletImagePath && paragraph.numbering.picBulletHeightPt != null ? {
+        firstLinePictureMarkerHeightPt: paragraph.numbering.picBulletHeightPt,
       } : {}),
     },
     continuation,

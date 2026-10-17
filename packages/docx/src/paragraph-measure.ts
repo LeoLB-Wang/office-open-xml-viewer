@@ -14,6 +14,7 @@ import {
   type DocGridCtx,
   type LineBoundary,
   type LayoutLine,
+  type LayoutImageSeg,
   type LineLayoutEnvironment,
   type WrapLayoutCtx,
 } from './line-layout.js';
@@ -39,6 +40,9 @@ export interface ParagraphMeasurementEnvironment extends LineLayoutEnvironment {
   readonly paragraphMarkShapeInput?: NumberingMarkerShapeInput;
   /** Selected-face text marker box, resolved by retained numbering before line acquisition. */
   readonly firstLineNumberingMarkerBox?: Readonly<{ ascentPt: number; descentPt: number; intendedSinglePt?: number }>;
+  /** Display height of a sized picture-bullet marker, which stands on the
+   * paragraph's first baseline (see `markerMetric` in the line breaker). */
+  readonly firstLinePictureMarkerHeightPt?: number;
   /** Canonical section writing mode used by retained page geometry. */
   readonly pageWritingMode: WritingMode;
   /** The paragraph is acquired in a section-logical frame that paint rotates
@@ -95,6 +99,9 @@ export interface MeasuredParagraph {
    * invisible mark box grazes past the bottom content edge.
    */
   readonly lastLineBelowBaselinePt: number;
+  /** Draw-only baseline of a mark-only line that carries a picture bullet,
+   * measured from `contentStartYPt` (see `measureMarkOnly`). */
+  readonly markPictureBaselineOffsetPt?: number;
   readonly placement: Readonly<ParagraphPlacement>;
 }
 
@@ -167,6 +174,17 @@ export function measureParagraph(
   // when the document contains no literal CJK code point.
   const markUsesEastAsianGrid = environment.documentHasEastAsianText === true
     || environment.useFeLayout === true;
+  // Observed Windows Word (16.0): a picture bullet stands on its paragraph's
+  // first baseline and takes part in that line's box except under exact
+  // spacing, whose line box and baseline are the same with or without it
+  // (15 and 2.25 pt bullets, text and empty items: baseline 14.1-14.3 pt below
+  // an 18 pt exact line's top in every case); the picture then overflows.
+  const pictureMarkerHeight = continuation
+    || (context.lineSpacing?.rule === 'exact' && context.lineSpacing.value > 0)
+    ? undefined : environment.firstLinePictureMarkerHeightPt;
+  const firstLinePictureMarkerHeightPt = pictureMarkerHeight !== undefined
+    && Number.isFinite(pictureMarkerHeight) && pictureMarkerHeight > 0
+    ? pictureMarkerHeight : undefined;
 
   let cursorPt = placement.startYPt
     + (placement.suppressSpaceBefore ? 0 : requestedSpaceBeforePt);
@@ -199,6 +217,7 @@ export function measureParagraph(
       environment.layoutServices?.text,
       environment.paragraphMarkShapeInput,
       environment.useFeLayout === true,
+      firstLinePictureMarkerHeightPt ?? 0,
     );
     const markAdvancePt = markMetrics.advancePx;
     let markWrapBounds: MeasuredParagraph['markWrapBounds'];
@@ -224,8 +243,22 @@ export function measureParagraph(
           widthPt: window.maximumWidthPt, heightPt: markAdvancePt };
       }
     }
+    // Observed Windows Word (16.0): a picture bullet on an empty item stands
+    // on the mark line's baseline, which an automatic multiple pins to the top
+    // of its box like a text line's (WORD_AUTO_MULTIPLE_BASELINE_PIN): 15 and
+    // 40 pt bullets at 1.5 and 2.0 start at the line's top, and 2.25 and 6 pt
+    // ones stand at the mark ascent below it. This is draw-only; pagination
+    // keeps the centred trailing-mark metric below.
+    const lineSpacing = context.lineSpacing;
+    const markPictureBaselineOffsetPt = firstLinePictureMarkerHeightPt !== undefined
+      && lineSpacing?.rule === 'auto' && lineSpacing.value > 1
+      && !context.hasRuby && !context.lineGrid.active
+      ? (Math.max(markMetrics.ascentPx + markMetrics.descentPx, markMetrics.intendedSinglePx)
+        - markMetrics.ascentPx - markMetrics.descentPx) / 2 + markMetrics.ascentPx
+      : undefined;
     return {
       ...(markWrapBounds ? { markWrapBounds } : {}),
+      ...(markPictureBaselineOffsetPt === undefined ? {} : { markPictureBaselineOffsetPt }),
       lines: [],
       markOnly: true,
       requestedSpaceBeforePt,
@@ -251,6 +284,22 @@ export function measureParagraph(
     autoSpaceDN: paragraph.autoSpaceDN,
   });
   if (segments.length === 0) return measureMarkOnly();
+  const pictureMarkerHeightPt = firstLinePictureMarkerHeightPt;
+  if (pictureMarkerHeightPt !== undefined) {
+    // Observed Windows Word (16.0): a picture bullet takes part in its first
+    // line like an inline picture of that height standing on the baseline
+    // (automatic multiples add the text's own leading only, atLeast keeps the
+    // larger box, a line grid counts cells from the union of the picture and
+    // the text below the baseline, ruby forms one union with it). A
+    // metric-only segment carries that height into the line breaker's
+    // inline-picture accounting without taking width, a break opportunity or
+    // paint; the marker itself is painted separately.
+    segments.unshift({
+      imagePath: '', mimeType: '', widthPt: 0, heightPt: pictureMarkerHeightPt,
+      inlinePicture: true, markerMetric: true,
+      anchor: false, anchorXPt: 0, anchorYPt: 0, anchorXFromMargin: false, anchorYFromPara: false,
+    } as LayoutImageSeg);
+  }
 
   if (context.lineSpacing?.rule === 'auto'
     && context.lineSpacing.value > 1
@@ -342,6 +391,14 @@ export function measureParagraph(
         ? specifiedTextLineMetrics(line, context, paragraph, environment.compatibilityMode,
             environment.verticalPageFrame === true, environment.paragraphMarkShapeInput)
         : null;
+      // Observed Windows Word (16.0): a picture bullet that supplies an East
+      // Asian line's ascent counts grid cells together with the text's
+      // descent: a 15 pt bullet over 10.5 pt East Asian text takes two cells
+      // of an 18 pt grid (baseline centred, 96.0 pt) and one of a 24 pt grid.
+      const pictureMarkerGridCountPt = lineIndex === 0 && pictureMarkerHeightPt !== undefined
+        && pictureMarkerHeightPt >= line.ascent
+        ? Math.max(line.gridCountSingle, line.ascent + line.descent)
+        : undefined;
       let advancePt = specified ? specified.advancePt : markerRaisesBox
         ? markerNaturalPt + textSinglePt * ((context.lineSpacing?.value ?? 1) - 1)
         : context.hasRuby
@@ -357,7 +414,7 @@ export function measureParagraph(
             // §17.6.5 cell rounding is gated by the line's script; a Latin-only
             // line in a CJK paragraph keeps its natural height.
             line.eastAsian ?? false,
-            line.gridCountSingle,
+            pictureMarkerGridCountPt ?? line.gridCountSingle,
             undefined,
             line.uniformPositionAuto,
             line.inlinePictureTextSingle,
@@ -374,8 +431,12 @@ export function measureParagraph(
         // Only an object supplying the line's ascent owns this allocation.
         // A small object beside taller text must retain that text's grid policy.
         && line.ascent + line.descent >= line.intendedSingle
-        && line.segments.some((segment) => 'imagePath' in segment && !segment.anchor
-          && segment.heightPt >= line.ascent)) {
+        && (line.segments.some((segment) => 'imagePath' in segment && !segment.anchor
+          && segment.heightPt >= line.ascent)
+          // A picture-bullet marker on the first line is that inline object
+          // (Word: a 40 pt bullet on an 18 pt grid takes 3 whole cells).
+          || (lineIndex === 0 && pictureMarkerHeightPt !== undefined
+            && pictureMarkerHeightPt >= line.ascent))) {
         advancePt = snapParagraphLineToGrid(advancePt, grid);
       }
       allocations.push({ layout: line, advancePt });
