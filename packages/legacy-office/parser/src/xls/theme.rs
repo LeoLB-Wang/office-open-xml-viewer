@@ -123,7 +123,12 @@ impl Colors {
         let entries = preflight(bytes)?;
         // Share actual decoder-input work across the entire relationship chain.
         let mut work_budget = super::MAX_RECORDS;
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        // Preflight proved the directory ends at its EOCD with no prefix, so
+        // open at offset 0 rather than letting the reader scan for signatures.
+        let config = zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        };
+        let mut archive = zip::ZipArchive::with_config(config, Cursor::new(bytes))
             .map_err(|_| unsupported("invalid BIFF theme ZIP"))?;
         let mut names = BTreeSet::new();
         let mut total = 0u64;

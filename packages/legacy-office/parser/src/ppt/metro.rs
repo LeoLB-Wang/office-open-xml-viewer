@@ -220,8 +220,15 @@ fn theme_part(
     work_budget: &mut usize,
 ) -> Result<String, String> {
     let unreadable = || unsupported("unreadable PowerPoint round-trip theme");
-    let mut archive =
-        zip::ZipArchive::new(std::io::Cursor::new(package)).map_err(|_| unreadable())?;
+    // The budgeted footer/index preflight opens at the validated archive
+    // offset, so the ZIP reader never scans the payload for signatures.
+    let mut archive = zip_index::open(package, work_budget).map_err(|error| {
+        if error.starts_with("UNSUPPORTED:") {
+            unreadable()
+        } else {
+            error
+        }
+    })?;
     if archive.len() > MAX_THEME_ENTRIES {
         return Err(crate::rejection::resource(
             "PowerPoint theme ZIP entry budget exceeded",

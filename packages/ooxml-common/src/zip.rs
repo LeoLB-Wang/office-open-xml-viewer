@@ -958,7 +958,7 @@ fn read_entry<R: std::io::Read>(
             // proven policy crossing. Recording it latches limit+1.
             let count = entry
                 .read(&mut chunk[..1])
-                .map_err(|e| format!("read error: {e}"))?;
+                .map_err(|e| read_failure(e, part_id, path, observed))?;
             if count == 0 {
                 break;
             }
@@ -970,7 +970,7 @@ fn read_entry<R: std::io::Read>(
         let remaining = ordinary_limit - observed;
         let count = entry
             .read(&mut chunk[..remaining.min(READ_CHUNK_BYTES as u64) as usize])
-            .map_err(|e| format!("read error: {e}"))?;
+            .map_err(|e| read_failure(e, part_id, path, observed))?;
         if count == 0 {
             break;
         }
@@ -981,6 +981,25 @@ fn read_entry<R: std::io::Read>(
         bytes.extend_from_slice(&chunk[..count]);
     }
     Ok(bytes)
+}
+
+/// The ZIP reader stops an entry once its output passes the declared size,
+/// after the decoder has already produced at least one more byte. Charge that
+/// proven byte first, so an actual-inflation limit crossing stays the typed
+/// resource error (matching the retained session's decoder) rather than being
+/// masked by the integrity error.
+fn read_failure(error: std::io::Error, part_id: usize, path: &str, observed: u64) -> String {
+    if error.kind() == std::io::ErrorKind::InvalidData
+        && error
+            .to_string()
+            .contains("larger than its declared uncompressed size")
+    {
+        if let Err(limit) = resource::observe_inflated(part_id, path, observed.saturating_add(1), 1)
+        {
+            return limit;
+        }
+    }
+    format!("read error: {error}")
 }
 
 /// Open one package and extract a single entry under an ephemeral resource
@@ -1448,6 +1467,7 @@ mod tests {
             .windows(4)
             .position(|window| window == 0x0201_4b50u32.to_le_bytes())
             .expect("central-directory header");
+        let forged = bytes.clone();
         bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
 
         let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, Some(64), Some(64), None);
@@ -1460,6 +1480,23 @@ mod tests {
             "{error}"
         );
         assert!(governor.first_error().is_none());
+
+        // When the declaration equals the entry limit, the first byte past it
+        // is also an actual-inflation crossing and must stay typed.
+        let mut bytes = forged.clone();
+        bytes[22..26].copy_from_slice(&4u32.to_le_bytes());
+        bytes[central + 24..central + 28].copy_from_slice(&4u32.to_le_bytes());
+        let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, Some(4), Some(64), None);
+        let _scope = governor.scope("parse");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        validate_archive_limits(&mut archive).unwrap();
+        let error = read_zip_bytes(&mut archive, "word/document.xml").unwrap_err();
+        let json = details(&error);
+        let violation = &json["details"]["violation"];
+        assert_eq!(violation["metric"], "actual-inflated-bytes");
+        assert_eq!(violation["limit"], 4);
+        assert_eq!(violation["observed"], 5);
+        assert!(governor.first_error().is_some());
     }
 
     #[test]
