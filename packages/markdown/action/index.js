@@ -6,8 +6,8 @@
 // artifact without `npm install` in the runner.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readdirSync, mkdirSync } from 'node:fs';
-import { resolve, join, extname, dirname, basename } from 'node:path';
+import { existsSync, lstatSync, readdirSync, mkdirSync, realpathSync } from 'node:fs';
+import { resolve, join, extname, dirname, basename, relative, isAbsolute } from 'node:path';
 
 const INPUT_FILES = process.env.INPUT_FILES ?? '';
 const INPUT_OUT_DIR = process.env['INPUT_OUT-DIR'] ?? '';
@@ -16,6 +16,21 @@ const INPUT_COMMIT = (process.env.INPUT_COMMIT ?? 'false').toLowerCase() === 'tr
 if (!INPUT_FILES) {
   console.error('::error::No files input provided');
   process.exit(1);
+}
+
+// Repository contents are untrusted: a committed symlink must not make the
+// action read documents from, or write Markdown to, anywhere outside the
+// checked-out workspace.
+const WORKSPACE = realpathSync(process.env.GITHUB_WORKSPACE || process.cwd());
+function insideWorkspace(path) {
+  let real;
+  try {
+    real = realpathSync(path);
+  } catch {
+    return false;
+  }
+  const offset = relative(WORKSPACE, real);
+  return offset === '' || (!offset.startsWith('..') && !isAbsolute(offset));
 }
 
 // Tiny glob: supports `**/*.ext` and direct paths. For anything fancier,
@@ -38,9 +53,16 @@ function match(filesGlob) {
   if (filesGlob.includes('**')) {
     const [base, rest] = filesGlob.split('**');
     const ext = rest.split('.').pop();
-    return walk(resolve(base || '.'), (f) => f.toLowerCase().endsWith('.' + ext.toLowerCase()));
+    const root = resolve(base || '.');
+    if (!insideWorkspace(root)) {
+      console.error(`::warning::Pattern "${filesGlob}" is outside the workspace`);
+      return [];
+    }
+    return walk(root, (f) => f.toLowerCase().endsWith('.' + ext.toLowerCase()));
   }
-  if (existsSync(filesGlob) && lstatSync(filesGlob).isFile()) return [resolve(filesGlob)];
+  if (existsSync(filesGlob) && lstatSync(filesGlob).isFile() && insideWorkspace(filesGlob)) {
+    return [resolve(filesGlob)];
+  }
   console.error(`::warning::Pattern "${filesGlob}" matched no files`);
   return [];
 }
@@ -58,6 +80,16 @@ for (const src of matched) {
   const targetDir = INPUT_OUT_DIR ? resolve(INPUT_OUT_DIR) : dirname(src);
   mkdirSync(targetDir, { recursive: true });
   const out = join(targetDir, basename(src, ext) + '.md');
+  let existing = null;
+  try {
+    existing = lstatSync(out);
+  } catch {}
+  if (!insideWorkspace(targetDir) || (existing && !existing.isFile())) {
+    // An output directory outside the workspace, or an output path that is a
+    // symlink, would let the conversion overwrite an arbitrary file.
+    console.error(`::error::Refusing to write ${out}: not a regular file inside the workspace`);
+    continue;
+  }
   try {
     // Repository file names are untrusted: pass them as argv entries, never
     // through a shell command line where `$(...)`, backticks or quotes in a
