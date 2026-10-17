@@ -6384,19 +6384,21 @@ mod threaded_comment_tests {
     }
 
     /// Sheet names, cell values and review comments are document text: they
-    /// reach the Markdown projection as literal text, while the converter's
-    /// own heading, table and quote syntax stays intact.
+    /// reach the Markdown projection as literal text (no links, HTML,
+    /// entities, strikethrough, code fences or line-start blocks), while the
+    /// converter's own heading, table and quote syntax stays intact. A lone
+    /// CR in a comment cannot end the quote.
     #[test]
     fn markdown_sheet_names_cells_and_comments_cannot_inject_markup() {
         const ATTACK: &str = "&lt;img src=x onerror=alert(1)&gt; [x](javascript:alert(1))";
         let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="&lt;b&gt;_x_ #" sheetId="1" r:id="rSheet1"/></sheets></workbook>"#;
         let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rSheet1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rPersons" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/></Relationships>"#;
         let worksheet = format!(
-            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{ATTACK}</t></is></c><c r="B1" t="inlineStr"><is><t xml:space="preserve">a|b&#13;c&#10;d, 50% done</t></is></c></row></sheetData></worksheet>"#
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{ATTACK}</t></is></c><c r="B1" t="inlineStr"><is><t xml:space="preserve">a|b&#13;c&#10;d, 50% done</t></is></c><c r="C1" t="inlineStr"><is><t xml:space="preserve">&amp;copy; ~~x~~</t></is></c></row></sheetData></worksheet>"#
         );
         let worksheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rThread" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/></Relationships>"#;
         let threaded_comments = format!(
-            r#"<ThreadedComments xmlns="{TC_NS}"><threadedComment ref="A1" personId="{{p1}}" id="thread-1"><text>{ATTACK}</text></threadedComment></ThreadedComments>"#,
+            r#"<ThreadedComments xmlns="{TC_NS}"><threadedComment ref="A1" personId="{{p1}}" id="thread-1"><text>{ATTACK}&#13;&#13;```&#13;- outside</text></threadedComment></ThreadedComments>"#,
         );
         let persons = r#"<personList><person id="{p1}" displayName="[a](javascript:alert(1))"/></personList>"#;
 
@@ -6427,7 +6429,7 @@ mod threaded_comment_tests {
         let escaped = r"\<img src=x onerror=alert(1)> \[x\](javascript:alert(1))";
         assert!(
             markdown.starts_with(&format!(
-                "## \\<b>\\_x\\_ \\#\n\n| {escaped} | a\\|b<br>c<br>d, 50% done |\n| --- | --- |\n"
+                "## \\<b>\\_x\\_ \\#\n\n| {escaped} | a\\|b<br>c<br>d, 50% done | \\&copy; \\~\\~x\\~\\~ |\n| --- | --- | --- |\n"
             )),
             "{markdown}"
         );
@@ -6437,7 +6439,7 @@ mod threaded_comment_tests {
         );
         assert!(
             markdown.contains(&format!(
-                "> **\\[a\\](javascript:alert(1))**\n>\n> {escaped}\n"
+                "> **\\[a\\](javascript:alert(1))**\n>\n> {escaped}\n> \n> \\`\\`\\`\n> \\- outside\n"
             )),
             "{markdown}"
         );

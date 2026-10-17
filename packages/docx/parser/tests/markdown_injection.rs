@@ -149,3 +149,47 @@ fn review_comments_and_note_labels_cannot_inject_markdown_links_or_html() {
         "{markdown}"
     );
 }
+
+/// Document text cannot form Markdown structure either: entities,
+/// strikethrough and code fences stay literal, a heading keeps its trailing
+/// `#`s, a line break inside a table cell stays inside the cell, block
+/// markers at a line start (including an ordered-list marker split across
+/// runs) do not open blocks, and a lone CR in a comment cannot end the quote.
+#[test]
+fn document_text_cannot_form_blocks_entities_or_fences() {
+    let document = format!(
+        r#"<w:document xmlns:w="{W_NS}"><w:body><w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t xml:space="preserve">Topic ###</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>first</w:t><w:br/><w:t xml:space="preserve"># forged</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>a|b</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>1</w:t></w:r><w:r><w:t xml:space="preserve">. split</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">~~deleted~~ &amp;copy;</w:t></w:r></w:p><w:p><w:r><w:t>```</w:t></w:r><w:r><w:br/></w:r><w:r><w:t xml:space="preserve">&gt; quoted</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#
+    );
+    let rels = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="c" Type="{R_NS}/comments" Target="comments.xml"/></Relationships>"#
+    );
+    let comments = format!(
+        r#"<w:comments xmlns:w="{W_NS}"><w:comment w:id="1" w:author="A"><w:p><w:r><w:t xml:space="preserve">alpha&#13;&#13;~~~&#13;outside</w:t></w:r></w:p></w:comment></w:comments>"#
+    );
+    let bytes = package(&[
+        ("word/document.xml", document),
+        ("word/_rels/document.xml.rels", rels),
+        ("word/comments.xml", comments),
+    ]);
+
+    let markdown = to_markdown_native(&bytes).expect("markdown projects");
+
+    assert!(markdown.starts_with("# Topic \\#\\#\\#\n"), "{markdown}");
+    assert!(
+        markdown.contains("| first<br># forged | a\\|b |\n| --- | --- |\n"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("\n1\\. split\n"), "{markdown}");
+    assert!(
+        markdown.contains("\n\\~\\~deleted\\~\\~ \\&copy;\n"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("\n\\`\\`\\`  \n\\> quoted\n"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("> alpha\n> \n> \\~\\~\\~\n> outside\n"),
+        "{markdown}"
+    );
+}

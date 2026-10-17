@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
-use ooxml_common::markdown::{escape_text, TextContext};
+use ooxml_common::markdown::{escape_text, split_lines, TextContext};
 use serde_json::Value;
 
 use crate::types::SharedString;
@@ -384,7 +384,7 @@ pub(crate) fn render_sheet_comments(
 /// doubles the author and the text, and every text line gains the prefix, a
 /// space and a newline.
 fn quoted_comment_bound(author: &str, text: &str, prefix: &str) -> u64 {
-    let lines = text.bytes().filter(|&b| b == b'\n').count() as u64 + 1;
+    let lines = ooxml_common::markdown::line_count_bound(text);
     (2 * author.len() as u64)
         .saturating_add(2 * text.len() as u64)
         .saturating_add(lines.saturating_mul(prefix.len() as u64 + 2))
@@ -398,7 +398,7 @@ fn write_quoted_comment(author: &str, text: &str, prefix: &str, status: &str, ou
     if text.is_empty() {
         let _ = writeln!(out, "{prefix}");
     } else {
-        for line in text.lines() {
+        for line in split_lines(text) {
             let _ = writeln!(out, "{prefix} {}", escape_text(line, TextContext::Inline));
         }
     }
@@ -509,6 +509,18 @@ mod tests {
             .expect_err("over budget");
         assert!(observed > 1 << 20);
         assert!(out.len() < (1 << 20) + 64 * 1024, "{}", out.len());
+    }
+
+    /// The admission bound covers the worst-case expansion: every lone CR
+    /// starts a prefixed line and every character is escaped.
+    #[test]
+    fn comment_bound_covers_lone_cr_lines_and_escaping() {
+        for text in ["\r".repeat(512), "#\r".repeat(256), "&~".repeat(256)] {
+            let mut out = String::new();
+            write_quoted_comment("*_", &text, ">>", " (resolved)", &mut out);
+            let bound = quoted_comment_bound("*_", &text, ">>");
+            assert!(out.len() as u64 <= bound, "{} > {bound}", out.len());
+        }
     }
 
     /// One oversized comment is rejected from its size bound before any of

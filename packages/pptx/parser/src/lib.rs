@@ -4087,7 +4087,8 @@ mod tests {
     /// Slide titles, table cells, equations, speaker notes and review
     /// comments carry document text into the Markdown projection too. It must
     /// read as literal text while the converter's own heading, table and quote
-    /// syntax stays intact.
+    /// syntax stays intact: no links, HTML, entities, strikethrough, code
+    /// fences or line-start blocks, and a lone CR cannot end a comment quote.
     #[test]
     fn markdown_titles_tables_notes_and_comments_cannot_inject_markup() {
         use std::io::{Read, Write};
@@ -4118,15 +4119,20 @@ mod tests {
                 "",
                 r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><mc:Choice Requires="a14"><a14:m><m:oMath><m:r><m:t>&lt;img src=x onerror=alert(2)&gt;</m:t></m:r></m:oMath></a14:m></mc:Choice><mc:Fallback/></mc:AlternateContent>"#,
             ),
+            text_shape(
+                5,
+                "",
+                "<a:r><a:t>- item ~~del~~ &amp;copy;</a:t></a:r>",
+            ),
         ]
         .concat();
         let rels = r#"<Relationship Id="rNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/><Relationship Id="rComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments/comment1.xml"/>"#;
         let base = build_align_pptx_with_rels(&slide_sp, "", "", rels, "", "");
         let notes = format!(
-            r#"<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><a:p><a:r><a:t>{ATTACK}</a:t></a:r></a:p></p:spTree></p:cSld></p:notes>"#
+            r#"<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><a:p><a:r><a:t>{ATTACK}&#13;```&#13;# h</a:t></a:r></a:p></p:spTree></p:cSld></p:notes>"#
         );
         let comments = format!(
-            r#"<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cm authorId="0"><p:text>{ATTACK}</p:text></p:cm></p:cmLst>"#
+            r#"<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cm authorId="0"><p:text>{ATTACK}&#13;&#13;outside</p:text></p:cm></p:cmLst>"#
         );
         let mut source = zip::ZipArchive::new(Cursor::new(base)).unwrap();
         let mut data = Vec::new();
@@ -4167,10 +4173,19 @@ mod tests {
             "{markdown}"
         );
         assert!(
-            markdown.contains(&format!("## Speaker notes\n\n{escaped}\n")),
+            markdown.contains("\n\\- item \\~\\~del\\~\\~ \\&copy;\n"),
             "{markdown}"
         );
-        assert!(markdown.contains(&format!("> {escaped}\n")), "{markdown}");
+        assert!(
+            markdown.contains(&format!(
+                "## Speaker notes\n\n{escaped}\r\\`\\`\\`\r\\# h\n"
+            )),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(&format!("> {escaped}\n> \n> outside\n")),
+            "{markdown}"
+        );
         assert!(
             !markdown.contains(" <img") && !markdown.contains("[x]("),
             "{markdown}"

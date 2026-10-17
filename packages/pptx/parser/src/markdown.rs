@@ -2,7 +2,7 @@
 //! feed canonical slides through this one bounded writer and renderer.
 
 use crate::types::*;
-use ooxml_common::markdown::{escape_text, TextContext};
+use ooxml_common::markdown::{escape_text, split_lines, TextContext};
 use ooxml_common::math::nodes_to_text;
 use std::cell::Cell;
 use std::fmt;
@@ -474,7 +474,7 @@ fn write_quoted_comment_md(
     if text.is_empty() {
         let _ = writeln!(out, "{prefix}");
     } else {
-        for line in text.lines() {
+        for line in split_lines(text) {
             out.push_str(prefix);
             out.push(' ');
             write_escaped_inline_md(line, out);
