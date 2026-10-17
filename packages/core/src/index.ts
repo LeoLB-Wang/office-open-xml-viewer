@@ -247,7 +247,7 @@ export { hexToRgba, relativeLuma, autoContrastColor, resolveFill, usesPathShade,
 export { trackPaintPath, currentStrokeBounds } from './shape/paint-bounds';
 export { measurePaintBounds } from './shape/measure-paint-bounds';
 export type { FillOutline } from './shape/path-gradient';
-export { buildShapePath, drawStar, drawPolygon, ooxmlArcTo } from './shape/preset';
+export { buildShapePath } from './shape/preset';
 export {
   paintDrawingMLShape,
   clipDrawingMLShape,
@@ -444,9 +444,9 @@ export { decodedBitmapTargetResizeOptions } from './image/raster-target';
 // renderers' picture-decode paths.
 export { preferVectorBlip } from './image/blip-gate';
 // ECMA-376 §20.1.9 spec-driven preset geometry engine (presets.json from
-// presetShapeDefinitions.xml). Coexists with the legacy hand-rolled
-// `buildShapePath` above, which the pptx renderer still uses as a silhouette /
-// fallback codepath. Consolidating the two is intentionally out of scope here.
+// presetShapeDefinitions.xml). `buildShapePath` above is only the fallback for
+// names the engine does not define (`rect`, schema-invalid values) and routes
+// every spec-defined name back to this engine.
 export {
   renderPresetShape,
   hasPreset,

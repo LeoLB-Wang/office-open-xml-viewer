@@ -4154,14 +4154,12 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   const custTailTrim = custEnds?.end ? tailTrim : 0;
 
   // ── Dispatch to preset engine when possible ────────────────────────────
-  // Preference order: custGeom → generic preset engine → legacy switch.
+  // Preference order: custGeom → generic preset engine → buildShapePath
+  // (only `rect` or a schema-invalid name, which the engine does not define).
   // `arc` (ECMA-376 §20.1.10.56 ST_ShapeType "arc") goes through the engine
   // too: its presetShapeDefinitions geometry is a two-<path> shape — path 0
   // (stroke="false") fills the pie wedge (arc + lnTo centre + close) and path 1
-  // (fill="none") strokes only the open arc edge. The engine honours those
-  // per-path fill/stroke flags, so arc renders its true pie-wedge fill + open
-  // outline. The legacy buildShapePath could only draw the open arc (filling it
-  // auto-closes into a *chord*), which is why arc used to be excluded here.
+  // (fill="none") strokes only the open arc edge.
   const usePresetEngine =
     !el.custGeom && hasPreset(geom);
 
@@ -4279,18 +4277,15 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     if (el.custGeom && el.custGeom.length > 0) {
       buildCustomPath(target, el.custGeom, bx, by, bw, bh);
     } else if (usePresetEngine) {
-      // Silhouette of a preset shape: build a single filled outline. Preset
-      // path 0 is the body outline (secondary paths are highlights), so the
-      // legacy buildShapePath gives a faithful silhouette of the body.
+      // Silhouette of a preset shape. buildShapePath resolves spec-defined
+      // names through the ECMA-376 preset engine (all of its paths).
       buildShapePath(target, geom, bx, by, bw, bh, el.adj, el.adj2, el.adj3, el.adj4);
     } else {
       buildShapePath(target, geom, bx, by, bw, bh, el.adj, el.adj2, el.adj3, el.adj4);
     }
-    // Normal arc bodies render through the preset engine above; this legacy
-    // path is only reached for an arc as a custGeom/effect silhouette built by
-    // buildShapePath, which draws the OPEN arc — filling that auto-closes into
-    // a chord, not the pie wedge. So skip the fill for arc here (the engine,
-    // not this branch, owns arc's pie-wedge fill).
+    // Arc bodies render through the preset engine above, which owns arc's
+    // pie-wedge fill (path 0) and open-arc stroke (path 1); never fill an arc
+    // outline here, where both paths would be filled together.
     if (paintImageFill && geom !== 'arc') {
       if (paintImageFill(target)) tClearShadow();
     } else if (tFill && geom !== 'arc') {

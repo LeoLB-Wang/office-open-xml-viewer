@@ -96,13 +96,13 @@ export function resolveDrawingMLGeometry(plan: DrawingMLShapePaintPlan, scale: n
         else add(path.path, path.fill, path.stroke && !(decorated && trailing) ? stroke : null);
       });
     } else {
+      // Only names the spec engine does not define reach here: `rect` (implicit
+      // box geometry) or a schema-invalid value (see buildShapePath).
       const path = createGeometryPath(charge);
       buildShapePath(path.sink, name, x, y, w, h, adjustments[0], adjustments[1], adjustments[2], adjustments[3]);
-      add(Object.freeze(path.commands), name === 'arc' ? 'none' : null, stroke,
-        ['donut', 'smileyface', 'frame'].includes(name) ? 'evenodd' : 'nonzero');
+      add(Object.freeze(path.commands), null, stroke, 'nonzero');
     }
-    // Preserve the existing clip/shade silhouette, which intentionally differs
-    // from body fallback geometry for some legacy presets.
+    // The clip/shade silhouette excludes the decorative `fill="none"` paths.
     if (!buildPresetGeometryFillPath(silhouette.sink, plan.geometry.name, x, y, w, h, adjustments)) {
       buildShapePath(silhouette.sink, plan.geometry.name, x, y, w, h, adjustments[0], adjustments[1], adjustments[2], adjustments[3]);
     }
