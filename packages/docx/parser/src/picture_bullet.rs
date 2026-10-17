@@ -22,6 +22,7 @@
 //!   width, all fit that value);
 //! - a complex-script or right-to-left marker (`w:cs`, `w:rtl`) uses its
 //!   `w:szCs` size.
+//!
 //! Each displayed dimension is limited to 32767 twips, as for DOC picture
 //! bullets. Other image formats (BMP, TIFF, metafiles) have no measured
 //! natural size here, so their bullets keep the VML extent as authored.
