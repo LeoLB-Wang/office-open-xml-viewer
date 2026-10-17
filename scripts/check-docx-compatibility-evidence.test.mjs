@@ -470,4 +470,3 @@ fn stray() {
   const accepted = run(root);
   assert.equal(accepted.status, 0, accepted.stderr);
 });
-
