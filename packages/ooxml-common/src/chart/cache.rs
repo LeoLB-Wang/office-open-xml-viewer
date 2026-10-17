@@ -1881,6 +1881,7 @@ pub(super) fn parse_error_bars(
     resolver: &dyn ColorResolver,
 ) -> Vec<ChartErrBars> {
     let mut result = Vec::new();
+    let (mut seen_x, mut seen_other) = (false, false);
     for eb in ser_node
         .children()
         .filter(|n| n.is_element() && n.tag_name().name() == "errBars")
@@ -1889,6 +1890,20 @@ pub(super) fn parse_error_bars(
             .and_then(|n| n.attribute("val"))
             .unwrap_or("y")
             .to_string();
+        // At most one block per direction (CT_ScatterSer allows two errBars,
+        // one per axis; other series types allow one). A schema-invalid
+        // repeat of a direction would otherwise allocate another pair of
+        // series-length vectors per copy — and a formula-resolved series can
+        // be long without any cache `ptCount` to admit against. ST_ErrDir
+        // has only `x` and `y`; any other value shares the `y` slot.
+        let seen = if dir == "x" {
+            &mut seen_x
+        } else {
+            &mut seen_other
+        };
+        if std::mem::replace(seen, true) {
+            continue;
+        }
         let bar_type = child(eb, "errBarType")
             .and_then(|n| n.attribute("val"))
             .unwrap_or("both")
