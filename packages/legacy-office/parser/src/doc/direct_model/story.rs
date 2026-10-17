@@ -1155,6 +1155,8 @@ mod tests {
         inherited_conditional_borders: bool,
         inherited_partial_conditional_borders: bool,
         inherited_first_column_borders: bool,
+        /// Both a child and its base write borders of this condition.
+        inherited_composed_condition: u16,
         distinct_multi_condition_order: u8,
         shading: ShadingFixture,
         margins: MarginFixture,
@@ -1380,6 +1382,18 @@ mod tests {
             let child = conditional_border_side(4, 0xd681, [0, 0, 0], 40);
             append_table_style(&mut bytes, 2, [&child, &[], &[]]);
             let parent = conditional_borders(4);
+            append_table_style(&mut bytes, 0xfff, [&parent, &[], &[]]);
+            for _ in 3..15 {
+                bytes.extend(0u16.to_le_bytes());
+            }
+            return bytes;
+        }
+
+        if fixture.inherited_composed_condition != 0 {
+            let condition = fixture.inherited_composed_condition;
+            let child = conditional_border_side(condition, 0xd681, [0, 0, 0], 40);
+            append_table_style(&mut bytes, 2, [&child, &[], &[]]);
+            let parent = conditional_borders(condition);
             append_table_style(&mut bytes, 0xfff, [&parent, &[], &[]]);
             for _ in 3..15 {
                 bytes.extend(0u16.to_le_bytes());
@@ -2765,6 +2779,94 @@ mod tests {
             .enumerate()
             .filter(|(index, _)| index % 3 != 0)
             .all(|(_, sides)| sides.iter().all(Option::is_none)));
+    }
+
+    #[test]
+    fn inherited_last_edge_borders_compose_per_side() {
+        for (condition, options) in [
+            (table_style_condition::LAST_ROW, 1 << 6),
+            (table_style_condition::LAST_COLUMN, 1 << 8),
+        ] {
+            let own = conditional_border_grid(condition, options);
+            let inherited = conditional_border_grid_with_rows(
+                StyleFixture {
+                    conditional_borders: condition,
+                    inherited_conditional_borders: true,
+                    ..StyleFixture::default()
+                },
+                std::array::from_fn(|_| row_cells(options, 3)),
+            );
+            assert!(!inherited.unsupported_table, "{condition:#x}");
+            assert_eq!(inherited.borders, own.borders, "{condition:#x}");
+            let composed = conditional_border_grid_with_rows(
+                StyleFixture {
+                    inherited_composed_condition: condition,
+                    ..StyleFixture::default()
+                },
+                std::array::from_fn(|_| row_cells(options, 3)),
+            );
+            // Per-side replacement: the child's left side replaces the base's
+            // on the region's left edge (the last row's first cell, or every
+            // cell of the last column); every other side keeps the base.
+            assert!(!composed.unsupported_table, "{condition:#x}");
+            let mut expected = own.borders.clone();
+            let left_edge: &[usize] = if condition == table_style_condition::LAST_ROW {
+                &[6]
+            } else {
+                &[2, 5, 8]
+            };
+            for &cell in left_edge {
+                expected[cell][1] = Some(("000000".into(), 5.0));
+            }
+            assert_eq!(composed.borders, expected, "{condition:#x}");
+        }
+    }
+
+    #[test]
+    fn first_and_last_row_or_column_borders_are_their_single_projections() {
+        for (first_condition, last_condition, first_option, last_option, regions) in [
+            (
+                table_style_condition::FIRST_ROW,
+                table_style_condition::LAST_ROW,
+                1 << 5,
+                1 << 6,
+                [[0, 1, 2], [6, 7, 8], [3, 4, 5]],
+            ),
+            (
+                table_style_condition::FIRST_COLUMN,
+                table_style_condition::LAST_COLUMN,
+                1 << 7,
+                1 << 8,
+                [[0, 3, 6], [2, 5, 8], [1, 4, 7]],
+            ),
+        ] {
+            let grid = |options: u16| {
+                conditional_border_grid_with_rows(
+                    StyleFixture {
+                        conditional_borders: first_condition,
+                        conditional_borders_second: last_condition,
+                        ..StyleFixture::default()
+                    },
+                    std::array::from_fn(|_| row_cells(options, 3)),
+                )
+            };
+            let first = grid(first_option);
+            let last = grid(last_option);
+            let both = grid(first_option | last_option);
+            assert!(!both.unsupported_table && !first.unsupported_table && !last.unsupported_table);
+            // In three rows (columns) the first and last regions carry exactly
+            // their single-condition borders and the middle one neither.
+            let [first_cells, last_cells, middle] = regions;
+            for cell in first_cells {
+                assert_eq!(both.borders[cell], first.borders[cell]);
+            }
+            for cell in last_cells {
+                assert_eq!(both.borders[cell], last.borders[cell]);
+            }
+            for cell in middle {
+                assert!(both.borders[cell].iter().all(Option::is_none));
+            }
+        }
     }
 
     #[test]
