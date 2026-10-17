@@ -111,9 +111,10 @@ impl PreparedBorder {
             //   tested last two bytes (dptSpace 0 or 31, fShadow, fFrame, the
             //   reserved bits: 00 00, 1F 00, 20 00, 40 00, 7F 00, 00 FF,
             //   E0 FF), so none of those fields matters.
-            // - Any other cv paints undefined artwork, including the cvAuto
-            //   value 0xFF000000 and explicit red at widths 8 and 255, so it
-            //   keeps the deferred refusal below.
+            // - The other tested values, cvAuto 0xFF000000 at width 255 and
+            //   explicit red at widths 8 and 255, paint undefined artwork;
+            //   Word could not export auto with RGB 123456. Every cv other
+            //   than 0xFFFFFFFF therefore keeps the deferred refusal below.
             if bytes[..4] == [0xff; 4] {
                 return Ok(Self::Modern([0xff; 8]));
             }
