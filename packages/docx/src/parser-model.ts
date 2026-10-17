@@ -2190,14 +2190,6 @@ export function normalizeDocxDocumentModel(doc: DocxDocumentModel): DocxDocument
   return normalizeInternalDocumentModel(doc).document;
 }
 
-export function internalFieldRun(run: FieldRun): InternalFieldRun {
-  return run as InternalFieldRun;
-}
-
-export function internalTextRun(run: DocxTextRun): InternalTextRun {
-  return run as InternalTextRun;
-}
-
 export function internalNumberingInfo(numbering: NumberingInfo): InternalNumberingInfo {
   return numbering as InternalNumberingInfo;
 }

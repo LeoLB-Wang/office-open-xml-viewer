@@ -378,7 +378,7 @@ fn render_runs(runs: &[DocRun], revisions: &[Option<crate::types::RunRevision>])
     out
 }
 
-fn format_text_run(t: &crate::types::TextRun) -> String {
+fn format_text_run(t: &TextRun) -> String {
     // Footnote/endnote reference markers carry only the note's id; the linkage
     // is expressed via the `[^id]` syntax elsewhere, so drop the marker glyph
     // from the inline text projection.
@@ -475,10 +475,6 @@ fn render_table_cell(cell: &DocTableCell) -> String {
     }
     buf.replace('|', "\\|")
 }
-
-// Silence unused-import warnings when the cfg gate excludes some types.
-#[allow(dead_code)]
-fn _ensure_types_used(_t: TextRun) {}
 
 #[cfg(test)]
 mod tests {

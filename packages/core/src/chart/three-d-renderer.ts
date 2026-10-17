@@ -24,10 +24,6 @@ import {
 } from './marker-style.js';
 import { dataLabelIsDeleted } from './data-label-style.js';
 
-/** Stable bundle-audit marker. Re-exported only by the opt-in package entry so
- * build verification can prove the mesh/camera implementation is absent from
- * every base document-format dependency closure. */
-export const THREE_D_IMPLEMENTATION_MARKER = 'ooxml-three-d-mesh-implementation-v1';
 import { EMU_PER_PT, PT_TO_PX } from '../units.js';
 import { pptxPresetDashArray } from '../draw/dash.js';
 import { finiteDataExtent, planNumericValueAxis, type NumericValueAxisPlan } from './axis-scale.js';
@@ -85,7 +81,6 @@ import {
   buildThreeDLineRibbonMesh,
   buildThreeDPieSectorMesh,
   buildThreeDShapeMesh,
-  DEFAULT_THREE_D_ROUND_SEGMENTS,
   type ThreeDMesh,
 } from './three-d-mesh.js';
 import {
@@ -178,9 +173,6 @@ const SUPPORTED_CARTESIAN_THREE_D_TYPES = new Set([
   'clusteredBar', 'clusteredBarH',
   'stackedBar', 'stackedBarH', 'stackedBarPct', 'stackedBarHPct',
 ]);
-/** Worst-case cap + side-face count for one revolved 3-D datum. Shared with
- * the renderer preflight so higher fidelity never expands unbounded work. */
-export const THREE_D_ROUND_MESH_FACE_WEIGHT = DEFAULT_THREE_D_ROUND_SEGMENTS + 4;
 
 /** Office renders authored 3-D mesh edges in chart/sheet display pixels, not
  * with the 96-DPI typography expansion used for text. The supplied Excel
