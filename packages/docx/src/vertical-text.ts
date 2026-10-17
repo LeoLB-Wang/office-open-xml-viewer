@@ -65,6 +65,7 @@ import {
   measureVerticalVertGlyph,
   verticalVertGlyphReachable,
   withVertFeature,
+  emBoxCenterAboveBaseline,
 } from '@silurus/ooxml-core';
 
 // Browser acceptance tests load this source module through Vite's `/src` bridge;
@@ -151,37 +152,6 @@ export function splitVerticalOrientationRuns(
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 type VertCapability = (cp: number) => boolean;
 const NO_VERT_CAPABILITY: VertCapability = () => false;
-
-/**
- * Cross-axis (column-thickness) offset, in px, from the alphabetic baseline to
- * the font's EM-BOX CENTRE — i.e. `(fontBoundingBoxAscent − fontBoundingBoxDescent)/2`.
- *
- * This is a FONT metric (glyph-independent): `fontBoundingBox*` describe the
- * font's design box, not one glyph's ink. In vertical text the column's cross
- * axis is where every cell centres, and the UPRIGHT cells (drawn with a `middle`
- * textBaseline) already sit their em box on the caller's `baseline`. A SIDEWAYS
- * (Latin/digit) glyph, however, is drawn on its ALPHABETIC baseline, so its ink
- * (which sits ~this many px above the baseline) would land off the column centre
- * by exactly this amount. Shifting the sideways draw down the cross axis by this
- * offset re-centres its em box on the same line the upright cells use — so mixed
- * columns like "電話 03-1234-5678" share one centreline (ECMA-376 §17.6.20).
- *
- * Falls back to `0.38 × fontPx` (the near-universal CJK/Latin em-box centre ratio)
- * only if the Canvas does not report `fontBoundingBox*` (older engines); on those
- * engines the previous baseline-anchored placement is no worse than today.
- */
-function emBoxCenterAboveBaselinePx(ctx: Ctx2D, sample: string, fontPx: number): number {
-  const prevBaseline = ctx.textBaseline;
-  ctx.textBaseline = 'alphabetic';
-  const m = ctx.measureText(sample);
-  ctx.textBaseline = prevBaseline;
-  const asc = m.fontBoundingBoxAscent;
-  const desc = m.fontBoundingBoxDescent;
-  if (typeof asc === 'number' && typeof desc === 'number' && (asc !== 0 || desc !== 0)) {
-    return (asc - desc) / 2;
-  }
-  return 0.38 * fontPx;
-}
 
 /**
  * Along-column offset, in px, from a glyph's own cell centre to its INK centre
@@ -410,7 +380,7 @@ export function planVerticalRunWithCapability(
   characterGridDeltaPt = 0,
 ): readonly PlannedVerticalGlyphCell[] {
   const cells: PlannedVerticalGlyphCell[] = [];
-  const emBoxCenterPt = emBoxCenterAboveBaselinePx(ctx, text, fontPt);
+  const emBoxCenterPt = emBoxCenterAboveBaseline(ctx, text, fontPt);
   let ax = 0;
   let sourceOffset = 0;
   for (const piece of splitVerticalOrientationRuns(text)) {
@@ -617,7 +587,7 @@ export function drawVerticalRunWithCapability(
   // font's em-box centre — the line the UPRIGHT cells centre on. Measured once
   // per run (font-level, glyph-independent). Used to re-centre SIDEWAYS glyphs,
   // which are otherwise drawn on their baseline and so land off the centreline.
-  const emBoxCenterPx = emBoxCenterAboveBaselinePx(ctx, text, fontPx);
+  const emBoxCenterPx = emBoxCenterAboveBaseline(ctx, text, fontPx);
   // In this rotate-layout architecture the direction-independent layout kernel
   // applies ECMA-376 §17.3.2.43 `w:w` to the line axis (`segAdvanceWidth`) even
   // for tbRl; wrapping, selection, and run boxes already depend on that advance,

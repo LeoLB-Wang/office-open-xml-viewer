@@ -19,7 +19,7 @@ import { CHART_PALETTE, chartColor, chartExSeriesFormatIndex, piePointStyleIndex
 import { bubblePointFill, bubblePointLine } from './bubble-paint.js';
 import { drawMarker } from './markers.js';
 import { paintClassicDataPointRect } from './chartex-style.js';
-import { resolveThemeFontRef } from './fonts.js';
+import { chartFaceWithFallback, resolveThemeFontRef } from './fonts.js';
 import { dashPatternForPreset } from './geometry.js';
 import { wrapMeasuredText } from './axis.js';
 import { legendSeriesWithTrendlines } from './trendline.js';
@@ -813,7 +813,7 @@ export function legendEntryTextStyle(
   if (!override) return base;
   const face = resolveThemeFontRef(chart, override.fontFace) ?? override.fontFace;
   return {
-    fontFamily: face ? `"${face}", Calibri, Arial, sans-serif` : base.fontFamily,
+    fontFamily: face ? chartFaceWithFallback(face) : base.fontFamily,
     color: override.fontColor ? `#${override.fontColor}` : base.color,
     bold: override.fontBold ?? base.bold,
     italic: override.fontItalic ?? base.italic,
@@ -936,7 +936,6 @@ export function measuredLegendReserve(
   chart: ChartModel,
   w: number,
   h: number,
-  sideReserveFrac: number,
   ptToPx: number,
 ): MeasuredLegendLayout | null {
   if (!chart.showLegend) return null;
@@ -968,7 +967,7 @@ export function measuredLegendReserve(
   ctx.restore();
   const pos = chart.legendPos ?? 'r';
   const horizontal = pos === 't' || pos === 'b';
-  const reserve = chartLegendReserve(chart, w, h, sideReserveFrac, {
+  const reserve = chartLegendReserve(chart, w, h, {
     itemWidths,
     rowHeight: Math.max(0, ...fontSizes) + LEGEND_ROW_EXTRA_PX,
     itemGap: LEGEND_ITEM_GAP,
@@ -1158,7 +1157,7 @@ export function drawLegend(
 export function legendTextStyle(chart: ChartModel, ptToPx: number): LegendTextStyle {
   const face = resolveThemeFontRef(chart, chart.legendFontFace) ?? chart.themeMinorFontLatin;
   return {
-    fontFamily: face ? `"${face}", Calibri, Arial, sans-serif` : 'sans-serif',
+    fontFamily: face ? chartFaceWithFallback(face) : 'sans-serif',
     color: chart.legendFontColor ? `#${chart.legendFontColor}` : '#333',
     bold: chart.legendFontBold ?? false,
     italic: chart.legendFontItalic ?? false,

@@ -1253,7 +1253,14 @@ export interface RichCellGeom {
  *  the underline sits a full text height below it and the strike near mid-height;
  *  `'middle'` / `'bottom'` shift relative to the centre / bottom baseline. The
  *  caller adds any super/subscript `yShift`. One function so the single-line and
- *  multi-line paths place decorations identically. */
+ *  multi-line paths place decorations identically.
+ *
+ *  The 0.55 / 0.35 / 0.5 font-size fractions (repeated by the single-run cell
+ *  path in renderQuadrant) are library policy dating from the initial xlsx
+ *  underline/strike support: SpreadsheetML `<u>` / `<strike>` (§18.4.13 /
+ *  §18.4.10) give no geometry, no Excel measurement is recorded, and the font
+ *  rule (OpenType post.underlinePosition / OS/2.yStrikeoutPosition) is not in
+ *  the reference-font-metrics table. */
 function decoYForBaseline(baseline: CanvasTextBaseline, textY: number, rSizePx: number): { underline: number; strike: number } {
   if (baseline === 'middle') return { underline: textY + Math.round(rSizePx * 0.55), strike: textY };
   if (baseline === 'bottom') return { underline: textY + 1, strike: textY - Math.round(rSizePx * 0.35) };
@@ -1989,7 +1996,13 @@ function buildSparklineMap(worksheet: Worksheet): Map<string, SparklineModel> {
 }
 
 function stripeColorFor(accent: string): string {
-  // Light tint of the accent — mimics TableStyleLight* banded rows.
+  // Library approximation, not the spec rule: a 20% accent / 80% white mix for
+  // banded rows of a built-in table style whose stripe dxf is not resolved.
+  // The normative definitions are the built-in table styles shipped with
+  // ECMA-376 Part 1 (SpreadsheetML presetTableStyles.xml: per-style dxfs with
+  // theme colour + tint, applied per §18.8.40 tableStyle / §18.5.1.5
+  // tableStyleInfo); no Excel measurement backs the 20% value. Resolving those
+  // definitions changes table rendering and is tracked as follow-up work.
   const hex = accent.replace('#', '');
   if (hex.length < 6) return '#F2F2F2';
   const r = parseInt(hex.slice(0, 2), 16);

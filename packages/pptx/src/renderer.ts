@@ -132,6 +132,8 @@ import {
   symbolFontToUnicode,
   isSymbolFontFamily,
   drawUnderline,
+  DECORATION_LINE_WIDTH_EM,
+  STRIKE_RISE_EM,
   hasTextWarp,
   buildWarpEnvelope,
   warpGlyphTransform,
@@ -732,11 +734,11 @@ function paintRunUnderline(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
     // Office PDF shows a separately chosen underline pattern on the
     // same slide-aligned grid.
     const underlinePaint = seg.underlineFill
-      ? resolveFillCore(seg.underlineFill, ctx, x, baseline, width, drawSizePx * 0.05,
+      ? resolveFillCore(seg.underlineFill, ctx, x, baseline, width, drawSizePx * DECORATION_LINE_WIDTH_EM,
           0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
       : seg.underlineLine?.fill
         ? resolveFillCore(seg.underlineLine.fill, ctx, x, baseline, width,
-            drawSizePx * 0.05, 0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
+            drawSizePx * DECORATION_LINE_WIDTH_EM, 0, scale * PT_TO_EMU) ?? 'rgba(0,0,0,0)'
         : seg.underlineColor ?? glyphPaint;
     drawUnderline(ctx, x, baseline, width, drawSizePx,
       underlinePaint, seg.underlineStyle, dpr,
@@ -749,7 +751,7 @@ function paintRunStrike(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
   dpr: number): void {
   const drawSizePx = seg.drawSizePx ?? seg.sizePx;
   if (seg.strikethrough && !seg.noFill) {
-    const lineW = Math.max(1, drawSizePx * 0.05);
+    const lineW = Math.max(1, drawSizePx * DECORATION_LINE_WIDTH_EM);
     ctx.strokeStyle = glyphPaint;
     ctx.lineWidth = lineW;
     ctx.setLineDash([]);
@@ -757,11 +759,13 @@ function paintRunStrike(ctx: CanvasRenderingContext2D, seg: LayoutSegment,
     // an odd device-pixel width is centered on one device row by snapping its
     // y onto the nearest crisp device position (otherwise it straddles two
     // rows → blurry). Snap each line from its own y.
-    const yMid = baseline - drawSizePx * 0.32;
+    // Strike rise and width: core library policy (see text/underline.ts).
+    const yMid = baseline - drawSizePx * STRIKE_RISE_EM;
     if (seg.strikeDouble) {
-      // Two parallel lines straddling the standard strike position,
-      // separated by ~ 1.5× the line weight (visually distinct yet
-      // staying inside the glyph's central band).
+      // Two parallel lines straddling the standard strike position, each
+      // 0.9 line widths from it (library policy; ST_TextStrikeType
+      // §20.1.10.79 `dblStrike` gives no spacing and no Office measurement
+      // is recorded).
       const offset = lineW * 0.9;
       const yUp = yMid - offset;
       const yDn = yMid + offset;
@@ -3437,7 +3441,7 @@ function renderWarpedText(
           ctx.strokeStyle = underlinePaint;
           ctx.lineWidth = seg.underlineLine?.width
             ? emuToPx(seg.underlineLine.width, scale)
-            : Math.max(1, seg.sizePx * 0.05);
+            : Math.max(1, seg.sizePx * DECORATION_LINE_WIDTH_EM);
           ctx.beginPath();
           const samples = Math.max(2, Math.ceil((penW - segmentStartW) / 8));
           for (let sample = 0; sample <= samples; sample++) {
@@ -4154,14 +4158,12 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
   const custTailTrim = custEnds?.end ? tailTrim : 0;
 
   // ── Dispatch to preset engine when possible ────────────────────────────
-  // Preference order: custGeom → generic preset engine → legacy switch.
+  // Preference order: custGeom → generic preset engine → buildShapePath
+  // (only `rect` or a schema-invalid name, which the engine does not define).
   // `arc` (ECMA-376 §20.1.10.56 ST_ShapeType "arc") goes through the engine
   // too: its presetShapeDefinitions geometry is a two-<path> shape — path 0
   // (stroke="false") fills the pie wedge (arc + lnTo centre + close) and path 1
-  // (fill="none") strokes only the open arc edge. The engine honours those
-  // per-path fill/stroke flags, so arc renders its true pie-wedge fill + open
-  // outline. The legacy buildShapePath could only draw the open arc (filling it
-  // auto-closes into a *chord*), which is why arc used to be excluded here.
+  // (fill="none") strokes only the open arc edge.
   const usePresetEngine =
     !el.custGeom && hasPreset(geom);
 
@@ -4279,18 +4281,15 @@ function renderShape(ctx: CanvasRenderingContext2D, el: ShapeElement, scale: num
     if (el.custGeom && el.custGeom.length > 0) {
       buildCustomPath(target, el.custGeom, bx, by, bw, bh);
     } else if (usePresetEngine) {
-      // Silhouette of a preset shape: build a single filled outline. Preset
-      // path 0 is the body outline (secondary paths are highlights), so the
-      // legacy buildShapePath gives a faithful silhouette of the body.
+      // Silhouette of a preset shape. buildShapePath resolves spec-defined
+      // names through the ECMA-376 preset engine (all of its paths).
       buildShapePath(target, geom, bx, by, bw, bh, el.adj, el.adj2, el.adj3, el.adj4);
     } else {
       buildShapePath(target, geom, bx, by, bw, bh, el.adj, el.adj2, el.adj3, el.adj4);
     }
-    // Normal arc bodies render through the preset engine above; this legacy
-    // path is only reached for an arc as a custGeom/effect silhouette built by
-    // buildShapePath, which draws the OPEN arc — filling that auto-closes into
-    // a chord, not the pie wedge. So skip the fill for arc here (the engine,
-    // not this branch, owns arc's pie-wedge fill).
+    // Arc bodies render through the preset engine above, which owns arc's
+    // pie-wedge fill (path 0) and open-arc stroke (path 1); never fill an arc
+    // outline here, where both paths would be filled together.
     if (paintImageFill && geom !== 'arc') {
       if (paintImageFill(target)) tClearShadow();
     } else if (tFill && geom !== 'arc') {

@@ -247,7 +247,9 @@ export { hexToRgba, relativeLuma, autoContrastColor, resolveFill, usesPathShade,
 export { trackPaintPath, currentStrokeBounds } from './shape/paint-bounds';
 export { measurePaintBounds } from './shape/measure-paint-bounds';
 export type { FillOutline } from './shape/path-gradient';
-export { buildShapePath, drawStar, drawPolygon, ooxmlArcTo } from './shape/preset';
+export { buildShapePath } from './shape/preset';
+export { EM_BOX_CENTER_FALLBACK_EM, emBoxCenterAboveBaseline } from './text/em-box-center';
+export { SYNTHETIC_ASCENT_EM, SYNTHETIC_DESCENT_EM } from './text/synthetic-em-box';
 export {
   paintDrawingMLShape,
   clipDrawingMLShape,
@@ -444,9 +446,9 @@ export { decodedBitmapTargetResizeOptions } from './image/raster-target';
 // renderers' picture-decode paths.
 export { preferVectorBlip } from './image/blip-gate';
 // ECMA-376 §20.1.9 spec-driven preset geometry engine (presets.json from
-// presetShapeDefinitions.xml). Coexists with the legacy hand-rolled
-// `buildShapePath` above, which the pptx renderer still uses as a silhouette /
-// fallback codepath. Consolidating the two is intentionally out of scope here.
+// presetShapeDefinitions.xml). `buildShapePath` above is only the fallback for
+// names the engine does not define (`rect`, schema-invalid values) and routes
+// every spec-defined name back to this engine.
 export {
   renderPresetShape,
   hasPreset,
@@ -600,7 +602,7 @@ export { doubleRailGeometry, fillDoubleBorder } from './draw/double-border';
 // of truth for underline geometry across the pptx / docx renderers; docx
 // normalizes its §17.18.99 ST_Underline vocabulary to this DrawingML vocabulary
 // before calling in.
-export { drawUnderline } from './text/underline';
+export { drawUnderline, DECORATION_LINE_WIDTH_EM, STRIKE_RISE_EM } from './text/underline';
 export {
   WorkerBridge,
   type WorkerLike,
