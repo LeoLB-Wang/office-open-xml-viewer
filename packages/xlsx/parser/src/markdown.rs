@@ -5,6 +5,7 @@
 // styling, formatting (numFmt), charts, sparklines, drawings, slicers,
 // conditional formatting, and the formula text (cached value only).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
@@ -66,7 +67,10 @@ pub(crate) fn render_sheet(
     }
 
     // Sparse grid of display strings keyed by (row, col) inside the bbox.
-    let mut grid: BTreeMap<(u32, u32), String> = BTreeMap::new();
+    // Display strings borrow from the sheet JSON and the shared-string table,
+    // so repeated references to one long string cost nothing until a row is
+    // written, which happens only after the size admission below.
+    let mut grid: BTreeMap<(u32, u32), Cow<'_, str>> = BTreeMap::new();
     for row in rows {
         let row_idx = row["index"].as_u64().unwrap_or(0) as u32;
         if row_idx < min_row || row_idx > max_row {
@@ -113,10 +117,10 @@ pub(crate) fn render_sheet(
     }
 
     let n_cols = n_cols as usize;
-    let row_cells = |row_idx: u32| -> Vec<String> {
-        let mut cells = vec![String::new(); n_cols];
+    let row_cells = |row_idx: u32| -> Vec<&str> {
+        let mut cells = vec![""; n_cols];
         for ((_, col), value) in grid.range((row_idx, min_col)..=(row_idx, max_col)) {
-            cells[(col - min_col) as usize] = value.clone();
+            cells[(col - min_col) as usize] = value.as_ref();
         }
         cells
     };
@@ -139,7 +143,7 @@ pub(crate) fn render_sheet(
     Ok(())
 }
 
-fn write_table_row(out: &mut String, row: &[String], n_cols: usize) {
+fn write_table_row(out: &mut String, row: &[&str], n_cols: usize) {
     let cells: Vec<String> = (0..n_cols)
         .map(|i| row.get(i).map(|s| escape_cell(s)).unwrap_or_default())
         .collect();
@@ -153,37 +157,31 @@ fn escape_cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', "<br>")
 }
 
-fn cell_display(cell: &Value, shared_strings: &[SharedString]) -> String {
+fn cell_display<'a>(cell: &'a Value, shared_strings: &'a [SharedString]) -> Cow<'a, str> {
     // CellValue has `rename_all = "camelCase"` so the JSON tag is lowercase
     // ("text"/"number"/...). PascalCase would silently never match — same
     // class of bug that hid pptx_extract_text earlier.
     let value = &cell["value"];
     match value["type"].as_str().unwrap_or("empty") {
-        "text" => value["text"].as_str().unwrap_or("").to_string(),
+        "text" => Cow::Borrowed(value["text"].as_str().unwrap_or("")),
         // A `t="s"` cell ships only an `si` index now; resolve it back to the
         // shared-string table's plain text (markdown drops runs anyway,
         // matching the `"text"` arm).
         "shared" => value["si"]
             .as_u64()
             .and_then(|i| shared_strings.get(i as usize))
-            .map(|s| s.text.clone())
+            .map(|s| Cow::Borrowed(s.text.as_str()))
             .unwrap_or_default(),
         "number" => value["number"]
             .as_f64()
-            .map(format_number)
+            .map(|n| Cow::Owned(format_number(n)))
             .unwrap_or_default(),
         "bool" => value["bool"]
             .as_bool()
-            .map(|b| {
-                if b {
-                    "TRUE".to_string()
-                } else {
-                    "FALSE".to_string()
-                }
-            })
+            .map(|b| Cow::Borrowed(if b { "TRUE" } else { "FALSE" }))
             .unwrap_or_default(),
-        "error" => value["error"].as_str().unwrap_or("#ERR").to_string(),
-        _ => String::new(),
+        "error" => Cow::Borrowed(value["error"].as_str().unwrap_or("#ERR")),
+        _ => Cow::Borrowed(""),
     }
 }
 
@@ -216,7 +214,10 @@ const MAX_ROW: u32 = 1_048_576;
 /// cover each column of the current row; a populated cell is a continuation
 /// cell exactly when more merges cover it than start at it. The work is
 /// O((cells + merges) · log columns) regardless of merge area.
-fn clear_merge_continuation_cells(merge_cells: &Value, grid: &mut BTreeMap<(u32, u32), String>) {
+fn clear_merge_continuation_cells(
+    merge_cells: &Value,
+    grid: &mut BTreeMap<(u32, u32), Cow<'_, str>>,
+) {
     let Some(arr) = merge_cells.as_array() else {
         return;
     };
@@ -275,7 +276,7 @@ fn clear_merge_continuation_cells(merge_cells: &Value, grid: &mut BTreeMap<(u32,
         }
         let starting_here = starts.get(&(row, col)).copied().unwrap_or(0);
         if covering(&tree, col) > starting_here {
-            value.clear();
+            *value = Cow::Borrowed("");
         }
     }
 }
@@ -487,6 +488,30 @@ mod tests {
             .expect_err("over budget");
         assert!(observed > 1 << 20);
         assert!(out.len() < (1 << 20) + 64 * 1024, "{}", out.len());
+    }
+
+    /// Many cells sharing one long shared string are admitted against the
+    /// budget from borrowed display strings; nothing is copied per cell.
+    #[test]
+    fn repeated_shared_strings_are_admitted_before_expansion() {
+        let shared = vec![SharedString {
+            text: "s".repeat(32_767),
+            runs: None,
+            ..Default::default()
+        }];
+        let cells: Vec<Value> = (1..=8192)
+            .map(|row| json!({ "col": 1, "row": row, "value": { "type": "shared", "si": 0 } }))
+            .collect();
+        let rows: Vec<Value> = cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, cell)| json!({ "index": i + 1, "cells": [cell] }))
+            .collect();
+        let sheet = json!({ "name": "S", "rows": rows });
+        let mut out = String::new();
+        let projected = render_sheet(&sheet, &shared, &mut out, 64 << 20).expect_err("over budget");
+        assert!(projected > 64 << 20);
+        assert!(out.len() < 1024, "{}", out.len());
     }
 
     /// A long sheet name on an otherwise empty sheet is charged before the
