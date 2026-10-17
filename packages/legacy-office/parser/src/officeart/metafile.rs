@@ -1,10 +1,12 @@
 //! Passive EMF/WMF extraction. MS-ODRAW 2.2.24-25/31.
+use super::inflate::{inflate_exact, InflateError};
 use super::raster::DecodedBytes;
 use super::{unsupported, Record};
 #[cfg(test)]
 use std::borrow::Cow;
 
-// Resource policy, not a format limit. Check before allocating or inflating.
+// Resource policy, not a format limit. Charged by produced bytes (see
+// `decode_payload`); never checked against declared or compressed sizes.
 const MAX_METAFILE_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(test)]
@@ -100,70 +102,36 @@ fn decode_payload(
         .ok_or_else(|| unsupported("truncated OfficeArt metafile header"))?;
     let expanded = number(header, 0) as usize;
     let stored = number(header, 28) as usize;
-    if expanded > MAX_METAFILE_BYTES || expanded > remaining || stored > MAX_METAFILE_BYTES {
-        return Err(crate::rejection::resource(
-            "OfficeArt metafile byte budget exceeded",
-        ));
-    }
     let source_range = start + 34..record.payload.len();
     let bytes = &record.payload[source_range.clone()];
+    // cbSave must describe the bytes actually present: structural framing,
+    // not admission by compressed size.
     if bytes.len() != stored || header[33] != 0xfe {
         return Err(unsupported("invalid OfficeArt metafile size or filter"));
     }
+    // The cap is charged by produced bytes only: the bytes present for an
+    // uncompressed payload, or the bytes the inflater actually emits.
+    let cap = MAX_METAFILE_BYTES.min(remaining);
+    let over_budget = || crate::rejection::resource("OfficeArt metafile byte budget exceeded");
     let bytes = match header[32] {
-        0xfe if stored == expanded => DecodedBytes::Source(source_range),
-        0 => DecodedBytes::Owned(inflate_exact(bytes, expanded, stored)?),
+        0xfe if stored == expanded => {
+            if stored > cap {
+                return Err(over_budget());
+            }
+            DecodedBytes::Source(source_range)
+        }
+        0 => DecodedBytes::Owned(
+            inflate_exact(bytes, expanded, stored, cap).map_err(|error| match error {
+                InflateError::Invalid => unsupported("invalid compressed OfficeArt metafile"),
+                InflateError::SizeMismatch => {
+                    unsupported("OfficeArt metafile decompression size mismatch")
+                }
+                InflateError::OverBudget => over_budget(),
+            })?,
+        ),
         _ => return Err(unsupported("unsupported OfficeArt metafile compression")),
     };
     Ok(bytes)
-}
-
-/// Output growth step while inflating. Memory follows the bytes the stream
-/// actually produces, not the declared cbSize.
-const INFLATE_CHUNK: usize = 64 * 1024;
-
-/// Inflate one RFC 1950 zlib-wrapped DEFLATE stream that must produce exactly
-/// `expanded` bytes from exactly `stored` input bytes.
-///
-/// The destination grows by [`INFLATE_CHUNK`] as output is produced, so a
-/// header that declares a large cbSize over a small stream never reserves the
-/// declared size (allocating it up front would permanently grow WASM linear
-/// memory). Production stops at `expanded + 1` bytes: that one spare byte
-/// detects a stream longer than its declaration without letting it grow
-/// further. `expanded` is already bounded by `MAX_METAFILE_BYTES`.
-fn inflate_exact(bytes: &[u8], expanded: usize, stored: usize) -> Result<Vec<u8>, String> {
-    let limit = expanded + 1;
-    let mut output = Vec::new();
-    let mut decoder = flate2::Decompress::new(true);
-    let mut status = flate2::Status::Ok;
-    while output.len() < limit && status != flate2::Status::StreamEnd {
-        let produced_before = output.len();
-        let consumed_before = decoder.total_in() as usize;
-        let room = (limit - produced_before).min(INFLATE_CHUNK);
-        output.resize(produced_before + room, 0);
-        status = decoder
-            .decompress(
-                &bytes[consumed_before..],
-                &mut output[produced_before..],
-                flate2::FlushDecompress::None,
-            )
-            .map_err(|_| unsupported("invalid compressed OfficeArt metafile"))?;
-        // `total_out` counts every byte written so far, i.e. the kept prefix.
-        output.truncate(decoder.total_out() as usize);
-        if output.len() == produced_before && decoder.total_in() as usize == consumed_before {
-            break; // Truncated stream: no further progress is possible.
-        }
-    }
-    if status != flate2::Status::StreamEnd
-        || decoder.total_out() != expanded as u64
-        || decoder.total_in() != stored as u64
-    {
-        return Err(unsupported(
-            "OfficeArt metafile decompression size mismatch",
-        ));
-    }
-    output.shrink_to_fit();
-    Ok(output)
 }
 
 #[derive(Clone, Copy)]
@@ -720,18 +688,22 @@ pub(super) mod tests {
             };
             for data in [payload(&source, two), compressed(&source, two)] {
                 assert_eq!(read(&data, source.len()).unwrap().view(&data), source);
-                assert!(read(&data, source.len() - 1).is_err());
                 let mut invalid = data.clone();
                 invalid[start + 33] = 0;
                 assert!(read(&invalid, source.len()).is_err());
                 assert!(read(&data[..data.len() - 1], source.len()).is_err());
-                invalid = data.clone();
-                invalid[start..start + 4]
-                    .copy_from_slice(&((MAX_METAFILE_BYTES + 1) as u32).to_le_bytes());
-                assert!(read(&invalid, usize::MAX)
+                // Output beyond the retention budget is a resource limit.
+                assert!(read(&data, source.len() - 1)
                     .err()
                     .unwrap()
                     .contains("byte budget exceeded"));
+                // A declaration above the cap over a small payload is a
+                // framing mismatch, not admission by declared size.
+                invalid = data.clone();
+                invalid[start..start + 4]
+                    .copy_from_slice(&((MAX_METAFILE_BYTES + 1) as u32).to_le_bytes());
+                let error = read(&invalid, usize::MAX).err().unwrap();
+                assert!(error.starts_with("UNSUPPORTED:"), "{error}");
             }
             let mut damaged = compressed(&source, two);
             damaged[start + 34] ^= 0xff; // Damage the zlib header, not its declaration.
@@ -811,43 +783,6 @@ pub(super) mod tests {
             assert!(parse(&bad, two, &mut 100, usize::MAX).is_err());
         }
     }
-    #[test]
-    fn inflation_is_charged_by_produced_bytes_not_the_declared_size() {
-        use std::io::Write;
-        let zlib = |source: &[u8]| {
-            let mut encoder =
-                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-            encoder.write_all(source).unwrap();
-            encoder.finish().unwrap()
-        };
-        let mismatch = "OfficeArt metafile decompression size mismatch";
-
-        // Valid input spanning several growth steps still decodes exactly.
-        let source: Vec<u8> = (0..INFLATE_CHUNK * 3 + 17)
-            .map(|index| (index * 31 % 251) as u8)
-            .collect();
-        let stream = zlib(&source);
-        let output = inflate_exact(&stream, source.len(), stream.len()).unwrap();
-        assert_eq!(output, source);
-        assert!(output.capacity() < source.len() + INFLATE_CHUNK);
-
-        // A small stream declaring the maximum size is rejected by what it
-        // actually produces, with the same error as before.
-        let small = zlib(b"tiny");
-        assert!(inflate_exact(&small, MAX_METAFILE_BYTES, small.len())
-            .unwrap_err()
-            .contains(mismatch));
-
-        // A stream that inflates past its declaration (here past the hard cap)
-        // stops one byte beyond the declaration and fails closed.
-        let bomb = zlib(&vec![0; MAX_METAFILE_BYTES + 2 * INFLATE_CHUNK]);
-        for declared in [4096, MAX_METAFILE_BYTES] {
-            assert!(inflate_exact(&bomb, declared, bomb.len())
-                .unwrap_err()
-                .contains(mismatch));
-        }
-    }
-
     #[test]
     fn rejects_truncation_reserved_encodings_and_malformed_record_envelopes() {
         let source = emf();
