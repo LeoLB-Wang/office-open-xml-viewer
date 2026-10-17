@@ -361,6 +361,17 @@ where
             text = text.replace(&placeholder, &rendered);
             highest = ancestor.checked_sub(1);
         }
+        // Literal level text without placeholders never enters the loop; the
+        // retained marker obeys the same ceiling.
+        if text.len() > MAX_MARKER_BYTES {
+            let _ = crate::resource::observe_hard_limit(
+                crate::resource::HardResourceLimitKind::NumberingMarkerBytes,
+                None,
+                MAX_MARKER_BYTES as u64,
+                text.len() as u64,
+            );
+            return String::new();
+        }
         text
     }
 

@@ -776,6 +776,7 @@ fn oversized_numbering_markers_fail_with_a_typed_resource_error() {
         single_level_package("4294967295", "aiueoFullWidth", "%1"),
         single_level_package("4294967295", "lowerLetter", "%1"),
         single_level_package("30000", "upperLetter", &"%1".repeat(64)),
+        single_level_package("1", "decimal", &"x".repeat(65_537)),
     ] {
         let error = crate::parse_docx_native(&bytes).expect_err("oversized marker rejected");
         let json: serde_json::Value = serde_json::from_str(

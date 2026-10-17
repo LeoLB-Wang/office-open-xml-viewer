@@ -214,56 +214,39 @@ const MAX_CLASSIC_CHART_CACHE_SLOTS: usize = 4 * MAX_CHART_CACHE_POINTS;
 /// Bound the dense vectors the classic parser sizes from `<c:ptCount>` and
 /// `<c:pt idx>` before any of them is allocated.
 ///
-/// Every numeric/string cache or literal (`numCache`, `numLit`, `strCache`,
-/// `strLit`) is materialized as up to `max(ptCount, max(idx) + 1)` slots, and
-/// a `multiLvlStrCache` as that width times its `lvl` count. A single cache
-/// wider than [`MAX_CHART_CACHE_POINTS`] (the worksheet row limit chart data
-/// comes from) or a part whose caches total more than
-/// [`MAX_CLASSIC_CHART_CACHE_SLOTS`] is rejected; `Err` carries the crossed
-/// limit and the observed (saturated) slot count.
+/// The cache collectors size one vector per cache from whichever `ptCount`
+/// they meet (some take the first child, others the last descendant of a
+/// series container) or from the largest `pt idx`, so admission does not
+/// mirror one collector. Every element's width is the largest `ptCount` value
+/// or `pt idx + 1` among its children; each width is bounded by
+/// [`MAX_CHART_CACHE_POINTS`] (the worksheet row limit chart data comes from)
+/// and their sum over the part by [`MAX_CLASSIC_CHART_CACHE_SLOTS`]. Every
+/// `ptCount` and `pt` is some element's child, so this covers every vector the
+/// collectors can size (a `multiLvlStrCache` counts each `lvl`; its own
+/// collector separately bounds width × levels). `Err` carries the crossed
+/// limit and the observed (saturated) count.
 fn classic_cache_preparse(root: Node) -> Result<(), (u64, u64)> {
-    fn elements<'a, 'input>(
-        node: Node<'a, 'input>,
-        name: &'static str,
-    ) -> impl Iterator<Item = Node<'a, 'input>> {
-        node.children()
-            .filter(move |child| child.is_element() && child.tag_name().name() == name)
-    }
-    fn sparse_width(container: Node) -> u64 {
-        elements(container, "pt")
-            .filter_map(|point| point.attribute("idx"))
-            .filter_map(|value| value.trim().parse::<u64>().ok())
-            .map(|index| index.saturating_add(1))
-            .max()
-            .unwrap_or(0)
-    }
+    let single = MAX_CHART_CACHE_POINTS as u64;
+    let total_limit = MAX_CLASSIC_CHART_CACHE_SLOTS as u64;
+    let parse = |value: Option<&str>| value.and_then(|v| v.trim().parse::<u64>().ok());
     let mut total = 0u64;
-    for cache in root.descendants().filter(Node::is_element) {
-        let multi_level = match cache.tag_name().name() {
-            "numCache" | "numLit" | "strCache" | "strLit" => false,
-            "multiLvlStrCache" => true,
-            _ => continue,
-        };
-        let declared = elements(cache, "ptCount")
-            .next()
-            .and_then(|node| node.attribute("val"))
-            .and_then(|value| value.trim().parse::<u64>().ok())
+    for node in root.descendants().filter(Node::is_element) {
+        let width = node
+            .children()
+            .filter(Node::is_element)
+            .filter_map(|child| match child.tag_name().name() {
+                "ptCount" => parse(child.attribute("val")),
+                "pt" => parse(child.attribute("idx")).map(|index| index.saturating_add(1)),
+                _ => None,
+            })
+            .max()
             .unwrap_or(0);
-        let (width, rows) = if multi_level {
-            let levels = elements(cache, "lvl");
-            let (count, sparse) = levels.fold((0u64, 0u64), |(count, sparse), level| {
-                (count + 1, sparse.max(sparse_width(level)))
-            });
-            (declared.max(sparse), count.max(1))
-        } else {
-            (declared.max(sparse_width(cache)), 1)
-        };
-        if width > MAX_CHART_CACHE_POINTS as u64 {
-            return Err((MAX_CHART_CACHE_POINTS as u64, width));
+        if width > single {
+            return Err((single, width));
         }
-        total = total.saturating_add(width.saturating_mul(rows));
-        if total > MAX_CLASSIC_CHART_CACHE_SLOTS as u64 {
-            return Err((MAX_CLASSIC_CHART_CACHE_SLOTS as u64, total));
+        total = total.saturating_add(width);
+        if total > total_limit {
+            return Err((total_limit, total));
         }
     }
     Ok(())

@@ -4857,11 +4857,14 @@ fn to_markdown_from_archive(archive: &mut XlsxZip) -> Result<String, String> {
             return Err(markdown_limit_error(archive, observed));
         }
         markdown::render_sheet_comments(&sheet, &mut review_comments, &mut has_comments);
+        // Comments are appended after every table; charge them to the same
+        // budget per sheet, before they can accumulate past it.
+        let projected = (out.len() as u64).saturating_add(review_comments.len() as u64);
+        if projected > MAX_XLSX_MARKDOWN_BYTES {
+            return Err(markdown_limit_error(archive, projected));
+        }
     }
     out.push_str(&review_comments);
-    if out.len() as u64 > MAX_XLSX_MARKDOWN_BYTES {
-        return Err(markdown_limit_error(archive, out.len() as u64));
-    }
     Ok(out)
 }
 
@@ -7987,17 +7990,33 @@ mod rb7_partial_degradation_tests {
     // ── #832 / #833-1: implicit references through the whole-archive path ─────
 
     fn build_single_sheet_workbook(sheet: &str) -> Vec<u8> {
-        let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+        build_workbook_with_parts(
+            r#"<sheet name="Sheet1" sheetId="1" r:id="rId1"/>"#,
+            sheet,
+            None,
+        )
+    }
+
+    fn build_workbook_with_parts(sheets: &str, sheet: &str, comments: Option<&str>) -> Vec<u8> {
+        let workbook = format!(
+            r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{sheets}</sheets></workbook>"#
+        );
         let wb_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+        let sheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdC" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/></Relationships>"#;
+        let mut parts: Vec<(&str, &str)> = vec![
+            ("xl/workbook.xml", workbook.as_str()),
+            ("xl/_rels/workbook.xml.rels", wb_rels),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ];
+        if let Some(comments) = comments {
+            parts.push(("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels));
+            parts.push(("xl/comments1.xml", comments));
+        }
         let mut buf = Vec::new();
         {
             let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
             let o = zip::write::SimpleFileOptions::default();
-            for (name, body) in [
-                ("xl/workbook.xml", workbook),
-                ("xl/_rels/workbook.xml.rels", wb_rels),
-                ("xl/worksheets/sheet1.xml", sheet),
-            ] {
+            for (name, body) in parts {
                 w.start_file(name, o).unwrap();
                 w.write_all(body.as_bytes()).unwrap();
             }
@@ -8056,6 +8075,22 @@ mod rb7_partial_degradation_tests {
         assert_eq!(violation["resource"], "xlsx-markdown");
         assert_eq!(violation["metric"], "bytes");
         assert_eq!(violation["limit"], MAX_XLSX_MARKDOWN_BYTES);
+
+        // Review comments are charged to the same budget as they accumulate
+        // across sheets, before the final copy.
+        let comment = "c".repeat(1 << 20);
+        let workbook_sheets: String = (1..=70)
+            .map(|i| format!(r#"<sheet name="S{i}" sheetId="{i}" r:id="rId1"/>"#))
+            .collect();
+        let package = build_workbook_with_parts(
+            &workbook_sheets,
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+            Some(&format!(
+                r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>a</author></authors><commentList><comment ref="A1" authorId="0"><text><t>{comment}</t></text></comment></commentList></comments>"#
+            )),
+        );
+        let error = to_markdown_native(&package).expect_err("oversized comments rejected");
+        assert!(error.contains("xlsx-markdown"), "{error}");
 
         let small = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>2</v></c></row></sheetData></worksheet>"#;
         let markdown = to_markdown_native(&build_single_sheet_workbook(small)).expect("fits");

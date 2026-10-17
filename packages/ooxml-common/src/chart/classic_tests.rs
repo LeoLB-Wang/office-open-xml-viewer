@@ -2875,6 +2875,15 @@ mod tests {
             ),
             (chart(&num("4294967295")), MAX_CHART_CACHE_POINTS as u64),
             (chart(&str_cat("4294967294")), MAX_CHART_CACHE_POINTS as u64),
+            // Collectors that read the last descendant ptCount must not see a
+            // count the admission skipped.
+            (
+                chart(&num("1").replace(
+                    r#"<c:ptCount val="1"/>"#,
+                    r#"<c:ptCount val="1"/><c:ptCount val="4294967295"/>"#,
+                )),
+                MAX_CHART_CACHE_POINTS as u64,
+            ),
             (
                 chart(&num(&wide).repeat(5)),
                 MAX_CLASSIC_CHART_CACHE_SLOTS as u64,

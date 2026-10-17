@@ -88,7 +88,8 @@ pub(crate) fn render_sheet(
 
     // Every emitted row carries all `n_cols` cells, so bound the projected
     // output before writing it: a few far-apart cells can otherwise expand
-    // into gigabytes of empty `|  |` columns.
+    // into gigabytes of empty `|  |` columns. A row costs at most 6 bytes per
+    // column (the `--- | ` separator) plus its delimiters and newline.
     let n_cols = u64::from(max_col - min_col + 1);
     let mut emitted_rows = 2u64; // header + separator
     let mut content = 0u64;
@@ -101,8 +102,9 @@ pub(crate) fn render_sheet(
         }
     }
     let projected = (out.len() as u64)
-        .saturating_add(emitted_rows.saturating_mul(n_cols.saturating_mul(3).saturating_add(2)))
-        .saturating_add(content);
+        .saturating_add(emitted_rows.saturating_mul(n_cols.saturating_mul(6).saturating_add(4)))
+        .saturating_add(content)
+        .saturating_add(1);
     if projected > limit {
         return Err(projected);
     }
@@ -526,5 +528,20 @@ mod tests {
         let mut out = String::new();
         let projected = render_sheet(&sheet, &[], &mut out, 1 << 20).expect_err("over budget");
         assert!(projected > 1 << 20);
+
+        // The projection is an upper bound of the written table: with the
+        // limit at the projected size the table fits, one byte less fails.
+        let sheet = sheet_of(&[(1, 1, "a"), (1, 16_384, "z")], Value::Null);
+        let mut probe = String::new();
+        render_sheet(&sheet, &[], &mut probe, u64::MAX).unwrap();
+        let mut out = String::new();
+        let projected = render_sheet(&sheet, &[], &mut out, 0).expect_err("over budget");
+        assert!(
+            projected >= probe.len() as u64,
+            "{projected} < {}",
+            probe.len()
+        );
+        let mut out = String::new();
+        render_sheet(&sheet, &[], &mut out, projected).expect("fits its projection");
     }
 }
