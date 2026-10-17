@@ -1,6 +1,12 @@
 import { clipCanvasHorizontally } from '@silurus/ooxml-core/internal/canvas-clip';
 import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { quoteCssFontFamily } from '@silurus/ooxml-core/internal/css-font-family';
+import {
+  arabicFallbackFamilies,
+  containsArabicFallbackText,
+  officeFaceWebAlias,
+  quoteCssFontFamilies as quoteAll,
+} from '@silurus/ooxml-core/internal/font-stack';
 import { FONT_TRACKING_SENTINEL, FONT_BASELINE_SENTINEL, FONT_SPACE_SENTINEL } from '@silurus/ooxml-core/internal/font-measurement-sentinels';
 import { preparedPowerPointText } from './font-display-text.js';
 import { pptxSlideCjkFallback } from './google-fonts.js';
@@ -1056,30 +1062,6 @@ function genericFallback(family: string): string {
 }
 
 /**
- * Optional published web aliases for authored Office faces. These enter the
- * canvas stack only when `useGoogleFonts` is enabled. The authored family
- * remains first, followed by a fallback of the same generic class. Keys are
- * lower-cased; this map is not a metric correction or a line-break rule.
- */
-const OFFICE_FONT_SUBSTITUTE: Record<string, string> = {
-  'calibri': 'Carlito',
-  'cambria': 'Caladea',
-  'franklin gothic book': 'Libre Franklin',
-  'franklin gothic medium': 'Libre Franklin',
-  // Optional aliases for common Arabic-script faces. "Naskh" covers
-  // traditional serif-like faces; "Sans" covers geometric ones.
-  'sakkal majalla': 'Noto Naskh Arabic',
-  'traditional arabic': 'Noto Naskh Arabic',
-  'simplified arabic': 'Noto Naskh Arabic',
-  'arabic typesetting': 'Noto Naskh Arabic',
-  'univers next arabic': 'Noto Sans Arabic',
-};
-
-/** Arabic fallbacks apply only to runs containing Arabic codepoints, before
- * the CSS generic so a missing authored face can retain the script. */
-const ARABIC_TEXT_RE = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]/u;
-
-/**
  * True when `family` names an Arabic-script face. Its Arabic runs place the
  * script fallbacks before CJK and other script tails.
  *
@@ -1091,15 +1073,10 @@ const ARABIC_TEXT_RE = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]/u;
  */
 function isArabicScriptFace(family: string): boolean {
   // Faces we explicitly substitute to a Noto Arabic web font are Arabic-script.
-  if (ownValue(OFFICE_FONT_SUBSTITUTE, family.toLowerCase())?.includes('Arabic')) return true;
+  if (officeFaceWebAlias(family)?.includes('Arabic')) return true;
   const l = family.toLowerCase();
   // Common Arabic-script family-name markers (Latin transliterations + Arabic).
   return /arabic|naskh|kufi|nastaliq|amiri|scheherazade|lateef|aldhabi|urdu|farsi|العرب|[؀-ۿ]/.test(l);
-}
-
-/** Quote each family for a CSS font-family list (no trailing comma). */
-function quoteAll(names: readonly string[]): string {
-  return names.map(quoteCssFontFamily).join(', ');
 }
 
 /**
@@ -1123,8 +1100,10 @@ export function cssFontStack(
   googleSubstitutes = false,
 ): string {
   const generic = genericFallback(authoredFamily);
-  const arabicText = ARABIC_TEXT_RE.test(text);
-  const alias = googleSubstitutes ? ownValue(OFFICE_FONT_SUBSTITUTE, authoredFamily.toLowerCase()) : undefined;
+  const arabicText = containsArabicFallbackText(text);
+  // Optional published web aliases for authored Office faces enter the stack
+  // only with `useGoogleFonts`; the authored family stays first.
+  const alias = googleSubstitutes ? officeFaceWebAlias(authoredFamily) : undefined;
   // Script-scoped visual substitutes (core substitute-script.ts) join only a
   // run that contains their script. A CSS stack cannot split a run, but the
   // authored family stays first, so an installed authored face still wins.
@@ -1135,9 +1114,7 @@ export function cssFontStack(
   const googleAlias = googleCjkFontAlias(authoredFamily);
   const aliasPart = googleAlias ? `${quoteCssFontFamily(googleAlias)}, ` : '';
   // Arabic faces lead with script fallbacks only for Arabic runs.
-  const arabicFamilies = generic === 'serif'
-    ? ['Noto Naskh Arabic', 'Noto Sans Arabic']
-    : ['Noto Sans Arabic'];
+  const arabicFamilies = arabicFallbackFamilies(generic === 'serif');
   const arabicPart = arabicText ? `${quoteAll(arabicFamilies)}, ` : '';
   if (isArabicScriptFace(authoredFamily) && arabicText) {
     const cjk = fallback ? cjkFallbackChain(fallback, 'sans') : [];
@@ -1871,7 +1848,7 @@ export function paragraphInputRuns(
       // `buildFont` depends on text only through these script predicates. Keep
       // cache cardinality bounded by face/script class, not grapheme count.
       const key = `${face}\0${named ? 1 : 0}\0${containsHanScript(text) ? 1 : 0}`
-        + `\0${ARABIC_TEXT_RE.test(text) ? 1 : 0}\0${extras.join('\0')}`;
+        + `\0${containsArabicFallbackText(text) ? 1 : 0}\0${extras.join('\0')}`;
       const cached = stackFonts.get(key);
       if (cached !== undefined) return cached;
       const built = buildFont(bold, italic, drawSizePx, face, rc, text, named, extras);

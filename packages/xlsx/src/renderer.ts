@@ -7,6 +7,7 @@ import { inheritCellFontLanguage, usesJapaneseCellFonts } from './internal/cell-
 import { drawShapeStackedText } from './shape-stacked-text.js';
 import type { CjkLang } from '@silurus/ooxml-core';
 import { quoteCssFontFamily } from '@silurus/ooxml-core/internal/css-font-family';
+import { arabicFallbackFamilies, containsArabicFallbackText } from '@silurus/ooxml-core/internal/font-stack';
 import {
   breakDrawingMlText, drawingMlTextRect, drawingMlLineHeight,
   drawingMlSpacedLineBox, drawingMlParagraphSpacing, drawingMlBlockTop, drawingMlLineX, paintDrawingMlLine,
@@ -112,7 +113,6 @@ const NAMED_SERIF_TAIL =
   `"Times New Roman", "Liberation Serif", ${NON_CJK_SERIF_TAIL}, serif`;
 const CALIBRI_TAIL = `"Carlito", ${NAMED_SANS_TAIL}`;
 const CAMBRIA_TAIL = `"Caladea", ${NAMED_SERIF_TAIL}`;
-const ARABIC_TEXT_RE = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]/u;
 type OfficeRoutes = Readonly<Record<string, import('@silurus/ooxml-core').OfficeFontFallbackRoute>>;
 const officeRoutesByContext = new WeakMap<object, OfficeRoutes>();
 const officeRoutesByWorksheet = new WeakMap<Worksheet, OfficeRoutes>();
@@ -278,9 +278,7 @@ export function cssTailFor(name: string | null | undefined, fallback?: CjkLang, 
     const families = [
       ...(includeRegional && fallback
         ? cjkFallbackChain(fallback, generic === 'serif' ? 'serif' : 'sans') : []),
-      ...(ARABIC_TEXT_RE.test(text)
-        ? generic === 'serif' ? ['Noto Naskh Arabic', 'Noto Sans Arabic'] : ['Noto Sans Arabic']
-        : []),
+      ...(containsArabicFallbackText(text) ? arabicFallbackFamilies(generic === 'serif') : []),
     ];
     if (families.length === 0) return base;
     const split = base.lastIndexOf(',');
