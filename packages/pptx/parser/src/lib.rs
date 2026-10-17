@@ -11280,7 +11280,7 @@ mod tests {
         let mut ordinary_slide = String::new();
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).unwrap();
-            let name = entry.name().to_owned();
+            let name = entry.name().unwrap().into_owned();
             let mut xml = String::new();
             entry.read_to_string(&mut xml).unwrap();
             if name == "ppt/presentation.xml" {
@@ -13191,7 +13191,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 if name == "ppt/slides/slide1.xml" {
@@ -13223,7 +13223,7 @@ mod tests {
                 .compression_method(zip::CompressionMethod::Stored);
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 writer.start_file(name, options).unwrap();
@@ -13370,7 +13370,7 @@ mod tests {
             let o = zip::write::SimpleFileOptions::default();
             for i in 0..zip.len() {
                 let mut f = zip.by_index(i).unwrap();
-                let name = f.name().to_owned();
+                let name = f.name().unwrap().into_owned();
                 if name == "ppt/slides/slide3.xml" {
                     continue; // omit → its read fails → placeholder
                 }
@@ -13394,7 +13394,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 if name == target {
@@ -13418,7 +13418,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes).unwrap();
                 writer.start_file(name, options).unwrap();
@@ -13445,7 +13445,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 for (slide, is_referenced) in referenced.iter().copied().enumerate() {
@@ -13507,7 +13507,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 if name == "ppt/slides/_rels/slide1.xml.rels" {
@@ -13559,7 +13559,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 if name == "ppt/slides/_rels/slide1.xml.rels" {
@@ -14093,7 +14093,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for index in 0..source.len() {
                 let mut entry = source.by_index(index).unwrap();
-                let name = entry.name().to_owned();
+                let name = entry.name().unwrap().into_owned();
                 let mut body = Vec::new();
                 entry.read_to_end(&mut body).unwrap();
                 let body: &[u8] = match name.as_str() {

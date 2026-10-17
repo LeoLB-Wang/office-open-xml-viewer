@@ -10,12 +10,15 @@ pub(crate) fn entry_index<R: std::io::Read + std::io::Seek>(
 ) -> Option<usize> {
     let key = ooxml_common::rels::part_name_equivalence_key(path);
     let mut found = None;
-    for name in archive.file_names() {
-        if ooxml_common::rels::part_name_equivalence_key(name) == key {
+    // `file_names` enumerates items in index order. A name the ZIP crate
+    // cannot decode never equals a requested OPC part name.
+    for (index, name) in archive.file_names().enumerate() {
+        let Ok(name) = name else { continue };
+        if ooxml_common::rels::part_name_equivalence_key(&name) == key {
             if found.is_some() {
                 return None;
             }
-            found = archive.index_for_name(name);
+            found = Some(index);
         }
     }
     found

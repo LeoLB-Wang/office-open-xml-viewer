@@ -343,8 +343,13 @@ impl PackageSession {
             let entry = archive
                 .by_index_raw(index)
                 .map_err(|error| format!("ZIP archive entry metadata error: {error}"))?;
-            let data_start = usize::try_from(entry.data_start())
-                .map_err(|_| "ZIP entry data offset exceeds this platform".to_string())?;
+            let data_start = entry
+                .data_start()
+                .ok_or_else(|| "ZIP entry data offset was not resolved".to_string())
+                .and_then(|start| {
+                    usize::try_from(start)
+                        .map_err(|_| "ZIP entry data offset exceeds this platform".to_string())
+                })?;
             let compressed_size = entry.compressed_size();
             let data_end = data_start
                 .checked_add(
@@ -355,7 +360,10 @@ impl PackageSession {
             if data_end > source.as_slice().len() {
                 return Err("ZIP entry data range exceeds package bytes".to_string());
             }
-            let path = entry.name().to_string();
+            let path = entry
+                .name()
+                .map_err(|error| format!("ZIP archive entry name error: {error}"))?
+                .into_owned();
             by_name.insert(path.clone(), index);
             by_key.insert(crate::rels::part_name_equivalence_key(&path), index);
             entries.push(EntryMetadata {
@@ -1719,7 +1727,7 @@ mod tests {
             ("word/good.bin", b"good", CompressionMethod::Stored),
         ]);
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
-        let bad_start = archive.by_index_raw(0).unwrap().data_start() as usize;
+        let bad_start = archive.by_index_raw(0).unwrap().data_start().unwrap() as usize;
         drop(archive);
         bytes[bad_start] ^= 0xff;
 

@@ -208,7 +208,7 @@ fn read_master_theme(
 fn open_part<'a, R: std::io::Read + std::io::Seek>(
     archive: &'a mut zip::ZipArchive<R>,
     name: &str,
-) -> Result<crate::opc_part::Entry<'a>, String> {
+) -> Result<crate::opc_part::Entry<'a, R>, String> {
     let index = crate::opc_part::entry_index(archive, name)
         .ok_or_else(|| unsupported("unreadable PowerPoint embedded part"))?;
     crate::opc_part::Entry::open(archive, index)

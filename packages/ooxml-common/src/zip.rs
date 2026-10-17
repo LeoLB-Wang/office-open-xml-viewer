@@ -100,7 +100,7 @@ impl ArchivePreflight {
             let matches = entry.name_raw() == expected.name.as_ref()
                 && entry.central_header_start() == expected.central_header_start
                 && entry.header_start() == expected.local_header_start
-                && entry.data_start() == expected.data_start
+                && entry.data_start() == Some(expected.data_start)
                 && entry.compressed_size() == expected.compressed_size
                 && entry.size() == expected.uncompressed_size
                 && entry.crc32() == expected.crc32
@@ -1021,8 +1021,9 @@ fn equivalent_entry_index<R: std::io::Read + std::io::Seek>(
         let key = crate::rels::part_name_equivalence_key(path);
         archive
             .file_names()
+            .filter_map(Result::ok)
             .find(|name| crate::rels::part_name_equivalence_key(name) == key)
-            .and_then(|name| archive.index_for_name(name))
+            .and_then(|name| archive.index_for_name(&name))
     })
 }
 
@@ -1137,7 +1138,9 @@ mod tests {
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
             if zip64 {
-                writer.set_zip64_comment(Some("metadata PK\u{6}\u{6} with a false signature"));
+                writer.set_raw_zip64_extensible_data_sector(
+                    b"metadata PK\x06\x06 with a false signature"[..].into(),
+                );
             }
             let options = zip::write::SimpleFileOptions::default();
             writer.start_file("word/a.xml", options).unwrap();
@@ -1436,8 +1439,10 @@ mod tests {
             writer.finish().unwrap();
         }
         // Forge both local and central uncompressed-size fields down to one.
-        // The stored payload still delivers eight bytes, so metadata alone must
-        // not authorize the read.
+        // The payload still delivers eight bytes, so metadata alone must not
+        // authorize the read: the decoder stops once actual output passes the
+        // declaration (the retained session's inflated-size check agrees), and
+        // the governor is charged only for bytes actually produced.
         bytes[22..26].copy_from_slice(&1u32.to_le_bytes());
         let central = bytes
             .windows(4)
@@ -1445,16 +1450,16 @@ mod tests {
             .expect("central-directory header");
         bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
 
-        let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, Some(4), Some(64), None);
+        let governor = ResourceGovernor::from_wasm(OoxmlFormat::Docx, Some(64), Some(64), None);
         let _scope = governor.scope("parse");
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         validate_archive_limits(&mut archive).unwrap();
         let error = read_zip_bytes(&mut archive, "word/document.xml").unwrap_err();
-        let json = details(&error);
-        let violation = &json["details"]["violation"];
-        assert_eq!(violation["metric"], "actual-inflated-bytes");
-        assert_eq!(violation["limit"], 4);
-        assert_eq!(violation["observed"], 5);
+        assert!(
+            error.contains("larger than its declared uncompressed size"),
+            "{error}"
+        );
+        assert!(governor.first_error().is_none());
     }
 
     #[test]
@@ -1741,7 +1746,7 @@ mod tests {
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
             let comment = "x".repeat(128);
-            writer.set_zip64_comment(Some(comment));
+            writer.set_raw_zip64_extensible_data_sector(comment.into_bytes().into());
             writer
                 .start_file(
                     "word/document.xml",
@@ -1822,7 +1827,6 @@ mod tests {
             if offset == 8 {
                 let error = preflight_archive_limits(&bytes).unwrap_err();
                 assert!(!error.starts_with("OOXML_RESOURCE_LIMIT:"));
-                assert!(zip::ZipArchive::new(Cursor::new(bytes)).is_err());
             } else {
                 let preflight = preflight_archive_limits(&bytes).unwrap();
                 assert_eq!(preflight.entry_count, 2);

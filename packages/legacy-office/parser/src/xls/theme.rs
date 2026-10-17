@@ -152,11 +152,14 @@ impl Colors {
                     "encrypted BIFF theme ZIP entry",
                 ));
             }
+            let name = entry
+                .name()
+                .map_err(|_| unsupported("invalid BIFF theme ZIP entry"))?;
             if entry.is_symlink()
-                || !names.insert(ooxml_common::rels::part_name_equivalence_key(entry.name()))
-                || (entry.name() != "[Content_Types].xml"
-                    && ooxml_common::rels::part_name_equivalence_key(&normalize("", entry.name())?)
-                        != ooxml_common::rels::part_name_equivalence_key(entry.name()))
+                || !names.insert(ooxml_common::rels::part_name_equivalence_key(&name))
+                || (name != "[Content_Types].xml"
+                    && ooxml_common::rels::part_name_equivalence_key(&normalize("", &name)?)
+                        != ooxml_common::rels::part_name_equivalence_key(&name))
             {
                 return Err(unsupported("unsafe or oversized BIFF theme ZIP entry"));
             }
