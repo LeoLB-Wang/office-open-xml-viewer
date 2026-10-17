@@ -281,11 +281,18 @@ pub(crate) fn render_runs_md(runs: &[TextRun], out: &mut MarkdownWriter) {
                 if t.bold == Some(true) {
                     out.push_str("**");
                 }
-                if t.hyperlink.is_some() {
+                // A target outside the viewer's hyperlink scheme policy
+                // (`javascript:`, `data:`, ...) keeps its text but does not
+                // become a Markdown link.
+                let link = t
+                    .hyperlink
+                    .as_deref()
+                    .and_then(ooxml_common::markdown::link_destination);
+                if link.is_some() {
                     out.push('[');
                 }
                 write_escaped_inline_md(trimmed, out);
-                if let Some(url) = &t.hyperlink {
+                if let Some(url) = &link {
                     out.push_str("](");
                     out.push_str(url);
                     out.push(')');
@@ -303,13 +310,14 @@ pub(crate) fn render_runs_md(runs: &[TextRun], out: &mut MarkdownWriter) {
 }
 
 /// Escape the markdown inline metacharacters that would otherwise be parsed as
-/// formatting. We deliberately don't escape every potential metachar — pptx
+/// formatting or open a link, image or raw HTML
+/// ([`ooxml_common::markdown::is_inline_metachar`]). We deliberately don't escape every potential metachar — pptx
 /// body text contains so much punctuation that aggressive escaping makes the
 /// output noisier than the structure it's trying to expose. Pipe is handled
 /// separately in `render_table_cell_md` since it only matters inside tables.
 fn write_escaped_inline_md(value: &str, out: &mut MarkdownWriter) {
     for character in value.chars() {
-        if matches!(character, '\\' | '*' | '_' | '`') {
+        if ooxml_common::markdown::is_inline_metachar(character) {
             out.push('\\');
         }
         out.push(character);

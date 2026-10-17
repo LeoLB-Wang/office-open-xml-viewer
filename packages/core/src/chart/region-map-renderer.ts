@@ -16,8 +16,6 @@ import {
   type RegionMapPoint,
 } from './region-map-natural-earth.generated.js';
 
-export const REGION_MAP_IMPLEMENTATION_MARKER = 'ooxml-region-map-natural-earth-v1';
-
 type ProjectionType = 'mercator' | 'miller' | 'robinson' | 'albers';
 interface Point { x: number; y: number }
 

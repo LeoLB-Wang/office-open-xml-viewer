@@ -196,4 +196,7 @@ it.each(['header', 'footer'] as const)('credits a repeated complete text box in 
   const texts = textRunsForPage(blocking, 299, { scale: 1 })
     .filter(run => run.source?.story === 'textbox').map(run => run.text);
   expect(texts).toEqual(Array(110).fill('h'));
-}, 60000);
+  // 300 pages that each repaint a 110-line text box, laid out blocking and
+  // progressively: ~34-39 s on an idle machine, so 60 s timed out when the
+  // suite ran on a loaded machine. Reducing the fixture is tracked in #1852.
+}, 180_000);

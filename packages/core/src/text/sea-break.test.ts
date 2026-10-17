@@ -521,6 +521,42 @@ describe('graphemeClusterOffsets', () => {
     // Exactly one interior boundary, between the two clusters (after index 2).
     expect(offsets).toEqual([2]);
   });
+  it('matches the extended-grapheme segmenter for Latin-1 text, including CR LF and controls', () => {
+    const native = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const expected = (text: string) => [...native.segment(text)].map((part) => part.index).filter((index) => index > 0);
+    // Every ordered pair of Basic Latin / Latin-1 Supplement code units covers
+    // each rule that can apply inside the range (GB3 CR × LF, GB4/GB5 around
+    // controls and the soft hyphen, GB999 elsewhere).
+    for (let first = 0; first <= 0xff; first += 1) {
+      for (let second = 0; second <= 0xff; second += 1) {
+        const text = String.fromCharCode(first, second);
+        expect(graphemeClusterOffsets(text)).toEqual(expected(text));
+      }
+    }
+    for (const text of ['', 'a', 'Caf\u00e9 cr\u00e8me', 'one\r\ntwo\r\n\r\n', '\r\r\n\n', 'x\u00ad\ty']) {
+      expect(graphemeClusterOffsets(text)).toEqual(expected(text));
+    }
+  });
+  it('matches the segmenter across the CJK and kana fast-path ranges', () => {
+    const native = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const expected = (text: string) => [...native.segment(text)].map((part) => part.index).filter((index) => index > 0);
+    const ranges = [[0x3000, 0x303f], [0x3041, 0x30ff], [0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xff01, 0xff9f]];
+    for (const [first, last] of ranges) {
+      for (let code = first; code <= last; code += 1) {
+        // `a c a c c` exposes every UAX #29 rule that could join c to a
+        // neighbour: Extend/ZWJ/SpacingMark (a c), Prepend (c a), and Hangul
+        // jamo or Regional_Indicator pairs (c c). Characters outside the fast
+        // path (U+302A..U+302F, U+3099..U+309A, U+FF9E..U+FF9F) take the
+        // segmenter and must still match it.
+        const c = String.fromCharCode(code);
+        const text = `a${c}a${c}${c}`;
+        expect(graphemeClusterOffsets(text)).toEqual(expected(text));
+      }
+    }
+    for (const text of ['\u65e5\u672c\u8a9e\u3002', '\u304b\u3099\u304d', '\uff76\uff9e\uff77\uff9e', '\u6f22\r\n\u304b', '\u301c\u300c\u5f15\u300d']) {
+      expect(graphemeClusterOffsets(text)).toEqual(expected(text));
+    }
+  });
   it('returns interior offsets only (excludes 0 and length)', () => {
     const offsets = graphemeClusterOffsets('abc');
     for (const o of offsets) {

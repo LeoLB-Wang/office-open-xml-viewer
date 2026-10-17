@@ -318,10 +318,14 @@ export function buildShapePath(
   // Three tiers, all routed here: SPEC_MIGRATED_PRESETS (coordinate-identical to
   // the legacy body), SPEC_MIGRATED_FILL_EQUIVALENT_PRESETS (same filled
   // silhouette, decorative strokes aside), and SPEC_MIGRATED_SPEC_CORRECT_PRESETS
-  // (same topology, small spec-CORRECT vertex/arc drift). All three are safe
-  // because the sole live legacy caller is the pptx effect-mask that fills
-  // path 0. Everything not in any set keeps its legacy output — including the
-  // plain-rect default — untouched.
+  // (same topology, small spec-CORRECT vertex/arc drift). Live legacy callers
+  // are the pptx effect mask, which fills a silhouette, and the
+  // drawingml-geometry fallbacks for names the spec engine does not define:
+  // the shape body (filled and stroked) and the clip/shade silhouette. Those
+  // fallbacks reach this branch only through a LEGACY_SPEC_ALIASES spelling;
+  // there the fill-equivalent tier may differ from the legacy body in its
+  // decorative strokes. Everything not in any set keeps its legacy output —
+  // including the plain-rect default — untouched.
   {
     const raw = geom.toLowerCase();
     const key = ownValue(LEGACY_SPEC_ALIASES, raw) ?? raw;

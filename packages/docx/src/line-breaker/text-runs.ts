@@ -1,7 +1,6 @@
 import type { DocxTextRun, FieldRun } from '../types';
 import type { NumberFormat } from '@silurus/ooxml-core';
 import { isCjkBreakChar, isComplexScriptCodePoint, formatOrdinalNumber, parseFieldFormatSwitch, formatDateTimePicture, parseDateTimePictureSwitch } from '@silurus/ooxml-core';
-import { mathFallbackText } from '../layout/math-fallback-text.js';
 import type { ParagraphLayoutRun } from '../layout/text.js';
 import { RTL_PRIMARY_SUBTAGS } from '../layout/line-compatibility.js';
 import { wordNeutralAttachesToActiveScript } from '../layout/script-compatibility.js';
@@ -123,8 +122,6 @@ export function resolveFieldText(f: FieldRun, environment: LineLayoutEnvironment
   return f.fallbackText;
 }
 
-
-export const mathPlainText = mathFallbackText;
 
 
 /** Returns true when any code point of `text` permits a line break between

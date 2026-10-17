@@ -165,23 +165,28 @@ function compile(segments: readonly (readonly number[])[]): Profile {
   }
   return { height, slope };
 }
-const PROFILES = Object.fromEntries(
-  Object.entries(CURVES).map(([name, curve]) => [name, compile(curve)]),
-);
+// Compiled on first use per preset. Compilation is deterministic, so a lazy
+// table returns the same samples as an eager one; most documents use no bevel
+// or one preset, and every realm (main thread and each render worker) would
+// otherwise compile all presets while the module evaluates.
+const PROFILES = new Map<string, Profile>();
+function profileFor(name: string): Profile {
+  const key = Object.hasOwn(CURVES, name) ? name : 'circle';
+  let profile = PROFILES.get(key);
+  if (profile === undefined) {
+    profile = compile(CURVES[key]);
+    PROFILES.set(key, profile);
+  }
+  return profile;
+}
 function sample(values: Float64Array, t: number): number {
   const u = Math.max(0, Math.min(1, t)) * RESOLUTION;
   const i = Math.min(RESOLUTION - 1, Math.floor(u));
   return values[i] + (values[i + 1] - values[i]) * (u - i);
 }
 export function profileHeight(name: string, t: number): number {
-  return sample(
-    (Object.hasOwn(PROFILES, name) ? PROFILES[name] : PROFILES.circle).height,
-    t,
-  );
+  return sample(profileFor(name).height, t);
 }
 export function profileSlope(name: string, t: number): number {
-  return sample(
-    (Object.hasOwn(PROFILES, name) ? PROFILES[name] : PROFILES.circle).slope,
-    t,
-  );
+  return sample(profileFor(name).slope, t);
 }

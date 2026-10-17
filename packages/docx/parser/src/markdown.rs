@@ -378,7 +378,7 @@ fn render_runs(runs: &[DocRun], revisions: &[Option<crate::types::RunRevision>])
     out
 }
 
-fn format_text_run(t: &crate::types::TextRun) -> String {
+fn format_text_run(t: &TextRun) -> String {
     // Footnote/endnote reference markers carry only the note's id; the linkage
     // is expressed via the `[^id]` syntax elsewhere, so drop the marker glyph
     // from the inline text projection.
@@ -401,7 +401,13 @@ fn format_text_run(t: &crate::types::TextRun) -> String {
     let body = &raw[leading_len..trail_start];
 
     let mut s = escape_inline_md(body);
-    if let Some(url) = &t.hyperlink {
+    // A target outside the viewer's hyperlink scheme policy (`javascript:`,
+    // `data:`, ...) keeps its text but does not become a Markdown link.
+    if let Some(url) = t
+        .hyperlink
+        .as_deref()
+        .and_then(ooxml_common::markdown::link_destination)
+    {
         s = format!("[{s}]({url})");
     }
     // Order: bold > italic > strikethrough wrappers. Multiple wrappers stack.
@@ -421,14 +427,20 @@ fn format_text_run(t: &crate::types::TextRun) -> String {
     out
 }
 
-/// Minimal markdown escape: only metacharacters that would otherwise be
-/// parsed as formatting (bold `*`, italic `_`, code `` ` ``, backslash).
-/// Pipes are handled separately inside table cells.
+/// Minimal markdown escape: metacharacters that would otherwise be parsed as
+/// formatting (bold `*`, italic `_`, code `` ` ``, backslash) or open a link,
+/// image or raw HTML (`[`, `]`, `<`); see
+/// [`ooxml_common::markdown::is_inline_metachar`]. Pipes are handled
+/// separately inside table cells.
 fn escape_inline_md(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('_', "\\_")
-        .replace('`', "\\`")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if ooxml_common::markdown::is_inline_metachar(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn render_table(t: &DocTable, out: &mut MarkdownWriter) {
@@ -475,10 +487,6 @@ fn render_table_cell(cell: &DocTableCell) -> String {
     }
     buf.replace('|', "\\|")
 }
-
-// Silence unused-import warnings when the cfg gate excludes some types.
-#[allow(dead_code)]
-fn _ensure_types_used(_t: TextRun) {}
 
 #[cfg(test)]
 mod tests {
