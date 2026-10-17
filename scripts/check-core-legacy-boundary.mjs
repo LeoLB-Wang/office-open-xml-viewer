@@ -68,9 +68,15 @@ export const RULES = [
   { id: 'legacy-binary-spec', pattern: /\bMS-(?:DOC|PPT|XLS|XLSB|ODRAW)\b|\bBIFF\d*\b/ },
   {
     id: 'legacy-binary-structure',
-    pattern: /\bsprm[A-Z]|\b(?:PAPX|CHPX|SEPX|MSOTXFL|PlcfHdd)\b|\bWordDocument\b|PowerPoint Document/,
+    pattern: /\bsprm[A-Z]\w*|\b(?:PAPX|CHPX|SEPX|MSOTXFL|PlcfHdd)\b|\bWordDocument\b|PowerPoint Document/,
   },
 ];
+
+/** A path matcher for exactly the listed files. */
+function exactPaths(...paths) {
+  const listed = new Set(paths);
+  return { test: (path) => listed.has(path) };
+}
 
 /**
  * Exact allowances for legitimate tokens. Each entry names its rule, the
@@ -83,12 +89,20 @@ export const ALLOWED_TOKENS = [
   // citations) to recognize and refuse them, not to read them.
   {
     rule: 'legacy-binary-spec',
-    path: /^packages\/core\/src\/errors\/cfb-sniff\.ts$/,
+    path: exactPaths('packages/core/src/errors/cfb-sniff.ts'),
     token: /^(?:MS-DOC|MS-XLS|MS-PPT|BIFF)$/,
   },
   {
     rule: 'legacy-binary-structure',
-    path: /^packages\/(?:core\/src\/(?:errors\/cfb-|source\/cfb-|testing\/cfb-)|(?:docx|pptx|xlsx)\/src\/[a-z-]*cfb-guard[a-z-]*\.test\.ts$|docx\/src\/document-model-source\.test\.ts$)/,
+    path: exactPaths(
+      'packages/core/src/errors/cfb-sniff.ts',
+      'packages/core/src/errors/cfb-sniff.test.ts',
+      'packages/core/src/errors/cfb-guard.test.ts',
+      'packages/core/src/errors/cfb-guard-resolve.test.ts',
+      'packages/docx/src/document-cfb-guard.test.ts',
+      'packages/docx/src/document-model-source.test.ts',
+      'packages/pptx/src/presentation-cfb-guard.test.ts',
+    ),
     token: /^(?:WordDocument|PowerPoint Document)$/,
   },
   // XLSX may cite the Excel binary specifications as Excel-behaviour
@@ -98,13 +112,17 @@ export const ALLOWED_TOKENS = [
   // spacing representation (LSPD) and its page-size limit.
   {
     rule: 'legacy-binary-spec',
-    path: /^packages\/docx\/src\/(?:layout\/line-compatibility\.ts|layout\/table-acquisition\.ts|line-box-height\.test\.ts)$/,
+    path: exactPaths(
+      'packages/docx/src/layout/line-compatibility.ts',
+      'packages/docx/src/layout/table-acquisition.ts',
+      'packages/docx/src/line-box-height.test.ts',
+    ),
     token: /^MS-DOC$/,
   },
   {
     rule: 'legacy-binary-structure',
-    path: /^packages\/docx\/src\/layout\/table-acquisition\.ts$/,
-    token: /^sprmS$/,
+    path: exactPaths('packages/docx/src/layout/table-acquisition.ts'),
+    token: /^sprmS[XY]aPage$/,
   },
 ];
 
@@ -131,23 +149,143 @@ export const ALLOWED_LEGACY_PARSER_DEPENDENCIES = new Map([
   ['pptx-parser', 'standalone DrawingML shape parts'],
 ]);
 
-/** Report OOXML parser crates in the legacy reader's normal dependencies. */
-export function legacyCargoViolations(path, text) {
-  const violations = [];
-  let section = '';
-  text.split('\n').forEach((line, index) => {
-    const header = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-    if (header) {
-      section = header[1].trim();
+/** Strip a TOML comment that is not inside a basic or literal string. */
+function stripTomlComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (quote) {
+      if (char === '\\' && quote === '"') i++;
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '#') {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+/** Split a TOML dotted key (bare or quoted segments). Returns undefined for
+ * syntax this minimal reader does not understand, which the caller rejects. */
+function tomlKeySegments(text) {
+  const segments = [];
+  let rest = text.trim();
+  while (rest.length > 0) {
+    const match = /^(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*/.exec(rest);
+    if (!match) return undefined;
+    segments.push(match[1] ?? match[2] ?? match[3]);
+    rest = rest.slice(match[0].length);
+    if (rest.length === 0) break;
+    if (rest[0] !== '.') return undefined;
+    rest = rest.slice(1).trimStart();
+  }
+  return segments.length > 0 ? segments : undefined;
+}
+
+const DEPENDENCY_TABLES = new Set(['dependencies', 'build-dependencies']);
+
+/** The dependency-table role of a TOML table header: a dependency list
+ * (`[dependencies]`, `[target.<cfg>.dependencies]`), one dependency
+ * (`[dependencies.<name>]`, `[target.<cfg>.dependencies.<name>]`), or none.
+ * `dev-dependencies` are test-only and stay unrestricted. */
+function dependencyHeader(segments) {
+  const body = segments[0] === 'target' && segments.length >= 3 ? segments.slice(2) : segments;
+  if (!DEPENDENCY_TABLES.has(body[0])) return { kind: 'other' };
+  if (body.length === 1) return { kind: 'list' };
+  if (body.length === 2) return { kind: 'one', name: body[1] };
+  return { kind: 'invalid' };
+}
+
+/**
+ * Normal (and build) dependencies of a Cargo manifest, by the package each one
+ * actually resolves to: a `package = "..."` rename wins over the key. Covers
+ * `[dependencies]` key/value and inline-table entries, dotted keys,
+ * `[dependencies.<name>]` tables and their `target.<cfg>` forms.
+ */
+export function cargoNormalDependencies(text) {
+  const dependencies = new Map();
+  const declare = (key, line) => {
+    if (!dependencies.has(key)) dependencies.set(key, { key, package: key, line });
+    return dependencies.get(key);
+  };
+  let section = { kind: 'other' };
+  const problems = [];
+  // Open brackets of a multi-line array value (TOML 1.0 inline tables are
+  // single-line). Strings are blanked before counting.
+  let arrayDepth = 0;
+  const bracketBalance = (value) => {
+    const bare = value.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+    return (bare.match(/\[/g)?.length ?? 0) - (bare.match(/\]/g)?.length ?? 0);
+  };
+  text.split('\n').forEach((raw, index) => {
+    const line = stripTomlComment(raw).trim();
+    if (line.length === 0) return;
+    if (arrayDepth > 0) {
+      arrayDepth = Math.max(0, arrayDepth + bracketBalance(line));
       return;
     }
-    if (section !== 'dependencies') return;
-    const name = /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line)?.[1];
-    if (name && /(?:docx|xlsx|pptx)[-_]parser$/.test(name)
-      && !ALLOWED_LEGACY_PARSER_DEPENDENCIES.has(name.replaceAll('_', '-'))) {
-      violations.push({ path, line: index + 1, rule: 'legacy-parser-dependency', text: line.trim() });
+    const header = /^\[(\[?)(.*?)\]?\]$/.exec(line);
+    if (header && line.startsWith('[')) {
+      if (header[1] === '[') {
+        section = { kind: 'other' };
+        return;
+      }
+      const segments = tomlKeySegments(header[2]);
+      if (!segments) {
+        problems.push(index + 1);
+        section = { kind: 'other' };
+        return;
+      }
+      section = dependencyHeader(segments);
+      if (section.kind === 'invalid') problems.push(index + 1);
+      if (section.kind === 'one') declare(section.name, index + 1);
+      return;
+    }
+    const assignment = /^((?:"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_.\s-])+?)\s*=\s*(.*)$/.exec(line);
+    if (assignment) arrayDepth = Math.max(0, bracketBalance(assignment[2]));
+    if (section.kind !== 'list' && section.kind !== 'one') return;
+    const segments = assignment && tomlKeySegments(assignment[1]);
+    if (!segments) {
+      problems.push(index + 1);
+      return;
+    }
+    const value = assignment[2];
+    const renamed = (text) => /(?:^|[{,\s])package\s*=\s*["']([^"']+)["']/.exec(text)?.[1];
+    if (section.kind === 'one') {
+      if (segments.length === 1 && segments[0] === 'package') {
+        const target = /^["']([^"']+)["']/.exec(value)?.[1];
+        if (target) dependencies.get(section.name).package = target;
+      }
+      return;
+    }
+    const entry = declare(segments[0], index + 1);
+    if (segments.length === 1) {
+      const target = value.startsWith('{') ? renamed(value) : undefined;
+      if (target) entry.package = target;
+    } else if (segments.length === 2 && segments[1] === 'package') {
+      const target = /^["']([^"']+)["']/.exec(value)?.[1];
+      if (target) entry.package = target;
     }
   });
+  return { dependencies: [...dependencies.values()], problems };
+}
+
+/** Report OOXML parser crates in the legacy reader's normal dependencies. */
+export function legacyCargoViolations(path, text) {
+  const { dependencies, problems } = cargoNormalDependencies(text);
+  const lines = text.split('\n');
+  const violations = problems.map((line) => ({
+    path, line, rule: 'legacy-parser-dependency', text: `unparsed manifest syntax: ${lines[line - 1].trim()}`,
+  }));
+  for (const dependency of dependencies) {
+    const name = dependency.package.replaceAll('_', '-');
+    if (/(?:docx|xlsx|pptx)-parser$/.test(name) && !ALLOWED_LEGACY_PARSER_DEPENDENCIES.has(name)) {
+      violations.push({
+        path, line: dependency.line, rule: 'legacy-parser-dependency', text: lines[dependency.line - 1].trim(),
+      });
+    }
+  }
   return violations;
 }
 

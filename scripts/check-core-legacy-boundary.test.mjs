@@ -45,6 +45,15 @@ test('allows OOXML specifications and the listed binary-format allowances only',
   assert.deepEqual(at('packages/core/src/errors/cfb-sniff.ts', "['WordDocument']; // .doc (§[MS-DOC])"), []);
   assert.deepEqual(at('packages/core/src/errors/cfb-sniff.ts', '// sprmCFSpec'), ['legacy-binary-structure']);
   assert.deepEqual(at('packages/docx/src/layout/diagnostics.ts', "part: 'WordDocument';"), ['legacy-binary-structure']);
+  // Allowances name complete tokens and exact files: near misses still fail.
+  const pageLimit = 'packages/docx/src/layout/table-acquisition.ts';
+  assert.deepEqual(at(pageLimit, '// MS-DOC 2.6.4 sprmSXaPage / sprmSYaPage'), []);
+  assert.deepEqual(at(pageLimit, '// sprmSTextFlow'), ['legacy-binary-structure']);
+  assert.deepEqual(at(pageLimit, '// sprmSXaPageX'), ['legacy-binary-structure']);
+  assert.deepEqual(at(pageLimit, '// sprmSXaPage and sprmCFSpec'), ['legacy-binary-structure']);
+  assert.deepEqual(at('packages/core/src/source/cfb-new-reader.ts', "['WordDocument'];"), ['legacy-binary-structure']);
+  assert.deepEqual(at('packages/core/src/errors/cfb-sniff2.ts', "['WordDocument'];"), ['legacy-binary-structure']);
+  assert.deepEqual(at('packages/xlsx/src/xlsx-cfb-guard.test.ts', "['WordDocument'];"), ['legacy-binary-structure']);
   assert.deepEqual(at('packages/ooxml-common/src/chart/model.rs', '/// BIFF chart'), ['legacy-binary-spec']);
   assert.deepEqual(at('src/docx.ts', 'export { nativeReadingNotices };'), ['legacy-wire-name']);
 });
@@ -59,6 +68,49 @@ test('limits the legacy reader to model crates and the listed parser crates', ()
     'xlsx-parser = { path = "../../xlsx/parser" }',
   ].join('\n');
   assert.deepEqual(legacyCargoViolations('Cargo.toml', toml).map((v) => v.line), [4]);
+});
+
+test('resolves renamed, table and target-specific parser dependencies', () => {
+  const lines = (toml) => legacyCargoViolations('Cargo.toml', toml.join('\n')).map((v) => v.line);
+  // An alias resolves to the package it names, in inline and dotted form.
+  assert.deepEqual(lines([
+    '[dependencies]',
+    'reader = { package = "docx-parser", path = "../../docx/parser" }',
+    'model = { package = "docx-model", path = "../../docx/model" }',
+    'grid.package = "xlsx_parser"',
+    'grid.path = "../../xlsx/parser"',
+    'shape = { package = "pptx-parser", optional = true } # allowed by package',
+  ]), [2, 4]);
+  // A dependency table, quoted or bare, with or without its own rename.
+  assert.deepEqual(lines([
+    '[dependencies.docx-parser]',
+    'path = "../../docx/parser"',
+    '[dependencies."reader"]',
+    'package = "xlsx-parser"',
+    '[dependencies.pptx-model]',
+    'path = "../../pptx/model"',
+  ]), [1, 3]);
+  // Target-specific normal dependencies, as a list and as a table.
+  assert.deepEqual(lines([
+    "[target.'cfg(target_arch = \"wasm32\")'.dependencies]",
+    'docx-parser = { path = "../../docx/parser" }',
+    '[target.wasm32-unknown-unknown.dependencies.reader]',
+    'package = "xlsx-parser"',
+    "[target.'cfg(unix)'.dev-dependencies]",
+    'pptx-model = { path = "../../pptx/model" }',
+    'xlsx-parser = { path = "../../xlsx/parser" }',
+  ]), [2, 3]);
+  // Features, comments and multi-line arrays are not dependencies.
+  assert.deepEqual(lines([
+    '[features]',
+    'direct = ["dep:docx-parser"] # docx-parser = {}',
+    '[dependencies]',
+    'zip = { workspace = true, features = [',
+    '  "deflate",',
+    '] }',
+  ]), []);
+  // Manifest syntax this reader cannot parse fails closed.
+  assert.deepEqual(lines(['[dependencies]', '{ odd } = 1']), [2]);
 });
 
 test('allows the pre-existing generic CFB rejection and unrelated "legacy" wording', () => {
