@@ -3606,7 +3606,7 @@ function authoredAlignmentAnchor(
   h: number,
   algn: Shadow['algn'],
 ): [number, number] {
-  const [u, v] = ALIGNMENT_UV[algn ?? 'b'];
+  const [u, v] = ownValue(ALIGNMENT_UV, algn ?? 'b') ?? ALIGNMENT_UV.b;
   return transformPoint(transform, x + u * w, y + v * h);
 }
 
@@ -3659,7 +3659,7 @@ export function projectedEffectGeometry(
   const minY = Math.min(...ys);
   const maxX = Math.max(...xs);
   const maxY = Math.max(...ys);
-  const [u, v] = ALIGNMENT_UV[algn ?? 'b'];
+  const [u, v] = ownValue(ALIGNMENT_UV, algn ?? 'b') ?? ALIGNMENT_UV.b;
   const projectedAnchor = projectQuadPoint(face, u, v);
   return {
     bbox: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
