@@ -11038,7 +11038,9 @@ fn parse_wsp_shape(
             .and_then(|n| n.attribute("prst"))
             .unwrap_or("rect")
             .to_string();
-        let adj_values = prst_node.map(parse_preset_adj).unwrap_or_default();
+        let adj_values = prst_node
+            .map(ooxml_common::preset_geometry::parse_preset_adj)
+            .unwrap_or_default();
         (Vec::new(), Vec::new(), Some(prst), adj_values)
     };
     if subpaths.is_empty() && preset_geometry.is_none() {
@@ -11197,61 +11199,6 @@ fn parse_wsp_shape(
         });
     }
     Some(shape)
-}
-
-/// Parse the adjust handles from a `<a:prstGeom>`'s `<a:avLst>` into an
-/// `adj1..adj8`-ordered vector. ECMA-376 §20.1.9.5: each
-/// `<a:gd name="adjN" fmla="val X"/>` supplies one handle. Matching is by name
-/// (`adj`/`adj1`, `adj2`, …) with a positional fallback for legacy unnamed
-/// lists, mirroring the pptx/xlsx parsers so the shared preset engine receives
-/// identical inputs. Trailing `None`s are trimmed.
-fn parse_preset_adj(prst_geom: roxmltree::Node) -> Vec<Option<f64>> {
-    let av = prst_geom
-        .children()
-        .find(|n| n.is_element() && n.tag_name().name() == "avLst");
-    let Some(av) = av else {
-        return Vec::new();
-    };
-    let gd_nodes: Vec<roxmltree::Node> = av
-        .children()
-        .filter(|n| n.is_element() && n.tag_name().name() == "gd")
-        .collect();
-    if gd_nodes.is_empty() {
-        return Vec::new();
-    }
-
-    let parse_val = |gd: &roxmltree::Node| -> Option<f64> {
-        gd.attribute("fmla")
-            .and_then(|f| f.strip_prefix("val "))
-            .and_then(|s| s.trim().parse::<f64>().ok())
-    };
-
-    let named = gd_nodes.iter().any(|n| n.attribute("name").is_some());
-    let mut out: Vec<Option<f64>> = (1..=8)
-        .map(|i| {
-            if named {
-                let key = format!("adj{i}");
-                gd_nodes
-                    .iter()
-                    .find(|n| {
-                        let name = n.attribute("name");
-                        if i == 1 {
-                            matches!(name, Some("adj") | Some("adj1"))
-                        } else {
-                            name == Some(key.as_str())
-                        }
-                    })
-                    .and_then(parse_val)
-            } else {
-                gd_nodes.get(i - 1).and_then(parse_val)
-            }
-        })
-        .collect();
-
-    while matches!(out.last(), Some(None)) {
-        out.pop();
-    }
-    out
 }
 
 /// The `<wps:txbx>`/`<wps:bodyPr>` body parsed off a shape. The complete
@@ -27958,18 +27905,6 @@ mod shape_preset_geometry_tests {
                 Some(-34190.0),
             ]
         );
-    }
-
-    #[test]
-    fn named_adjust_values_preserve_missing_guides_as_none() {
-        let shape = shape_with_prst_geom(
-            r#"<a:prstGeom prst="wedgeRectCallout"><a:avLst>
-                 <a:gd name="adj1" fmla="val 25000"/>
-                 <a:gd name="adj3" fmla="val 16667"/>
-               </a:avLst></a:prstGeom>"#,
-        );
-
-        assert_eq!(shape.adj_values, vec![Some(25000.0), None, Some(16667.0)]);
     }
 
     #[test]

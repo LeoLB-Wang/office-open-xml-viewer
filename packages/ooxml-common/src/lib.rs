@@ -27,6 +27,7 @@ pub mod ns;
 pub mod numbering;
 pub mod opc;
 pub mod package_session;
+pub mod preset_geometry;
 pub mod pull;
 pub mod rels;
 pub mod resource;

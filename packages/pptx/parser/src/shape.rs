@@ -3691,11 +3691,6 @@ pub(crate) fn parse_connector(
         .unwrap_or_else(|| "line".to_owned());
 
     // Pull connector adjust values from avLst (e.g. bentConnector3 adj1 = bend %).
-    let parse_gd_val = |gd: roxmltree::Node<'_, '_>| -> Option<f64> {
-        attr(&gd, "fmla")
-            .and_then(|f| f.strip_prefix("val ").map(|s| s.to_owned()))
-            .and_then(|s| s.parse::<f64>().ok())
-    };
     let av_node = prst_geom_node.and_then(|n| child(n, "avLst"));
     let gd_nodes: Vec<_> = av_node
         .map(|av| {
@@ -3704,26 +3699,8 @@ pub(crate) fn parse_connector(
                 .collect()
         })
         .unwrap_or_default();
-    let adj: Option<f64> = gd_nodes
-        .iter()
-        .find(|n| matches!(attr(n, "name").as_deref(), Some("adj") | Some("adj1")))
-        .or_else(|| gd_nodes.first())
-        .and_then(|n| parse_gd_val(*n));
-    let adj2: Option<f64> = gd_nodes
-        .iter()
-        .find(|n| attr(n, "name").as_deref() == Some("adj2"))
-        .or_else(|| gd_nodes.get(1))
-        .and_then(|n| parse_gd_val(*n));
-    let adj3: Option<f64> = gd_nodes
-        .iter()
-        .find(|n| attr(n, "name").as_deref() == Some("adj3"))
-        .or_else(|| gd_nodes.get(2))
-        .and_then(|n| parse_gd_val(*n));
-    let adj4: Option<f64> = gd_nodes
-        .iter()
-        .find(|n| attr(n, "name").as_deref() == Some("adj4"))
-        .or_else(|| gd_nodes.get(3))
-        .and_then(|n| parse_gd_val(*n));
+    let [adj, adj2, adj3, adj4] =
+        std::array::from_fn(|index| crate::master::preset_adjustment(&gd_nodes, index));
 
     Some(ShapeElement {
         math_fallback: None,
