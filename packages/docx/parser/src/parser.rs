@@ -9621,13 +9621,7 @@ fn collect_drawing_extent_diagnostic(
     }
 }
 
-fn parse_on_off(value: &str) -> Option<bool> {
-    match value {
-        "1" | "true" | "on" => Some(true),
-        "0" | "false" | "off" => Some(false),
-        _ => None,
-    }
-}
+use ooxml_common::xml_node::parse_st_on_off as parse_on_off;
 
 fn anchor_emu_pt(value: Option<&str>) -> Option<f64> {
     value

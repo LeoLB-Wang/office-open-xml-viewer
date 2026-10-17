@@ -36,4 +36,5 @@ pub mod spreadsheet_style_presets;
 pub mod text;
 pub mod theme;
 pub mod units;
+pub mod xml_node;
 pub mod zip;
