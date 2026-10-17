@@ -285,7 +285,9 @@ function microsoftEvidenceCatalog(root) {
 
 function verifyEvidence(root, file, ruleId, evidence, microsoftCatalog) {
   const kind = stringValue(evidence, 'kind', file);
-  if (kind === 'regression-test') {
+  // A library policy carries no Office measurement; like a regression-test
+  // record it must name the concrete DOCX test that pins the behaviour.
+  if (kind === 'regression-test' || kind === 'library-policy') {
     const reference = stringValue(evidence, 'reference', file);
     const separator = reference.indexOf('#');
     if (separator <= 0 || separator === reference.length - 1) {

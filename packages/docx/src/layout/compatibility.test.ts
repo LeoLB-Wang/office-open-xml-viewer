@@ -218,6 +218,11 @@ describe('defineCompatibilityRule', () => {
       evidence: { kind: 'regression-test', reference: 'a test somewhere' },
       description: 'Invalid regression evidence',
     })).toThrow(/path#test-title/);
+    expect(() => defineCompatibilityRule({
+      id: 'bad-library-policy-reference',
+      evidence: { kind: 'library-policy', reference: 'a test somewhere' },
+      description: 'Library policy without a pinning test',
+    })).toThrow(/path#test-title/);
   });
 
   it('records the approved Word section btLr page-frame difference', () => {
@@ -246,7 +251,7 @@ describe('defineCompatibilityRule', () => {
     ];
 
     expect(rules.map((rule) => (
-      rule.evidence.kind === 'regression-test' ? rule.evidence.reference : null
+      'reference' in rule.evidence ? rule.evidence.reference : null
     ))).toEqual([
       'packages/docx/src/layout/coordinate-space.test.ts#maps Transitional text direction %s to %s',
       'packages/docx/src/pagination.test.ts#ignores a terminal last-column break before a hard page boundary',
@@ -313,7 +318,7 @@ describe('float compatibility evidence', () => {
   it('names the established different-paragraph displacement policy', () => {
     expect(WORD_FLOAT_DIFFERENT_PARAGRAPH_DISPLACEMENT).toMatchObject({
       id: 'word-float-different-paragraph-displacement',
-      evidence: { kind: 'regression-test' },
+      evidence: { kind: 'library-policy' },
     });
   });
 
