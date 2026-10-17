@@ -1038,10 +1038,12 @@ pnpm storybook
 # Type-check all packages
 pnpm typecheck
 
-# Run visual regression tests (local only — not run in CI)
+# Visual regression tests (local only — not run in CI). `pnpm vrt` compares
+# against a baseline checkout captured with `pnpm vrt:snapshot`; see AGENTS.md
+# for the required VRT_BASELINE_REVISION / VRT_BASELINE_CHECKOUT variables.
 pnpm vrt
-# Adopt the current rendering as the new reference baseline
-UPDATE_REFS=1 pnpm vrt
+# Fidelity ratchet against the committed demo references
+pnpm vrt:fidelity
 
 # Build the library
 pnpm build
@@ -1050,9 +1052,9 @@ pnpm build
 ### WASM build (individual packages)
 
 ```bash
-cd packages/docx/parser && wasm-pack build --target web && cp pkg/docx_parser_bg.wasm  pkg/docx_parser.js  ../src/wasm/
-cd packages/xlsx/parser && wasm-pack build --target web && cp pkg/xlsx_parser_bg.wasm  pkg/xlsx_parser.js  ../src/wasm/
-cd packages/pptx/parser && wasm-pack build --target web && cp pkg/pptx_parser_bg.wasm pkg/pptx_parser.js ../src/wasm/
+pnpm --filter @silurus/ooxml-docx wasm
+pnpm --filter @silurus/ooxml-xlsx wasm
+pnpm --filter @silurus/ooxml-pptx wasm
 ```
 
 ## Error handling

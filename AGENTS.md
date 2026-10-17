@@ -105,7 +105,7 @@ For a narrow DOCX renderer fix, a good verification set is:
   packages/docx/src/cell-border-conflict-render.test.ts \
   packages/docx/src/column-widths.test.ts
 
-./node_modules/.pnpm/typescript@*/node_modules/typescript/bin/tsc --build --pretty false
+./node_modules/.bin/tsc --build --pretty false
 git diff --check
 ```
 
@@ -273,7 +273,9 @@ Typical local-only paths:
 - `packages/xlsx/public/private/xlsx/`
 - `packages/pptx/public/private/pptx/`
 - `packages/*/src/*privateDemo.stories.ts`
-- `packages/*/src/wasm/`
+
+Generated build output such as `packages/*/src/wasm/` is also git-ignored and
+must not be committed; rebuild it instead of copying it between worktrees.
 
 When using a Codex/Claude worktree, copy local private stories/samples from the
 main local checkout if needed. Avoid copying `.DS_Store`, temporary Office lock
