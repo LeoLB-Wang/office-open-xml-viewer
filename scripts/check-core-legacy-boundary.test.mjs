@@ -3,7 +3,9 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTypeScriptResolver, findViolations, isGuardedPath } from './check-core-legacy-boundary.mjs';
+import {
+  createTypeScriptResolver, findViolations, isGuardedPath, legacyCargoViolations,
+} from './check-core-legacy-boundary.mjs';
 import { companionBundleBoundary, legacyBundleBoundary, wasmAssetUrl } from '../vite.config.ts';
 import { build } from 'vite';
 
@@ -18,6 +20,45 @@ test('flags legacy imports, options, branches and names in the OOXML packages', 
   assert.deepEqual(rules('archive.revision_markup_in_print?.()'), ['legacy-revision-view']);
   assert.deepEqual(rules('interface T { measureLegacyXlsNormalFont?: unknown; }'), ['legacy-xls-measurement']);
   assert.deepEqual(rules('interface T { langDefault?: string; }'), ['docx-lang-default']);
+});
+
+test('flags legacy-producer wire names and binary-format vocabulary', () => {
+  for (const [code, rule] of [
+    ['// pub native_separators: Option<Box<X>>,', 'legacy-wire-name'],
+    ['interface T { readonly nativeTextFlow?: number; }', 'legacy-wire-name'],
+    ["code: 'NATIVE_DOC_NESTED_CELL_FRAME_FLOW';", 'legacy-wire-name'],
+    ['// [MS-DOC] 2.3.3 reserved stories', 'legacy-binary-spec'],
+    ['// [MS-PPT] round-trip color map', 'legacy-binary-spec'],
+    ['/// a BIFF chart has no Series record', 'legacy-binary-spec'],
+    ['// effective CHPX of the paragraph mark', 'legacy-binary-structure'],
+    ['// sprmSTextFlow carries an MSOTXFL', 'legacy-binary-structure'],
+  ]) {
+    assert.deepEqual(rules(code), [rule], code);
+  }
+});
+
+test('allows OOXML specifications and the listed binary-format allowances only', () => {
+  assert.deepEqual(rules('// [MS-DOCX] §2.6.2.3 and MS-ODRAWXML svgBlip'), []);
+  const at = (path, text) => findViolations([{ path, text }]).map((v) => v.rule);
+  assert.deepEqual(at('packages/xlsx/src/x.ts', '// [MS-XLSB] and [MS-XLS] semantics'), []);
+  assert.deepEqual(at('packages/xlsx/src/x.ts', '// [MS-XLS] and BIFF8'), ['legacy-binary-spec']);
+  assert.deepEqual(at('packages/core/src/errors/cfb-sniff.ts', "['WordDocument']; // .doc (§[MS-DOC])"), []);
+  assert.deepEqual(at('packages/core/src/errors/cfb-sniff.ts', '// sprmCFSpec'), ['legacy-binary-structure']);
+  assert.deepEqual(at('packages/docx/src/layout/diagnostics.ts', "part: 'WordDocument';"), ['legacy-binary-structure']);
+  assert.deepEqual(at('packages/ooxml-common/src/chart/model.rs', '/// BIFF chart'), ['legacy-binary-spec']);
+  assert.deepEqual(at('src/docx.ts', 'export { nativeReadingNotices };'), ['legacy-wire-name']);
+});
+
+test('limits the legacy reader to model crates and the listed parser crates', () => {
+  const toml = [
+    '[dependencies]',
+    'pptx-model = { workspace = true }',
+    'pptx-parser = { path = "../../pptx/parser", optional = true }',
+    'docx-parser = { path = "../../docx/parser" }',
+    '[dev-dependencies]',
+    'xlsx-parser = { path = "../../xlsx/parser" }',
+  ].join('\n');
+  assert.deepEqual(legacyCargoViolations('Cargo.toml', toml).map((v) => v.line), [4]);
 });
 
 test('allows the pre-existing generic CFB rejection and unrelated "legacy" wording', () => {
@@ -229,6 +270,8 @@ test('guards source, parser and manifest files but not generated or private outp
   assert.equal(isGuardedPath('packages/core/src/index.ts'), true);
   assert.equal(isGuardedPath('packages/docx/parser/src/parser.rs'), true);
   assert.equal(isGuardedPath('packages/node/package.json'), true);
+  assert.equal(isGuardedPath('packages/ooxml-common/src/chart/model.rs'), true);
+  assert.equal(isGuardedPath('src/docx.ts'), true);
   assert.equal(isGuardedPath('packages/xlsx/src/wasm/xlsx_parser.js'), false);
   assert.equal(isGuardedPath('packages/pptx/public/demo/readme.md'), false);
   assert.equal(isGuardedPath('packages/legacy-office/src/legacy-doc.ts'), false);
