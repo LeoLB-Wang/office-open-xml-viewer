@@ -172,7 +172,10 @@ export function chartTitleFontPx(chart: ChartModel, _h: number, ptToPx: number):
  *  `textBaseline='top'` the glyph cap-top sits ~0.19×font below the draw origin
  *  (the box-top → cap-top gap intrinsic to the face), so a top pad of ~0.62×font
  *  places the cap-top at ~0.81×font from the band top, matching PowerPoint's
- *  rendered chart titles in the bounded Office vector corpus.
+ *  rendered chart titles in the bounded Office vector corpus (#739: the
+ *  PowerPoint PDF export of the tracked demo deck's slide-5 chart puts the
+ *  cap-top at about 0.82×font; checked across the titled charts of that
+ *  corpus, application version not recorded).
  *
  *  For an already-resolved `fontPx`, the band's TOTAL height (`bandH`) is
  *  unchanged by this top/bottom-pad redistribution — see
@@ -545,8 +548,22 @@ export function chartManualOuterAxisInsets(metrics: Readonly<{
 
 /** A resolved `{t,r,b,l}` plot pad (canvas px). The caller builds this from the
  *  frame's shared bands plus its own extras (measured value-label gutter,
- *  secondary-axis bands, magic fractions), so `computeChartFrame` stays
- *  agnostic to per-family pad formulas while still owning the rect arithmetic. */
+ *  secondary-axis bands, fixed fractions), so `computeChartFrame` stays
+ *  agnostic to per-family pad formulas while still owning the rect arithmetic.
+ *
+ *  AUTOMATIC-LAYOUT PAD POLICY. ECMA-376 defines no automatic plot-area or
+ *  outer-gap geometry: §21.2.2.88 `layout` / §21.2.2.104 `manualLayout`
+ *  (optional in CT_Layout) only position an element when authored, and
+ *  [MS-OI29500] 2.1.1494 refers to the application's "default size and
+ *  position" without defining it. The fixed width/height fractions the families add to
+ *  their measured bands (for example cartesian right gutters of 3–5 % of the
+ *  frame width, a 12 % left value band, hidden-axis 3–4 % gutters, the 3-D
+ *  4/5/19/13 % outer pads, ChartEx 2–3 % gutters and the radial 2 % gap) are
+ *  therefore library policy. They date from the initial chart renderers
+ *  (#11, #52, #67) and the 3-D / ChartEx renderers (#1238, #1251, #1252); no
+ *  Office measurement is recorded for them, unlike the measured title and
+ *  category bands below (#739, #741) and the automatic value-axis rule in
+ *  axis-scale.ts. An authored manual layout always takes precedence. */
 export interface ChartPad {
   t: number;
   r: number;

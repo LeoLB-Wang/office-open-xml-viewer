@@ -271,6 +271,8 @@ export function renderLineChart(
     ? axisTitleFontPx(sec.titleFontSizeHpt, ptToPx) + 8
     : 0;
 
+  // Fixed gutter terms (2.2 x label font + 10 px, 5 % right): library policy,
+  // see ChartPad in layout.ts.
   let titleLeftBandW = legLeftW + Math.max(
     valAxFontPx * 2.2 + 10 + valTitleW,
     dataTableHeaderW,

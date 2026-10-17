@@ -163,6 +163,7 @@ export function renderStockChart(
     ? axisTitleFontPx(sec.titleFontSizeHpt, ptToPx) + 8
     : 0;
 
+  // Fixed gutter terms: library policy, see ChartPad in layout.ts.
   const pad = {
     t: padT,
     r: legRightW + w * 0.05 + secLabelBandW + secTitleBandW,
@@ -368,6 +369,8 @@ export function renderStockChart(
     const pointOverrides = indexPointOverrides(s.dataPointOverrides);
     const seriesMarkerVisible = s.markerSymbol != null && s.markerSymbol !== 'none'
       && seriesHasMarkerDetail(s);
+    // Open/close tick length (22 % of a category slot): library policy; #753
+    // compared bar heights and close marks with Word, not the tick length.
     const tickLen = Math.max(3, (pw / n) * 0.22);
     for (let ci = 0; ci < n; ci++) {
       const v = s.values[ci];

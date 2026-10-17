@@ -184,6 +184,7 @@ export function renderScatterChart(
     ? (chartTextFontSizePx(secondaryX.fontSizeHpt, ptToPx) ?? xAxLabelFontPx)
       + categoryTickLabelGapPx(xAxLabelFontPx) + 2
     : 0;
+  // Fixed gutter fractions: library policy, see ChartPad in layout.ts.
   const pad = {
     t: titleBand.bandH + legTopH + yAxLabelFontPx / 2 + 2 + secondaryXLabelHeight,
     r: legRightW + w * 0.05 + secondaryYLabelWidth,

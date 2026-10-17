@@ -525,9 +525,11 @@ function renderWaterfallChart(
       // Office keeps the visible Waterfall value-axis rule roughly 3% inside
       // the chart object even when this layout suppresses its implicit numeric
       // labels. A measured label band may be wider, but never collapses that
-      // automatic edge gutter to zero.
+      // automatic edge gutter to zero. (Compared against local Office vector
+      // references in #1251; the control set and range were not recorded.)
       : Math.max(w * 0.03, valLabelBandW)),
   };
+  // Fixed gutter fractions in the pad: library policy, see ChartPad in layout.ts.
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
     legendReserve: leg,
@@ -875,6 +877,7 @@ function renderFunnelChart(
     b: legBottomH + h * 0.02,
     l: legLeftW + labelW + w * 0.02,
   };
+  // Fixed gutter fractions in the pad: library policy, see ChartPad in layout.ts.
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
     legendReserve: leg,
@@ -1379,6 +1382,7 @@ function renderBoxWhiskerChart(
     b: legBottomH + axBands.catBandH + (chart.catAxisHidden ? h * 0.02 : catAxisLabelBandH(catAxFontPx0)),
     l: legLeftW + axBands.valBandW + (chart.valAxisHidden ? w * 0.02 : valLabelBandW),
   };
+  // Fixed gutter fractions in the pad: library policy, see ChartPad in layout.ts.
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleBand,
     legendReserve: leg,
@@ -1864,6 +1868,7 @@ function renderSunburstChart(
   // Reuse the radial frame so an authored top legend reserves space above the
   // rings instead of being painted over the circle.
   const leg = measuredLegendReserve(ctx, legendChart, w, h, ptToPx);
+  // Fixed gutter fractions in the pad: library policy, see ChartPad in layout.ts.
   const frame = computeChartFrame(chart, x, y, w, h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,
@@ -1876,6 +1881,7 @@ function renderSunburstChart(
   paintPlotAreaFrame(ctx, chart, px0, py0, pw, ph, ptToPx, shapeRotationDeg);
   const cx = px0 + pw / 2;
   const cy = py0 + ph / 2;
+  // Sunburst outer radius (46 % of the plot): library policy, unmeasured (#764).
   const outerR = Math.min(pw, ph) * 0.46;
 
   // Full circle from 12 o'clock (−90°), clockwise (canvas angles grow CW), each
@@ -2192,6 +2198,7 @@ function renderTreemapChart(
     }),
   });
   const leg = measuredLegendReserve(ctx, legendChart, r.w, r.h, ptToPx);
+  // Fixed gutter fractions in the pad: library policy, see ChartPad in layout.ts.
   const frame = computeChartFrame(chart, r.x, r.y, r.w, r.h, ptToPx, {
     titleTopPadFrac: 0.035,
     titleBottomPadFrac: 0.035,

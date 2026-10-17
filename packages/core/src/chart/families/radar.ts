@@ -84,6 +84,7 @@ export function renderRadarChart(
     && frame.plotAreaManualLayoutApplied;
   const rd = hasExplicitInnerSize
     ? Math.min(pw, ph) / 2
+    // Automatic radar radius (38 % of the plot): library policy (#11).
     : Math.min(pw, ph) * 0.38;
 
   let dataMin = Infinity;
@@ -271,6 +272,7 @@ export function renderRadarChart(
   const filled = markersSuppressedByChartStyle(
     'radar', chart.chartType, chart.scatterStyle, chart.radarStyle,
   );
+  // Marker radius fallback: library policy, unmeasured.
   const markerRadius = Math.max(2, rd * 0.025);
   for (let si = 0; si < chart.series.length; si++) {
     const s = chart.series[si];

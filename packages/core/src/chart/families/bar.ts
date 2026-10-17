@@ -725,6 +725,7 @@ export function renderBarChart(
     ? axisTitleFontPx(sec.titleFontSizeHpt, ptToPx) + 8
     : 0;
 
+  // Fixed gutter fractions: library policy, see ChartPad in layout.ts.
   const pad = {
     t: padT,
     r: legRightW + w * 0.03 + (primaryAxisRight

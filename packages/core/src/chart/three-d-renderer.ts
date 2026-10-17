@@ -1695,6 +1695,7 @@ function titleAndPlot(
   const frame = computeChartFrame(chart, rect.x, rect.y, rect.w, rect.h, ptToPx, {
     titleBand: band,
     legendReserve,
+    // Outer pads (4/5/19/13 % of the frame): library policy, see ChartPad in layout.ts.
     pad: {
       t: band.bandH + legendBands.legTopH + rect.h * 0.04,
       r: legendBands.legRightW + rect.w * 0.05,

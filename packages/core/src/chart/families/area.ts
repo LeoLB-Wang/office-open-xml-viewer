@@ -357,6 +357,7 @@ export function renderAreaChart(
     secondaryBandW: secLabelBandW + secTitleBandW,
   });
 
+  // Fixed gutter fractions: library policy, see ChartPad in layout.ts.
   const pad = {
     t: padT,
     r: legRightW + w * 0.05 + secLabelBandW + secTitleBandW,
