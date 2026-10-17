@@ -47,10 +47,11 @@ import {
   applyStroke as applyStrokeCore,
   buildShapePath,
   EMU_PER_INCH,
+  EMU_PER_PX,
   EMU_PER_PT as PT_TO_EMU,
   mathToMathML,
   rasterizeMathSvg,
-  tintMathRaster,
+  cachedTintedMathRaster,
   applyOuterShadow,
   applyInnerShadow,
   createRasterCoveragePaint,
@@ -814,20 +815,6 @@ interface MathRender {
 const mathRenders = new WeakMap<MathNode[], MathRender>();
 const failedMath = new WeakSet<MathNode[]>();
 
-/**
- * Tint the cached black equation image to `color`. PowerPoint equations follow
- * the run/paragraph text colour, which varies per slide (white on dark, theme
- * accents, …), so we recolour the glyphs at draw time via `source-in` instead
- * of baking a single colour. Cached per colour on the render.
- */
-function tintedMathImage(render: MathRender, color: string): CanvasImageSource {
-  const cached = render.tinted.get(color);
-  if (cached) return cached;
-  const tinted = tintMathRaster(render.raster, color);
-  render.tinted.set(color, tinted);
-  return tinted;
-}
-
 /** All currently supported text-bearing slide elements, including table cells. */
 function* elementTextBodies(element: SlideElement): Generator<TextBody> {
   if (element.type === 'shape' && element.textBody) yield element.textBody;
@@ -893,7 +880,7 @@ function paintEquation(ctx: CanvasRenderingContext2D, style: LayoutSegment, x: n
   const render = equation.unavailable ? undefined : mathRenders.get(equation.nodes);
   const height = equation.ascent + equation.descent;
   if (!(equation.width > 0 && height > 0)) return;
-  if (render) ctx.drawImage(tintedMathImage(render, style.color), x, y, equation.width, height);
+  if (render) ctx.drawImage(cachedTintedMathRaster(render, style.color), x, y, equation.width, height);
   else if (equation.fallbackText) {
     ctx.font = style.font;
     ctx.fillStyle = style.color;
@@ -2361,13 +2348,6 @@ async function prepareBackground(
 }
 
 /**
- * EMU per pixel at 96 DPI. A blip without an authored DPI uses this established
- * compatibility basis to get its native EMU size.
- * 914400 EMU / inch ÷ 96 px / inch = 9525 EMU / px.
- */
-const EMU_PER_PX_96 = 9525;
-
-/**
  * Compute the anchor (origin) of the first tile inside the fill box for a
  * given §20.1.8.41 ST_RectAlignment value. The returned point is where the
  * tile grid is registered; tx/ty then shift it further. The pattern is then
@@ -2460,7 +2440,8 @@ function paintTiledBackground(
     intrinsicSize?.height ?? bitmap.height,
     srcRect,
   );
-  const pixelToEmu = EMU_PER_PX_96 * 96 / dpi;
+  // A blip without an authored DPI uses the 96-DPI EMU-per-px basis.
+  const pixelToEmu = EMU_PER_PX * 96 / dpi;
   const tileW = source.width * pixelToEmu * (tile.sx ?? 1) * scale;
   const tileH = source.height * pixelToEmu * (tile.sy ?? 1) * scale;
   if (!(tileW > 0) || !(tileH > 0)) return false;
