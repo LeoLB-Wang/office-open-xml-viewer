@@ -1,4 +1,5 @@
 import { countedSpacingAdvance, countSpacingCharacters, textSpacingAdvance } from '../character-spacing.js';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { charSpacingDeltaPx, segmentCharacterGridDeltaPx } from '../line-breaker/advance.js';
 import { shadowInkBounds } from './vml-shadow.js';
 import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
@@ -1442,7 +1443,7 @@ const HIGHLIGHT_COLOR_HEX: Readonly<Record<string, string>> = Object.freeze({
 
 function retainedHighlightColor(value: string): string {
   if (value.startsWith('#')) return value;
-  return HIGHLIGHT_COLOR_HEX[value] ?? '#FFFF00';
+  return ownValue(HIGHLIGHT_COLOR_HEX, value) ?? '#FFFF00';
 }
 
 /** Canvas-space baseline offset for run-level vertical positioning.

@@ -1,4 +1,5 @@
 import { acquireCanvasGlyphContours } from '../native-glyph-contours.js';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { type CjkLang } from '@silurus/ooxml-core';
 import {
   activeFontSet,
@@ -191,7 +192,7 @@ export function createProductionLayoutServices(
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      const entry = DOCX_GOOGLE_FONTS[key];
+      const entry = ownValue(DOCX_GOOGLE_FONTS, key);
       const resolvedFamily = entry?.loadFamily ?? name;
       if (!entry) continue;
       if (normalizedFaceFamily(resolvedFamily) !== normalizedFaceFamily(name)

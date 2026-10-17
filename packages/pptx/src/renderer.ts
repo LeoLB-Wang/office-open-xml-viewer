@@ -1,4 +1,5 @@
 import { clipCanvasHorizontally } from '@silurus/ooxml-core/internal/canvas-clip';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { quoteCssFontFamily } from '@silurus/ooxml-core/internal/css-font-family';
 import { FONT_TRACKING_SENTINEL, FONT_BASELINE_SENTINEL, FONT_SPACE_SENTINEL } from '@silurus/ooxml-core/internal/font-measurement-sentinels';
 import { preparedPowerPointText } from './font-display-text.js';
@@ -1103,7 +1104,7 @@ const ARABIC_TEXT_RE = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]/u;
  */
 function isArabicScriptFace(family: string): boolean {
   // Faces we explicitly substitute to a Noto Arabic web font are Arabic-script.
-  if (OFFICE_FONT_SUBSTITUTE[family.toLowerCase()]?.includes('Arabic')) return true;
+  if (ownValue(OFFICE_FONT_SUBSTITUTE, family.toLowerCase())?.includes('Arabic')) return true;
   const l = family.toLowerCase();
   // Common Arabic-script family-name markers (Latin transliterations + Arabic).
   return /arabic|naskh|kufi|nastaliq|amiri|scheherazade|lateef|aldhabi|urdu|farsi|العرب|[؀-ۿ]/.test(l);
@@ -1136,12 +1137,12 @@ export function cssFontStack(
 ): string {
   const generic = genericFallback(authoredFamily);
   const arabicText = ARABIC_TEXT_RE.test(text);
-  const alias = googleSubstitutes ? OFFICE_FONT_SUBSTITUTE[authoredFamily.toLowerCase()] : undefined;
+  const alias = googleSubstitutes ? ownValue(OFFICE_FONT_SUBSTITUTE, authoredFamily.toLowerCase()) : undefined;
   // Script-scoped visual substitutes (core substitute-script.ts) join only a
   // run that contains their script. A CSS stack cannot split a run, but the
   // authored family stays first, so an installed authored face still wins.
   const sub = alias && substituteEntryCoversText(
-    GOOGLE_FONT_SUBSTITUTES[authoredFamily.toLowerCase()], text, 'any',
+    ownValue(GOOGLE_FONT_SUBSTITUTES, authoredFamily.toLowerCase()), text, 'any',
   ) ? alias : undefined;
   const subPart = sub ? `${quoteCssFontFamily(sub)}, ` : '';
   const googleAlias = googleCjkFontAlias(authoredFamily);

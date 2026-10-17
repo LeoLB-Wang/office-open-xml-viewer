@@ -5,6 +5,7 @@ import type {
   ChartexRegionMapColors,
   ChartexValueColorStop,
 } from '../types/chart.js';
+import { ownValue } from '../internal/own-key.js';
 import { chartTitleBand, resolveManualLayoutRect } from './layout.js';
 import { paintLegendFrame } from './legend-frame.js';
 import { paintPlotAreaFrame } from './plot-area-frame.js';
@@ -111,7 +112,8 @@ export function resolveRegionMapFeature(
   const identity = entityId ? lookup(normalizedKey(entityId)) : undefined;
   if (identity) return identity;
   const key = normalizedKey(label);
-  return lookup(key) ?? (ALIASES[key] ? lookup(normalizedKey(ALIASES[key])) : undefined);
+  const alias = ownValue(ALIASES, key);
+  return lookup(key) ?? (alias ? lookup(normalizedKey(alias)) : undefined);
 }
 
 function hexRgb(value: string | null | undefined, fallback: string): [number, number, number] {

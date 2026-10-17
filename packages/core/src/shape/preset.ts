@@ -1,4 +1,5 @@
 import type { GeometryPathSink } from './path-data';
+import { ownValue } from '../internal/own-key';
 // Pre-set shape paths and helpers for OOXML <a:prstGeom>.
 //
 // Originally lived inline in the pptx renderer (see commit history of
@@ -323,7 +324,7 @@ export function buildShapePath(
   // plain-rect default — untouched.
   {
     const raw = geom.toLowerCase();
-    const key = LEGACY_SPEC_ALIASES[raw] ?? raw;
+    const key = ownValue(LEGACY_SPEC_ALIASES, raw) ?? raw;
     if (
       SPEC_MIGRATED_PRESETS.has(key) ||
       SPEC_MIGRATED_FILL_EQUIVALENT_PRESETS.has(key) ||

@@ -1,4 +1,5 @@
 import { ScriptPreloadAccumulator } from '@silurus/ooxml-core/internal/script-preload-accumulator';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import type { CjkLang, OfficeFontFallbackRequest } from '@silurus/ooxml-core';
 import {
   classifyCjkFont,
@@ -64,7 +65,7 @@ export function docxFontPreloadNames(
     for (const family of usage.fontFamilies) {
       const name = family?.trim();
       const key = name?.toLowerCase();
-      const entry = key ? DOCX_GOOGLE_FONTS[key] : undefined;
+      const entry = ownValue(DOCX_GOOGLE_FONTS, key);
       // A script-scoped visual substitute is fetched only when text in its
       // script actually requests the family (core substitute-script.ts).
       if (name && key && entry && !themeKeys.has(key) && !renderedFamilies.has(key)
@@ -100,7 +101,7 @@ function differentFamilySubstitutes(
   for (const name of names) {
     const family = name?.trim();
     const key = family?.toLowerCase();
-    const loadFamily = key ? DOCX_GOOGLE_FONTS[key]?.loadFamily : undefined;
+    const loadFamily = ownValue(DOCX_GOOGLE_FONTS, key)?.loadFamily;
     if (family && key && loadFamily && loadFamily.toLowerCase() !== key) {
       substitutes.set(key, family);
     }
