@@ -14,6 +14,7 @@ import {
   type DocGridCtx,
   type LineBoundary,
   type LayoutLine,
+  type LayoutImageSeg,
   type LineLayoutEnvironment,
   type WrapLayoutCtx,
 } from './line-layout.js';
@@ -25,6 +26,7 @@ import { wordEmptyMarkMinimumStartWidthPx } from './layout/compatibility.js';
 import {
   WORD_NUMBERING_MARKER_FIRST_LINE_UNION,
   WORD_INLINE_OBJECT_GRID_LINE_ALLOCATION,
+  WORD_PICTURE_BULLET_LINE_PARTICIPATION,
   wordJustifiedInterwordCompressionApplies,
 } from './layout/line-compatibility.js';
 import { LayoutInvariantError } from './layout/diagnostics.js';
@@ -39,6 +41,9 @@ export interface ParagraphMeasurementEnvironment extends LineLayoutEnvironment {
   readonly paragraphMarkShapeInput?: NumberingMarkerShapeInput;
   /** Selected-face text marker box, resolved by retained numbering before line acquisition. */
   readonly firstLineNumberingMarkerBox?: Readonly<{ ascentPt: number; descentPt: number; intendedSinglePt?: number }>;
+  /** Display height of a sized picture-bullet marker, which stands on the
+   * paragraph's first baseline (see `markerMetric` in the line breaker). */
+  readonly firstLinePictureMarkerHeightPt?: number;
   /** Canonical section writing mode used by retained page geometry. */
   readonly pageWritingMode: WritingMode;
   /** The paragraph is acquired in a section-logical frame that paint rotates
@@ -95,6 +100,9 @@ export interface MeasuredParagraph {
    * invisible mark box grazes past the bottom content edge.
    */
   readonly lastLineBelowBaselinePt: number;
+  /** Draw-only baseline of a mark-only line that carries a picture bullet,
+   * measured from `contentStartYPt` (see `measureMarkOnly`). */
+  readonly markPictureBaselineOffsetPt?: number;
   readonly placement: Readonly<ParagraphPlacement>;
 }
 
@@ -167,6 +175,20 @@ export function measureParagraph(
   // when the document contains no literal CJK code point.
   const markUsesEastAsianGrid = environment.documentHasEastAsianText === true
     || environment.useFeLayout === true;
+  // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet stands on its
+  // paragraph's first baseline and takes part in that line's box, except
+  // under exact spacing, whose box and baseline it leaves unchanged (the
+  // picture then overflows above the line).
+  void WORD_PICTURE_BULLET_LINE_PARTICIPATION;
+  const pictureMarkerHeight = context.lineSpacing?.rule === 'exact' && context.lineSpacing.value > 0
+    ? undefined : environment.firstLinePictureMarkerHeightPt;
+  // The metric segment's height. It is prepended in every measurement of the
+  // paragraph, continuations included, so that line boundaries index the same
+  // segment array; a continuation starts past it and never admits it.
+  const pictureMarkerSegmentHeightPt = pictureMarkerHeight !== undefined
+    && Number.isFinite(pictureMarkerHeight) && pictureMarkerHeight > 0
+    ? pictureMarkerHeight : undefined;
+  const firstLinePictureMarkerHeightPt = continuation ? undefined : pictureMarkerSegmentHeightPt;
 
   let cursorPt = placement.startYPt
     + (placement.suppressSpaceBefore ? 0 : requestedSpaceBeforePt);
@@ -199,6 +221,7 @@ export function measureParagraph(
       environment.layoutServices?.text,
       environment.paragraphMarkShapeInput,
       environment.useFeLayout === true,
+      firstLinePictureMarkerHeightPt ?? 0,
     );
     const markAdvancePt = markMetrics.advancePx;
     let markWrapBounds: MeasuredParagraph['markWrapBounds'];
@@ -224,8 +247,21 @@ export function measureParagraph(
           widthPt: window.maximumWidthPt, heightPt: markAdvancePt };
       }
     }
+    // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet on an empty
+    // item stands on the mark line's baseline, which an automatic multiple
+    // pins to the top of its box like a text line's
+    // (WORD_AUTO_MULTIPLE_BASELINE_PIN). This is draw-only; pagination keeps
+    // the centred trailing-mark metric below.
+    const lineSpacing = context.lineSpacing;
+    const markPictureBaselineOffsetPt = firstLinePictureMarkerHeightPt !== undefined
+      && lineSpacing?.rule === 'auto' && lineSpacing.value > 1
+      && !context.hasRuby && !context.lineGrid.active
+      ? (Math.max(markMetrics.ascentPx + markMetrics.descentPx, markMetrics.intendedSinglePx)
+        - markMetrics.ascentPx - markMetrics.descentPx) / 2 + markMetrics.ascentPx
+      : undefined;
     return {
       ...(markWrapBounds ? { markWrapBounds } : {}),
+      ...(markPictureBaselineOffsetPt === undefined ? {} : { markPictureBaselineOffsetPt }),
       lines: [],
       markOnly: true,
       requestedSpaceBeforePt,
@@ -251,6 +287,21 @@ export function measureParagraph(
     autoSpaceDN: paragraph.autoSpaceDN,
   });
   if (segments.length === 0) return measureMarkOnly();
+  const pictureMarkerHeightPt = firstLinePictureMarkerHeightPt;
+  if (pictureMarkerSegmentHeightPt !== undefined) {
+    // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet takes part in
+    // its first line like an inline picture of that height standing on the
+    // baseline (automatic multiples add the text's own leading only, atLeast
+    // keeps the larger box, ruby forms one union with it). A metric-only
+    // segment carries that height into the line breaker's
+    // inline-picture accounting without taking width, a break opportunity or
+    // paint; the marker itself is painted separately.
+    segments.unshift({
+      imagePath: '', mimeType: '', widthPt: 0, heightPt: pictureMarkerSegmentHeightPt,
+      inlinePicture: true, markerMetric: true,
+      anchor: false, anchorXPt: 0, anchorYPt: 0, anchorXFromMargin: false, anchorYFromPara: false,
+    } as LayoutImageSeg);
+  }
 
   if (context.lineSpacing?.rule === 'auto'
     && context.lineSpacing.value > 1
@@ -299,7 +350,29 @@ export function measureParagraph(
       );
     }
     const allocations: { layout: LayoutLine; advancePt: number }[] = [];
-    for (const [lineIndex, originalLine] of lines.entries()) {
+    // A float can split the first physical line into fragments; the metric
+    // segment joins only the fragment that holds it. Every fragment of that
+    // physical line shares the bullet's ascent so that they resolve one advance.
+    const markerFragment = pictureMarkerHeightPt === undefined ? undefined : lines[0];
+    const holdsPictureMarker = (line: LayoutLine, lineIndex: number): boolean =>
+      markerFragment !== undefined && (lineIndex === 0
+        || (markerFragment.physicalLineIndex !== undefined
+          && line.physicalLineIndex === markerFragment.physicalLineIndex));
+    for (const [lineIndex, fragment] of lines.entries()) {
+      const firstPhysicalLine = holdsPictureMarker(fragment, lineIndex);
+      const originalLine = firstPhysicalLine && lineIndex !== 0
+        ? {
+            ...fragment,
+            ascent: Math.max(fragment.ascent, pictureMarkerHeightPt!),
+            visibleAscent: Math.max(fragment.visibleAscent ?? fragment.ascent, pictureMarkerHeightPt!),
+            ...(markerFragment!.inlinePictureTextSingle === undefined ? {} : {
+              inlinePictureTextSingle: Math.max(
+                fragment.inlinePictureTextSingle ?? 0,
+                markerFragment!.inlinePictureTextSingle,
+              ),
+            }),
+          }
+        : fragment;
       const markerBox = lineIndex === 0 && !continuation && !placement.wrap
         && !context.lineGrid.active
         && (context.lineSpacing == null
@@ -342,6 +415,13 @@ export function measureParagraph(
         ? specifiedTextLineMetrics(line, context, paragraph, environment.compatibilityMode,
             environment.verticalPageFrame === true, environment.paragraphMarkShapeInput)
         : null;
+      // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet that supplies
+      // an East Asian line's ascent counts grid cells together with the
+      // text's descent.
+      const pictureMarkerGridCountPt = firstPhysicalLine
+        && pictureMarkerHeightPt! >= line.ascent
+        ? Math.max(line.gridCountSingle, line.ascent + line.descent)
+        : undefined;
       let advancePt = specified ? specified.advancePt : markerRaisesBox
         ? markerNaturalPt + textSinglePt * ((context.lineSpacing?.value ?? 1) - 1)
         : context.hasRuby
@@ -357,7 +437,7 @@ export function measureParagraph(
             // §17.6.5 cell rounding is gated by the line's script; a Latin-only
             // line in a CJK paragraph keeps its natural height.
             line.eastAsian ?? false,
-            line.gridCountSingle,
+            pictureMarkerGridCountPt ?? line.gridCountSingle,
             undefined,
             line.uniformPositionAuto,
             line.inlinePictureTextSingle,
@@ -374,8 +454,11 @@ export function measureParagraph(
         // Only an object supplying the line's ascent owns this allocation.
         // A small object beside taller text must retain that text's grid policy.
         && line.ascent + line.descent >= line.intendedSingle
-        && line.segments.some((segment) => 'imagePath' in segment && !segment.anchor
-          && segment.heightPt >= line.ascent)) {
+        && (line.segments.some((segment) => 'imagePath' in segment && !segment.anchor
+          && segment.heightPt >= line.ascent)
+          // A picture-bullet marker on the first line is that inline object
+          // (WORD_PICTURE_BULLET_LINE_PARTICIPATION).
+          || (firstPhysicalLine && pictureMarkerHeightPt! >= line.ascent))) {
         advancePt = snapParagraphLineToGrid(advancePt, grid);
       }
       allocations.push({ layout: line, advancePt });

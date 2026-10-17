@@ -314,6 +314,8 @@ export interface MarkLineMetrics {
   readonly gridAfterLeadingPx: number;
   readonly ascentPx: number;
   readonly descentPx: number;
+  /** The mark face's intended single-line height. */
+  readonly intendedSinglePx: number;
 }
 
 
@@ -330,6 +332,9 @@ export function paragraphMarkLineMetrics(
   textLayoutService?: TextLayoutService,
   markShapeInput?: NumberingMarkerShapeInput,
   useFeLayout = false,
+  // px — a picture bullet on an empty list item stands on the mark line's
+  // baseline: its height is a minimum ascent of the mark line.
+  minimumAscentPx = 0,
 ): MarkLineMetrics {
   const effectiveMarkShapeInput = markShapeInput;
   // ECMA-376 §17.3.2.26 `w:rFonts@w:hint`: an empty paragraph has no code
@@ -337,7 +342,10 @@ export function paragraphMarkLineMetrics(
   // the face used to measure the mark. It does NOT make an otherwise Latin-only
   // paragraph occupy East-Asian docGrid cells: grid-cell classification remains
   // content/document based, independently of font routing.
-  const markUsesEastAsianFace = eastAsian || effectiveMarkShapeInput?.fontHint === 'eastAsia';
+  // WORD_PICTURE_BULLET_LINE_PARTICIPATION: beside a picture bullet the empty
+  // mark is measured with its own (non-East-Asian) face.
+  const markUsesEastAsianFace = (eastAsian && minimumAscentPx <= 0)
+    || effectiveMarkShapeInput?.fontHint === 'eastAsia';
   const forceCs = effectiveMarkShapeInput?.complexScript === true;
   const fs = effectiveMarkShapeInput?.fontSizePt ?? getDefaultFontSize(para);
   const authoredFamily = getDefaultFontFamily(para, markUsesEastAsianFace);
@@ -457,6 +465,11 @@ export function paragraphMarkLineMetrics(
     asc = designSides.designAscentRatio! * fs * scale;
     desc = designSides.designDescentRatio! * fs * scale;
   }
+  // WORD_PICTURE_BULLET_LINE_PARTICIPATION: an empty list item's picture
+  // bullet makes the mark line max(mark ascent, picture height) high above
+  // the baseline, and that whole box then follows the paragraph's line rule.
+  // Exact spacing ignores the picture (the caller passes no minimum).
+  asc = Math.max(asc, minimumAscentPx);
   const resourceRatio = markUsesEastAsianFace
     ? resolvedLocalFont?.eastAsianLineHeightRatio ?? resolvedLocalFont?.lineHeightRatio
     : resolvedLocalFont?.lineHeightRatio;
@@ -470,7 +483,10 @@ export function paragraphMarkLineMetrics(
   // Keep an untabled mark on the same 1.3em grid fallback as visible text.
   const intendedSingle = Math.max(designIntendedSingle, (nativeMarkRatio ?? 0) * fs * scale);
   const gridCountSingle = eastAsian
-    ? eastAsianGridCountSinglePx(designIntendedSingle, fs * scale)
+    ? Math.max(
+        eastAsianGridCountSinglePx(designIntendedSingle, fs * scale),
+        minimumAscentPx > 0 ? asc + desc : 0,
+      )
     : undefined;
   const ordinaryAdvancePx = lineBoxHeight(
     effectiveLineSpacing,
@@ -535,7 +551,7 @@ export function paragraphMarkLineMetrics(
     ? Math.max(0, Math.min((advancePx - ownAdvancePx) / 2,
         lineBelowBaselinePx(advancePx, asc, desc) - desc))
     : 0;
-  return { advancePx, gridAfterLeadingPx, ascentPx: asc, descentPx: desc };
+  return { advancePx, gridAfterLeadingPx, ascentPx: asc, descentPx: desc, intendedSinglePx: intendedSingle };
 }
 
 

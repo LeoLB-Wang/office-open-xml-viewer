@@ -55,6 +55,7 @@ export type BreakOpportunityIteratorContext = Pick<
   | 'flush'
   | 'baseRtl'
   | 'addToLine'
+  | 'admitLineMetric'
   | 'scale'
   | 'firstIndent'
   | 'tabOriginPx'
@@ -548,6 +549,11 @@ function processImageSegment(context: BreakOpportunityIteratorContext, seg: Layo
 
   if (seg.anchor) {
     seg.measuredWidth = 0;
+    return;
+  }
+  if (seg.markerMetric) {
+    seg.measuredWidth = 0;
+    context.admitLineMetric(seg, seg.heightPt, seg.heightPt * scale);
     return;
   }
   const w = seg.widthPt * scale;

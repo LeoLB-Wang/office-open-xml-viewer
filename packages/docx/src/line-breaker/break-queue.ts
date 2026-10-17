@@ -241,6 +241,9 @@ export function createLineBreakerState(maxWidth: number, wrapCtx?: WrapLayoutCtx
     lineVisibleDescent: 0,
     lineVisibleIntendedSingle: 0,
     lineHasVisibleMetrics: false,
+    /** Picture-bullet marker metric admitted to the current line (pt, px). */
+    lineMarkerHeight: 0,
+    lineMarkerAscent: 0,
     isFirst: true,
     lineMaxWidth: maxWidth,
     lineXOffset: 0,

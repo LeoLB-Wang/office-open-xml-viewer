@@ -45,6 +45,7 @@ import {
   performFlush,
   performProspectiveSnapAdvance,
   performAddToLine,
+  performAdmitLineMetric,
   performSegNaturalAdvance,
   performStandaloneSnapAdvance,
   performSegAdvance,
@@ -204,6 +205,8 @@ export function runLineBreakerPass(input: LineBreakerPassInput): LayoutLine[] {
     asc: number,
     desc: number,
   ) => performAddToLine(operationState, s, w, h, asc, desc);
+  const admitLineMetric = (s: LayoutImageSeg, h: number, asc: number) =>
+    performAdmitLineMetric(operationState, s, h, asc);
 
   const measurement = new LineMeasurementAdapter(
     ctx,
@@ -389,6 +392,7 @@ export function runLineBreakerPass(input: LineBreakerPassInput): LayoutLine[] {
     flush,
     prospectiveSnapAdvance,
     addToLine,
+    admitLineMetric,
     measurement,
     effectiveFontPx,
     measureText,

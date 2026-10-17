@@ -363,6 +363,9 @@ pub struct PicBullet {
     /// Marker height in pt, from the `<v:shape style="height:..">`. `None` ⇒ see
     /// {@link PicBullet::width_pt}.
     pub height_pt: Option<f64>,
+    /// The picture's natural size in points (`picture_bullet::natural_size_pt`),
+    /// resolved from the media part after parsing; `None` when unmeasured.
+    pub natural_size_pt: Option<(f64, f64)>,
 }
 
 impl Default for LevelDef {
@@ -531,6 +534,27 @@ fn parse_level_def(
 }
 
 impl NumberingMap {
+    /// Resolve every picture bullet's natural size from its media part.
+    pub fn resolve_picture_bullet_natural_sizes(
+        &mut self,
+        mut natural: impl FnMut(&str) -> Option<(f64, f64)>,
+    ) {
+        let levels = self
+            .abstract_nums
+            .values_mut()
+            .flat_map(|levels| levels.iter_mut())
+            .chain(
+                self.num_level_overrides
+                    .values_mut()
+                    .flat_map(|levels| levels.values_mut()),
+            );
+        for level in levels {
+            if let Some(picture) = level.pic_bullet.as_mut() {
+                picture.natural_size_pt = natural(&picture.image_path);
+            }
+        }
+    }
+
     /// Parse `word/numbering.xml`. `media_map` is the numbering part's own
     /// relationship table (rId → zip media path, built from
     /// `word/_rels/numbering.xml.rels`); it is required to resolve the
@@ -593,6 +617,7 @@ impl NumberingMap {
                     mime_type,
                     width_pt,
                     height_pt,
+                    natural_size_pt: None,
                 },
             );
         }
