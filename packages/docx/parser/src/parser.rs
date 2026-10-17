@@ -3537,17 +3537,7 @@ fn find_internal_rel_target_by_types(
         return None;
     }
     let doc = parse_guarded(rels_xml).ok()?;
-    doc.root_element()
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Relationship")
-        .filter(|node| matches!(node.attribute("TargetMode"), None | Some("Internal")))
-        .find_map(|node| {
-            let relationship_type = node.attribute("Type")?;
-            relationship_types
-                .contains(&relationship_type)
-                .then_some(())?;
-            node.attribute("Target").map(str::to_owned)
-        })
+    ooxml_common::rels::find_internal_rel_target_by_types(&doc, relationship_types)
 }
 
 /// Parse `word/fontTable.xml` and build maps from font name to family class and pitch.

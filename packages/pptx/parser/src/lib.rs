@@ -1286,10 +1286,9 @@ pub(crate) fn parse_rels(xml: &str) -> HashMap<String, String> {
     let Ok(doc) = parse_preflighted_pptx_xml(xml) else {
         return HashMap::new();
     };
-    doc.root_element()
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Relationship")
-        .filter_map(|node| Some((attr(&node, "Id")?, attr(&node, "Target")?)))
+    ooxml_common::rels::parse_rels_document(&doc)
+        .into_iter()
+        .map(|(id, relationship)| (id, relationship.target))
         .collect()
 }
 
@@ -1432,15 +1431,7 @@ fn find_internal_rel_target_by_types(
     relationship_types: &[&str],
 ) -> Option<String> {
     let doc = parse_preflighted_pptx_xml(rels_xml).ok()?;
-    doc.root_element()
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Relationship")
-        .filter(|node| matches!(attr(node, "TargetMode").as_deref(), None | Some("Internal")))
-        .find_map(|node| {
-            attr(&node, "Type")
-                .filter(|rel_type| relationship_types.contains(&rel_type.as_str()))
-                .and_then(|_| attr(&node, "Target"))
-        })
+    ooxml_common::rels::find_internal_rel_target_by_types(&doc, relationship_types)
 }
 
 const FONT_RELATIONSHIP_TYPES: &[&str] = &[
