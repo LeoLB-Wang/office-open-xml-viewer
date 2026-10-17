@@ -1,4 +1,4 @@
-export { drawingMlCodePointCount, measureDrawingMlAdvance } from './measure.js';
+export { measureDrawingMlAdvance } from './measure.js';
 export { breakDrawingMlText } from './break.js';
 export type {
   DrawingMlInputRun,

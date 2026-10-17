@@ -287,7 +287,7 @@ export function chartLegendBands(
 /** Product fallback for an axis title whose run/style omits `a:rPr@sz`.
  *  OOXML does not define application auto-layout text metrics; the fixed 10pt
  *  value is the intentionally small compatibility policy recorded in #1228. */
-export const AXIS_TITLE_FALLBACK_PT = 10;
+const AXIS_TITLE_FALLBACK_PT = 10;
 
 /** Axis-title font size (px). Authored/style size is authoritative; omission
  *  is fixed at 10pt and therefore invariant across chart dimensions. */
@@ -425,7 +425,7 @@ export function chartAxisTitleBands(
  *  mix, whose h-proportional pad made the band collapse to a much smaller fraction
  *  of the frame on large charts (e.g. the xlsx demo charts) — a different fraction
  *  of the same-point title per frame size. */
-export const TITLE_BAND_FONT_FRAC = 2.25;
+const TITLE_BAND_FONT_FRAC = 2.25;
 
 /** Total vertical band a single row of horizontal CATEGORY tick labels reserves
  *  below the plot, as a multiple of the category-axis label font size. Models
@@ -435,7 +435,7 @@ export const TITLE_BAND_FONT_FRAC = 2.25;
  *  frame (PowerPoint PDF). The old `fontPx + 12` (a fixed 12px gap) under-reserved
  *  this — 0.106 of the frame on slide-5, and it did not scale, shrinking to a few
  *  percent of the frame on the larger xlsx demo charts. */
-export const CAT_AXIS_LABEL_BAND_FONT_FRAC = 2.75;
+const CAT_AXIS_LABEL_BAND_FONT_FRAC = 2.75;
 
 // Word's classic 2-D column-chart auto layout is observably distinct from the
 // PowerPoint/Excel default above. ECMA-376 does not prescribe this geometry.

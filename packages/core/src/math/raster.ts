@@ -2,7 +2,7 @@ import { recolorSvg, type MathSvg } from './mathjax.js';
 import { createAuxCanvas, type AuxContext } from '../canvas/aux-canvas.js';
 import { clampCanvasSize } from '../canvas/clamp.js';
 
-export const MATH_RASTER_PX_PER_EM = 256;
+const MATH_RASTER_PX_PER_EM = 256;
 const MATH_RASTER_CACHE_PX_PER_EM = 64;
 
 export interface RasterizedMathSvg {

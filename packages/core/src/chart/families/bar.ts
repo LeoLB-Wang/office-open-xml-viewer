@@ -2418,7 +2418,7 @@ export function drawBarDataLabel(
  * follows the numeric axis: Y for columns and X for horizontal bars. Deltas
  * have already been expanded by the shared parser (percentage/fixed/stdDev/
  * custom), so this layer only maps the authored geometry. */
-export function drawBarErrorBars(
+function drawBarErrorBars(
   ctx: CanvasRenderingContext2D,
   s: ChartSeries,
   eb: NonNullable<ChartSeries['errBars']>[number],
@@ -2476,7 +2476,7 @@ export function drawBarErrorBars(
  * a slightly wider fallback and otherwise split `10` into `1` / `0`. Permit a
  * small metric-only overhang for numeric tokens; ordinary text still obeys the
  * exact measured slot and genuinely over-wide numbers continue to wrap. */
-export function numericCategoryMetricTolerance(text: string, fontPx: number): number {
+function numericCategoryMetricTolerance(text: string, fontPx: number): number {
   return /^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)%?$/.test(text)
     ? fontPx * 0.15
     : 0;
@@ -2487,7 +2487,7 @@ export function numericCategoryMetricTolerance(text: string, fontPx: number): nu
  * rectangle replaces the automatic legend rectangle, so the plot must start
  * below its actual bottom rather than below the shorter measured reserve. Keep
  * the existing automatic legend-to-plot clearance unchanged. */
-export function manualTopLegendPlotInset(
+function manualTopLegendPlotInset(
   chart: ChartModel,
   legend: MeasuredLegendLayout | null,
   x: number,

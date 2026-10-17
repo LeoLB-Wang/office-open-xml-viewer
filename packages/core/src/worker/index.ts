@@ -107,7 +107,6 @@ export {
   WorkerSvgDecodeClient,
   boundedSvgRasterSize,
   decodeSvgBlobOnMainThread,
-  isWorkerSvgDecodeRequest,
   isWorkerSvgDecodeResponse,
   respondToWorkerSvgDecodeRequest,
   type SvgBlobDecoder,
@@ -117,7 +116,6 @@ export {
 } from './svg-decode-bridge.js';
 export {
   BoundedPullSession,
-  DEFAULT_PULL_CANCEL_GRACE_MS,
   PULL_SESSION_PROTOCOL,
   PullSessionHost,
   PullSessionHostCoordinator,

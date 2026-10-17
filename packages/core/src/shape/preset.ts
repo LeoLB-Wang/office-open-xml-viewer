@@ -74,7 +74,7 @@ import { ownValue } from '../internal/own-key';
 import { buildPresetGeometryPath } from './preset-geometry/geometry';
 
 // ── Star helper ──────────────────────────────────────────────────────────────
-export function drawStar(
+function drawStar(
   ctx: GeometryPathSink,
   cx: number, cy: number,
   rx: number, ry: number,
@@ -95,7 +95,7 @@ export function drawStar(
 }
 
 // ── Regular polygon helper ───────────────────────────────────────────────────
-export function drawPolygon(
+function drawPolygon(
   ctx: GeometryPathSink,
   cx: number, cy: number,
   rx: number, ry: number,

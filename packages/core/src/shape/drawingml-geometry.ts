@@ -184,7 +184,7 @@ export function requireResolvedDrawingMLGeometry(plan: DrawingMLShapePaintPlan, 
   }
   return geometry;
 }
-export function composeGeometryMatrix(a: GeometryMatrix, b: GeometryMatrix): GeometryMatrix {
+function composeGeometryMatrix(a: GeometryMatrix, b: GeometryMatrix): GeometryMatrix {
   const m = { a: a.a * b.a + a.c * b.b, b: a.b * b.a + a.d * b.b, c: a.a * b.c + a.c * b.d,
     d: a.b * b.c + a.d * b.d, e: a.a * b.e + a.c * b.f + a.e, f: a.b * b.e + a.d * b.f + a.f };
   if (!Object.values(m).every(Number.isFinite) || !Number.isFinite(m.a * m.d - m.b * m.c) || m.a * m.d - m.b * m.c === 0) throw new RangeError('Invalid DrawingML geometry transform');

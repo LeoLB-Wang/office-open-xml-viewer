@@ -194,7 +194,7 @@ export function paintDrawingWithOwnedTextBoxes(
   }
 }
 
-export function paintParagraphDrawingLayout(
+function paintParagraphDrawingLayout(
   node: ParagraphLayout,
   drawing: import('../layout/types.js').DrawingLayout,
   context: CanvasPaintContext,

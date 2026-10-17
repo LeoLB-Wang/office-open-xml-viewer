@@ -388,7 +388,7 @@ export function formatAxisTickWithUnits(
 }
 
 
-export function automaticDisplayUnitLabel(units: ChartDisplayUnits): string {
+function automaticDisplayUnitLabel(units: ChartDisplayUnits): string {
   const names: Record<string, string> = {
     hundreds: 'Hundreds',
     thousands: 'Thousands',
@@ -627,7 +627,7 @@ export function catLabelsVisible(chart: ChartModel): boolean {
  *  Format-Axis "Custom angle" control accepts -90°…+90° INCLUSIVE, so the code
  *  below deliberately uses a closed boundary (`> LIMIT` rejects, `== LIMIT`
  *  honors) to keep genuine ±90° (vertical) axis labels working. */
-export const FIXED_ANGLE_LIMIT_60K = 5_400_000;
+const FIXED_ANGLE_LIMIT_60K = 5_400_000;
 
 
 /** Category-axis label rotation in RADIANS (canvas convention), from
@@ -757,7 +757,7 @@ export function drawAxisTitle(
 
 /** Resolve the per-axis title color string for `drawAxisTitle`. Returns
  *  '#rrggbb' when the XML supplied a srgb color, else the legacy '#555'. */
-export function axisTitleColor(hex: string | null | undefined): string {
+function axisTitleColor(hex: string | null | undefined): string {
   return hex ? `#${hex}` : '#555';
 }
 

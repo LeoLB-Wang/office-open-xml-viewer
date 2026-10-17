@@ -247,7 +247,7 @@ export { hexToRgba, relativeLuma, autoContrastColor, resolveFill, usesPathShade,
 export { trackPaintPath, currentStrokeBounds } from './shape/paint-bounds';
 export { measurePaintBounds } from './shape/measure-paint-bounds';
 export type { FillOutline } from './shape/path-gradient';
-export { buildShapePath, drawStar, drawPolygon, ooxmlArcTo } from './shape/preset';
+export { buildShapePath, ooxmlArcTo } from './shape/preset';
 export {
   paintDrawingMLShape,
   clipDrawingMLShape,
@@ -292,7 +292,6 @@ export {
   captureDecodedBitmapCacheEpoch,
   dropCachedDerivedBitmapNamespace,
   getCachedBitmapByPath,
-  getCachedDecodedBitmap,
   getCachedDerivedBitmap,
   inspectCachedRasterSource,
   resolvedCachedBitmapVariantKey,
@@ -339,7 +338,6 @@ export {
   decodeRasterOrMetafile,
   getIncompleteMetafileReport,
   isOoxmlIncompleteMetafileError,
-  OoxmlIncompleteMetafileError,
   type DecodeRasterOptions,
   type IncompleteMetafilePolicy,
   type IncompleteMetafileReport,
@@ -394,7 +392,6 @@ export {
 // Shared `<a:srcRect>` crop (§20.1.8.55) for all three renderers: the source-rect
 // math, the full-frame raster size for a cropped metafile, and the draw wrapper.
 export {
-  cropSourceRect,
   drawImageCropped,
   imageNaturalSize,
   metafileRasterSize,
@@ -412,7 +409,6 @@ export {
   duotoneImageData,
   hex6ToRgb,
   luminance601,
-  defaultOffscreenFactory,
   type Duotone,
   type RgbaBuffer,
   type OffscreenFactory,
@@ -462,7 +458,6 @@ export { type PresetPath } from './shape/preset-geometry/path-executor';
 // the pptx renderer's per-glyph WordArt path.
 export {
   hasTextWarp,
-  isSingleEdgeWarp,
   buildWarpEnvelope,
   samplePolyline,
   warpGlyphTransform,
@@ -510,7 +505,6 @@ export {
   type ExtrusionInput,
   type BevelRegion,
   computeBevelNormals,
-  bevelHeightProfile,
   distanceToEdge,
   lightDirFromRig,
   materialClass,
@@ -538,7 +532,6 @@ export {
   mathToMathML,
   svgExtents,
   recolorSvg,
-  MATH_RASTER_PX_PER_EM,
   rasterizeMathSvg,
   sizeMathSvgForRaster,
   tintMathRaster,

@@ -23,7 +23,7 @@ export interface ResolvedTitleLine {
 }
 
 
-export function chartTitleRunFont(
+function chartTitleRunFont(
   chart: ChartModel,
   run: ChartTextRun,
   fallbackFontSize: number,
@@ -63,7 +63,7 @@ export function chartTitleRunFont(
 /** Measure DrawingML title runs against the chart's finite title box. Explicit
  * newlines remain hard breaks; ordinary whitespace is the only automatic wrap
  * opportunity, matching DrawingML's default square text wrapping. */
-export function resolveChartTitleLines(
+function resolveChartTitleLines(
   ctx: CanvasRenderingContext2D,
   chart: ChartModel,
   maxWidth: number,
@@ -123,7 +123,7 @@ export function measuredCartesianTitleBand(
 }
 
 
-export function drawChartTitle(
+function drawChartTitle(
   ctx: CanvasRenderingContext2D,
   chart: ChartModel,
   x: number, y: number, w: number, fontSize: number,

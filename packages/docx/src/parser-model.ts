@@ -300,7 +300,7 @@ export interface DocumentPageLayoutSettingsInput {
   readonly printTwoOnOne: boolean;
 }
 
-export function documentPageLayoutSettingsInput(
+function documentPageLayoutSettingsInput(
   doc: DocxDocumentModel,
 ): DocumentPageLayoutSettingsInput {
   const settings = (doc as InternalDocxDocumentModel).__pageLayoutSettings;
@@ -428,7 +428,7 @@ function noteNumberingInput(
   };
 }
 
-export function documentNoteLayoutSettingsInput(
+function documentNoteLayoutSettingsInput(
   doc: DocxDocumentModel,
 ): DocumentNoteLayoutSettingsInput {
   const settings = (doc as InternalDocxDocumentModel).__noteLayoutSettings;
@@ -2175,15 +2175,15 @@ export function normalizeDocxDocumentModel(doc: DocxDocumentModel): DocxDocument
   return normalizeInternalDocumentModel(doc).document;
 }
 
-export function internalNumberingInfo(numbering: NumberingInfo): InternalNumberingInfo {
+function internalNumberingInfo(numbering: NumberingInfo): InternalNumberingInfo {
   return numbering as InternalNumberingInfo;
 }
 
-export function internalParagraph(paragraph: ParagraphLayoutSource): InternalDocParagraph {
+function internalParagraph(paragraph: ParagraphLayoutSource): InternalDocParagraph {
   return paragraph as unknown as InternalDocParagraph;
 }
 
-export function internalDocumentModel(doc: DocxDocumentModel): InternalDocxDocumentModel {
+function internalDocumentModel(doc: DocxDocumentModel): InternalDocxDocumentModel {
   return doc as InternalDocxDocumentModel;
 }
 
