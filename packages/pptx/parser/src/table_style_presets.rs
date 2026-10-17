@@ -73,9 +73,9 @@ pub(crate) fn apply_transforms(hex: &str, transforms: &[(&str, i64)]) -> String 
     if hex.len() < 6 {
         return hex.to_owned();
     }
-    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    let r = u8::from_str_radix(hex.get(0..2).unwrap_or(""), 16).unwrap_or(0);
+    let g = u8::from_str_radix(hex.get(2..4).unwrap_or(""), 16).unwrap_or(0);
+    let b = u8::from_str_radix(hex.get(4..6).unwrap_or(""), 16).unwrap_or(0);
     let mut rf = r as f64 / 255.0;
     let mut gf = g as f64 / 255.0;
     let mut bf = b as f64 / 255.0;
@@ -996,6 +996,14 @@ pub fn lookup_builtin_table_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Theme scheme colours reach the preset table-style transforms verbatim;
+    /// a non-ASCII value must not panic on a char-boundary slice.
+    #[test]
+    fn apply_transforms_tolerates_non_ascii_hex() {
+        let out = apply_transforms("a\u{e9}000", &[("tint", 50000)]);
+        assert!(out.is_ascii() && out.len() >= 6, "{out:?}");
+    }
 
     fn solid_color(fill: &Option<Fill>) -> Option<&str> {
         match fill {

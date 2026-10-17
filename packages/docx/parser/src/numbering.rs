@@ -816,9 +816,13 @@ impl NumberingMap {
             facts,
             |index, live, format| {
                 if word_zero && (index == level || live.is_none()) {
-                    format_word_synthetic_zero(format)
+                    Some(format_word_synthetic_zero(format))
                 } else {
-                    format_counter(live.unwrap_or_else(|| start_at(index)), format)
+                    ooxml_common::numbering::format_counter_within(
+                        live.unwrap_or_else(|| start_at(index)),
+                        format,
+                        ooxml_common::numbering::MAX_MARKER_BYTES,
+                    )
                 }
             },
         )

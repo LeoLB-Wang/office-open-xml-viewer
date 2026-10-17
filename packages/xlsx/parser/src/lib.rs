@@ -2331,18 +2331,22 @@ fn parse_projected_worksheet(
                 }
             }
             "mergeCell" if is_x_ns(node.tag_name().namespace()) => {
-                if let Some(r) = node.attribute("ref") {
-                    let parts: Vec<&str> = r.split(':').collect();
-                    if parts.len() == 2 {
-                        let (left, top) = parse_cell_ref(parts[0]);
-                        let (right, bottom) = parse_cell_ref(parts[1]);
-                        merge_cells.push(MergeCell {
-                            top,
-                            left,
-                            bottom,
-                            right,
-                        });
-                    }
+                // ST_Ref (§18.3.1.55): both corners must be real grid cells
+                // (A1..XFD1048576). An out-of-grid corner such as
+                // `ZZZZZZ4294967295` is not a cell reference, so it is not a
+                // merge; accepting it would hand renderers and the markdown
+                // projection a range far outside any worksheet.
+                if let Some(range) = node
+                    .attribute("ref")
+                    .filter(|r| r.split(':').count() == 2)
+                    .and_then(worksheet_reference::parse_a1_range)
+                {
+                    merge_cells.push(MergeCell {
+                        top: range.top,
+                        left: range.left,
+                        bottom: range.bottom,
+                        right: range.right,
+                    });
                 }
             }
             "conditionalFormatting"
@@ -4843,11 +4847,59 @@ fn to_markdown_from_archive(archive: &mut XlsxZip) -> Result<String, String> {
             })?;
         let sheet: serde_json::Value =
             serde_json::from_slice(&sheet_json).map_err(|e| e.to_string())?;
-        markdown::render_sheet(&sheet, &shared.shared_strings, &mut out);
-        markdown::render_sheet_comments(&sheet, &mut review_comments, &mut has_comments);
+        // Comments are retained for the end of the document, so they share
+        // the budget every later table is checked against.
+        let table_budget = MAX_XLSX_MARKDOWN_BYTES.saturating_sub(review_comments.len() as u64);
+        let rendered =
+            markdown::render_sheet(&sheet, &shared.shared_strings, &mut out, table_budget);
+        if let Err(observed) = rendered {
+            let projected = observed.saturating_add(review_comments.len() as u64);
+            return Err(markdown_limit_error(archive, projected));
+        }
+        // Comments are appended after every table; charge them to the same
+        // budget as they are written, so they cannot accumulate past it.
+        let comment_budget = MAX_XLSX_MARKDOWN_BYTES.saturating_sub(out.len() as u64);
+        if let Err(observed) = markdown::render_sheet_comments(
+            &sheet,
+            &mut review_comments,
+            &mut has_comments,
+            comment_budget,
+        ) {
+            let projected = (out.len() as u64).saturating_add(observed);
+            return Err(markdown_limit_error(archive, projected));
+        }
+    }
+    let total = (out.len() as u64).saturating_add(review_comments.len() as u64);
+    if total > MAX_XLSX_MARKDOWN_BYTES {
+        return Err(markdown_limit_error(archive, total));
     }
     out.push_str(&review_comments);
     Ok(out)
+}
+
+/// Markdown output ceiling, matching the DOCX and PPTX markdown hard ceilings.
+/// Implementation resource policy: a projection larger than this fails with a
+/// typed `xlsx-markdown:bytes` violation instead of exhausting WASM memory.
+const MAX_XLSX_MARKDOWN_BYTES: u64 = ooxml_common::resource::HARD_MAX_PPTX_MARKDOWN_BYTES;
+
+fn markdown_limit_error(archive: &mut XlsxZip, observed: u64) -> String {
+    let reported = archive
+        .operation()
+        .and_then(|operation| operation.limit_reporter())
+        .and_then(|reporter| {
+            reporter.observe_hard_limit(
+                HardResourceLimitKind::XlsxMarkdownBytes,
+                None,
+                MAX_XLSX_MARKDOWN_BYTES,
+                observed,
+            )
+        });
+    match reported {
+        Err(error) => error,
+        Ok(()) => {
+            format!("xlsx markdown projection exceeds {MAX_XLSX_MARKDOWN_BYTES} bytes ({observed})")
+        }
+    }
 }
 
 /// Parses a single worksheet by 0-based index and returns it as JSON.
@@ -7945,6 +7997,161 @@ mod rb7_partial_degradation_tests {
     }
 
     // ── #832 / #833-1: implicit references through the whole-archive path ─────
+
+    fn build_single_sheet_workbook(sheet: &str) -> Vec<u8> {
+        build_workbook_with_parts(
+            r#"<sheet name="Sheet1" sheetId="1" r:id="rId1"/>"#,
+            sheet,
+            None,
+            None,
+        )
+    }
+
+    /// `sheets` may reference `rId1` (sheet1.xml, with the optional comments
+    /// part) and, when `second_sheet` is given, `rId2` (sheet2.xml).
+    fn build_workbook_with_parts(
+        sheets: &str,
+        sheet: &str,
+        comments: Option<&str>,
+        second_sheet: Option<&str>,
+    ) -> Vec<u8> {
+        let workbook = format!(
+            r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{sheets}</sheets></workbook>"#
+        );
+        let second_rel = if second_sheet.is_some() {
+            r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>"#
+        } else {
+            ""
+        };
+        let wb_rels = format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>{second_rel}</Relationships>"#
+        );
+        let wb_rels = wb_rels.as_str();
+        let sheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdC" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/></Relationships>"#;
+        let mut parts: Vec<(&str, &str)> = vec![
+            ("xl/workbook.xml", workbook.as_str()),
+            ("xl/_rels/workbook.xml.rels", wb_rels),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ];
+        if let Some(comments) = comments {
+            parts.push(("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels));
+            parts.push(("xl/comments1.xml", comments));
+        }
+        if let Some(second) = second_sheet {
+            parts.push(("xl/worksheets/sheet2.xml", second));
+        }
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let o = zip::write::SimpleFileOptions::default();
+            for (name, body) in parts {
+                w.start_file(name, o).unwrap();
+                w.write_all(body.as_bytes()).unwrap();
+            }
+            crate::write_test_content_types(&mut w);
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    /// A merge corner outside the A1..XFD1048576 grid is not an ST_Ref cell,
+    /// so the range is not retained; in-grid ranges are kept (normalized).
+    #[test]
+    fn merge_cells_outside_the_grid_are_not_merges() {
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData><mergeCells count="4"><mergeCell ref="A1:ZZZZZZ4294967295"/><mergeCell ref="A1:XFD1048577"/><mergeCell ref="C3:B2"/><mergeCell ref="A1:XFD1048576"/></mergeCells></worksheet>"#;
+        let json = parse_sheet_native(&build_single_sheet_workbook(sheet), 0, "Sheet1")
+            .expect("sheet parses");
+        let sheet: serde_json::Value = serde_json::from_str(&json).expect("sheet JSON");
+        let merges = sheet["mergeCells"].as_array().expect("merges");
+        assert_eq!(merges.len(), 2, "{merges:?}");
+        assert_eq!(
+            (merges[0]["top"].as_u64(), merges[0]["left"].as_u64()),
+            (Some(2), Some(2))
+        );
+        assert_eq!(
+            (merges[0]["bottom"].as_u64(), merges[0]["right"].as_u64()),
+            (Some(3), Some(3))
+        );
+        assert_eq!(merges[1]["bottom"], 1_048_576);
+        assert_eq!(merges[1]["right"], 16_384);
+    }
+
+    /// Far-apart cells project to rows of 16384 columns each; past the
+    /// markdown ceiling the projection fails with a typed resource error
+    /// instead of exhausting memory.
+    #[test]
+    fn oversized_markdown_projection_fails_with_a_typed_resource_error() {
+        let rows: String = (1..=2000)
+            .map(|row| {
+                format!(
+                    r#"<row r="{row}"><c r="A{row}"><v>1</v></c><c r="XFD{row}"><v>2</v></c></row>"#
+                )
+            })
+            .collect();
+        let sheet = format!(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{rows}</sheetData></worksheet>"#
+        );
+        let error = to_markdown_native(&build_single_sheet_workbook(&sheet))
+            .expect_err("oversized markdown rejected");
+        let json: serde_json::Value = serde_json::from_str(
+            error
+                .strip_prefix("OOXML_RESOURCE_LIMIT:")
+                .unwrap_or_else(|| panic!("typed prefix: {error}")),
+        )
+        .expect("typed JSON");
+        let violation = &json["details"]["violation"];
+        assert_eq!(violation["resource"], "xlsx-markdown");
+        assert_eq!(violation["metric"], "bytes");
+        assert_eq!(violation["limit"], MAX_XLSX_MARKDOWN_BYTES);
+
+        // Review comments are charged to the same budget as they accumulate
+        // across sheets, before the final copy.
+        let comment = "c".repeat(1 << 20);
+        let workbook_sheets: String = (1..=70)
+            .map(|i| format!(r#"<sheet name="S{i}" sheetId="{i}" r:id="rId1"/>"#))
+            .collect();
+        let package = build_workbook_with_parts(
+            &workbook_sheets,
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+            Some(&format!(
+                r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>a</author></authors><commentList><comment ref="A1" authorId="0"><text><t>{comment}</t></text></comment></commentList></comments>"#
+            )),
+            None,
+        );
+        let error = to_markdown_native(&package).expect_err("oversized comments rejected");
+        assert!(error.contains("xlsx-markdown"), "{error}");
+
+        // Comments retained from earlier sheets count against a later table
+        // (and the final document) even when that sheet has no comments:
+        // ~60 MiB of comments plus a ~10 MiB table must fail, although each
+        // part alone fits.
+        let wide_rows: String = (1..=200)
+            .map(|row| {
+                format!(
+                    r#"<row r="{row}"><c r="A{row}"><v>1</v></c><c r="XFD{row}"><v>2</v></c></row>"#
+                )
+            })
+            .collect();
+        let comment_sheets: String = (1..=60)
+            .map(|i| format!(r#"<sheet name="C{i}" sheetId="{i}" r:id="rId1"/>"#))
+            .collect();
+        let package = build_workbook_with_parts(
+            &format!(r#"{comment_sheets}<sheet name="Wide" sheetId="99" r:id="rId2"/>"#),
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#,
+            Some(&format!(
+                r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>a</author></authors><commentList><comment ref="A1" authorId="0"><text><t>{comment}</t></text></comment></commentList></comments>"#
+            )),
+            Some(&format!(
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{wide_rows}</sheetData></worksheet>"#
+            )),
+        );
+        let error = to_markdown_native(&package).expect_err("combined size rejected");
+        assert!(error.contains("xlsx-markdown"), "{error}");
+
+        let small = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>2</v></c></row></sheetData></worksheet>"#;
+        let markdown = to_markdown_native(&build_single_sheet_workbook(small)).expect("fits");
+        assert!(markdown.contains("| 1 |") && markdown.contains("| 2 |"));
+    }
 
     /// Build a 1-sheet workbook that OMITS `@r` on both `<row>` and every `<c>`
     /// (the minimal enterprise-exporter shape from #832 / #833-1), backed by a

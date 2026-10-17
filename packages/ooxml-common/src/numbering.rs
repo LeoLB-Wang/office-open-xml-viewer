@@ -9,7 +9,7 @@ use std::hash::Hash;
 
 mod format;
 #[doc(hidden)]
-pub use format::format_counter;
+pub use format::{format_counter, format_counter_within};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CounterError {
@@ -278,7 +278,11 @@ where
             counter,
             effective_level,
             |index, live, format| {
-                format::format_counter(live.unwrap_or_else(|| start_at(index)), format)
+                format::format_counter_within(
+                    live.unwrap_or_else(|| start_at(index)),
+                    format,
+                    MAX_MARKER_BYTES,
+                )
             },
         )
     }
@@ -294,7 +298,7 @@ where
         level: u32,
         counter: u32,
         mut effective_level: impl FnMut(u32) -> Option<LevelFacts<'a>>,
-        mut render_counter: impl FnMut(u32, Option<u32>, &str) -> String,
+        mut render_counter: impl FnMut(u32, Option<u32>, &str) -> Option<String>,
     ) -> String {
         let Some(current) = effective_level(level) else {
             return format!("{counter}.");
@@ -322,12 +326,50 @@ where
             let rendered = if format == "bullet" {
                 // A bullet uses literal lvlText; Word suppresses a numeric
                 // placeholder even when the level text contains one.
-                String::new()
+                Some(String::new())
             } else {
                 render_counter(ancestor, live, format)
             };
-            text = text.replace(&format!("%{}", u64::from(ancestor) + 1), &rendered);
+            let placeholder = format!("%{}", u64::from(ancestor) + 1);
+            // Bound the expanded marker before allocating it: a huge counter
+            // value in a repeating alphabet (`w:start`/`w:startOverride` are
+            // uncapped ST_DecimalNumber values) or a level text repeating one
+            // placeholder many times would otherwise multiply into gigabytes.
+            // Crossing MAX_MARKER_BYTES fails the parse with a typed hard-limit
+            // violation rather than truncating the marker.
+            let limit = MAX_MARKER_BYTES as u64;
+            // A counter whose own rendering already exceeds the budget is
+            // reported as one byte over it (its exact size is never built).
+            let observed = match &rendered {
+                Some(rendered) => {
+                    let occurrences = text.matches(placeholder.as_str()).count() as u64;
+                    (text.len() as u64 - occurrences * placeholder.len() as u64)
+                        .saturating_add(occurrences.saturating_mul(rendered.len() as u64))
+                }
+                None => limit + 1,
+            };
+            let Some(rendered) = rendered.filter(|_| observed <= limit) else {
+                let _ = crate::resource::observe_hard_limit(
+                    crate::resource::HardResourceLimitKind::NumberingMarkerBytes,
+                    None,
+                    limit,
+                    observed,
+                );
+                return String::new();
+            };
+            text = text.replace(&placeholder, &rendered);
             highest = ancestor.checked_sub(1);
+        }
+        // Literal level text without placeholders never enters the loop; the
+        // retained marker obeys the same ceiling.
+        if text.len() > MAX_MARKER_BYTES {
+            let _ = crate::resource::observe_hard_limit(
+                crate::resource::HardResourceLimitKind::NumberingMarkerBytes,
+                None,
+                MAX_MARKER_BYTES as u64,
+                text.len() as u64,
+            );
+            return String::new();
         }
         text
     }
