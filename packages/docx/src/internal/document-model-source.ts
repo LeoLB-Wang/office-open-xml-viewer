@@ -1,7 +1,5 @@
 import { loadDocxOfficeFontFallbacks as loadOfficeFontFallbacks } from '../host-font-line-metrics.js';
 import { recordResourceDiagnostics } from '../resource-diagnostics.js';
-import { readingHooks } from './reading-hooks.js';
-import { installNativeReadingRuntime } from './native-reading-runtime.js';
 import { resolveBundledAssetUrl } from '@silurus/ooxml-core/internal/bundled-asset-url';
 import { resolveCjkFallback, type CjkLang } from '@silurus/ooxml-core';
 import {
@@ -189,7 +187,6 @@ export async function loadDocxModelSource(
     // runs and the OOXML path below is unchanged.
     const selected = selectModelSource(opts.modelSources, 'docx', new Uint8Array(buffer));
     if (!selected) return DocxDocument.load(buffer, { ...opts, modelSources: undefined });
-    installNativeReadingRuntime();
     const sourceLoad = beginModelSourceLoad(selected, 'docx');
     try {
     // Resolve the container on the main thread before spinning up the worker.
@@ -213,7 +210,6 @@ export async function loadDocxModelSource(
     const wiredWorker = sourceWorker(worker, sourceLoad, opts, (view) => { if (doc) adoptSourceView(doc, view); });
     const rendererDescriptors = mode === 'worker' ? workerRendererDescriptors(opts) : undefined;
     const workerProgressive = mode === 'worker' && !!opts.progressiveLayout;
-    let owesNativeCompletion = false;
     try {
       publicDoc = Reflect.construct(DocxDocument, [wiredWorker, mode, defaultCurrentDateMs, opts.wasmUrl]) as DocxDocument;
       // TypeScript's private members have no cross-module friend access;
@@ -399,12 +395,7 @@ export async function loadDocxModelSource(
             )
             : undefined,
         };
-        // Native reading suppresses early publication, not the library's
-        // requested completion callback. Retain the same short-circuit scan.
-        const nativeReading = deferrable && !!opts.progressiveLayout
-          && readingHooks.requested(doc._source);
-        owesNativeCompletion = nativeReading;
-        if (deferrable && opts.progressiveLayout && !nativeReading) {
+        if (deferrable && opts.progressiveLayout) {
           const store = retained.layoutVariants;
           // Narrowed once: the closures below outlive this block's control flow.
           const progressiveDocument = doc;
@@ -587,14 +578,6 @@ export async function loadDocxModelSource(
       checkAbort();
       metrics.succeed({ pages: doc.pageCount });
       sourceLoad.release();
-      // LoadOptions.onLayoutComplete also applies when native reading builds
-      // the full layout before load() resolves. A caller-owned release can
-      // synchronously cancel its viewer: recheck before notifying so this
-      // unpublished native load still rejects without a completion callback.
-      if (owesNativeCompletion) {
-        checkAbort();
-        doc._layoutObservers.notify('onLayoutComplete', opts.onLayoutComplete);
-      }
       return publicDoc;
     } catch (error) {
       disposeRejectedLoad(worker, doc ? abortDocument : undefined);

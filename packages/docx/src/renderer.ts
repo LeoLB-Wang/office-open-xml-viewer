@@ -92,7 +92,7 @@ function normalizeRenderOptions(
   source: LayoutSourceStore,
   canvas: HTMLCanvasElement | OffscreenCanvas,
   pageIndex: number,
-  options: RenderDocumentOptions & { readonly assertPublicationCurrent?: () => void; readonly callerOwnedCanvasTarget?: boolean },
+  options: RenderDocumentOptions & { readonly callerOwnedCanvasTarget?: boolean },
 ) {
   if (canvas === null || typeof canvas !== 'object' || typeof canvas.getContext !== 'function') {
     if (options.callerOwnedCanvasTarget === false) throw new Error('Internally acquired DOCX paint target is invalid');
@@ -141,9 +141,6 @@ function normalizeRenderOptions(
         ? textRunsForPage(selection.layout, pageIndex, { scale })
         : [],
       onTextRun: options.onTextRun,
-      // Internal publication ownership follows normalized paint options; the
-      // final renderer adapter performs no policy or option reconstruction.
-      assertPublicationCurrent: options.assertPublicationCurrent,
       callerOwnedCanvasTarget: options.callerOwnedCanvasTarget,
       validatedTargetContext,
       threeD: options.threeD,
@@ -160,7 +157,7 @@ export async function renderLayoutSourceToCanvas(
   source: LayoutSourceStore,
   canvas: HTMLCanvasElement | OffscreenCanvas,
   pageIndex: number,
-  opts: RenderDocumentOptions & { readonly assertPublicationCurrent?: () => void; readonly callerOwnedCanvasTarget?: boolean } = {},
+  opts: RenderDocumentOptions & { readonly callerOwnedCanvasTarget?: boolean } = {},
 ): Promise<void> {
   const normalized = normalizeRenderOptions(source, canvas, pageIndex, opts);
   return renderSelectedDocumentPage(

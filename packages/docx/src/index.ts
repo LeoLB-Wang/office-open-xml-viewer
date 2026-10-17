@@ -280,4 +280,3 @@ export type {
 } from './types';
 export type { DocxTextRunInfo } from './renderer';
 
-export type { DocxReadingNotice } from './native-reading-notice.js';

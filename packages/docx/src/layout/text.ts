@@ -1,5 +1,3 @@
-import type { NativeReadingWordBreaking } from '../native-reading-word-breaking.js';
-import type { NativeReadingPictureBullet } from '../native-reading-picture-bullet.js';
 import { wordTextBoxVerticalMode } from './compatibility.js';
 import type { LayoutDiagnostic } from './types.js';
 import {
@@ -141,9 +139,6 @@ type ParagraphTextFacts = Readonly<{
   /** Authored discretionary opportunity with its own conditional glyph style.
    * Its source run is otherwise empty, independent of dictionary hyphenation. */
   optionalHyphen?: boolean;
-  /** Explicit native reading owner; common layout never applies unknown
-   * Hresi dictionary/character transformations. Literal text stays unchanged. */
-  nativeReadingWordBreaking?: Readonly<NativeReadingWordBreaking>;
   /** Parser-projected CT_R boundary constraint around an authored
    * `<w:noBreakHyphen/>`. These names are layout facts, not parser wire keys. */
   noBreakBefore?: boolean;
@@ -245,10 +240,8 @@ export interface ComplexFieldBoundaryInput {
 
 export type ParagraphAcquisitionInput = DeepReadonly<Omit<DocParagraph, 'runs'>> & Readonly<{
   typographyInput?: Readonly<InternalParagraphTypographyWire>;
-  nativeReadingNumberingWordBreaking?: Readonly<NativeReadingWordBreaking>;
   runs: readonly ParagraphAcquisitionRun[];
   complexFieldBoundaries?: readonly ComplexFieldBoundaryInput[];
-  nativeReadingPictureBullet?: NativeReadingPictureBullet;
   numberingMarkerShapeInput?: NumberingMarkerShapeInput;
   paragraphMarkShapeInput?: NumberingMarkerShapeInput;
 }>;
@@ -259,7 +252,6 @@ export type ParagraphAcquisitionInput = DeepReadonly<Omit<DocParagraph, 'runs'>>
 export type ParagraphLayoutSource = DeepReadonly<Omit<DocParagraph, 'runs'>> & Readonly<{
   runs: readonly (DeepReadonly<DocRun> | ParagraphAcquisitionRun)[];
   complexFieldBoundaries?: readonly ComplexFieldBoundaryInput[];
-  nativeReadingPictureBullet?: NativeReadingPictureBullet;
   numberingMarkerShapeInput?: NumberingMarkerShapeInput;
   paragraphMarkShapeInput?: NumberingMarkerShapeInput;
 }>;

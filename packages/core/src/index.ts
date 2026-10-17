@@ -395,8 +395,6 @@ export {
 // math, the full-frame raster size for a cropped metafile, and the draw wrapper.
 export {
   cropSourceRect,
-  imagePaintProjection,
-  type ImagePaintProjection,
   drawImageCropped,
   imageNaturalSize,
   metafileRasterSize,

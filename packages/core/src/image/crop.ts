@@ -131,12 +131,10 @@ export interface ImagePaintProjection {
 }
 export interface ImagePaintProjectionOptions {
   readonly transform?: Readonly<ImagePaintTransform>;
-  readonly projection?: Readonly<ImagePaintProjection>;
 }
 
 /** Canonical local-coordinate crop/transform projection. This is a pure
- * drawing primitive, not a layout or contour algorithm. Layout retains its
- * plan and proves allocation; ordinary painting uses the same constructor. */
+ * drawing primitive, not a layout or contour algorithm. */
 export function imagePaintProjection(
   width: number, height: number, srcRect: SrcRect | null | undefined,
   transform: Readonly<ImagePaintTransform> = {}, strict = true,
@@ -230,10 +228,9 @@ export function drawImageCropped(
     }
   };
   // Keep all existing seven-argument DOCX/XLSX/PPTX calls exactly on their
-  // crop-only path; a retained projection is an explicit eighth argument.
+  // crop-only path; an authored transform is an explicit eighth argument.
   if (!options) { paint(dx, dy, dw, dh); return; }
-  const plan = options.projection ?? imagePaintProjection(dw, dh, srcRect, options.transform, false);
-  if (plan.width !== dw || plan.height !== dh) throw new RangeError('Image projection destination mismatch');
+  const plan = imagePaintProjection(dw, dh, srcRect, options.transform, false);
   withImagePaintProjection(ctx, dx, dy, plan, (x, y, width, height) => paint(x, y, width, height, plan.crop));
 }
 

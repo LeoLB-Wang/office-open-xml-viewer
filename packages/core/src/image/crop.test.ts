@@ -164,7 +164,7 @@ describe('sourceRasterTargetSize', () => {
   });
 });
 
-describe('retained image paint projection', () => {
+describe('image paint projection', () => {
   it('rejects strict intermediate overflow while preserving ordinary invalid/empty crop behavior', () => {
     const negative = { l: -1e308, t: 0, r: -1e308, b: 0 };
     const positive = { l: 1e308, t: 0, r: 1e308, b: 0 };
@@ -179,9 +179,6 @@ describe('retained image paint projection', () => {
     drawImageCropped(ctx, fakeImg(100, 80), { l: NaN, t: 0, r: 0, b: 0 }, 0, 0, 40, 20);
     expect(drawImage).toHaveBeenCalledExactlyOnceWith(expect.anything(), 0, 0, 40, 20);
     const empty = imagePaintProjection(40, 20, { l: 2, t: 0, r: 0, b: 0 });
-    drawImage.mockClear();
-    drawImageCropped(ctx, fakeImg(100, 80), undefined, 0, 0, 40, 20, { projection: empty });
-    expect(drawImage).not.toHaveBeenCalled();
     expect(empty.destination).toEqual({ x: 0, y: 0, width: 40, height: 20 });
   });
 });

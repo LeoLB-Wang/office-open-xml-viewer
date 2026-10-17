@@ -1,5 +1,4 @@
 import { normalizeDocxParserError } from './parser-errors.js';
-import { installNativeReadingRuntime } from './native-reading-runtime.js';
 import type { OoxmlResourceUsageSnapshot } from '@silurus/ooxml-core';
 import { normalizeLoadResourceOptions, OoxmlResourceMetricsSession, parseTypedParserError } from '@silurus/ooxml-core/worker';
 import type { PullSessionCommand } from '@silurus/ooxml-core/worker';
@@ -57,7 +56,6 @@ export async function acquireDocxSessionFromArchive<TResult>(
     });
     metrics.setSourceBytes(source.sourceByteLength);
     throwIfAborted(options.signal);
-    installNativeReadingRuntime();
     metrics.checkpoint('container ready');
   } catch (error) {
     try { closeArchive(); } catch {}

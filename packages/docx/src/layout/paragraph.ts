@@ -3,7 +3,6 @@ import { charSpacingDeltaPx, segmentCharacterGridDeltaPx } from '../line-breaker
 import { shadowInkBounds } from './vml-shadow.js';
 import { createParagraphAnchorReferenceWorkBudget } from './resource-budgets.js';
 import { addExactRational, exactRationalFromNumber, exactRationalToNumberUp } from './exact-geometry.js';
-import { readingHooks } from '../internal/reading-hooks.js';
 import { revisionIsOmitted } from './revision-visibility.js';
 import { wordKerningApplies } from './line-compatibility.js';
 import type { LineGapPlan } from '../line-breaker/line-gaps.js';
@@ -121,7 +120,6 @@ import {
   createParagraphWrapRegistry,
 } from './paragraph-wrap-registry.js';
 import {
-  paintResourceRegistryOf,
   paragraphAcquisitionCacheOf,
   type ParagraphAcquisitionRuntimeCache,
 } from './runtime-state.js';
@@ -1250,9 +1248,6 @@ function finalizeParagraphLayout(input: AcquiredParagraphLayoutInput, frozenSour
     kind: 'paragraph',
     id: input.id,
     source: input.source,
-    ...(input.nativeReadingPictureBullet && lines.some(line => line.placements.some(
-      placement => placement.kind === 'resource' && placement.resourceKind === 'picture-bullet',
-    )) ? { nativeReadingPictureBullet: true as const } : {}),
     ...(input.paragraphId !== undefined ? { paragraphId: input.paragraphId } : {}),
     flowDomainId: input.flowDomainId,
     ordinaryFlow: input.ordinaryFlow,
@@ -1274,8 +1269,6 @@ function finalizeParagraphLayout(input: AcquiredParagraphLayoutInput, frozenSour
     textBoxes: input.textBoxes,
     events: input.events,
     exclusions: input.exclusions,
-    ...(input.nativeReadingRelocations?.length ? { nativeReadingRelocations: input.nativeReadingRelocations } : {}),
-    ...(input.nativeReadingInactivePictureData ? { nativeReadingInactivePictureData: true } : {}),
     ...(input.cellContainmentBounds
       ? { cellContainmentBounds: input.cellContainmentBounds }
       : {}),
@@ -5018,37 +5011,11 @@ export function acquireParagraphResult(
   options: ParagraphAcquisitionOptions,
   continuation?: Parameters<typeof measureParagraph>[5],
 ): AcquiredParagraphResult {
-  return acquireParagraphCandidate(paragraph, options, continuation, 'complete');
-}
-
-/** Internal acquisition stage, not a publication-ready paragraph. The body
- * anchor-run owner must compose every acquired scene before admitting any
- * member. Ordinary measurement, anchors and complete textbox stories use the
- * same acquisition core; the stage has a separate retained-cache identity. */
-export function acquireParagraphAnchorRunStage(
-  paragraph: ParagraphAcquisitionInput, options: ParagraphAcquisitionOptions,
-) {
-  const acquired = acquireParagraphCandidate(paragraph, options, undefined, 'anchor-run');
-  const scenes = readingHooks.scenes(paragraph, options.source,
-    options.id, options.flowDomainId,
-    options.environment.layoutServices ? paintResourceRegistryOf(options.environment.layoutServices) : undefined);
-  return Object.freeze({ kind: 'native-reading-anchor-stage' as const, acquired, scenes });
-}
-
-function acquireParagraphCandidate(
-  paragraph: ParagraphAcquisitionInput,
-  options: ParagraphAcquisitionOptions,
-  continuation: Parameters<typeof measureParagraph>[5] | undefined,
-  stage: 'complete' | 'anchor-run',
-): AcquiredParagraphResult {
-  const readingOccurrences = readingHooks.occurrences(paragraph);
-  if (readingOccurrences.length && (continuation || options.continuesFromPrevious || options.anchorCellBounds || options.environment.verticalPageFrame))
-    throw readingHooks.error('placement', 'reading blocks require complete horizontal body paragraphs');
   const cache = options.environment.layoutServices
     ? paragraphAcquisitionCacheOf(options.environment.layoutServices)
     : undefined;
   const cacheKey = cache
-    ? `${stage}:${paragraphAcquisitionCacheKey(cache, paragraph, options, continuation)}`
+    ? paragraphAcquisitionCacheKey(cache, paragraph, options, continuation)
     : undefined;
   const cached = cacheKey === undefined
     ? undefined
@@ -5130,7 +5097,7 @@ function acquireParagraphCandidate(
         const projectionOptions = anchorLineExemptions && anchorLineExemptions.size > 0
           ? { ...acquisitionOptions, anchorLineExemptions } : acquisitionOptions;
         let layout = projectAcquiredParagraph(
-          paragraph, projectionOptions, measured, stage, lineReferences,
+          paragraph, projectionOptions, measured, lineReferences,
         );
         if (lineReferences === undefined && lineRelativeOccurrenceIds.size > 0) {
           // ECMA-376 Part 1 §§20.4.2.11–12, 20.4.3.5: positionV's line
@@ -5221,7 +5188,7 @@ function acquireParagraphCandidate(
           // at anchorLineExemptions below, not in reference acquisition.
           if (measuredOtherObjects) {
             layout = projectAcquiredParagraph(
-              paragraph, projectionOptions, measured, stage, lineReferences,
+              paragraph, projectionOptions, measured, lineReferences,
             );
           }
         }
@@ -5537,7 +5504,7 @@ export function paragraphLayoutFromMeasurement(
   paragraph: ParagraphAcquisitionInput, options: ParagraphAcquisitionOptions,
   measured: MeasuredParagraph,
 ): ParagraphLayout {
-  return projectAcquiredParagraph(paragraph, options, measured, 'complete');
+  return projectAcquiredParagraph(paragraph, options, measured);
 }
 
 function projectAcquiredParagraphLines(
@@ -5604,7 +5571,6 @@ function projectAcquiredParagraph(
   paragraph: ParagraphAcquisitionInput,
   options: ParagraphAcquisitionOptions,
   measured: MeasuredParagraph,
-  stage: 'complete' | 'anchor-run',
   lineReferences?: ReadonlyMap<string, AnchorLineReference>,
 ): ParagraphLayout {
   const linePlan = projectAcquiredParagraphLines(paragraph, options, measured);
@@ -5634,7 +5600,6 @@ function projectAcquiredParagraph(
   });
   const paragraphOccurrenceIds: ReadonlySet<string> = new Set(payloadsByOccurrence.keys());
   for (const [occurrenceId, payloads] of payloadsByOccurrence) {
-    if (payloads[0]?.run.anchorAcquisitionInput?.nativeReadingRelocation === 'completeScene') continue;
     const acquired = acquireAnchorOccurrence(
       occurrenceId,
       payloads,
@@ -5907,9 +5872,6 @@ function projectAcquiredParagraph(
   const cellContainmentBounds = unionLayoutRects(cellContainmentRects);
   const retainedInput: AcquiredParagraphLayoutInput = {
     kind: 'paragraph', id: options.id, source: options.source,
-    ...(paragraph.nativeReadingPictureBullet && !options.continuesFromPrevious
-      && lines.some(line => line.placements.some(placement => placement.kind === 'resource'
-        && placement.resourceKind === 'picture-bullet')) ? { nativeReadingPictureBullet: true as const } : {}),
     ...(paragraph.paragraphId !== undefined ? { paragraphId: paragraph.paragraphId } : {}),
     flowDomainId: options.flowDomainId, ordinaryFlow: options.ordinaryFlow,
     ...(paragraph.styleId !== undefined ? { styleId: paragraph.styleId } : {}),
@@ -5952,12 +5914,7 @@ function projectAcquiredParagraph(
       bounds: { xPt: paragraphXPt, yPt: measured.contentStartYPt, widthPt: 0, heightPt: contentHeightPt },
     } : undefined,
   };
-  if (stage === 'anchor-run' || readingHooks.occurrences(paragraph).length === 0) return layoutParagraph(retainedInput);
-  const frame = options.anchorFrames?.column;
-  if (!frame) throw readingHooks.error('placement', 'reading paragraph has no resolved column');
-  const readingImage = paragraph.runs.some(run => run.type === 'image' && run.anchorAcquisitionInput?.nativeReadingRelocation === 'completeScene');
-  const registry = readingImage && options.environment.layoutServices ? paintResourceRegistryOf(options.environment.layoutServices) : undefined;
-  return layoutParagraph(readingHooks.appendScenes(paragraph, retainedInput, frame, registry));
+  return layoutParagraph(retainedInput);
 }
 
 const translatePointY = (point: PointPt, yPt: number): PointPt =>

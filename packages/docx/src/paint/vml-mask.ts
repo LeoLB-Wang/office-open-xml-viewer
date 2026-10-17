@@ -50,7 +50,7 @@ export function paintVmlImageMask(
       ctx.rotate((imageTransform.rotationDeg * Math.PI) / 180);
       ctx.translate(-x, -y);
     }
-    context.resources.paint(resourceKey, 'image', imageBounds, ctx, undefined, bounds);
+    context.resources.paint(resourceKey, 'image', imageBounds, ctx, bounds);
     ctx.restore();
     ctx.globalCompositeOperation = 'destination-in';
     paintVmlRasterPass(bounds, { ...context, ctx }, mask);

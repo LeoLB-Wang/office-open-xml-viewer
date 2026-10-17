@@ -1,5 +1,4 @@
 import { acquireVmlImageBrush } from './browser-vml-image-brush.js';
-import { readingPaintHooks } from './reading-hooks.js';
 import {
   withBitmapCacheLease,
   clampCanvasSize,
@@ -54,9 +53,6 @@ interface PrivatePaintResourceLookup {
 
 export interface CanvasDocumentPaintOptions<TTextRun> {
   readonly onDiagnostic?: (diagnostic: import('../layout/types.js').LayoutDiagnostic) => void;
-  /** Internal document ownership check after every async acquisition, before
-   * the first clear/paint. It is not serialized or exposed as authored facts. */
-  readonly assertPublicationCurrent?: () => void;
   /** Internal provenance: bitmap/worker surfaces belong to the document, not a caller target. */
   readonly callerOwnedCanvasTarget?: boolean;
   /** The renderer validates this context before layout and paint retain the same instance. */
@@ -490,7 +486,6 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
 
     // Clearing the target (by resizing it) starts the page paint.
     const clearPage = (): void => {
-      options.assertPublicationCurrent?.();
       canvas.width = clamped.width;
       canvas.height = clamped.height;
       if (paintCanvas !== canvas) {
@@ -528,10 +523,9 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
       return;
     }
 
-    // Changed resource owners must all be validated before clearing. Strict
-    // pages retain their established background-before-error behavior.
-    const readingAdmission = readingPaintHooks.pageAdmission(page);
-    if (outcome.kind === 'failed') { if (!readingAdmission) clearPage(); throw outcome.error; }
+    // Decode and budget failures surface after the page background, before
+    // any content.
+    if (outcome.kind === 'failed') { clearPage(); throw outcome.error; }
     const { images, chartImages } = outcome.images;
 
     const session = createProductionPaintResourceSession(options.registry, (descriptor) => {
@@ -563,7 +557,6 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
       }
       return undefined;
     });
-    if (readingAdmission) readingPaintHooks.assertPageImages(session, page, readingAdmission);
     // From this single clear through completed painting there is no await.
     clearPage();
 
@@ -597,7 +590,7 @@ async function renderSelectedDocumentPageLeased<TTextRun>(
       destination.drawImage(paintCanvas, 0, 0);
     }
     if (options.onTextRun) {
-      for (const run of options.textRuns) { options.assertPublicationCurrent?.(); options.onTextRun(run); }
+      for (const run of options.textRuns) options.onTextRun(run);
     }
   } finally {
     releasePaintSurface?.();

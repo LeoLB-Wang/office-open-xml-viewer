@@ -136,7 +136,6 @@ export function paintDrawingLayout(node: DrawingLayout, context: CanvasPaintCont
         command.rect,
         command.orientation,
         context,
-        command.nativeImagePlan,
       );
       continue;
     }

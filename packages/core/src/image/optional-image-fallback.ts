@@ -70,7 +70,6 @@ export function paintOptionalImagePlaceholder(
     } finally { ctx.restore(); }
   };
   if (!options) { paint(bounds.x, bounds.y, bounds.width, bounds.height); return; }
-  const plan = options.projection ?? imagePaintProjection(bounds.width, bounds.height, null, options.transform, false);
-  if (plan.width !== bounds.width || plan.height !== bounds.height) throw new RangeError('Image placeholder projection destination mismatch');
+  const plan = imagePaintProjection(bounds.width, bounds.height, null, options.transform, false);
   withImagePaintProjection(ctx, bounds.x, bounds.y, plan, paint);
 }

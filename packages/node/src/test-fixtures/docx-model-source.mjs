@@ -24,21 +24,6 @@ export async function openModelSource(bytes, config, _signal, transfer = []) {
   if (typeof config.showTrackedChanges === 'boolean') viewDefaults.showTrackedChanges = config.showTrackedChanges;
   if (typeof config.extraViewDefault === 'string') viewDefaults[config.extraViewDefault] = true;
   const archive = config.minimal ? only(parser, REQUIRED) : parser;
-  if (config.readingWordBreaking && config.minimal) {
-    archive.pull_document_chunk = (...args) => {
-      const chunk = JSON.parse(new TextDecoder().decode(parser.pull_document_chunk(...args)));
-      const mark = (value) => {
-        if (!value || typeof value !== 'object') return;
-        if (value.type === 'text') value.__nativeReadingWordBreaking = { rawHres: 0, rawChHres: 1 };
-        for (const child of Object.values(value)) {
-          if (Array.isArray(child)) child.forEach(mark);
-          else if (child && typeof child === 'object') mark(child);
-        }
-      };
-      mark(chunk);
-      return new TextEncoder().encode(JSON.stringify(chunk));
-    };
-  }
   return {
     archive,
     viewDefaults,

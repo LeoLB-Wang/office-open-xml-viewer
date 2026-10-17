@@ -239,12 +239,6 @@ export default defineConfig(({ command, mode }) => ({
         // lightweight codec contract and header guard.
         tiff: resolve(__dirname, 'src/tiff.ts'),
         'internal-companion': resolve(__dirname, 'src/internal-companion.ts'),
-        // Internal optional reading implementation, shared by browser and Node
-        // source loaders. Keep it an entry in both dispatch comparison builds:
-        // otherwise removing dispatch also re-factors dozens of shared geometry
-        // modules and charges chunk framing to the dispatch byte budget. This
-        // is not a package export and ordinary OOXML never imports it eagerly.
-        'docx-reading-source-runtime': resolve(__dirname, 'packages/docx/src/internal/native-reading-runtime.ts'),
         // Node-only bounded sessions and server render helpers. Kept as a
         // separate entry so browser consumers never load Node built-ins.
         node:  resolve(__dirname, 'src/node.ts'),

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerBridge, deserializeWorkerError, type WorkerLike } from '@silurus/ooxml-core/worker';
-import { ProgressiveLayoutLifecycle } from '@silurus/ooxml-core/internal/progressive-layout-lifecycle';
 import { acquireDocumentCanvasTargetContext } from './paint/canvas-document.js';
 import { DocxDocument } from './document.js';
 import { attachDocumentLayoutRuntime } from './layout/runtime-state.js';
@@ -278,19 +277,6 @@ describe('DOCX render worker bitmap surface', () => {
     expect(bitmap).toBe(canvas!.bitmap);
   });
 
-  it('revokes reading publication when its transferred bitmap target cannot acquire a context', async () => {
-    const { document } = await loadWorker();
-    Object.assign(document, { _layoutLifecycle: new ProgressiveLayoutLifecycle(), _layoutViewGeneration: 0,
-      _meta: { pageCount: 1, pageSizes: [], bookmarkPages: [], nativeReadingRequested: true, readingNotices: [] } });
-    mocks.render.mockImplementation(async (_source, canvas, _page, options) => {
-      acquireDocumentCanvasTargetContext(canvas as OffscreenCanvas,
-        (options as { callerOwnedCanvasTarget?: boolean }).callerOwnedCanvasTarget !== false);
-    });
-    await expect(document.renderPageToBitmap(0)).rejects.toThrow('internally acquired');
-    expect(document.pageCount).toBe(0); expect(document.readingNotices).toEqual([]);
-    expect(FakeOffscreenCanvas.created[0]!.width).toBe(1);
-    expect(FakeOffscreenCanvas.created[0]!.height).toBe(1);
-  });
   it('keeps a worker-created context failure terminal on the ordinary worker error wire', async () => {
     const { worker, dispatch } = await loadWorker();
     mocks.render.mockImplementation(async (_source, canvas, _page, options) => {

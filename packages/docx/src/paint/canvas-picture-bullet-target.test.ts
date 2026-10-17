@@ -937,38 +937,6 @@ describe('vertical OpenType paint target projection', () => {
     expect(target.context.operations).toContain('clearRect');
     expect(target.context.operations).not.toContain('drawImage');
   });
-  it('checks current publication after asynchronous acquisition before resizing or painting a target', async () => {
-    vi.stubGlobal('HTMLCanvasElement', undefined);
-    vi.stubGlobal('document', undefined);
-    const target = new WorkerCanvas();
-    const selected = { ...page, layers: buildPageLayers([]) };
-    let current = true;
-    const error = new Error('reading publication was revoked during acquisition');
-    const pending = renderSelectedDocumentPage(
-      { pages: [selected], diagnostics: [] }, selected,
-      target as unknown as OffscreenCanvas,
-      { dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [],
-        assertPublicationCurrent: () => { if (!current) throw error; } },
-    );
-    current = false;
-    await expect(pending).rejects.toBe(error);
-    expect([target.width, target.height]).toEqual([1, 1]);
-    expect(target.context.operations).toEqual([]);
-  });
 
-  it('stops main text replay when the first callback revokes its publication', async () => {
-    vi.stubGlobal('HTMLCanvasElement', undefined);
-    vi.stubGlobal('document', undefined);
-    const target = new WorkerCanvas(), selected = { ...page, layers: buildPageLayers([]) };
-    let current = true;
-    const error = new Error('callback replaced the reading publication');
-    const onTextRun = vi.fn(() => { current = false; });
-    await expect(renderSelectedDocumentPage(
-      { pages: [selected], diagnostics: [] }, selected, target as unknown as OffscreenCanvas,
-      { dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: ['first', 'stale second'], onTextRun,
-        assertPublicationCurrent: () => { if (!current) throw error; } },
-    )).rejects.toBe(error);
-    expect(onTextRun).toHaveBeenCalledTimes(1); expect(onTextRun).toHaveBeenCalledWith('first');
-  });
 
 });
