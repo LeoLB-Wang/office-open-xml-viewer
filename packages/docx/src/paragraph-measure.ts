@@ -180,12 +180,15 @@ export function measureParagraph(
   // under exact spacing, whose box and baseline it leaves unchanged (the
   // picture then overflows above the line).
   void WORD_PICTURE_BULLET_LINE_PARTICIPATION;
-  const pictureMarkerHeight = continuation
-    || (context.lineSpacing?.rule === 'exact' && context.lineSpacing.value > 0)
+  const pictureMarkerHeight = context.lineSpacing?.rule === 'exact' && context.lineSpacing.value > 0
     ? undefined : environment.firstLinePictureMarkerHeightPt;
-  const firstLinePictureMarkerHeightPt = pictureMarkerHeight !== undefined
+  // The metric segment's height. It is prepended in every measurement of the
+  // paragraph, continuations included, so that line boundaries index the same
+  // segment array; a continuation starts past it and never admits it.
+  const pictureMarkerSegmentHeightPt = pictureMarkerHeight !== undefined
     && Number.isFinite(pictureMarkerHeight) && pictureMarkerHeight > 0
     ? pictureMarkerHeight : undefined;
+  const firstLinePictureMarkerHeightPt = continuation ? undefined : pictureMarkerSegmentHeightPt;
 
   let cursorPt = placement.startYPt
     + (placement.suppressSpaceBefore ? 0 : requestedSpaceBeforePt);
@@ -285,7 +288,7 @@ export function measureParagraph(
   });
   if (segments.length === 0) return measureMarkOnly();
   const pictureMarkerHeightPt = firstLinePictureMarkerHeightPt;
-  if (pictureMarkerHeightPt !== undefined) {
+  if (pictureMarkerSegmentHeightPt !== undefined) {
     // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet takes part in
     // its first line like an inline picture of that height standing on the
     // baseline (automatic multiples add the text's own leading only, atLeast
@@ -294,7 +297,7 @@ export function measureParagraph(
     // inline-picture accounting without taking width, a break opportunity or
     // paint; the marker itself is painted separately.
     segments.unshift({
-      imagePath: '', mimeType: '', widthPt: 0, heightPt: pictureMarkerHeightPt,
+      imagePath: '', mimeType: '', widthPt: 0, heightPt: pictureMarkerSegmentHeightPt,
       inlinePicture: true, markerMetric: true,
       anchor: false, anchorXPt: 0, anchorYPt: 0, anchorXFromMargin: false, anchorYFromPara: false,
     } as LayoutImageSeg);

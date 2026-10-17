@@ -63,7 +63,12 @@ pub(crate) fn natural_size_pt(bytes: &[u8]) -> Option<(f64, f64)> {
     } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         let width = u16::from_le_bytes([*bytes.get(6)?, *bytes.get(7)?]);
         let height = u16::from_le_bytes([*bytes.get(8)?, *bytes.get(9)?]);
-        (u32::from(width), u32::from(height), DEFAULT_DPI, DEFAULT_DPI)
+        (
+            u32::from(width),
+            u32::from(height),
+            DEFAULT_DPI,
+            DEFAULT_DPI,
+        )
     } else {
         return None;
     };
@@ -202,19 +207,46 @@ mod tests {
         let natural = (24.0, 24.0);
         let close = |a: Option<(f64, f64)>, b: (f64, f64)| {
             let (x, y) = a.unwrap();
-            assert!((x - b.0).abs() < 0.01 && (y - b.1).abs() < 0.01, "{x}x{y} vs {b:?}");
+            assert!(
+                (x - b.0).abs() < 0.01 && (y - b.1).abs() < 0.01,
+                "{x}x{y} vs {b:?}"
+            );
         };
-        close(display_box(42.0, Some(9.0), Some(9.0), natural), (15.0, 15.0));
-        close(display_box(8.0, Some(9.0), Some(9.0), natural), (2.25, 2.25));
-        close(display_box(42.0, Some(18.0), Some(18.0), natural), (30.0, 30.0));
-        close(display_box(42.0, Some(9.0), Some(18.0), natural), (15.0, 30.0));
-        close(display_box(42.0, Some(9.0), Some(9.0), (48.0, 48.0)), (7.5, 7.5));
-        close(display_box(42.0, Some(9.0), Some(9.0), (36.0, 18.0)), (20.0, 20.0));
+        close(
+            display_box(42.0, Some(9.0), Some(9.0), natural),
+            (15.0, 15.0),
+        );
+        close(
+            display_box(8.0, Some(9.0), Some(9.0), natural),
+            (2.25, 2.25),
+        );
+        close(
+            display_box(42.0, Some(18.0), Some(18.0), natural),
+            (30.0, 30.0),
+        );
+        close(
+            display_box(42.0, Some(9.0), Some(18.0), natural),
+            (15.0, 30.0),
+        );
+        close(
+            display_box(42.0, Some(9.0), Some(9.0), (48.0, 48.0)),
+            (7.5, 7.5),
+        );
+        close(
+            display_box(42.0, Some(9.0), Some(9.0), (36.0, 18.0)),
+            (20.0, 20.0),
+        );
         // The 2 pt floor applies before scaling.
-        close(display_box(1.0, Some(9.0), Some(9.0), natural), (0.75, 0.75));
+        close(
+            display_box(1.0, Some(9.0), Some(9.0), natural),
+            (0.75, 0.75),
+        );
         // Absent VML dimensions act as 50 pt.
         close(display_box(42.0, None, None, natural), (83.33, 83.33));
         close(display_box(42.0, Some(9.0), None, natural), (15.0, 83.33));
-        close(display_box(1638.0, Some(9.0), Some(9.0), (1.0, 1.0)), (1638.35, 1638.35));
+        close(
+            display_box(1638.0, Some(9.0), Some(9.0), (1.0, 1.0)),
+            (1638.35, 1638.35),
+        );
     }
 }

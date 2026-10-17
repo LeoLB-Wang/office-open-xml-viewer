@@ -170,4 +170,45 @@ describe('picture-bullet line height', () => {
   it('keeps an empty item\'s box under exact spacing', () => {
     expect(layout(paragraph('', exact(18), bullet(30))).advancePt).toBeCloseTo(18, 6);
   });
+
+  it('keeps every word when the bullet paragraph continues on the next page', () => {
+    const words = Array.from({ length: 30 }, (_, index) => `w${index}`);
+    const item = paragraph(words.join(' '), null, bullet(30));
+    const model = {
+      section: {
+        pageWidth: 200, pageHeight: 60,
+        marginTop: 0, marginRight: 0, marginBottom: 0, marginLeft: 0,
+        headerDistance: 0, footerDistance: 0, titlePage: false, evenAndOddHeaders: false,
+      } as SectionProps,
+      body: [item],
+      headers: { default: null, first: null, even: null },
+      footers: { default: null, first: null, even: null },
+      fontFamilyClasses: { [TEST_FONT]: 'roman' },
+    } as unknown as DocxDocumentModel;
+    const services = createLayoutServices(model, {
+      localMetrics: testFontSnapshot([{ family: TEST_FONT }]),
+      measureContext: measureContext(),
+    });
+    const pages = layoutDocument(model, services).pages;
+    expect(pages.length).toBeGreaterThan(1);
+    const ranges = pages.flatMap((page) => page.layers.body.flatMap((node) =>
+      node.kind === 'paragraph' ? node.lines.map((line) => line.range) : []));
+    // The lines cover the whole paragraph text without a gap or overlap.
+    const text = words.join(' ');
+    expect(ranges[0]!.start).toBe(0);
+    for (let index = 1; index < ranges.length; index += 1) {
+      expect(ranges[index]!.start).toBe(ranges[index - 1]!.end);
+    }
+    expect(ranges.at(-1)!.end).toBe(text.length);
+  });
+
+  it('measures a bullet without an explicit size at the height it paints', () => {
+    const numbering = { ...bullet(30), fontFacts: { fontSize: 40 } } as NumberingInfo;
+    delete (numbering as { picBulletWidthPt?: number }).picBulletWidthPt;
+    delete (numbering as { picBulletHeightPt?: number }).picBulletHeightPt;
+    const { bullet: box, baselinePt } = layout(paragraph('Item', null, numbering));
+    expect(box.heightPt).toBeCloseTo(40, 6);
+    expect(baselinePt).toBeCloseTo(40, 6);
+    expect(box.yPt).toBeCloseTo(0, 6);
+  });
 });

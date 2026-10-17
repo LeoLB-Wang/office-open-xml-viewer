@@ -5064,8 +5064,10 @@ export function acquireParagraphResult(
       ...(numberingPlan?.lineBox && numberingPlan.markerText ? {
         firstLineNumberingMarkerBox: numberingPlan.lineBox,
       } : {}),
-      ...(paragraph.numbering?.picBulletImagePath && paragraph.numbering.picBulletHeightPt != null ? {
-        firstLinePictureMarkerHeightPt: paragraph.numbering.picBulletHeightPt,
+      ...(paragraph.numbering?.picBulletImagePath ? {
+        // The same display height the marker placement below paints.
+        firstLinePictureMarkerHeightPt: paragraph.numbering.picBulletHeightPt
+          ?? paragraph.numberingMarkerShapeInput?.fontSizePt,
       } : {}),
     },
     continuation,
