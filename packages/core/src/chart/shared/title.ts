@@ -4,7 +4,7 @@ import { cartesianTitleBand, chartTextFontSizePx, resolveManualLayoutRect } from
 import type { ChartTitleBand } from '../layout.js';
 import { rawLinkedChartStyleRole } from '../effective-style.js';
 import { paintChartLabelBox } from '../label-box.js';
-import { chartFontCss, resolveThemeFontRef } from './fonts.js';
+import { CHART_FALLBACK_FONT_STACK, chartFaceWithFallback, chartFontCss, resolveThemeFontRef } from './fonts.js';
 import { effectiveLinkedLabelBox } from './style-roles.js';
 
 
@@ -36,7 +36,7 @@ export function chartTitleRunFont(
   const effectivePtToPx = fallbackFontSize / titleSizePt;
   const fontSize = chartTextFontSizePx(run.fontSizeHpt, effectivePtToPx) ?? fallbackFontSize;
   const titleFace = resolveThemeFontRef(chart, run.fontFace ?? chart.titleFontFace);
-  const face = titleFace ? `"${titleFace}", Calibri, Arial, sans-serif` : 'Calibri, Arial, sans-serif';
+  const face = titleFace ? chartFaceWithFallback(titleFace) : CHART_FALLBACK_FONT_STACK;
   return {
     font: chartFontCss(
       fontSize,
@@ -143,8 +143,8 @@ export function drawChartTitle(
   if (!chart.titleRichRuns?.length) {
     const titleFace = resolveThemeFontRef(chart, chart.titleFontFace);
     const face = titleFace
-      ? `"${titleFace}", Calibri, Arial, sans-serif`
-      : 'Calibri, Arial, sans-serif';
+      ? chartFaceWithFallback(titleFace)
+      : CHART_FALLBACK_FONT_STACK;
     ctx.font = chartFontCss(
       fontSize,
       face,
@@ -205,7 +205,7 @@ export function drawChartTitleForLayout(
   const ml = chart.titleManualLayout;
   if (ml) {
     const titleFace = resolveThemeFontRef(chart, chart.titleFontFace);
-    const face = titleFace ? `"${titleFace}", Calibri, Arial, sans-serif` : 'Calibri, Arial, sans-serif';
+    const face = titleFace ? chartFaceWithFallback(titleFace) : CHART_FALLBACK_FONT_STACK;
     ctx.font = chartFontCss(
       fontSize,
       face,
