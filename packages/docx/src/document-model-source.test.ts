@@ -451,4 +451,3 @@ describe('DocxDocument.load with model sources', () => {
     explicit.destroy();
   });
 });
-

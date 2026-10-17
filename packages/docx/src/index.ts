@@ -279,4 +279,3 @@ export type {
   LineEnd,
 } from './types';
 export type { DocxTextRunInfo } from './renderer';
-

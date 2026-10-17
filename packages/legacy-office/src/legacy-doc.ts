@@ -13,6 +13,8 @@ export type LegacyDocSourceOptions = LegacySourceOptions;
  * is claimed.
  */
 export function legacyDocSource(options: LegacyDocSourceOptions = {}): ModelSource<'docx'> {
+  if (typeof options !== 'object' || options === null || Array.isArray(options))
+    throw new TypeError('legacy DOC source options must be an object');
   return createLegacySource<'docx'>('doc', options, {
     wasmUrl: resolveBundledAssetUrl(defaultWasmUrl, import.meta.url),
     moduleUrl: resolveBundledAssetUrl(defaultModuleUrl, import.meta.url),

@@ -70,6 +70,6 @@ export function paintOptionalImagePlaceholder(
     } finally { ctx.restore(); }
   };
   if (!options) { paint(bounds.x, bounds.y, bounds.width, bounds.height); return; }
-  const plan = imagePaintProjection(bounds.width, bounds.height, null, options.transform, false);
+  const plan = imagePaintProjection(bounds.width, bounds.height, null, options.transform);
   withImagePaintProjection(ctx, bounds.x, bounds.y, plan, paint);
 }

@@ -3,7 +3,7 @@ import { buildPageLayers } from '../layout/page-graph.js';
 import { rasterPaintOccurrencesForPage } from '../layout/text-index.js';
 import type { DocumentLayout, LayoutPage, PaintResourceRegistry } from '../layout/types.js';
 import * as browserImages from './browser-images.js';
-import { renderSelectedDocumentPage } from './canvas-document.js';
+import { acquireDocumentCanvasTargetContext, renderSelectedDocumentPage } from './canvas-document.js';
 import * as core from '@silurus/ooxml-core';
 import { OoxmlResourceLimitError, TiffDecodeError, type ChartModel, type TiffRenderOptions } from '@silurus/ooxml-core';
 
@@ -30,13 +30,13 @@ class ElementCanvas {
   isConnected = false;
   removeCalls = 0;
   ownerDocument?: {
-    defaultView?: { HTMLCanvasElement: typeof ElementCanvas };
+    defaultView?: { HTMLCanvasElement: typeof ElementCanvas; DOMException?: new (message?: string, name?: string) => Error };
   };
   readonly attributes: Record<string, string> = {};
   readonly style: Record<string, string> = {};
   readonly context = new RecordingContext();
 
-  getContext(): RecordingContext { return this.context; }
+  getContext(): RecordingContext | null { return this.context; }
   setAttribute(name: string, value: string): void {
     this.attributes[name] = value;
   }
@@ -932,5 +932,195 @@ describe('vertical OpenType paint target projection', () => {
     expect(target.context.operations).toContain('clearRect');
     expect(target.context.operations).not.toContain('drawImage');
   });
-});
 
+  it('keeps an unavailable internally acquired vertical surface classified as acquisition failure', async () => {
+    const canvas = new ElementCanvas();
+    vi.spyOn(canvas, 'getContext').mockReturnValue(null);
+    vi.stubGlobal('HTMLCanvasElement', ElementCanvas);
+    vi.stubGlobal('OffscreenCanvas', WorkerCanvas);
+    vi.stubGlobal('document', {
+      createElement() { return canvas; },
+      body: { appendChild(node: ElementCanvas) { node.isConnected = true; return node; } },
+    });
+    let failure: unknown;
+    try {
+      await renderSelectedDocumentPage(layout, page, new OffscreenCanvas(1, 1), {
+        dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [],
+      });
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toHaveProperty('code', 'docx-caller-input');
+    expect(canvas.removeCalls).toBe(1);
+    expect(canvas.context.operations).toEqual([]);
+  });
+
+  it('does not inspect owner getters for an internally owned current-realm InvalidStateError', () => {
+    const target = new WorkerCanvas();
+    const failure = new DOMException('internal transferred surface', 'InvalidStateError');
+    const ownerLookup = vi.fn(() => { throw new Error('owner lookup must not run'); });
+    Object.defineProperty(target, 'ownerDocument', { get: ownerLookup });
+    vi.spyOn(target, 'getContext').mockImplementation(() => { throw failure; });
+    let actual: unknown;
+    try { acquireDocumentCanvasTargetContext(target as unknown as OffscreenCanvas, false); }
+    catch (error) { actual = error; }
+    expect(actual).toBe(failure); expect(ownerLookup).not.toHaveBeenCalled();
+    expect(actual).not.toHaveProperty('code', 'docx-caller-input');
+    expect(target.width).toBe(1); expect(target.height).toBe(1);
+    expect(target.context.operations).toEqual([]);
+  });
+
+  it('preserves a proven DOMException when reading its name itself fails', () => {
+    const target = new WorkerCanvas();
+    const failure = new DOMException('caller surface unavailable', 'InvalidStateError');
+    const inspectionFailure = new Error('name inspection failed');
+    Object.defineProperty(failure, 'name', { get() { throw inspectionFailure; } });
+    vi.spyOn(target, 'getContext').mockImplementation(() => { throw failure; });
+    let actual: unknown;
+    try { acquireDocumentCanvasTargetContext(target as unknown as OffscreenCanvas); }
+    catch (error) { actual = error; }
+    expect(actual === failure).toBe(true); expect(actual === inspectionFailure).toBe(false);
+    expect(actual).not.toHaveProperty('code', 'docx-caller-input');
+  });
+
+  it('preserves a thrown error proxy when prototype proof itself fails', () => {
+    const target = new WorkerCanvas();
+    const inspectionFailure = new Error('prototype inspection failed');
+    const failure = new Proxy(new Error('resource failure'), {
+      getPrototypeOf() { throw inspectionFailure; },
+    });
+    target.getContext = () => { throw failure; };
+    let actual: unknown;
+    try { acquireDocumentCanvasTargetContext(target as unknown as OffscreenCanvas); }
+    catch (error) { actual = error; }
+    expect(actual === failure).toBe(true); expect(actual === inspectionFailure).toBe(false);
+  });
+
+  it('classifies only the caller canvas owner-realm InvalidStateError as input', async () => {
+    class ForeignCanvas extends ElementCanvas {}
+    class ForeignDOMException extends Error {
+      constructor(message = '', name = 'Error') { super(message); this.name = name; }
+    }
+    const target = new ForeignCanvas();
+    target.ownerDocument = { defaultView: { HTMLCanvasElement: ForeignCanvas, DOMException: ForeignDOMException } };
+    const invalidState = new ForeignDOMException('foreign caller transferred canvas', 'InvalidStateError');
+    expect(invalidState).not.toBeInstanceOf(DOMException);
+    const getContext = vi.spyOn(target, 'getContext').mockImplementation(() => { throw invalidState; });
+    await expect(renderSelectedDocumentPage(layout, page, target as unknown as HTMLCanvasElement, {
+      dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [],
+    })).rejects.toMatchObject({ code: 'docx-caller-input', cause: invalidState });
+    expect(target.width).toBe(1); expect(target.height).toBe(1);
+    expect(target.context.operations).toEqual([]);
+    const impostor = Object.assign(new Error('resource failure named like a DOM error'), { name: 'InvalidStateError' });
+    getContext.mockImplementation(() => { throw impostor; });
+    await expect(renderSelectedDocumentPage(layout, page, target as unknown as HTMLCanvasElement, {
+      dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [],
+    })).rejects.toBe(impostor);
+    getContext.mockImplementation(() => { throw invalidState; });
+    await expect(renderSelectedDocumentPage(layout, page, target as unknown as HTMLCanvasElement, {
+      dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [], callerOwnedCanvasTarget: false,
+    })).rejects.toBe(invalidState);
+  });
+
+  it('keeps internally owned bitmap target failures terminal before any paint', async () => {
+    const target = new WorkerCanvas();
+    const failure = new DOMException('internal transferred target unavailable', 'InvalidStateError');
+    vi.spyOn(target, 'getContext').mockImplementation(() => { throw failure; });
+    await expect(renderSelectedDocumentPage(layout, page, target as unknown as OffscreenCanvas, {
+      dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [], callerOwnedCanvasTarget: false,
+    })).rejects.toBe(failure);
+    expect(target.width).toBe(1); expect(target.height).toBe(1);
+    expect(target.context.operations).toEqual([]);
+  });
+
+  it('refuses an unavailable vertical destination before staging or mutating its target', async () => {
+    const created: ElementCanvas[] = [];
+    vi.stubGlobal('HTMLCanvasElement', ElementCanvas);
+    vi.stubGlobal('document', {
+      createElement() {
+        const canvas = new ElementCanvas();
+        created.push(canvas);
+        return canvas;
+      },
+      body: {
+        appendChild(canvas: ElementCanvas) {
+          canvas.isConnected = true;
+          return canvas;
+        },
+      },
+    });
+    const target = {
+      width: 1,
+      height: 1,
+      getContext() { return null; },
+    };
+
+    await expect(renderSelectedDocumentPage(
+      layout,
+      page,
+      target as unknown as OffscreenCanvas,
+      { dpr: 1, parseError: false, registry, rasterPaintOccurrences: [], textRuns: [] },
+    )).rejects.toThrow('2D canvas is unavailable for DOCX paint projection');
+
+    expect(created).toHaveLength(0);
+    expect(target.width).toBe(1); expect(target.height).toBe(1);
+  });
+
+  it.each([
+    ['ownerDocument', true], ['defaultView', true],
+    ['ownerDocument', false], ['defaultView', false],
+  ] as const)('keeps original target failure when %s lookup fails (caller=%s)', (lookup, callerOwned) => {
+    const target = new ElementCanvas(), originalFailure = new RangeError('original canvas resource failure');
+    const lookupFailure = new Error('realm lookup failure');
+    vi.spyOn(target, 'getContext').mockImplementation(() => { throw originalFailure; });
+    if (lookup === 'ownerDocument') Object.defineProperty(target, 'ownerDocument', { get() { throw lookupFailure; } });
+    else {
+      target.ownerDocument = { defaultView: { HTMLCanvasElement: ElementCanvas } };
+      Object.defineProperty(target.ownerDocument, 'defaultView', { get() { throw lookupFailure; } });
+    }
+    vi.stubGlobal('HTMLCanvasElement', ElementCanvas);
+    let actual: unknown;
+    try { acquireDocumentCanvasTargetContext(target as unknown as HTMLCanvasElement, callerOwned); }
+    catch (error) { actual = error; }
+    expect(actual === originalFailure).toBe(true); expect(actual === lookupFailure).toBe(false);
+    expect(actual).not.toHaveProperty('code', 'docx-caller-input');
+    expect(target.width).toBe(1); expect(target.height).toBe(1);
+    expect(target.context.operations).toEqual([]);
+  });
+
+  it.each(['ownerDocument', 'defaultView'] as const)(
+    'keeps proven current-realm caller InvalidStateError retryable despite unavailable %s', lookup => {
+      const target = new ElementCanvas(), originalFailure = new DOMException('caller target', 'InvalidStateError');
+      const lookupFailure = new Error('unavailable optional realm');
+      vi.spyOn(target, 'getContext').mockImplementation(() => { throw originalFailure; });
+      if (lookup === 'ownerDocument') Object.defineProperty(target, 'ownerDocument', { get() { throw lookupFailure; } });
+      else {
+        target.ownerDocument = { defaultView: { HTMLCanvasElement: ElementCanvas } };
+        Object.defineProperty(target.ownerDocument, 'defaultView', { get() { throw lookupFailure; } });
+      }
+      vi.stubGlobal('HTMLCanvasElement', ElementCanvas);
+      let actual: unknown;
+      try { acquireDocumentCanvasTargetContext(target as unknown as HTMLCanvasElement, true); }
+      catch (error) { actual = error; }
+      expect(actual).toMatchObject({ code: 'docx-caller-input', cause: originalFailure });
+      expect(actual === lookupFailure).toBe(false);
+      expect(target.width).toBe(1); expect(target.height).toBe(1);
+      expect(target.context.operations).toEqual([]);
+    },
+  );
+
+  it.each(['prototype', 'name'] as const)('retains original target exception when optional %s classification fails', kind => {
+    const target = new ElementCanvas(), inspectionFailure = new Error('classification unavailable');
+    const originalFailure = kind === 'prototype'
+      ? new Proxy(new RangeError('original resource exception'), { getPrototypeOf() { throw inspectionFailure; } })
+      : new DOMException('original unclassifiable exception', 'InvalidStateError');
+    if (kind === 'name') Object.defineProperty(originalFailure, 'name', { get() { throw inspectionFailure; } });
+    // A mock wrapper may inspect the Proxy before production receives it.
+    target.getContext = () => { throw originalFailure; };
+    let actual: unknown;
+    try { acquireDocumentCanvasTargetContext(target as unknown as HTMLCanvasElement, true); }
+    catch (error) { actual = error; }
+    expect(actual === originalFailure).toBe(true); expect(actual === inspectionFailure).toBe(false);
+    expect(target.width).toBe(1); expect(target.height).toBe(1);
+    expect(target.context.operations).toEqual([]);
+  });
+});
