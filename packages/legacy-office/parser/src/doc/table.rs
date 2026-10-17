@@ -100,7 +100,18 @@ impl PreparedBorder {
             .try_into()
             .expect("eight-byte slice");
         if bytes[4..] != [0xff; 4] && bytes[5] == 0xff {
-            let _ = super::colorref::read(&bytes[..4])?;
+            // Observed Windows Word (16.0) behavior: a direct sprmTSetBrc cell
+            // assignment of type 0xFF with an automatic COLORREF (fAuto 0xFF)
+            // prints exactly as the exact NilBrc. It removes a bordered table
+            // style's edges just as NilBrc does, unlike an ignored assignment
+            // (the style's borders, which print) or type 0 (none). Measured
+            // by pixel-identical PDFs (zero two-export noise) at widths 8 and
+            // 255, both without and under an all-sides single style border.
+            // Explicit-color 0xFF prints undefined artwork, so it keeps the
+            // deferred refusal below.
+            if super::colorref::read(&bytes[..4])?.is_none() {
+                return Ok(Self::Modern([0xff; 8]));
+            }
             if bytes[4] >= 32 {
                 return Err(unsupported("invalid Word ignored border width"));
             }
@@ -1173,6 +1184,17 @@ mod tests {
                 .unwrap();
         assert!(!ignored.is_nil());
         assert!(ignored.decode().is_err());
+        // Automatic-color FF is Word's exact NilBrc at any width, including
+        // the out-of-domain 255.
+        for width in [8, 255] {
+            let auto = PreparedBorder::read_cell_assignment(
+                &[0, 0, 0, 0xff, width, 255, 0xe0, 0xff],
+                false,
+            )
+            .unwrap();
+            assert!(auto.is_nil());
+            assert_eq!(auto.decode().unwrap().direct_spec().style, "nil");
+        }
     }
 
     #[test]
