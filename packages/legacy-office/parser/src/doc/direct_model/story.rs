@@ -201,15 +201,7 @@ pub(super) fn project(
                 direct.numbering_revision_label.as_deref(),
             )?;
             if let Some(bullet) = marker.picture_bullet().enabled()? {
-                // The resolved marker size: a complex-script or right-to-left
-                // marker uses its complex-script size.
-                let marker_size = numbering_info.font_facts.as_ref().and_then(|facts| {
-                    if facts.rtl == Some(true) || facts.cs == Some(true) {
-                        facts.font_size_cs.or(facts.font_size)
-                    } else {
-                        facts.font_size
-                    }
-                });
+                let marker_size = Some(marker.picture_bullet_marker_size_pt()?);
                 match pictures.picture_bullet_display_box(formatting, bullet, marker_size)? {
                     Some(display_box) => pictures
                         .direct_picture_bullet(

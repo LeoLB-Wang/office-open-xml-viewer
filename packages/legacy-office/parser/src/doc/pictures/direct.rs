@@ -90,7 +90,8 @@ impl Store<'_> {
     ///   following text: changing only the following text from 12 pt to 8 or
     ///   24 pt leaves the bullet unchanged. A complex-script or right-to-left
     ///   marker (sprmCFComplexScripts / sprmCFBiDi) uses its sprmCHpsBi size,
-    ///   and bold or italic markers are unaffected. The displayed height is
+    ///   or 10 pt with none (`picture_bullet_marker_size_pt`), and bold or
+    ///   italic markers are unaffected. The displayed height is
     ///   the marker size minus 2 pt, never less than 2 pt, and the width keeps
     ///   the goal aspect ratio; the goal size itself does not matter. Each
     ///   dimension is limited to 32767 twips (1638.35 pt), which only a very

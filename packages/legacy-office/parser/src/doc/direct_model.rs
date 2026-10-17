@@ -3368,6 +3368,10 @@ mod tests {
         ]
         .concat();
         assert_eq!(projected(&complex).unwrap(), [44.0, 22.0]);
+        // Without any sprmCHpsBi, a complex-script marker is 10 pt (MS-DOC's
+        // 20 half-point default), whatever its 24 pt sprmCHps.
+        let complex_default = [sized(0x01, 48), vec![0x82, 0x08, 1]].concat();
+        assert_eq!(projected(&complex_default).unwrap(), [16.0, 8.0]);
         // A rotation does not apply; both flips mirror the bullet in its box.
         let bytes = picture_bullet_source_with(
             &picture_bullet_level(0, 0x03),
