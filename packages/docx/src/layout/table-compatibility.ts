@@ -1,4 +1,5 @@
 import type { FramePr } from '../types.js';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { defineCompatibilityRule } from './compatibility.js';
 import { stableFingerprint } from './fingerprint.js';
 import type { ParagraphLayoutSource, ParagraphAcquisitionInput } from './text.js';
@@ -545,7 +546,7 @@ export function wordTableBorderWeight(
   widthPt: number,
 ): number {
   if (style === 'dotted' || style === 'dashed') return 1;
-  return Math.max(0, widthPt) * 8 * (WORD_BORDER_NUMBER[style] ?? 0);
+  return Math.max(0, widthPt) * 8 * (ownValue(WORD_BORDER_NUMBER, style) ?? 0);
 }
 
 export function wordTableRowHeightRule(

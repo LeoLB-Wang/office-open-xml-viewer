@@ -2,6 +2,7 @@ import {
   wrapSpreadsheetCellParagraph, layoutSpreadsheetCellRichLines,
   type SpreadsheetCellRichSeg, type SpreadsheetCellRichLine,
 } from './spreadsheet-cell.js';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { inheritCellFontLanguage, usesJapaneseCellFonts } from './internal/cell-font-language.js';
 import { drawShapeStackedText } from './shape-stacked-text.js';
 import type { CjkLang } from '@silurus/ooxml-core';
@@ -670,7 +671,7 @@ function hatchPattern(
   const key = `${pt}|${fgHex}|${bgHex}|${sx}|${sy}`;
   if (PATTERN_CACHE.has(key)) return PATTERN_CACHE.get(key)!;
 
-  const rows = PATTERN_BITMAPS[pt];
+  const rows = ownValue(PATTERN_BITMAPS, pt);
   if (!rows) {
     PATTERN_CACHE.set(key, null);
     return null;

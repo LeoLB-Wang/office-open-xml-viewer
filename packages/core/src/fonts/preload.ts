@@ -23,6 +23,7 @@
  * the canvas after the font landed.
  */
 import { retainFace, releaseFaces } from './font-registry.js';
+import { ownValue } from '../internal/own-key.js';
 import type { FontSubstituteScript } from './substitute-script.js';
 
 export interface FontPreloadEntry {
@@ -245,7 +246,7 @@ export class GoogleFontPreloadLease {
     const urlTargets = new Map<string, Set<string>>();
     for (const name of names) {
       const key = name?.trim().toLowerCase();
-      const entry = key && this.map[key];
+      const entry = ownValue(this.map, key);
       if (!entry) continue;
       const targets = urlTargets.get(entry.url) ?? new Set<string>();
       targets.add((entry.loadFamily ?? (name as string).trim()).toLowerCase());

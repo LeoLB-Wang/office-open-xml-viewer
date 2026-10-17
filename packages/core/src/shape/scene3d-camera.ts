@@ -1,3 +1,4 @@
+import { ownValue } from '../internal/own-key';
 /**
  * DrawingML 3D camera — perspective projection of a planar shape (Phase A).
  *
@@ -294,7 +295,7 @@ function buildRotation(preset: PresetDef, rot: RotInput | undefined): Mat3 {
  * standard name. Unknown perspective names retain the old neutral lens/framing;
  * other unknown and legacy names retain the old parallel fallback. */
 function presetDef(prst: string): PresetDef {
-  const known = PRESETS[prst];
+  const known = ownValue(PRESETS, prst);
   if (known) return known;
   if (prst.startsWith('perspective')) return UNKNOWN_PERSPECTIVE;
   return PRESETS.orthographicFront;

@@ -1,4 +1,5 @@
 import { findReferenceFontMetrics } from '@silurus/ooxml-core';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import { excelDrawingMlLineRatios } from '@silurus/ooxml-core/internal/office-auto-line';
 
 /**
@@ -78,7 +79,7 @@ export function powerPointAscentShare(
  */
 export function officeFaceWeight(family: string, bold: boolean, italic: boolean): number {
   const requested = bold ? 700 : 400;
-  const name = OBSERVED_SUBSTITUTES[family.trim().toLocaleLowerCase('en-US')] ?? family.trim();
+  const name = ownValue(OBSERVED_SUBSTITUTES, family.trim().toLocaleLowerCase('en-US')) ?? family.trim();
   if (!name) return requested;
   const style = italic ? 'italic' : 'normal';
   if (findReferenceFontMetrics(name, { weight: requested, style }).length > 0) return requested;
@@ -92,7 +93,7 @@ type Profile = ReturnType<typeof findReferenceFontMetrics>[number];
 function chosenProfiles(family: string, bold: boolean, italic: boolean): Profile[] {
   const trimmed = family.trim();
   if (!trimmed) return [];
-  const name = OBSERVED_SUBSTITUTES[trimmed.toLocaleLowerCase('en-US')] ?? trimmed;
+  const name = ownValue(OBSERVED_SUBSTITUTES, trimmed.toLocaleLowerCase('en-US')) ?? trimmed;
   const style = italic ? 'italic' : 'normal';
   let profiles = findReferenceFontMetrics(name, { weight: bold ? 700 : 400, style });
   if (profiles.length === 0) {
