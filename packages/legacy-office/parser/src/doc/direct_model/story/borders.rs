@@ -17,7 +17,8 @@ struct ActiveConditional {
     options: u16,
     /// Column then row is the edge-condition portion of the required
     /// [MS-DOC] 2.4.6.6 order. The bounded admission below permits at most one
-    /// of each family.
+    /// of each family, or both conditions of one family
+    /// (`supported_edge_combination`).
     patches: [Option<(u16, BorderSides)>; 2],
     presence: u16,
 }
@@ -175,8 +176,8 @@ fn active_conditional(
         }
         if !supported_edge_combination(active_borders) {
             // The bounded mapper composes at most one column condition and one
-            // row condition. Same-family and three-or-more-condition cascades
-            // remain behind the admission gate.
+            // row condition, or both conditions of one family. Cascades of
+            // three or more conditions remain behind the gate.
             formatting.unsupported_table_properties = true;
             return Ok(None);
         }
@@ -205,8 +206,18 @@ fn active_conditional(
 fn supported_edge_combination(mask: u16) -> bool {
     let columns = mask & (table_style_condition::FIRST_COLUMN | table_style_condition::LAST_COLUMN);
     let rows = mask & (table_style_condition::FIRST_ROW | table_style_condition::LAST_ROW);
+    // Two conditions of one family: the shared selector gives a row (column)
+    // that is both first and last only the first condition
+    // (`table_style_condition::select`), and the two patches otherwise reach
+    // different rows (columns). Word-saved DOC controls of 1-, 2- and 3-row
+    // and -column tables agree, including when the first condition leaves
+    // the sides the last one writes unset: a single row (column) shows only
+    // its first-row (column) borders, and adjacent first and last regions
+    // meet as ordinary adjacent cell borders.
     mask.count_ones() <= 1
         || (mask.count_ones() == 2 && columns.count_ones() == 1 && rows.count_ones() == 1)
+        || mask == table_style_condition::FIRST_ROW | table_style_condition::LAST_ROW
+        || mask == table_style_condition::FIRST_COLUMN | table_style_condition::LAST_COLUMN
 }
 
 fn selected_edge_conditions(mask: u16) -> [Option<u16>; 2] {
@@ -610,5 +621,16 @@ mod tests {
         row.cells[0].flags = 2;
         row.cells[1].flags = 0;
         assert!(SourceSpans::parse(&row).is_none());
+    }
+
+    #[test]
+    fn only_three_condition_cascades_stay_gated() {
+        let rows = table_style_condition::FIRST_ROW | table_style_condition::LAST_ROW;
+        let columns = table_style_condition::FIRST_COLUMN | table_style_condition::LAST_COLUMN;
+        assert!(supported_edge_combination(rows));
+        assert!(supported_edge_combination(columns));
+        assert!(!supported_edge_combination(
+            rows | table_style_condition::FIRST_COLUMN
+        ));
     }
 }

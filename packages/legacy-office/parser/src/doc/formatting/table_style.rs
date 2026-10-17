@@ -383,6 +383,12 @@ impl Formatting<'_> {
                             }
                             let slot = conditional_border_index(condition)
                                 .expect("validated edge condition");
+                            // The chain runs base to child, so a later style
+                            // replaces only the sides it writes. Word-saved DOC
+                            // controls establish this per-side replacement for
+                            // all four edge conditions: a child writing only
+                            // one side of a base's first/last row or column
+                            // keeps the base's other sides.
                             profile.conditional_table_borders.sides[slot][side] = Some(value);
                             profile.conditional_table_borders.present |= 1 << slot;
                             profile.condition_presence |= condition;
@@ -708,17 +714,6 @@ impl Formatting<'_> {
             // by the fixed slots above and have separate Word controls.
             profile.unsupported_table = true;
             profile.conditional_table_borders = ConditionalTableBorders::default();
-        }
-        if inherited {
-            let borders = profile.conditional_table_borders;
-            let unsupported_inherited_border = borders.present & !0b0101 != 0;
-            if unsupported_inherited_border {
-                // Inherited native controls cover complete FIRST_ROW and
-                // FIRST_COLUMN patches with per-side child replacement. Keep
-                // other inherited edge conditions gated.
-                profile.unsupported_table = true;
-                profile.conditional_table_borders = ConditionalTableBorders::default();
-            }
         }
         Ok(profile)
     }
