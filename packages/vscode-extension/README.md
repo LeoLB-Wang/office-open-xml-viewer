@@ -23,7 +23,7 @@ A high-fidelity viewer for `.docx`, `.xlsx`, and `.pptx` files — powered by a 
 - **High fidelity** — Classic and ChartEx charts, 3-D charts, offline Region Maps, conditional formatting, theme colors, custom geometry shapes, math equations (OMML, via MathJax + STIX Two Math), and more rendered straight from the OOXML spec.
 - **MCP server (opt-in)** — Lets GitHub Copilot Chat in Agent mode read `.xlsx` / `.docx` / `.pptx` files and the active Viewer selection through dedicated tools instead of unzipping XML by hand. Claude Code and Codex can use the same binary for file tools through their own MCP configuration, but do not receive active Viewer selection. See [MCP server for AI agents](#mcp-server-for-ai-agents) below.
 
-All three formats share the same Rust parser (`wasm-pack`) for accuracy and speed.
+Each format is parsed by its own Rust parser compiled to WebAssembly (`wasm-pack`) for accuracy and speed.
 
 ## Usage
 
