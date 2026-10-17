@@ -585,7 +585,9 @@ describe.skipIf(!skia)('DrawingML path-gradient pixels', () => {
       expect(actual.getImageData(0, 0, 300, 200).data, JSON.stringify({ tiled }))
         .toEqual(expected.getImageData(0, 0, 300, 200).data);
     }
-  });
+    // ~1.7 s on an idle machine; the default 5 s budget timed out when
+    // the suite ran on a loaded machine.
+  }, 30_000);
 
   it.each(['rect', 'shape'] as const)('retains main %s midpoint behavior for inverted focus axes, including tiles', path => {
     for (const focus of [

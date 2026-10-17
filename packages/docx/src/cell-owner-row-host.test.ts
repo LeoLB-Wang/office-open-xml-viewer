@@ -1594,7 +1594,9 @@ describe('cell-owner row host at the production layout boundary', () => {
       const lineTops = (boxes: readonly Box[]) => [...new Set(own(boxes).map((box) => box.y))];
       expect(lineTops(runs(result, 1)), label).toEqual(lineTops(runs(document(null), 1)));
     }
-  });
+    // Four layouts of a 400-word cell paragraph cut across pages (~3.5 s on an
+    // idle machine); the default 5 s budget is too tight on loaded CI runners.
+  }, 30_000);
 
   it('places an upright vertical-section host at its physical frame with zero flow advance', () => {
     const vertical = section({ textDirection: 'tbRl' } as Partial<SectionProps>);
