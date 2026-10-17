@@ -342,10 +342,8 @@ export function paragraphMarkLineMetrics(
   // the face used to measure the mark. It does NOT make an otherwise Latin-only
   // paragraph occupy East-Asian docGrid cells: grid-cell classification remains
   // content/document based, independently of font routing.
-  // Observed Windows Word (16.0): beside a picture bullet the empty mark keeps
-  // its own (non-East-Asian) face in an East Asian document: a 15 pt bullet
-  // over a 10.5 pt Arial/MS Mincho mark fills one 18 pt grid cell with the
-  // Arial descent (baseline 87.35 pt), where the East Asian box would take two.
+  // WORD_PICTURE_BULLET_LINE_PARTICIPATION: beside a picture bullet the empty
+  // mark is measured with its own (non-East-Asian) face.
   const markUsesEastAsianFace = (eastAsian && minimumAscentPx <= 0)
     || effectiveMarkShapeInput?.fontHint === 'eastAsia';
   const forceCs = effectiveMarkShapeInput?.complexScript === true;
@@ -467,12 +465,9 @@ export function paragraphMarkLineMetrics(
     asc = designSides.designAscentRatio! * fs * scale;
     desc = designSides.designDescentRatio! * fs * scale;
   }
-  // Observed Windows Word (16.0): an empty list item's picture bullet makes
-  // the mark line max(mark ascent, picture height) high above the baseline,
-  // and that whole box then follows the paragraph's line rule: an automatic
-  // multiple multiplies it (40 pt bullet, 10 pt mark: 42.1, 63.3 and 84.3 pt
-  // at 1, 1.5 and 2), atLeast keeps the larger of the two (42.1 at 18 pt,
-  // 60 at 60 pt) and a line grid counts cells from it (3 cells of 18 pt).
+  // WORD_PICTURE_BULLET_LINE_PARTICIPATION: an empty list item's picture
+  // bullet makes the mark line max(mark ascent, picture height) high above
+  // the baseline, and that whole box then follows the paragraph's line rule.
   // Exact spacing ignores the picture (the caller passes no minimum).
   asc = Math.max(asc, minimumAscentPx);
   const resourceRatio = markUsesEastAsianFace

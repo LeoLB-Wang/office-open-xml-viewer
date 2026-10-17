@@ -26,6 +26,7 @@ import { wordEmptyMarkMinimumStartWidthPx } from './layout/compatibility.js';
 import {
   WORD_NUMBERING_MARKER_FIRST_LINE_UNION,
   WORD_INLINE_OBJECT_GRID_LINE_ALLOCATION,
+  WORD_PICTURE_BULLET_LINE_PARTICIPATION,
   wordJustifiedInterwordCompressionApplies,
 } from './layout/line-compatibility.js';
 import { LayoutInvariantError } from './layout/diagnostics.js';
@@ -174,11 +175,11 @@ export function measureParagraph(
   // when the document contains no literal CJK code point.
   const markUsesEastAsianGrid = environment.documentHasEastAsianText === true
     || environment.useFeLayout === true;
-  // Observed Windows Word (16.0): a picture bullet stands on its paragraph's
-  // first baseline and takes part in that line's box except under exact
-  // spacing, whose line box and baseline are the same with or without it
-  // (15 and 2.25 pt bullets, text and empty items: baseline 14.1-14.3 pt below
-  // an 18 pt exact line's top in every case); the picture then overflows.
+  // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet stands on its
+  // paragraph's first baseline and takes part in that line's box, except
+  // under exact spacing, whose box and baseline it leaves unchanged (the
+  // picture then overflows above the line).
+  void WORD_PICTURE_BULLET_LINE_PARTICIPATION;
   const pictureMarkerHeight = continuation
     || (context.lineSpacing?.rule === 'exact' && context.lineSpacing.value > 0)
     ? undefined : environment.firstLinePictureMarkerHeightPt;
@@ -243,12 +244,11 @@ export function measureParagraph(
           widthPt: window.maximumWidthPt, heightPt: markAdvancePt };
       }
     }
-    // Observed Windows Word (16.0): a picture bullet on an empty item stands
-    // on the mark line's baseline, which an automatic multiple pins to the top
-    // of its box like a text line's (WORD_AUTO_MULTIPLE_BASELINE_PIN): 15 and
-    // 40 pt bullets at 1.5 and 2.0 start at the line's top, and 2.25 and 6 pt
-    // ones stand at the mark ascent below it. This is draw-only; pagination
-    // keeps the centred trailing-mark metric below.
+    // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet on an empty
+    // item stands on the mark line's baseline, which an automatic multiple
+    // pins to the top of its box like a text line's
+    // (WORD_AUTO_MULTIPLE_BASELINE_PIN). This is draw-only; pagination keeps
+    // the centred trailing-mark metric below.
     const lineSpacing = context.lineSpacing;
     const markPictureBaselineOffsetPt = firstLinePictureMarkerHeightPt !== undefined
       && lineSpacing?.rule === 'auto' && lineSpacing.value > 1
@@ -286,12 +286,11 @@ export function measureParagraph(
   if (segments.length === 0) return measureMarkOnly();
   const pictureMarkerHeightPt = firstLinePictureMarkerHeightPt;
   if (pictureMarkerHeightPt !== undefined) {
-    // Observed Windows Word (16.0): a picture bullet takes part in its first
-    // line like an inline picture of that height standing on the baseline
-    // (automatic multiples add the text's own leading only, atLeast keeps the
-    // larger box, a line grid counts cells from the union of the picture and
-    // the text below the baseline, ruby forms one union with it). A
-    // metric-only segment carries that height into the line breaker's
+    // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet takes part in
+    // its first line like an inline picture of that height standing on the
+    // baseline (automatic multiples add the text's own leading only, atLeast
+    // keeps the larger box, ruby forms one union with it). A metric-only
+    // segment carries that height into the line breaker's
     // inline-picture accounting without taking width, a break opportunity or
     // paint; the marker itself is painted separately.
     segments.unshift({
@@ -391,10 +390,9 @@ export function measureParagraph(
         ? specifiedTextLineMetrics(line, context, paragraph, environment.compatibilityMode,
             environment.verticalPageFrame === true, environment.paragraphMarkShapeInput)
         : null;
-      // Observed Windows Word (16.0): a picture bullet that supplies an East
-      // Asian line's ascent counts grid cells together with the text's
-      // descent: a 15 pt bullet over 10.5 pt East Asian text takes two cells
-      // of an 18 pt grid (baseline centred, 96.0 pt) and one of a 24 pt grid.
+      // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet that supplies
+      // an East Asian line's ascent counts grid cells together with the
+      // text's descent.
       const pictureMarkerGridCountPt = lineIndex === 0 && pictureMarkerHeightPt !== undefined
         && pictureMarkerHeightPt >= line.ascent
         ? Math.max(line.gridCountSingle, line.ascent + line.descent)
@@ -434,7 +432,7 @@ export function measureParagraph(
         && (line.segments.some((segment) => 'imagePath' in segment && !segment.anchor
           && segment.heightPt >= line.ascent)
           // A picture-bullet marker on the first line is that inline object
-          // (Word: a 40 pt bullet on an 18 pt grid takes 3 whole cells).
+          // (WORD_PICTURE_BULLET_LINE_PARTICIPATION).
           || (lineIndex === 0 && pictureMarkerHeightPt !== undefined
             && pictureMarkerHeightPt >= line.ascent))) {
         advancePt = snapParagraphLineToGrid(advancePt, grid);
