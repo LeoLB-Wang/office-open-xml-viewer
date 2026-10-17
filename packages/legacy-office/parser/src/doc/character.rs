@@ -442,6 +442,19 @@ impl Properties {
                 if operand.len() != 2 {
                     return Err(unsupported("invalid Word word-breaking method"));
                 }
+                // Observed Windows Word (16.0) behavior: the spec-undefined
+                // operand [0, 1] (Hres 0, ChHres 1) lays out and prints
+                // exactly as hresNormal [1, 0]. Tested with pixel-identical
+                // PDFs (zero two-export noise) on a 292-page document whose
+                // only Hresi is [0, 1], against its [1, 0] patch, and on an
+                // automatically hyphenating page whose every hyphenated break
+                // lies in [0, 1] runs, against [1, 0] and no Hresi at all.
+                // Only this exact operand is aliased; other undefined values
+                // keep the refusal below.
+                if operand == [0, 1] {
+                    self.word_breaking = Some(HresiOperand([1, 0]));
+                    return Ok(true);
+                }
                 let valid = (1..=6).contains(&operand[0])
                     && if operand[0] == 1 {
                         operand[1] == 0
@@ -1231,6 +1244,10 @@ mod tests {
         let base = Properties::default();
         let mut normal = base.clone();
         assert!(normal.apply(0x484e, &[1, 0], &base).unwrap());
+        // The undefined [0, 1] is Word's measured alias of hresNormal.
+        let mut alias = base.clone();
+        assert!(alias.apply(0x484e, &[0, 1], &base).unwrap());
+        assert_eq!(alias.word_breaking, normal.word_breaking);
         // Explicit normal is an authored override for sparse style patches,
         // while its projected default word-breaking behavior stays unchanged.
         assert_eq!(
@@ -1246,7 +1263,8 @@ mod tests {
             vec![],
             vec![1],
             vec![1, 0, 0],
-            vec![0, 1],
+            vec![0, 0],
+            vec![0, 2],
             vec![7, 0],
             vec![1, 1],
             vec![2, 0],
