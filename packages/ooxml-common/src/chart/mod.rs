@@ -223,8 +223,9 @@ const MAX_CLASSIC_CHART_CACHE_SLOTS: usize = 4 * MAX_CHART_CACHE_POINTS;
 /// and their sum over the part by [`MAX_CLASSIC_CHART_CACHE_SLOTS`]. Every
 /// `ptCount` and `pt` is some element's child, so this covers every vector the
 /// collectors can size (a `multiLvlStrCache` counts each `lvl`; its own
-/// collector separately bounds width × levels). `Err` carries the crossed
-/// limit and the observed (saturated) count.
+/// collector separately bounds width × levels), and error bars beyond the
+/// schema's two per series are charged at their plus/minus vector cost.
+/// `Err` carries the crossed limit and the observed (saturated) count.
 fn classic_cache_preparse(root: Node) -> Result<(), (u64, u64)> {
     let single = MAX_CHART_CACHE_POINTS as u64;
     let total_limit = MAX_CLASSIC_CHART_CACHE_SLOTS as u64;
@@ -245,6 +246,29 @@ fn classic_cache_preparse(root: Node) -> Result<(), (u64, u64)> {
             return Err((single, width));
         }
         total = total.saturating_add(width);
+        // Each `<c:errBars>` of a series materializes plus/minus vectors as
+        // long as the series. The schema allows at most two per series
+        // (CT_ScatterSer x and y); charge every further one at that cost so
+        // repeated error bars cannot multiply a bounded cache.
+        let extra_error_bars = node
+            .children()
+            .filter(|child| child.is_element() && child.tag_name().name() == "errBars")
+            .count()
+            .saturating_sub(2) as u64;
+        if extra_error_bars > 0 {
+            let series_width = node
+                .descendants()
+                .filter(Node::is_element)
+                .filter_map(|child| match child.tag_name().name() {
+                    "ptCount" => parse(child.attribute("val")),
+                    "pt" => parse(child.attribute("idx")).map(|index| index.saturating_add(1)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            total = total
+                .saturating_add(extra_error_bars.saturating_mul(series_width.saturating_mul(2)));
+        }
         if total > total_limit {
             return Err((total_limit, total));
         }

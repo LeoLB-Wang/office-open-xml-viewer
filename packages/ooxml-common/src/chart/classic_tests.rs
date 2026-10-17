@@ -2888,6 +2888,18 @@ mod tests {
                 chart(&num(&wide).repeat(5)),
                 MAX_CLASSIC_CHART_CACHE_SLOTS as u64,
             ),
+            // Repeated error bars multiply the series width into plus/minus
+            // vectors; beyond the schema's two per series they are charged.
+            (
+                chart(&num(&(MAX_CHART_CACHE_POINTS / 2).to_string()).replace(
+                    "</c:ser>",
+                    &format!(
+                        "{}</c:ser>",
+                        r#"<c:errBars><c:errValType val="fixedVal"/></c:errBars>"#.repeat(8)
+                    ),
+                )),
+                MAX_CLASSIC_CHART_CACHE_SLOTS as u64,
+            ),
         ];
         for (host, format) in [
             (ChartHost::Unspecified, OoxmlFormat::Pptx),
