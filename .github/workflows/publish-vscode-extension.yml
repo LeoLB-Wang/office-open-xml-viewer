@@ -69,12 +69,11 @@ jobs:
           --filter @silurus/ooxml-docx
           -r --workspace-concurrency=1 build
 
-      - name: Build extension bundle (esbuild --production)
-        working-directory: packages/vscode-extension
-        run: node esbuild.config.mjs --production
-
       # ── Package (.vsix) ────────────────────────────────────────────────────
       # --no-dependencies: extension is fully bundled by esbuild, no node_modules needed.
+      # `vsce package` always runs the extension's `vscode:prepublish` script
+      # (`node esbuild.config.mjs --production`) first, so this step builds the
+      # production bundle itself; a separate esbuild step would only repeat it.
       - name: Package VSIX
         working-directory: packages/vscode-extension
         run: pnpm exec vsce package --no-dependencies --out ooxml-viewer.vsix
