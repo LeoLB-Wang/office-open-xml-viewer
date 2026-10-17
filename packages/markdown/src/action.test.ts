@@ -53,6 +53,20 @@ describe('ooxml-to-markdown GitHub Action', () => {
       const direct = run(join(root, 'report.docx'));
       expect(direct.stderr).toContain('Refusing to write');
       expect(readFileSync(sentinel, 'utf8')).toBe('keep');
+      // A symlinked out-dir component must not create directories outside.
+      const outDir = spawnSync(process.execPath, [ACTION], {
+        cwd: root,
+        env: {
+          ...process.env,
+          GITHUB_WORKSPACE: root,
+          INPUT_FILES: join(root, 'report.docx'),
+          'INPUT_OUT-DIR': join(root, 'docs', 'new', 'deep'),
+          INPUT_COMMIT: 'false',
+        },
+        encoding: 'utf8',
+      });
+      expect(outDir.stderr).toContain('outside the workspace');
+      expect(existsSync(join(outside, 'new'))).toBe(false);
       const walked = run(`${join(root, 'docs')}/**/*.docx`);
       expect(walked.stdout).toContain('Matched 0 files');
       expect(run(join(root, 'docs', 'external.docx')).stdout).toContain('Matched 0 files');

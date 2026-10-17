@@ -78,6 +78,14 @@ for (const src of matched) {
   const ext = extname(src).toLowerCase();
   if (!['.pptx', '.docx', '.xlsx'].includes(ext)) continue;
   const targetDir = INPUT_OUT_DIR ? resolve(INPUT_OUT_DIR) : dirname(src);
+  // Validate the nearest existing ancestor before creating anything, so a
+  // symlinked out-dir component cannot create directories outside.
+  let ancestor = targetDir;
+  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
+  if (!insideWorkspace(ancestor)) {
+    console.error(`::error::Refusing to write into ${targetDir}: outside the workspace`);
+    continue;
+  }
   mkdirSync(targetDir, { recursive: true });
   const out = join(targetDir, basename(src, ext) + '.md');
   let existing = null;
