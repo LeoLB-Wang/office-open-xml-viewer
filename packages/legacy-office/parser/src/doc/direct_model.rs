@@ -2478,8 +2478,8 @@ mod tests {
         }
         for chpx in [
             &[0x4e, 0x48, 0, 0][..],
-            &[0x4e, 0x48, 0, 1, 0x4e, 0x48, 1, 0][..],
-            &[0x3c, 0x08, 1, 0x4e, 0x48, 0, 1][..],
+            &[0x4e, 0x48, 0, 2, 0x4e, 0x48, 1, 0][..],
+            &[0x3c, 0x08, 1, 0x4e, 0x48, 0, 2][..],
         ] {
             assert!(project(chpx)
                 .unwrap_err()
@@ -2507,6 +2507,9 @@ mod tests {
         for chpx in [
             &[0x4e, 0x48, 2, b'q', 0x4e, 0x48, 1, 0][..],
             &[0x4e, 0x48, 2, b'q', 0x33, 0x2a, 0][..],
+            // Word's measured alias of hresNormal, alone and as final owner.
+            &[0x4e, 0x48, 0, 1][..],
+            &[0x4e, 0x48, 2, b'q', 0x4e, 0x48, 0, 1][..],
         ] {
             assert_eq!(project(chpx).unwrap(), expected);
         }
@@ -2521,7 +2524,7 @@ mod tests {
         }
         for chpx in [
             &[0x4e, 0x48, 0, 0][..],
-            &[0x4e, 0x48, 0, 1][..],
+            &[0x4e, 0x48, 0, 2][..],
             &[0x4e, 0x48, 0, b'Z', 0x4e, 0x48, 1, 0][..],
             &[0x4e, 0x48, 7, b'Z', 0x4e, 0x48, 1, 0][..],
             &[0x4e, 0x48, 2][..],
