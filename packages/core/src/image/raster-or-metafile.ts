@@ -2,7 +2,6 @@
 // Format players remain in their format-specific modules; this module owns the
 // cross-format safety policy, decoder-side resizing, and final surface check.
 
-import { renderEmfToBitmap } from './emf.js';
 import { closeImageBitmapIfSupported } from './image-bitmap-lifecycle.js';
 import {
   MAX_RASTER_DIMENSION,
@@ -25,7 +24,14 @@ import {
   type TiffRenderer,
 } from './tiff-contract.js';
 import { OptionalImageCodecUnavailableError } from './optional-image-fallback.js';
-import { isEmf, isWmf, renderWmfToBitmap, wmfRasterTarget } from './wmf.js';
+import { isEmf, isWmf, wmfRasterTarget } from './metafile-format.js';
+
+// The metafile players are loaded on the first WMF/EMF picture, not with the
+// viewer: most documents carry none, and the EMF/EMF+/WMF players are a large
+// share of the default bundle. Decoding is asynchronous already, so the only
+// change is one module load before the first metafile is played.
+const loadWmfPlayer = () => import('./wmf.js');
+const loadEmfPlayer = () => import('./emf.js');
 
 /**
  * What the loading path does with a metafile whose playback could not
@@ -227,6 +233,7 @@ export async function decodeRasterOrMetafileWithInspection(
   if (isWmf(head)) {
     const { w, h } = wmfRasterTarget(widthPt, heightPt);
     let unsupported: readonly string[] = [];
+    const { renderWmfToBitmap } = await loadWmfPlayer();
     const bitmap = await renderWmfToBitmap(
       new Uint8Array(await data.arrayBuffer()), w, h,
       (records) => { unsupported = records; },
@@ -238,6 +245,7 @@ export async function decodeRasterOrMetafileWithInspection(
   }
   if (isEmf(head)) {
     const { w, h } = wmfRasterTarget(widthPt, heightPt);
+    const { renderEmfToBitmap } = await loadEmfPlayer();
     const played = await renderEmfToBitmap(new Uint8Array(await data.arrayBuffer()), w, h);
     return enforceDecodedBitmapBudget(
       applyIncompleteMetafilePolicy(played.bitmap, played.unsupported, incompleteMetafile),
