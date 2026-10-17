@@ -158,6 +158,34 @@ const measuredTextSequence = (
   .join(''));
 
 describe('measureParagraph', () => {
+  it.each([
+    ['Latin', 'word '.repeat(40), false],
+    ['East Asian grid', '日本語の本文です。'.repeat(12), true],
+  ] as const)('gives every fragment of a picture-bullet first line one advance (%s)', (_, text, grid) => {
+    const float: FloatRect = { kind: 'shape', mode: 'square', authoredWrap: 'square',
+      imageKey: 'center', imageX: 70, imageY: 0, imageW: 60, imageH: 200,
+      xLeft: 70, xRight: 130, yTop: 0, yBottom: 200, side: 'bothSides',
+      distLeft: 0, distRight: 0, distTop: 0, distBottom: 0, paraId: 0 };
+    const result = measureParagraph(
+      paragraph({ spaceBefore: 0, runs: [{ type: 'text', ...textRun(text) }] }),
+      layoutContext({
+        spaceBeforePt: 0,
+        hasEastAsianText: grid,
+        ...(grid ? { lineGrid: { active: true, pitchPt: 18 } } : {}),
+      }),
+      placement({ startYPt: 0, wrap: createFloatWrapOracle([float]) }),
+      measurer,
+      environment({ firstLinePictureMarkerHeightPt: 17, documentHasEastAsianText: grid }),
+    );
+    const firstTop = result.lines[0]!.topYPt;
+    const first = result.lines.filter((line) => line.topYPt === firstTop);
+    expect(first.length).toBeGreaterThan(1);
+    expect(new Set(first.map((line) => line.advancePt)).size).toBe(1);
+    const next = result.lines.find((line) => line.topYPt > firstTop)!;
+    expect(next.topYPt).toBeGreaterThanOrEqual(firstTop + first[0]!.advancePt - 1e-8);
+    expect(first[0]!.advancePt).toBeGreaterThanOrEqual(grid ? 36 : 17);
+  });
+
   it('allocates the selected text marker and body line union before pagination', () => {
     const doc = paragraph({ runs: [{ type: 'text', ...textRun('List item') }] });
     const auto = layoutContext({

@@ -350,7 +350,29 @@ export function measureParagraph(
       );
     }
     const allocations: { layout: LayoutLine; advancePt: number }[] = [];
-    for (const [lineIndex, originalLine] of lines.entries()) {
+    // A float can split the first physical line into fragments; the metric
+    // segment joins only the fragment that holds it. Every fragment of that
+    // physical line shares the bullet's ascent so that they resolve one advance.
+    const markerFragment = pictureMarkerHeightPt === undefined ? undefined : lines[0];
+    const holdsPictureMarker = (line: LayoutLine, lineIndex: number): boolean =>
+      markerFragment !== undefined && (lineIndex === 0
+        || (markerFragment.physicalLineIndex !== undefined
+          && line.physicalLineIndex === markerFragment.physicalLineIndex));
+    for (const [lineIndex, fragment] of lines.entries()) {
+      const firstPhysicalLine = holdsPictureMarker(fragment, lineIndex);
+      const originalLine = firstPhysicalLine && lineIndex !== 0
+        ? {
+            ...fragment,
+            ascent: Math.max(fragment.ascent, pictureMarkerHeightPt!),
+            visibleAscent: Math.max(fragment.visibleAscent ?? fragment.ascent, pictureMarkerHeightPt!),
+            ...(markerFragment!.inlinePictureTextSingle === undefined ? {} : {
+              inlinePictureTextSingle: Math.max(
+                fragment.inlinePictureTextSingle ?? 0,
+                markerFragment!.inlinePictureTextSingle,
+              ),
+            }),
+          }
+        : fragment;
       const markerBox = lineIndex === 0 && !continuation && !placement.wrap
         && !context.lineGrid.active
         && (context.lineSpacing == null
@@ -396,8 +418,8 @@ export function measureParagraph(
       // WORD_PICTURE_BULLET_LINE_PARTICIPATION: a picture bullet that supplies
       // an East Asian line's ascent counts grid cells together with the
       // text's descent.
-      const pictureMarkerGridCountPt = lineIndex === 0 && pictureMarkerHeightPt !== undefined
-        && pictureMarkerHeightPt >= line.ascent
+      const pictureMarkerGridCountPt = firstPhysicalLine
+        && pictureMarkerHeightPt! >= line.ascent
         ? Math.max(line.gridCountSingle, line.ascent + line.descent)
         : undefined;
       let advancePt = specified ? specified.advancePt : markerRaisesBox
@@ -436,8 +458,7 @@ export function measureParagraph(
           && segment.heightPt >= line.ascent)
           // A picture-bullet marker on the first line is that inline object
           // (WORD_PICTURE_BULLET_LINE_PARTICIPATION).
-          || (lineIndex === 0 && pictureMarkerHeightPt !== undefined
-            && pictureMarkerHeightPt >= line.ascent))) {
+          || (firstPhysicalLine && pictureMarkerHeightPt! >= line.ascent))) {
         advancePt = snapParagraphLineToGrid(advancePt, grid);
       }
       allocations.push({ layout: line, advancePt });
