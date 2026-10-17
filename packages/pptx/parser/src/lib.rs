@@ -4039,6 +4039,51 @@ mod tests {
             .unwrap();
     }
 
+    /// Markdown consumers render links and HTML: a document hyperlink target
+    /// outside the viewer's scheme policy must not become a link, a target
+    /// cannot break out of its destination, and run text cannot open raw HTML
+    /// or an image.
+    #[test]
+    fn markdown_links_and_text_cannot_inject_markup() {
+        let run = |id: &str, text: &str| {
+            format!(r#"<a:r><a:rPr><a:hlinkClick r:id="{id}"/></a:rPr><a:t>{text}</a:t></a:r>"#)
+        };
+        let slide_sp = format!(
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="5" name="Links"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1000000" cy="1000000"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p>{}{}{}<a:r><a:t> &lt;img src=x onerror=alert(1)&gt; ![p](https://t.example/p.png)</a:t></a:r></a:p></p:txBody></p:sp>"#,
+            run("rJs", "script"),
+            run("rBreak", "safe"),
+            run("rOk", "ok"),
+        );
+        let rel = |id: &str, url: &str| {
+            format!(
+                r#"<Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{url}" TargetMode="External"/>"#
+            )
+        };
+        let rels = [
+            rel("rJs", "javascript:alert(document.domain)"),
+            rel("rBreak", "https://e.example/x) [y](https://evil.example/"),
+            rel("rOk", "https://example.com/a?b=c"),
+        ]
+        .concat();
+        let data = build_align_pptx_with_rels(&slide_sp, "", "", &rels, "", "");
+        let markdown = to_markdown_native(&data).expect("markdown projects");
+        assert!(!markdown.contains("javascript:"), "{markdown}");
+        assert!(markdown.contains("script"), "link text is kept: {markdown}");
+        assert!(
+            markdown.contains("[safe](https://e.example/x%29%20[y]%28https://evil.example/)"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("[ok](https://example.com/a?b=c)"),
+            "{markdown}"
+        );
+        assert!(markdown.contains(r"\<img src=x"), "{markdown}");
+        assert!(
+            markdown.contains(r"\!\[p\](https://t.example/p.png)"),
+            "{markdown}"
+        );
+    }
+
     fn build_align_pptx(slide_sp: &str, layout_extra_sp: &str, master_txstyles: &str) -> Vec<u8> {
         build_align_pptx_with_rels(slide_sp, layout_extra_sp, master_txstyles, "", "", "")
     }

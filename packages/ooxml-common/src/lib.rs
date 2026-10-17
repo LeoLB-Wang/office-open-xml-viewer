@@ -19,6 +19,7 @@ pub mod effect;
 pub mod fill;
 pub mod json_measurement;
 pub mod line;
+pub mod markdown;
 pub mod math;
 pub mod mce;
 pub mod ns;
