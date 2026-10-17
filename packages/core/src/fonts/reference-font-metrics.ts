@@ -50,11 +50,13 @@ function freezeProfile(profile: ReferenceFontMetricProfile): ReferenceFontMetric
 let profiles: readonly ReferenceFontMetricProfile[] | undefined;
 
 function getProfiles(): readonly ReferenceFontMetricProfile[] {
-  // The JSON payload is statically imported and parsed with the module. Only
-  // profile freezing and the alias index are deferred until the first lookup.
+  // The JSON payload is statically imported and parsed with the module. The
+  // alias index is deferred until the first lookup, and each profile is frozen
+  // when a lookup first buckets it (getOptionBuckets), so every profile a
+  // caller can observe is frozen without freezing the whole catalogue.
   return profiles ??= Object.freeze(
     [...referenceData.profiles as unknown as ReferenceFontMetricProfile[],
-      ...OPEN_FONT_REFERENCE_PROFILES].map(freezeProfile),
+      ...OPEN_FONT_REFERENCE_PROFILES],
   );
 }
 
@@ -64,11 +66,15 @@ let aliasProfiles: ReadonlyMap<string, readonly ReferenceFontMetricProfile[]> | 
 // families, so first paint no longer pays for the whole catalogue's buckets.
 const aliasBuckets = new Map<string, OptionBuckets>();
 const EMPTY_RESULTS = Object.freeze([]) as readonly ReferenceFontMetricProfile[];
+const ASCII_TEXT = /^[\u0000-\u007f]*$/;
 
 function normalizeFamilyName(value: string): string {
-  // NFKC leaves ASCII unchanged; skip it for the (common) ASCII names.
-  const composed = /^[\u0000-\u007f]*$/u.test(value) ? value : value.normalize('NFKC');
-  return composed.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
+  // The alias index normalizes every catalogue alias on its first lookup in
+  // each realm, so the common ASCII names take a cheap path: NFKC leaves ASCII
+  // unchanged, and on ASCII the en-US case mapping equals the locale-independent
+  // toLowerCase (Unicode SpecialCasing tailors only lt, tr and az).
+  if (ASCII_TEXT.test(value)) return value.trim().replace(/\s+/g, ' ').toLowerCase();
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
 }
 
 function optionKey(options: FindReferenceFontMetricsOptions): string {
@@ -96,6 +102,7 @@ function getOptionBuckets(alias: string): OptionBuckets | undefined {
   if (matches === undefined) return undefined;
   const buckets = new Map<string, ReferenceFontMetricProfile[]>();
   for (const profile of matches) {
+    freezeProfile(profile);
     const optionKeys = new Set<string>();
     for (const source of [undefined, profile.source] as const) {
       for (const weight of [undefined, profile.weight] as const) {
