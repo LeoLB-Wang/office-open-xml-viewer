@@ -39,9 +39,6 @@ export interface ParagraphMeasurementEnvironment extends LineLayoutEnvironment {
   readonly paragraphMarkShapeInput?: NumberingMarkerShapeInput;
   /** Selected-face text marker box, resolved by retained numbering before line acquisition. */
   readonly firstLineNumberingMarkerBox?: Readonly<{ ascentPt: number; descentPt: number; intendedSinglePt?: number }>;
-  /** Height of a sized picture-bullet marker, which sits on the first line's
-   * baseline like an inline picture. */
-  readonly firstLinePictureMarkerHeightPt?: number;
   /** Canonical section writing mode used by retained page geometry. */
   readonly pageWritingMode: WritingMode;
   /** The paragraph is acquired in a section-logical frame that paint rotates
@@ -312,21 +309,6 @@ export function measureParagraph(
         ? environment.firstLineNumberingMarkerBox : undefined;
       const markerAscent = markerBox?.ascentPt;
       const markerDescent = markerBox?.descentPt;
-      // A picture bullet takes part in its line like an inline picture: its
-      // height is ascent above the baseline under every line-spacing rule, so
-      // the ordinary line-box resolution below applies (auto, atLeast and
-      // exact alike). Word controls: a 22 pt automatic picture bullet raises
-      // its line while a 6 pt one on the same 24 pt marker font does not.
-      const pictureMarkerHeight = lineIndex === 0 && !continuation
-        ? environment.firstLinePictureMarkerHeightPt : undefined;
-      const pictureLine = pictureMarkerHeight !== undefined && Number.isFinite(pictureMarkerHeight)
-        && pictureMarkerHeight > originalLine.ascent
-        ? {
-            ...originalLine,
-            ascent: pictureMarkerHeight,
-            visibleAscent: Math.max(originalLine.visibleAscent ?? originalLine.ascent, pictureMarkerHeight),
-          }
-        : originalLine;
       const line = markerAscent !== undefined && markerDescent !== undefined
         && Number.isFinite(markerAscent) && Number.isFinite(markerDescent)
         ? {
@@ -339,7 +321,7 @@ export function measureParagraph(
             visibleIntendedSingle: Math.max(originalLine.visibleIntendedSingle ?? originalLine.intendedSingle,
               markerBox?.intendedSinglePt ?? 0),
           }
-        : pictureLine;
+        : originalLine;
       const textSinglePt = Math.max(
         originalLine.ascent + originalLine.descent,
         originalLine.intendedSingle,
@@ -354,7 +336,7 @@ export function measureParagraph(
       // retain their established allocation.
       void WORD_NUMBERING_MARKER_FIRST_LINE_UNION;
       const markerNaturalPt = Math.max(line.ascent + line.descent, markerBox?.intendedSinglePt ?? 0);
-      const markerRaisesBox = line !== pictureLine
+      const markerRaisesBox = line !== originalLine
         && markerNaturalPt > textSinglePt;
       const specified = specifiedParagraph && !paragraph.numbering
         ? specifiedTextLineMetrics(line, context, paragraph, environment.compatibilityMode,
