@@ -78,6 +78,9 @@ pub struct Properties {
     shading: Option<ShadingFill>,
     frame: frame::Frame,
     frame_origins: FrameOrigins,
+    /// MS-DOC 2.9.159 NumRM with fNumRM set: the list label the paragraph
+    /// displayed when revision tracking began (`numbering_revision_label`).
+    numbering_revision_label: Option<String>,
 }
 
 impl Default for Properties {
@@ -118,6 +121,7 @@ impl Default for Properties {
             shading: None,
             frame: frame::Frame::default(),
             frame_origins: [None; 12],
+            numbering_revision_label: None,
         }
     }
 }
@@ -135,6 +139,11 @@ impl Properties {
         if let Some(property) = FrameProperty::from_code(code) {
             self.frame_origins[property as usize] = Some(origin);
         }
+    }
+
+    /// The prior list label of a NumRM with fNumRM set, if any.
+    pub(in crate::doc) fn numbering_revision_label(&self) -> Option<&str> {
+        self.numbering_revision_label.as_deref()
     }
 
     pub(in crate::doc) fn native_frame(&self) -> Option<NativeFrameFacts> {
@@ -211,13 +220,20 @@ impl Properties {
             0xc645 => {
                 // MS-DOC 2.9.159-160: NumRM stores the *previous* numbering
                 // when revision tracking began, independently of the current
-                // list properties. An empty prior state has no old marker to
-                // render: fNumRM=0, no placeholders and empty xst. Author/date,
-                // ignored bytes and unused history slots do not create one.
-                // Current-content viewer policy omits this empty prior-display
-                // metadata; it does not assert that no revision exists.
-                // Nonempty history remains unsupported because the shared
-                // model cannot display numbering revisions.
+                // list properties. Author/date, ignored bytes and unused
+                // history slots never contribute to a display.
+                //
+                // An empty prior state (fNumRM=0, no placeholders and empty
+                // xst) has no old marker to render. Current-content viewer
+                // policy omits it; it does not assert that no revision exists.
+                // A nonempty prior state without fNumRM stays unsupported.
+                //
+                // With fNumRM set, the old label is retained and compared with
+                // the current computed label by the numbering consumer. An
+                // unchanged label has no numbering change to mark up, so
+                // nothing extra is displayed. A changed label is shown by Word
+                // with revision markup, which the shared model cannot display,
+                // so it stays unsupported.
                 if operand.len() != 129 || operand[0] != 128 {
                     return Err(unsupported("invalid Word numbering revision operand"));
                 }
@@ -226,9 +242,12 @@ impl Properties {
                 if length > 31 {
                     return Err(unsupported("invalid Word numbering revision string length"));
                 }
-                return Ok(!previously_numbered
-                    && length == 0
-                    && operand[9..18].iter().all(|value| *value == 0));
+                if previously_numbered {
+                    self.numbering_revision_label = Some(numbering_revision_label(operand)?);
+                    return Ok(true);
+                }
+                self.numbering_revision_label = None;
+                return Ok(length == 0 && operand[9..18].iter().all(|value| *value == 0));
             }
             0xc60d | 0xc615 => self.tabs.apply(operand, code == 0xc615)?,
             0x6412 => {
@@ -419,6 +438,91 @@ impl Properties {
     }
 }
 
+/// MS-DOC 2.9.159: the label a NumRM records. xst (cch, then at most 31
+/// UTF-16 units) holds literal text and level placeholders; rgbxchNums[i] is
+/// the one-based xst position of placeholder i, whose text is pnbr[i] in the
+/// MSONFC format rgnfc[i] ([MS-OSHARED] 2.2.1.3). A zero entry marks a level
+/// not in use, and a bullet or none format (0x17, 0xFF) displays no number.
+/// Implementation restriction: only contiguous used entries (as an LVL's
+/// rgbxchNums, 2.9.150), placeholders whose unit names their own level i,
+/// and number formats with an exact shared expansion are interpreted; any
+/// other NumRM is refused.
+fn numbering_revision_label(operand: &[u8]) -> Result<String, String> {
+    use ooxml_common::numbering::{NumberingTemplate, TemplatePart};
+    fn invalid() -> String {
+        unsupported("invalid Word numbering revision label")
+    }
+    fn flush(literal: &mut Vec<u16>, parts: &mut Vec<TemplatePart>) -> Result<(), String> {
+        if !literal.is_empty() {
+            parts.push(TemplatePart::Literal(
+                String::from_utf16(literal).map_err(|_| invalid())?,
+            ));
+            literal.clear();
+        }
+        Ok(())
+    }
+    let length = usize::from(u16_at(operand, 65)?);
+    let offsets = &operand[9..18];
+    let used = offsets.iter().take_while(|offset| **offset != 0).count();
+    if offsets[used..].iter().any(|offset| *offset != 0) {
+        return Err(invalid());
+    }
+    let mut parts = Vec::with_capacity(used * 2 + 1);
+    let mut literal = Vec::new();
+    let mut next = 0;
+    for index in 0..length {
+        let unit = u16_at(operand, 67 + index * 2)?;
+        if next < used && usize::from(offsets[next]) == index + 1 {
+            if usize::from(unit) != next {
+                return Err(unsupported(
+                    "Word numbering revision placeholder names another level",
+                ));
+            }
+            flush(&mut literal, &mut parts)?;
+            if !matches!(operand[18 + next], 0x17 | 0xff) {
+                parts.push(TemplatePart::Counter(next as u8));
+            }
+            next += 1;
+            continue;
+        }
+        if unit < 0x20 || matches!(unit, 0xfffe | 0xffff) {
+            return Err(invalid());
+        }
+        literal.push(unit);
+    }
+    if next != used {
+        return Err(invalid());
+    }
+    flush(&mut literal, &mut parts)?;
+    let mut values = [0u32; 9];
+    let mut formats = ["decimal"; 9];
+    for level in 0..used {
+        // pnbr holds LONG values; a negative number has no list label.
+        values[level] =
+            u32::try_from(super::u32_at(operand, 29 + level * 4)? as i32).map_err(|_| invalid())?;
+        if matches!(operand[18 + level], 0x17 | 0xff) {
+            continue;
+        }
+        // Only an exactly expanded format can be compared with the current
+        // label; a decimal fallback could equal it while Word's differs.
+        let format = super::number_format::name(operand[18 + level])?;
+        if !super::number_format::expands_exactly(format) {
+            return Err(unsupported(
+                "unsupported Word numbering revision number format",
+            ));
+        }
+        formats[level] = format;
+    }
+    NumberingTemplate::new(parts)
+        .and_then(|template| {
+            template.expand(
+                |level| values[usize::from(level)],
+                |level| formats[usize::from(level)],
+            )
+        })
+        .map_err(|_| invalid())
+}
+
 fn bool8(value: u8) -> Result<bool, String> {
     match value {
         0 => Ok(false),
@@ -481,9 +585,7 @@ mod tests {
         let baseline = projected(&properties);
         assert!(properties.apply(0xc645, &operand).unwrap());
         assert_eq!(projected(&properties), baseline);
-        operand[1] = 1;
-        assert!(!properties.apply(0xc645, &operand).unwrap());
-        operand[1] = 0;
+        assert_eq!(properties.numbering_revision_label(), None);
         operand[9] = 1;
         assert!(!properties.apply(0xc645, &operand).unwrap());
         operand[9] = 0;
@@ -497,6 +599,48 @@ mod tests {
         assert!(properties.apply(0xc645, &operand).is_err());
         operand[0] = 128;
         assert!(properties.apply(0xc645, &operand[..128]).is_err());
+    }
+
+    #[test]
+    fn numbering_revision_retains_the_prior_label_it_records() {
+        let mut operand = [0u8; 129];
+        operand[0] = 128;
+        operand[1] = 1;
+        operand[2] = 0xff; // fIgnored
+        operand[3..9].fill(0xa5); // author and date
+                                  // "(" level-0 ")" then "." level-1: rgbxchNums 2 and 4.
+        operand[9] = 2;
+        operand[10] = 4;
+        operand[18] = 2; // lowerRoman
+        operand[19] = 4; // lowerLetter
+        operand[29..33].copy_from_slice(&4u32.to_le_bytes());
+        operand[33..37].copy_from_slice(&2u32.to_le_bytes());
+        operand[65] = 4;
+        operand[67..75].copy_from_slice(&[b'(', 0, 0, 0, b')', 0, 1, 0]);
+        let mut properties = Properties::default();
+        assert!(properties.apply(0xc645, &operand).unwrap());
+        assert_eq!(properties.numbering_revision_label(), Some("(iv)b"));
+        // A bullet/none format displays no number at its placeholder.
+        operand[19] = 0x17;
+        assert!(properties.apply(0xc645, &operand).unwrap());
+        assert_eq!(properties.numbering_revision_label(), Some("(iv)"));
+        // A later empty fNumRM=0 operand replaces the retained label.
+        let mut empty = [0u8; 129];
+        empty[0] = 128;
+        assert!(properties.apply(0xc645, &empty).unwrap());
+        assert_eq!(properties.numbering_revision_label(), None);
+        // A placeholder that names another level, a gap in rgbxchNums, an
+        // offset past xst and a negative number are not interpreted.
+        // An ordinal ("1st") prior label has no exact shared expansion: the
+        // formatter's decimal fallback would compare equal to a current "1".
+        for (index, value) in [(69, 1), (9, 0), (10, 9), (32, 0x80), (18, 5)] {
+            let mut bad = operand;
+            bad[index] = value;
+            assert!(
+                Properties::default().apply(0xc645, &bad).is_err(),
+                "{index}"
+            );
+        }
     }
 
     #[test]

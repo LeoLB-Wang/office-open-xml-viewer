@@ -3713,12 +3713,62 @@ mod tests {
         let (reference, marker) = direct.numbering.expect("resolved numbering");
         let mut store = numbering::direct::Store::default();
         let error = formatting
-            .direct_numbering(&mut store, reference, &marker, &direct.paragraph)
+            .direct_numbering(&mut store, reference, &marker, &direct.paragraph, None)
             .unwrap_err();
         assert!(
             error.contains("font index outside empty font table"),
             "{error}"
         );
+    }
+
+    /// sprmPNumRM with fNumRM set, xst "<placeholder>." and pnbr[0] `number`.
+    fn numbering_revision(number: u32) -> Vec<u8> {
+        let mut operand = vec![0u8; 129];
+        operand[0] = 128;
+        operand[1] = 1;
+        operand[9] = 1; // rgbxchNums[0]: xst position 1
+        operand[29..33].copy_from_slice(&number.to_le_bytes());
+        operand[65] = 2; // cch
+        operand[67..71].copy_from_slice(&[0, 0, b'.', 0]);
+        test_prl(0xc645, &operand)
+    }
+
+    #[test]
+    fn numbering_revision_is_admitted_only_while_its_label_is_unchanged() {
+        // An ordinal current level ("1st." in Word) formats through the
+        // shared decimal fallback as "1.": that label is not comparable.
+        for (prior, format, changed) in [(1, 0, false), (2, 0, true), (1, 5, true)] {
+            let piece = [list_piece(1), numbering_revision(prior)].concat();
+            let mut formatting = empty();
+            formatting.numbering = level_bidi_formatting(0);
+            formatting.numbering.lists[0].levels[0].format = format;
+            let direct = formatting
+                .direct_paragraph(0, None, 0, 1, &[&piece])
+                .unwrap();
+            assert_eq!(
+                direct.numbering_revision_label.as_deref(),
+                Some(&*format!("{prior}."))
+            );
+            let (reference, marker) = direct.numbering.expect("resolved numbering");
+            let mut store = numbering::direct::Store::default();
+            let numbering = formatting
+                .direct_numbering(
+                    &mut store,
+                    reference,
+                    &marker,
+                    &direct.paragraph,
+                    direct.numbering_revision_label.as_deref(),
+                )
+                .unwrap();
+            assert_eq!(numbering.text, "1.");
+            assert_eq!(formatting.unsupported_paragraph_properties, changed);
+        }
+        // A previously numbered paragraph without current numbering changed.
+        let mut formatting = empty();
+        formatting
+            .direct_paragraph(0, None, 0, 1, &[&numbering_revision(1)])
+            .unwrap();
+        assert!(formatting.unsupported_paragraph_properties);
     }
 
     /// The direct paragraph at FC 100 with a list-selecting piece.
