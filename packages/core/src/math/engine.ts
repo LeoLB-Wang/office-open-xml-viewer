@@ -36,7 +36,7 @@ import {
   mathMLToSvgFromResolvedAsset,
 } from './engine-runtime.js';
 
-function resolveMathJaxAssetUrl(): string {
+export function resolveMathJaxAssetUrl(): string {
   // `?url` yields the asset href directly — an absolute URL at build time, the
   // dev-served path in dev. Resolve against the module URL so a bare relative
   // dev value still becomes an absolute href fetchable from any realm (matches
