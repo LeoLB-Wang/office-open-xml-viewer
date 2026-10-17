@@ -238,3 +238,36 @@ fn incremental_toc_scan_matches_whole_instruction_classification() {
         }
     }
 }
+
+#[test]
+fn table_style_inheritance_is_bounded_even_when_ids_are_reused() {
+    // A later character style reusing each table style id replaces only the
+    // paragraph/character map; the table map still holds the long chain.
+    let limit = crate::styles::MAX_STYLE_INHERITANCE_DEPTH;
+    let mut styles = format!(r#"<w:styles xmlns:w="{W_NS}">"#);
+    for level in 0..=limit {
+        let based_on = if level == 0 {
+            String::new()
+        } else {
+            format!(r#"<w:basedOn w:val="T{}"/>"#, level - 1)
+        };
+        styles.push_str(&format!(
+            r#"<w:style w:type="table" w:styleId="T{level}">{based_on}</w:style><w:style w:type="character" w:styleId="T{level}"/>"#
+        ));
+    }
+    styles.push_str("</w:styles>");
+    let body = format!(
+        r#"<w:tbl><w:tblPr><w:tblStyle w:val="T{limit}"/></w:tblPr><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl><w:p/>"#
+    );
+    let bytes = package(&body, &[("word/styles.xml", &styles)]);
+    let error = parse_from_bytes(&bytes).expect_err("long table chain must reject");
+    assert_hard_limit(&error, "style-inheritance", limit as u64);
+}
+
+#[test]
+fn many_begin_markers_in_one_run_fail_closed_without_rescanning_the_run() {
+    let begins = r#"<w:fldChar w:fldCharType="begin"/>"#.repeat(MAX_OPEN_COMPLEX_FIELDS + 1);
+    let bytes = package(&format!("<w:p><w:r>{begins}</w:r></w:p>"), &[]);
+    let error = parse_from_bytes(&bytes).expect_err("too many open fields must reject");
+    assert_hard_limit(&error, "complex-field", MAX_OPEN_COMPLEX_FIELDS as u64);
+}

@@ -52,6 +52,8 @@ struct GovernorState {
 struct LogicalOperationState {
     name: String,
     inflated_bytes: u64,
+    /// Work ledger kept across every bounded pull of this logical operation.
+    scope_work: HashMap<HardResourceLimitKind, u64>,
 }
 
 /// Opaque identity for a logical operation whose accounting survives multiple
@@ -268,8 +270,10 @@ impl Drop for ResourceScope {
             let mut state = self.governor.0.borrow_mut();
             if let Some(id) = self.logical_operation_id {
                 let inflated_bytes = state.usage.operation_inflated_bytes;
+                let work = state.scope_work.clone();
                 if let Some(operation) = state.operations.get_mut(&id) {
                     operation.inflated_bytes = inflated_bytes;
+                    operation.scope_work = work;
                 }
             }
             if self.restore_parent_operation {
@@ -283,7 +287,13 @@ impl Drop for ResourceScope {
             }
             state.scoped_operation_id = self.previous_logical_operation_id;
             if let Some(previous) = self.previous_scope_work.take() {
-                state.scope_work = previous;
+                // Resume the enclosing logical operation's latest ledger, never
+                // a stale snapshot; otherwise restore the enclosing plain one.
+                state.scope_work = self
+                    .previous_logical_operation_id
+                    .and_then(|id| state.operations.get(&id))
+                    .map(|operation| operation.scope_work.clone())
+                    .unwrap_or(previous);
             }
         }
         ACTIVE_GOVERNOR.with(|active| {
@@ -350,6 +360,7 @@ impl ResourceGovernor {
             LogicalOperationState {
                 name: name.into(),
                 inflated_bytes: 0,
+                scope_work: HashMap::new(),
             },
         );
         ResourceOperation(id)
@@ -380,8 +391,10 @@ impl ResourceGovernor {
         let mut state = self.0.borrow_mut();
         if let Some(id) = state.scoped_operation_id {
             let bytes = state.usage.operation_inflated_bytes;
+            let work = state.scope_work.clone();
             if let Some(parent) = state.operations.get_mut(&id) {
                 parent.inflated_bytes = bytes;
+                parent.scope_work = work;
             }
         }
         let previous_logical_operation_id =
@@ -395,10 +408,24 @@ impl ResourceGovernor {
         let restore_parent_operation = previous_active
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.0, &self.0));
-        // Only an outermost scope of this governor starts a fresh work ledger,
-        // so a nested entry read cannot reset the enclosing operation's budget.
-        let previous_scope_work = (!restore_parent_operation)
-            .then(|| std::mem::take(&mut self.0.borrow_mut().scope_work));
+        // A logical operation resumes its own ledger across bounded pulls. A
+        // nested plain scope (e.g. an entry read) keeps charging the enclosing
+        // ledger; only an outermost plain scope starts a fresh one.
+        let previous_scope_work = {
+            let mut state = self.0.borrow_mut();
+            let next = match logical_operation_id {
+                Some(id) => Some(
+                    state
+                        .operations
+                        .get(&id)
+                        .map(|operation| operation.scope_work.clone())
+                        .unwrap_or_default(),
+                ),
+                None if restore_parent_operation => None,
+                None => Some(HashMap::new()),
+            };
+            next.map(|next| std::mem::replace(&mut state.scope_work, next))
+        };
         ResourceScope {
             previous_scope_work,
             governor: self.clone(),

@@ -469,18 +469,19 @@ pub struct StyleMap {
 pub(crate) const MAX_STYLE_INHERITANCE_DEPTH: usize = 64;
 
 /// The largest number of distinct styles any one `basedOn` chain applies,
-/// counted exactly as [`StyleMap::apply_style_chain`] walks it (a cycle stops
-/// at the first revisited style; a missing parent ends the chain). Each style
-/// is resolved once, so this is linear in the number of styles.
-fn max_style_inheritance_depth(styles: &HashMap<String, StyleDef>) -> usize {
+/// counted exactly as [`StyleMap::apply_style_chain`] and
+/// [`StyleMap::resolve_table_style`] walk it (a cycle stops at the first
+/// revisited style; a missing parent ends the chain). `styles` maps each style
+/// id to its `basedOn`; each style is resolved once, so this is linear.
+fn max_style_inheritance_depth(styles: &HashMap<&str, Option<&str>>) -> usize {
     let mut depth: HashMap<&str, usize> = HashMap::with_capacity(styles.len());
     let mut deepest = 0;
     let mut path: Vec<&str> = Vec::new();
     let mut on_path: HashMap<&str, usize> = HashMap::new();
-    for start in styles.keys() {
+    for &start in styles.keys() {
         path.clear();
         on_path.clear();
-        let mut current = Some(start.as_str());
+        let mut current = Some(start);
         // Depth of the style that ends the walk's unresolved suffix.
         let mut tail = 0;
         while let Some(id) = current {
@@ -488,7 +489,7 @@ fn max_style_inheritance_depth(styles: &HashMap<String, StyleDef>) -> usize {
                 tail = known;
                 break;
             }
-            let Some(def) = styles.get(id) else {
+            let Some(&based_on) = styles.get(id) else {
                 break;
             };
             if let Some(&cycle_start) = on_path.get(id) {
@@ -502,7 +503,7 @@ fn max_style_inheritance_depth(styles: &HashMap<String, StyleDef>) -> usize {
             }
             on_path.insert(id, path.len());
             path.push(id);
-            current = def.based_on.as_deref();
+            current = based_on;
         }
         for member in path.drain(..).rev() {
             tail += 1;
@@ -653,7 +654,20 @@ impl StyleMap {
             );
         }
 
-        let depth = max_style_inheritance_depth(&styles);
+        // Table styles resolve through their own map (`resolve_table_style`),
+        // which a later same-id paragraph/character declaration does not
+        // overwrite, so both inheritance graphs are bounded.
+        let style_graph: HashMap<&str, Option<&str>> = styles
+            .iter()
+            .map(|(id, def)| (id.as_str(), def.based_on.as_deref()))
+            .collect();
+        let table_graph: HashMap<&str, Option<&str>> = table_styles
+            .iter()
+            .map(|(id, def)| (id.as_str(), def.based_on.as_deref()))
+            .collect();
+        let depth = max_style_inheritance_depth(&style_graph)
+            .max(max_style_inheritance_depth(&table_graph));
+        drop((style_graph, table_graph));
         if depth > MAX_STYLE_INHERITANCE_DEPTH {
             // Latches the typed resource error for the package operation; the
             // unbounded cascade is never resolved.

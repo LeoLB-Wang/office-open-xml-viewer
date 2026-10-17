@@ -6611,6 +6611,9 @@ struct FieldState {
     /// `(stack index, anchor)` of every open frame past `separate` whose
     /// rendered result is a REF/PAGEREF `\h` hyperlink, innermost last.
     result_anchors: Vec<(usize, String)>,
+    /// The checkBox facts of the run whose `begin` markers are being read.
+    /// Keyed by (document address, node id) of that run.
+    run_checkbox: Option<(RunKey, LegacyCheckbox)>,
 }
 
 impl FieldState {
@@ -6945,10 +6948,14 @@ fn field_control_run_fmt(r_node: roxmltree::Node, base_run: &RunFmt) -> RunFmt {
     fmt
 }
 
-fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run: &RunFmt) {
-    let occurrence_id = field.next_occurrence_id;
-    field.next_occurrence_id = field.next_occurrence_id.saturating_add(1);
-    let legacy_checkbox = r_node
+/// (document address, node id) identifying one run across field walks.
+type RunKey = (usize, roxmltree::NodeId);
+/// A run's first legacy checkBox: (checked, size in points).
+type LegacyCheckbox = Option<(bool, Option<f64>)>;
+
+/// ECMA-376 §17.16.17 ffData: the run's first legacy checkBox state and size.
+fn run_legacy_checkbox(r_node: roxmltree::Node) -> LegacyCheckbox {
+    r_node
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "checkBox")
         .map(|check_box| {
@@ -6967,11 +6974,13 @@ fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run
                 .and_then(|size| attr_w(size, "val"))
                 .and_then(|value| half_pt_to_pt(&value));
             (checked, size_pt)
-        });
-    let legacy_checkbox_checked = legacy_checkbox.map(|(checked, _)| checked);
-    let legacy_checkbox_size_pt = legacy_checkbox.and_then(|(_, size)| size);
+        })
+}
+
+fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run: &RunFmt) {
     if field.stack.len() >= MAX_OPEN_COMPLEX_FIELDS {
-        // Latch the typed resource error; the operation fails at its boundary.
+        // Latch the typed resource error before any per-field work; the
+        // operation fails at its boundary.
         let _ = ooxml_common::resource::observe_hard_limit(
             ooxml_common::resource::HardResourceLimitKind::DocxComplexFieldDepth,
             None,
@@ -6980,6 +6989,24 @@ fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run
         );
         return;
     }
+    let occurrence_id = field.next_occurrence_id;
+    field.next_occurrence_id = field.next_occurrence_id.saturating_add(1);
+    // Every `begin` in a run sees the run's first checkBox. Find it once per
+    // run, so a run holding many `begin` markers is not rescanned for each.
+    let run_key = (
+        r_node.document() as *const roxmltree::Document as usize,
+        r_node.id(),
+    );
+    let legacy_checkbox = match field.run_checkbox {
+        Some((run, checkbox)) if run == run_key => checkbox,
+        _ => {
+            let checkbox = run_legacy_checkbox(r_node);
+            field.run_checkbox = Some((run_key, checkbox));
+            checkbox
+        }
+    };
+    let legacy_checkbox_checked = legacy_checkbox.map(|(checked, _)| checked);
+    let legacy_checkbox_size_pt = legacy_checkbox.and_then(|(_, size)| size);
     let legacy_checkbox_nested = legacy_checkbox.is_some() && !field.stack.is_empty();
     // Legacy form fields keep their visible control formatting on the fldChar
     // begin run. Other complex fields use the first instruction run.

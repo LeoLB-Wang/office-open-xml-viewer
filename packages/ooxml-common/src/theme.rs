@@ -93,6 +93,9 @@ impl StandaloneThemeStyleXml {
     /// referenced by many shapes fails closed with a typed resource error
     /// instead of multiplying parse time.
     pub fn to_xml(&self) -> Result<String, String> {
+        // A poisoned operation copies nothing; otherwise the exact wrapper
+        // size is charged before the (possibly large) fragment is copied.
+        charge_style_reparse(0)?;
         let mut xml = String::from("<themeStyleRoot");
         for (prefix, uri) in self.namespaces.iter() {
             match prefix {
@@ -107,18 +110,20 @@ impl StandaloneThemeStyleXml {
             xml.push('"');
         }
         xml.push('>');
+        const CLOSE: &str = "</themeStyleRoot>";
+        charge_style_reparse(xml.len() + self.fragment.len() + CLOSE.len())?;
         xml.push_str(&self.fragment);
-        xml.push_str("</themeStyleRoot>");
-        charge_style_reparse(xml.len())?;
+        xml.push_str(CLOSE);
         Ok(xml)
     }
 }
 
 /// Library work budget for theme style-matrix XML rebuilt and re-parsed by
 /// style references within one parse operation. Ordinary themes keep each
-/// entry under a few kilobytes, so this admits well over 100 000 references;
-/// it exists to stop (entry size × reference count) amplification.
-pub const MAX_THEME_STYLE_REPARSE_BYTES: u64 = 256 * 1024 * 1024;
+/// entry under a few kilobytes, so this admits tens of thousands of
+/// references; it exists to stop (entry size × reference count)
+/// amplification, which costs roughly a second per 64 MiB re-parsed.
+pub const MAX_THEME_STYLE_REPARSE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Charge `bytes` of theme style-matrix XML about to be re-parsed for one
 /// style reference. Hosts that keep their own fragment copies (the PPTX theme
@@ -1159,5 +1164,21 @@ mod reparse_budget_tests {
             }
         }
         assert!(session.first_error().is_none());
+
+        // A logical operation resumed over several bounded pulls keeps one
+        // ledger: its pulls cannot each spend a fresh budget.
+        let pulls = ResourceGovernor::from_wasm(OoxmlFormat::Docx, None, None, None);
+        let operation = pulls.begin_operation("document");
+        {
+            let _pull = pulls.scope_operation(operation).unwrap();
+            for _ in 0..fits {
+                entry.to_xml().expect("first pull within budget");
+            }
+        }
+        {
+            let _pull = pulls.scope_operation(operation).unwrap();
+            let error = entry.to_xml().expect_err("resumed pull shares the ledger");
+            assert_eq!(violation(&error)["resource"], "theme-style-reparse");
+        }
     }
 }
