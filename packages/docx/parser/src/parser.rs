@@ -6611,9 +6611,6 @@ struct FieldState {
     /// `(stack index, anchor)` of every open frame past `separate` whose
     /// rendered result is a REF/PAGEREF `\h` hyperlink, innermost last.
     result_anchors: Vec<(usize, String)>,
-    /// The checkBox facts of the run whose `begin` markers are being read.
-    /// Keyed by (document address, node id) of that run.
-    run_checkbox: Option<(RunKey, LegacyCheckbox)>,
 }
 
 impl FieldState {
@@ -6948,8 +6945,6 @@ fn field_control_run_fmt(r_node: roxmltree::Node, base_run: &RunFmt) -> RunFmt {
     fmt
 }
 
-/// (document address, node id) identifying one run across field walks.
-type RunKey = (usize, roxmltree::NodeId);
 /// A run's first legacy checkBox: (checked, size in points).
 type LegacyCheckbox = Option<(bool, Option<f64>)>;
 
@@ -6977,7 +6972,12 @@ fn run_legacy_checkbox(r_node: roxmltree::Node) -> LegacyCheckbox {
         })
 }
 
-fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run: &RunFmt) {
+fn begin_complex_field(
+    field: &mut FieldState,
+    r_node: roxmltree::Node,
+    checkbox_cache: &mut Option<LegacyCheckbox>,
+    control_fmt: &mut impl FnMut() -> RunFmt,
+) {
     if field.stack.len() >= MAX_OPEN_COMPLEX_FIELDS {
         // Latch the typed resource error before any per-field work; the
         // operation fails at its boundary.
@@ -6991,27 +6991,16 @@ fn begin_complex_field(field: &mut FieldState, r_node: roxmltree::Node, base_run
     }
     let occurrence_id = field.next_occurrence_id;
     field.next_occurrence_id = field.next_occurrence_id.saturating_add(1);
-    // Every `begin` in a run sees the run's first checkBox. Find it once per
-    // run, so a run holding many `begin` markers is not rescanned for each.
-    let run_key = (
-        r_node.document() as *const roxmltree::Document as usize,
-        r_node.id(),
-    );
-    let legacy_checkbox = match field.run_checkbox {
-        Some((run, checkbox)) if run == run_key => checkbox,
-        _ => {
-            let checkbox = run_legacy_checkbox(r_node);
-            field.run_checkbox = Some((run_key, checkbox));
-            checkbox
-        }
-    };
+    // Every `begin` in a run sees the run's first checkBox; the caller's
+    // per-run cache finds it once however many `begin` markers the run has.
+    let legacy_checkbox = *checkbox_cache.get_or_insert_with(|| run_legacy_checkbox(r_node));
     let legacy_checkbox_checked = legacy_checkbox.map(|(checked, _)| checked);
     let legacy_checkbox_size_pt = legacy_checkbox.and_then(|(_, size)| size);
     let legacy_checkbox_nested = legacy_checkbox.is_some() && !field.stack.is_empty();
     // Legacy form fields keep their visible control formatting on the fldChar
     // begin run. Other complex fields use the first instruction run.
     let legacy_checkbox_fmt = legacy_checkbox_checked.map(|_| {
-        let mut fmt = field_control_run_fmt(r_node, base_run);
+        let mut fmt = control_fmt();
         if let Some(size_pt) = legacy_checkbox_size_pt {
             fmt.font_size = Some(size_pt);
             fmt.font_size_cs = Some(size_pt);
@@ -7036,6 +7025,12 @@ fn separate_complex_field(
 ) {
     let index = field.stack.len().wrapping_sub(1);
     if let Some(frame) = field.top_mut() {
+        // §17.16.18: one `separate` divides instructions from the result. A
+        // repeated marker would only re-derive the same facts and duplicate
+        // the result boundary, so it is ignored.
+        if frame.past_separate {
+            return;
+        }
         frame.past_separate = true;
         // Only locally-computed fields swallow their stored result. Other
         // complex fields render their stored result as ordinary run content.
@@ -7050,15 +7045,6 @@ fn separate_complex_field(
         let anchor = (!frame.substitute)
             .then(|| frame.hyperlink_anchor.clone())
             .flatten();
-        // A repeated `separate` re-derives the same facts; replace this
-        // frame's entry rather than indexing it twice.
-        if field
-            .result_anchors
-            .last()
-            .is_some_and(|(top, _)| *top == index)
-        {
-            field.result_anchors.pop();
-        }
         if let Some(anchor) = anchor {
             field.result_anchors.push((index, anchor));
         }
@@ -7153,14 +7139,31 @@ fn handle_run_in_para(
         .filter(|n| n.is_element())
         .any(|child| matches!(child.tag_name().name(), "fldChar" | "instrText"));
     if has_field_content {
-        let mut visible_children = HashSet::new();
+        // Everything derived from the run itself is computed at most once per
+        // run, however many field markers or visible segments it holds.
+        let run_rpr = child_w(r_node, "rPr");
+        let mut control_fmt_cache: Option<RunFmt> = None;
+        let mut control_fmt = || {
+            control_fmt_cache
+                .get_or_insert_with(|| {
+                    let mut fmt = base_run.clone();
+                    if let Some(rpr) = run_rpr {
+                        apply_direct_run(&mut fmt, &parse_run_fmt(rpr));
+                    }
+                    fmt
+                })
+                .clone()
+        };
+        let mut checkbox_cache: Option<LegacyCheckbox> = None;
+        // (first, last) visible children of the current segment.
+        let mut visible: Option<(roxmltree::Node, roxmltree::Node)> = None;
         let mut preserve_segment_boundary = preserve_comment_boundary;
         let mut collect_run_diagnostics = true;
 
         for child in r_node.children().filter(|n| n.is_element()) {
             let child_name = child.tag_name().name();
             if child_name == "fldChar" {
-                if !visible_children.is_empty() {
+                if let Some((first, last)) = visible.take() {
                     parse_run_inner(
                         r_node,
                         base_run,
@@ -7180,15 +7183,20 @@ fn handle_run_in_para(
                         depth,
                         diagnostics,
                         collect_run_diagnostics,
-                        Some(&visible_children),
+                        Some(RunSegment {
+                            first,
+                            last,
+                            rpr: run_rpr,
+                        }),
                     );
                     collect_run_diagnostics = false;
-                    visible_children.clear();
                     preserve_segment_boundary = false;
                 }
 
                 match attr_w(child, "fldCharType").as_deref() {
-                    Some("begin") => begin_complex_field(field, r_node, base_run),
+                    Some("begin") => {
+                        begin_complex_field(field, r_node, &mut checkbox_cache, &mut control_fmt)
+                    }
                     Some("separate") => {
                         separate_complex_field(field, runs, complex_field_boundaries)
                     }
@@ -7208,7 +7216,7 @@ fn handle_run_in_para(
             if child_name == "instrText" {
                 if field.top().is_some_and(|frame| !frame.past_separate) {
                     let needs_fmt = field.top().and_then(|frame| frame.fmt.as_ref()).is_none();
-                    let fmt = needs_fmt.then(|| field_control_run_fmt(r_node, base_run));
+                    let fmt = needs_fmt.then(&mut control_fmt);
                     let mut became_toc = false;
                     if let Some(frame) = field.top_mut() {
                         let text = child.text().unwrap_or("");
@@ -7237,7 +7245,7 @@ fn handle_run_in_para(
                 if child_name == "t" {
                     let text = child.text().unwrap_or("");
                     if !text.is_empty() {
-                        let cached_result_fmt = field_control_run_fmt(r_node, base_run);
+                        let cached_result_fmt = control_fmt();
                         if let Some(frame) = field.top_mut() {
                             frame.fallback.push_str(text);
                             if frame.result_fmt.is_none() {
@@ -7249,11 +7257,12 @@ fn handle_run_in_para(
                 continue;
             }
             if child_name != "rPr" {
-                visible_children.insert(child.id());
+                let first = visible.map_or(child, |(first, _)| first);
+                visible = Some((first, child));
             }
         }
 
-        if !visible_children.is_empty() {
+        if let Some((first, last)) = visible {
             parse_run_inner(
                 r_node,
                 base_run,
@@ -7273,7 +7282,11 @@ fn handle_run_in_para(
                 depth,
                 diagnostics,
                 collect_run_diagnostics,
-                Some(&visible_children),
+                Some(RunSegment {
+                    first,
+                    last,
+                    rpr: run_rpr,
+                }),
             );
         }
         return;
@@ -7816,6 +7829,26 @@ fn prepend_anchor_host_metrics(
     }
 }
 
+/// One visible stretch of a run that also carries complex-field markup: the
+/// element children from `first` to `last` (inclusive siblings) other than
+/// `rPr` and `instrText`, with the run's `rPr` found once for every segment.
+#[derive(Clone, Copy)]
+struct RunSegment<'a, 'input> {
+    first: roxmltree::Node<'a, 'input>,
+    last: roxmltree::Node<'a, 'input>,
+    rpr: Option<roxmltree::Node<'a, 'input>>,
+}
+
+impl<'a, 'input> RunSegment<'a, 'input> {
+    fn children(self) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
+        let last = self.last.id();
+        std::iter::successors(Some(self.first), move |node| {
+            (node.id() != last).then(|| node.next_sibling()).flatten()
+        })
+        .filter(|node| node.is_element() && !matches!(node.tag_name().name(), "rPr" | "instrText"))
+    }
+}
+
 // Same parse-context threading as handle_run_in_para.
 #[allow(clippy::too_many_arguments)]
 fn parse_run_inner(
@@ -7841,10 +7874,13 @@ fn parse_run_inner(
     depth: DepthGuard,
     diagnostics: &mut Vec<PendingParseDiagnostic>,
     collect_run_diagnostics: bool,
-    selected_children: Option<&HashSet<roxmltree::NodeId>>,
+    segment: Option<RunSegment<'_, '_>>,
 ) {
     // Merge run-level formatting
-    let rpr_node = child_w(node, "rPr");
+    let rpr_node = match segment {
+        Some(segment) => segment.rpr,
+        None => child_w(node, "rPr"),
+    };
     let mut fmt = base_run.clone();
 
     // Apply rStyle (§17.3.2.29). ECMA-376 §17.7.2 (Style Hierarchy) applies
@@ -8019,10 +8055,11 @@ fn parse_run_inner(
     // otherwise erase that boundary; ordinary run children retain their order.
     let mut preserve_next_comment_boundary = preserve_comment_boundary;
 
-    for child in node.children().filter(|n| n.is_element()) {
-        if selected_children.is_some_and(|selected| !selected.contains(&child.id())) {
-            continue;
-        }
+    let children: Box<dyn Iterator<Item = roxmltree::Node>> = match segment {
+        Some(segment) => Box::new(segment.children()),
+        None => Box::new(node.children().filter(|n| n.is_element())),
+    };
+    for child in children {
         let merge_here = merge_into_prev_text;
         merge_into_prev_text = false;
         match child.tag_name().name() {

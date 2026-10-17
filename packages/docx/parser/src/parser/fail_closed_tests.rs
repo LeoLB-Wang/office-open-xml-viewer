@@ -271,3 +271,53 @@ fn many_begin_markers_in_one_run_fail_closed_without_rescanning_the_run() {
     let error = parse_from_bytes(&bytes).expect_err("too many open fields must reject");
     assert_hard_limit(&error, "complex-field", MAX_OPEN_COMPLEX_FIELDS as u64);
 }
+
+fn checkbox_marks(document: &Document) -> String {
+    serde_json::to_string(document)
+        .unwrap()
+        .chars()
+        .filter(|c| matches!(c, '☐' | '☒'))
+        .collect()
+}
+
+#[test]
+fn checkbox_facts_stay_scoped_to_their_own_run_in_every_parse_path() {
+    let field = |checked: bool| {
+        format!(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:default w:val="{}"/></w:checkBox></w:ffData></w:fldChar></w:r><w:r><w:instrText>FORMCHECKBOX</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#,
+            u8::from(checked)
+        )
+    };
+    let body: String = [false, true, false, true, false, true]
+        .into_iter()
+        .map(field)
+        .collect();
+    let bytes = package(&body, &[]);
+    let expected = "☐☒☐☒☐☒";
+    assert_eq!(checkbox_marks(&parse_from_bytes(&bytes).unwrap()), expected);
+    let streamed = parse_from_bytes_streamed_with_limits(&bytes, None, None, "checkbox").unwrap();
+    assert_eq!(checkbox_marks(&streamed), expected);
+}
+
+#[test]
+fn repeated_separators_and_balanced_fields_in_one_run_stay_linear() {
+    // One field with many `separate` markers: only the first divides the
+    // instruction from the result; the stored result text still renders.
+    let separators = r#"<w:fldChar w:fldCharType="separate"/>"#.repeat(4_000);
+    let body = format!(
+        r#"<w:p><w:r><w:fldChar w:fldCharType="begin"/><w:instrText>{} </w:instrText>{separators}<w:t>result</w:t><w:fldChar w:fldCharType="end"/></w:r></w:p>"#,
+        "REF a ".repeat(4_000)
+    );
+    let document = parse_from_bytes(&package(&body, &[])).expect("repeated separators parse");
+    assert!(serde_json::to_string(&document).unwrap().contains("result"));
+
+    // Many balanced fields with visible text segments in a single run.
+    let sequence = r#"<w:fldChar w:fldCharType="begin"/><w:instrText>REF a</w:instrText><w:fldChar w:fldCharType="separate"/><w:t>x</w:t><w:fldChar w:fldCharType="end"/>"#;
+    let body = format!("<w:p><w:r>{}</w:r></w:p>", sequence.repeat(4_000));
+    let started = std::time::Instant::now();
+    let document = parse_from_bytes(&package(&body, &[])).expect("balanced fields parse");
+    let text = serde_json::to_string(&document).unwrap();
+    assert!(text.matches("\"x\"").count() >= 1);
+    // Linear work: well under the quadratic-era seconds even in debug.
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
