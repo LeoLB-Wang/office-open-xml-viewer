@@ -5,8 +5,8 @@
 // This file is intentionally dependency-free so it can run from a built
 // artifact without `npm install` in the runner.
 
-import { execSync } from 'node:child_process';
-import { existsSync, statSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, lstatSync, readdirSync, mkdirSync } from 'node:fs';
 import { resolve, join, extname, dirname, basename } from 'node:path';
 
 const INPUT_FILES = process.env.INPUT_FILES ?? '';
@@ -23,7 +23,9 @@ if (!INPUT_FILES) {
 function walk(root, predicate, out = []) {
   for (const name of readdirSync(root)) {
     const full = join(root, name);
-    const st = statSync(full);
+    // lstat: a symlinked directory is not followed, so a link cycle cannot
+    // recurse forever and a link cannot pull files from outside the tree.
+    const st = lstatSync(full);
     if (st.isDirectory()) walk(full, predicate, out);
     else if (predicate(full)) out.push(full);
   }
@@ -56,7 +58,10 @@ for (const src of matched) {
   mkdirSync(targetDir, { recursive: true });
   const out = join(targetDir, basename(src, ext) + '.md');
   try {
-    execSync(`node "${cliBin}" "${src}" -o "${out}"`, { stdio: 'inherit' });
+    // Repository file names are untrusted: pass them as argv entries, never
+    // through a shell command line where `$(...)`, backticks or quotes in a
+    // name would execute on the runner.
+    execFileSync(process.execPath, [cliBin, src, '-o', out], { stdio: 'inherit' });
     written.push(out);
   } catch (err) {
     console.error(`::error::Conversion failed for ${src}: ${err.message}`);
@@ -64,8 +69,12 @@ for (const src of matched) {
 }
 
 if (INPUT_COMMIT && written.length > 0) {
-  execSync(`git add ${written.map((p) => `"${p}"`).join(' ')}`);
-  execSync(`git -c user.email=action@github.com -c user.name="ooxml-to-markdown action" commit -m "chore: regenerate OOXML markdown (${written.length} files)"`);
+  execFileSync('git', ['add', '--', ...written]);
+  execFileSync('git', [
+    '-c', 'user.email=action@github.com',
+    '-c', 'user.name=ooxml-to-markdown action',
+    'commit', '-m', `chore: regenerate OOXML markdown (${written.length} files)`,
+  ]);
 }
 
 console.log(`Wrote ${written.length} markdown files.`);
