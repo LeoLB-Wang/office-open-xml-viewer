@@ -160,7 +160,9 @@ it('paints equivalent textpath font shorthand, longhands and template overrides 
   const bold = await draw('', "font:italic bold 24pt 'Times New Roman'");
   expect(bold.diagnostics).toEqual([]);
   expect(bold.pixels).not.toEqual(reference.pixels);
-});
+  // ~3.4 s on an idle machine; the default 5 s budget timed out when
+  // the suite ran on a loaded machine.
+}, 30_000);
 
 it('paints custom and inherited paths, primitives, cropped pixels and leaf shadows from a VML group', async () => {
   const { pixels, diagnostics } = await renderVml(`      <v:group style="width:140pt;height:120pt" coordsize="140,120">
@@ -258,7 +260,9 @@ it('renders every non-solid VML fill through direct and inherited brushes', asyn
     }
     expect([...direct.diagnostics, ...inherited.diagnostics, ...grouped.diagnostics], fill).toEqual([]);
   }
-});
+  // ~3.5 s on an idle machine; the default 5 s budget timed out when
+  // the suite ran on a loaded machine.
+}, 30_000);
 
 it('paints arc, curve, polyline and image siblings beside a VML group', async () => {
   const { pixels, diagnostics } = await renderVml(`<v:group style="width:140pt;height:100pt"/>

@@ -3,6 +3,7 @@ import { withFontCeiling } from './preload.js';
 import type { CanvasFontRoute } from './canvas-route.js';
 import type { ResolvedFontMetric } from './resource-metrics.js';
 import { quoteCssFontFamily } from '../internal/css-font-family.js';
+import { getGraphemeSegmenter } from '../text/sea-break.js';
 import type { CanvasFontBoxProbeContext } from './canvas-font-box.js';
 
 export interface LocalFontNormalLine {
@@ -184,8 +185,6 @@ interface CoverageRoute {
   readonly clusters: Map<string, boolean>;
 }
 
-const graphemes = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
-  ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
 
 /** Browser font fallback chooses a face per grapheme cluster, so ownership of
@@ -193,6 +192,9 @@ const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
  * single characters. Without a segmenter the whole text is one unit. */
 function clustersOf(text: string): Iterable<string> {
   if (PRINTABLE_ASCII.test(text)) return text;
+  // Created on first non-ASCII text rather than at module evaluation: an ICU
+  // break iterator costs several ms per realm and most texts never need one.
+  const graphemes = getGraphemeSegmenter();
   if (!graphemes) return [text];
   return Array.from(graphemes.segment(text), (part) => part.segment);
 }
