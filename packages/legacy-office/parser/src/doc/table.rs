@@ -100,18 +100,24 @@ impl PreparedBorder {
             .try_into()
             .expect("eight-byte slice");
         if bytes[4..] != [0xff; 4] && bytes[5] == 0xff {
-            // Observed Windows Word (16.0) behavior: a direct sprmTSetBrc cell
-            // assignment of type 0xFF with an automatic COLORREF (fAuto 0xFF)
-            // prints exactly as the exact NilBrc. It removes a bordered table
-            // style's edges just as NilBrc does, unlike an ignored assignment
-            // (the style's borders, which print) or type 0 (none). Measured
-            // by pixel-identical PDFs (zero two-export noise) at widths 8 and
-            // 255, both without and under an all-sides single style border.
-            // Explicit-color 0xFF prints undefined artwork, so it keeps the
-            // deferred refusal below.
-            if super::colorref::read(&bytes[..4])?.is_none() {
+            // Observed Windows Word (16.0) behavior for a direct sprmTSetBrc
+            // cell assignment of type 0xFF, measured by pixel-identical PDFs
+            // (zero two-export noise) in a table without borders and under a
+            // table style with single borders on every edge:
+            // - cv 0xFFFFFFFF prints exactly as the exact NilBrc. It removes
+            //   the style's edges as NilBrc does, unlike an ignored assignment
+            //   or type 0 (none), which both keep them. This holds for every
+            //   tested dptLineWidth (0, 1, 8, 31, 32, 128, 255) and every
+            //   tested last two bytes (dptSpace 0 or 31, fShadow, fFrame, the
+            //   reserved bits: 00 00, 1F 00, 20 00, 40 00, 7F 00, 00 FF,
+            //   E0 FF), so none of those fields matters.
+            // - Any other cv paints undefined artwork, including the cvAuto
+            //   value 0xFF000000 and explicit red at widths 8 and 255, so it
+            //   keeps the deferred refusal below.
+            if bytes[..4] == [0xff; 4] {
                 return Ok(Self::Modern([0xff; 8]));
             }
+            let _ = super::colorref::read(&bytes[..4])?;
             if bytes[4] >= 32 {
                 return Err(unsupported("invalid Word ignored border width"));
             }
@@ -1184,17 +1190,23 @@ mod tests {
                 .unwrap();
         assert!(!ignored.is_nil());
         assert!(ignored.decode().is_err());
-        // Automatic-color FF is Word's exact NilBrc at any width, including
-        // the out-of-domain 255.
-        for width in [8, 255] {
-            let auto = PreparedBorder::read_cell_assignment(
-                &[0, 0, 0, 0xff, width, 255, 0xe0, 0xff],
-                false,
-            )
-            .unwrap();
-            assert!(auto.is_nil());
-            assert_eq!(auto.decode().unwrap().direct_spec().style, "nil");
+        // cv 0xFFFFFFFF with FF is Word's exact NilBrc whatever the width and
+        // the trailing fields; cvAuto 0xFF000000 is not (Word paints artwork).
+        for width in [0, 32, 255] {
+            for tail in [[0xe0, 0xff], [0x7f, 0x00]] {
+                let nil = PreparedBorder::read_cell_assignment(
+                    &[0xff, 0xff, 0xff, 0xff, width, 255, tail[0], tail[1]],
+                    false,
+                )
+                .unwrap();
+                assert!(nil.is_nil());
+                assert_eq!(nil.decode().unwrap().direct_spec().style, "nil");
+            }
         }
+        let auto =
+            PreparedBorder::read_cell_assignment(&[0, 0, 0, 0xff, 8, 255, 0, 0], false).unwrap();
+        assert!(!auto.is_nil());
+        assert!(auto.decode().is_err());
     }
 
     #[test]
