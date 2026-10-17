@@ -104,7 +104,8 @@ import {
 
 
 import { DocxDocument, type DocxViewerLoadControl, type LoadOptions } from '../document.js';
-import { selectModelSource, beginModelSourceLoad } from '@silurus/ooxml-core/internal/model-source';
+import { selectModelSource, beginModelSourceLoad, modelSourceWorker } from '@silurus/ooxml-core/internal/model-source';
+import { deferred } from '@silurus/ooxml-core/internal/deferred';
 /** Parse-request fields for an application-selected model source. */
 function modelSourceFields(
   load: AdmittedModelSourceLoad,
@@ -118,14 +119,6 @@ function modelSourceFields(
   return load.transfer.length > 0
     ? { source: load.module, sourceTransfer: load.transfer, sourceOwnerUrl }
     : { source: load.module, sourceOwnerUrl };
-}
-
-interface Deferred<T> { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void; }
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
 }
 
 type SourceDocxFriend = Pick<DocxDocument, keyof DocxDocument> & Record<
@@ -602,21 +595,12 @@ function sourceWorker(
   adoptView: (value: boolean | undefined) => void,
 ): Worker {
   const listeners = new Map<EventListenerOrEventListenerObject, EventListener>();
-  return new Proxy(worker, {
-    get(target, key) {
-      if (key === 'postMessage') return (message: unknown, transfer?: Transferable[]) => {
-        if (typeof message === 'object' && message !== null) {
-          const wire = message as { type?: string };
-          if (wire.type === 'init') return;
-          if (wire.type === 'parse') {
-            target.postMessage({ ...wire, ...modelSourceFields(load),
-              ...(opts.showTrackedChanges === undefined ? {} : { showTrackedChanges: opts.showTrackedChanges }) },
-            [...(transfer ?? []), ...load.transfer]);
-            return;
-          }
-        }
-        target.postMessage(message, transfer ?? []);
-      };
+  return modelSourceWorker(worker, {
+    discriminator: 'type',
+    load,
+    parseMessage: (wire) => ({ ...wire, ...modelSourceFields(load),
+      ...(opts.showTrackedChanges === undefined ? {} : { showTrackedChanges: opts.showTrackedChanges }) }),
+    member: (target, key) => {
       if (key === 'addEventListener') return (
         type: string, listener: EventListenerOrEventListenerObject, options?: AddEventListenerOptions,
       ) => {
@@ -643,8 +627,7 @@ function sourceWorker(
       if (key === 'removeEventListener') return (
         type: string, listener: EventListenerOrEventListenerObject, options?: EventListenerOptions,
       ) => target.removeEventListener(type, type === 'message' ? (listeners.get(listener) ?? listener) : listener, options);
-      const value = Reflect.get(target, key, target);
-      return typeof value === 'function' ? value.bind(target) : value;
+      return undefined;
     },
   });
 }

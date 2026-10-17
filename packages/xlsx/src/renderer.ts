@@ -7,6 +7,7 @@ import { inheritCellFontLanguage, usesJapaneseCellFonts } from './internal/cell-
 import { drawShapeStackedText } from './shape-stacked-text.js';
 import type { CjkLang } from '@silurus/ooxml-core';
 import { quoteCssFontFamily } from '@silurus/ooxml-core/internal/css-font-family';
+import { arabicFallbackFamilies, containsArabicFallbackText } from '@silurus/ooxml-core/internal/font-stack';
 import {
   breakDrawingMlText, drawingMlTextRect, drawingMlLineHeight,
   drawingMlSpacedLineBox, drawingMlParagraphSpacing, drawingMlBlockTop, drawingMlLineX, paintDrawingMlLine,
@@ -31,7 +32,7 @@ import type {
 } from '@silurus/ooxml-core';
 import { usesPathShade, trackPaintPath, currentStrokeBounds, chartImageFillKey, paintOptionalImagePlaceholder, pathFillModeOverlay, withDrawingMLShapeTransform, buildPresetGeometryFillPath } from '@silurus/ooxml-core';
 import { placePhoneticRuns } from './phonetic.js';
-import { crispOffset, renderChart, renderSparkline, renderPresetShape, createAuxCanvas, PT_TO_PX, EMU_PER_PX, mathToMathML, rasterizeMathSvg, tintMathRaster, classifyCjkFont, classifyFontGeneric, googleCjkFontAlias, cjkFallbackChain, NON_CJK_SANS_FALLBACKS, NON_CJK_SERIF_FALLBACKS, isCjkBreakChar, xlsxBorderDashArray, drawImageCropped, hexToRgba, verticalTrLongMark, verticalVertGlyphReachable, applyStroke, resolveFill, type SparklineModel, type MathNode, type MathRenderer, type RasterizedMathSvg } from '@silurus/ooxml-core';
+import { crispOffset, renderChart, renderSparkline, renderPresetShape, createAuxCanvas, PT_TO_PX, EMU_PER_PX, mathToMathML, rasterizeMathSvg, cachedTintedMathRaster, classifyCjkFont, classifyFontGeneric, googleCjkFontAlias, cjkFallbackChain, NON_CJK_SANS_FALLBACKS, NON_CJK_SERIF_FALLBACKS, isCjkBreakChar, xlsxBorderDashArray, drawImageCropped, hexToRgba, verticalTrLongMark, verticalVertGlyphReachable, applyStroke, resolveFill, type SparklineModel, type MathNode, type MathRenderer, type RasterizedMathSvg } from '@silurus/ooxml-core';
 import {
   canvasShapeFontBoxProbe, excelShapeSpacing, officeRequestKey, shapeOfficeRouteKey, shapeRunLineRatios,
   type ShapeRunLineRatios,
@@ -112,7 +113,6 @@ const NAMED_SERIF_TAIL =
   `"Times New Roman", "Liberation Serif", ${NON_CJK_SERIF_TAIL}, serif`;
 const CALIBRI_TAIL = `"Carlito", ${NAMED_SANS_TAIL}`;
 const CAMBRIA_TAIL = `"Caladea", ${NAMED_SERIF_TAIL}`;
-const ARABIC_TEXT_RE = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]/u;
 type OfficeRoutes = Readonly<Record<string, import('@silurus/ooxml-core').OfficeFontFallbackRoute>>;
 const officeRoutesByContext = new WeakMap<object, OfficeRoutes>();
 const officeRoutesByWorksheet = new WeakMap<Worksheet, OfficeRoutes>();
@@ -278,9 +278,7 @@ export function cssTailFor(name: string | null | undefined, fallback?: CjkLang, 
     const families = [
       ...(includeRegional && fallback
         ? cjkFallbackChain(fallback, generic === 'serif' ? 'serif' : 'sans') : []),
-      ...(ARABIC_TEXT_RE.test(text)
-        ? generic === 'serif' ? ['Noto Naskh Arabic', 'Noto Sans Arabic'] : ['Noto Sans Arabic']
-        : []),
+      ...(containsArabicFallbackText(text) ? arabicFallbackFamilies(generic === 'serif') : []),
     ];
     if (families.length === 0) return base;
     const split = base.lastIndexOf(',');
@@ -4856,15 +4854,6 @@ interface MathRender {
 }
 const mathRenders = new WeakMap<MathNode[], MathRender>();
 
-/** Tint the cached black equation image to `color` via source-in (cached). */
-function tintedMathImage(render: MathRender, color: string): CanvasImageSource {
-  const cached = render.tinted.get(color);
-  if (cached) return cached;
-  const tinted = tintMathRaster(render.raster, color);
-  render.tinted.set(color, tinted);
-  return tinted;
-}
-
 /** Gather every math run reachable from a worksheet's shapes. Equations live
  *  only in shape text bodies (ECMA-376 §22.1) — never in cell values. */
 function collectWorksheetMath(ws: Worksheet): { nodes: MathNode[]; display: boolean }[] {
@@ -4981,7 +4970,7 @@ export function drawShapeText(
       const width = render.widthEm * pxSize;
       const height = (render.ascentEm + render.descentEm) * pxSize;
       return { width, height, draw: (x, y) => {
-        if (width > 0 && height > 0) ctx.drawImage(tintedMathImage(render, run.color ?? '#000000'), x, y, width, height);
+        if (width > 0 && height > 0) ctx.drawImage(cachedTintedMathRaster(render, run.color ?? '#000000'), x, y, width, height);
       } };
     });
     return;
@@ -5329,7 +5318,7 @@ export function drawShapeText(
           ctx.fillStyle = seg.color;
           ctx.fillText(seg.text, penX, baseline);
         } else if (seg.kind === 'math') {
-          const img = tintedMathImage(seg.render, seg.color);
+          const img = cachedTintedMathRaster(seg.render, seg.color);
           ctx.drawImage(img, penX, baseline - seg.ascent, seg.w, seg.ascent + seg.descent);
         }
       });

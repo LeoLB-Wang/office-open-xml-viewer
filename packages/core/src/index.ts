@@ -544,6 +544,7 @@ export {
   rasterizeMathSvg,
   sizeMathSvgForRaster,
   tintMathRaster,
+  cachedTintedMathRaster,
   type MathSvg,
   type MathRenderer,
   type RasterizedMathSvg,
@@ -689,6 +690,7 @@ export {
   withVertFeatureCanvasScope,
 } from './text/vertical-vert-feature';
 export type { VerticalGlyphCellMetrics } from './text/vertical-vert-feature';
+export { inkCenterAboveMiddlePx } from './text/vertical-glyph-metrics';
 // Shared Excel serial-date → UTC `Date` conversion (ECMA-376 §18.17.4.1),
 // with the 1900 Lotus leap-year-bug compat and 1900/1904 date-system select.
 // Used by the xlsx cell formatter and the core chart date formatter.

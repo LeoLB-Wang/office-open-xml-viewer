@@ -37,6 +37,7 @@ export {
   isPullSessionInsufficientCreditError,
   normalizePullSessionInsufficientCreditError,
   parsePullSessionInsufficientCreditError,
+  pullWithCreditRetry,
   requiredPullCredit,
   type PullSessionInsufficientCreditDetails,
 } from './pull-credit-error.js';

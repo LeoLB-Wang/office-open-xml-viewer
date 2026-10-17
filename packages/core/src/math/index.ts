@@ -14,5 +14,6 @@ export {
   rasterizeMathSvg,
   sizeMathSvgForRaster,
   tintMathRaster,
+  cachedTintedMathRaster,
   type RasterizedMathSvg,
 } from './raster';

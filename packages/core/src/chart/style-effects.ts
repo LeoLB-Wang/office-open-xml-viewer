@@ -13,8 +13,7 @@ import {
   type PaintShape,
 } from '../shape/effects.js';
 import { compactStyleIndex } from './sparse-style-index.js';
-
-const EMU_PER_PT = 12_700;
+import { EMU_PER_PT } from '../units.js';
 
 /**
  * One chart render may rasterize at most one maximum-size Canvas worth of

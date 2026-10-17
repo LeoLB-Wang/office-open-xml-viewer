@@ -45,36 +45,12 @@ import {
   verticalVertGlyphReachable,
   withVertFeature,
   emBoxCenterAboveBaseline,
+  inkCenterAboveMiddlePx,
 } from '@silurus/ooxml-core';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 type VertCapability = (cp: number) => boolean;
 const NO_VERT_CAPABILITY: VertCapability = () => false;
-
-/**
- * Along-column offset, in px, from a glyph's own cell centre to its INK centre
- * when drawn UPRIGHT — `(actualBoundingBoxAscent − actualBoundingBoxDescent)/2`
- * measured with a `middle` textBaseline. For an ordinary ideograph/kana this is
- * ≈0; for a substituted vertical bracket (︵ ︶ ﹁ ﹂, whose ink hugs one cell end)
- * it is the shift that re-centres the ink so the two halves sit a full cell apart.
- *
- * Returns 0 when the Canvas does not report `actualBoundingBox*` (older engines).
- */
-function inkCenterAboveMiddlePx(ctx: Ctx2D, drawStr: string): number {
-  const prevAlign = ctx.textAlign;
-  const prevBaseline = ctx.textBaseline;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const m = ctx.measureText(drawStr);
-  ctx.textAlign = prevAlign;
-  ctx.textBaseline = prevBaseline;
-  const asc = m.actualBoundingBoxAscent;
-  const desc = m.actualBoundingBoxDescent;
-  if (typeof asc === 'number' && typeof desc === 'number') {
-    return (asc - desc) / 2;
-  }
-  return 0;
-}
 
 /**
  * Paint one run's glyphs for an `eaVert` text body. The context is assumed to be

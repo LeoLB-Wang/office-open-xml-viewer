@@ -337,3 +337,26 @@ export function tintMathRaster(
   context.fillRect(0, 0, raster.widthPx, raster.heightPx);
   return canvas;
 }
+
+/**
+ * {@link tintMathRaster} cached per colour. Equations follow the run text
+ * colour, which can vary per draw (white on dark, theme accents, …), so the
+ * black raster is recoloured at draw time and each colour's copy is kept on
+ * the equation's own render record.
+ */
+export function cachedTintedMathRaster(
+  render: {
+    readonly raster: RasterizedMathSvg;
+    readonly tinted: {
+      get(color: string): CanvasImageSource | null | undefined;
+      set(color: string, image: CanvasImageSource): unknown;
+    };
+  },
+  color: string,
+): CanvasImageSource {
+  const cached = render.tinted.get(color);
+  if (cached) return cached;
+  const tinted = tintMathRaster(render.raster, color);
+  render.tinted.set(color, tinted);
+  return tinted;
+}
