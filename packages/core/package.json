@@ -71,6 +71,7 @@
     "./internal/scroll-load-controller": "./src/internal/scroll-load-controller.ts",
     "./internal/font-measurement-sentinels": "./src/internal/font-measurement-sentinels.ts",
     "./internal/css-font-family": "./src/internal/css-font-family.ts",
+    "./internal/own-key": "./src/internal/own-key.ts",
     "./internal/script-preload-accumulator": "./src/internal/script-preload-accumulator.ts",
     "./internal/wasm-runtime-generation": "./src/internal/wasm-runtime-generation.ts",
     "./mathjax-stix2": "./assets/mathjax-stix2.js"

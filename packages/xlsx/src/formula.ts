@@ -1,4 +1,5 @@
 import { excelSerialToUtcDate, utcDateToExcelSerial } from '@silurus/ooxml-core';
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 import type { Cell, DefinedName } from './types.js';
 // OOXML's fixed address grammar bounds belong to lexical reference parsing,
 // independently of renderer geometry and its shared layout runtime.
@@ -647,7 +648,7 @@ const FUNCTION_ARITY: Readonly<Record<string, readonly [min: number, max: number
 };
 
 function checkArity(name: string, count: number): void {
-  const arity = FUNCTION_ARITY[name];
+  const arity = ownValue(FUNCTION_ARITY, name);
   if (!arity) throw new FormulaFailure('unsupported');
   // IFS takes condition/value pairs.
   if (count < arity[0] || count > arity[1] || (name === 'IFS' && count % 2 !== 0)) {

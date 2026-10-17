@@ -1,3 +1,4 @@
+import { ownValue } from '@silurus/ooxml-core/internal/own-key';
 /**
  * Normalize a WordprocessingML underline style (ECMA-376 §17.18.99
  * ST_Underline, the `<w:u w:val>` vocabulary) to the DrawingML underline style
@@ -54,5 +55,5 @@ const DOCX_TO_DRAWINGML: Readonly<Record<string, string>> = {
  */
 export function docxUnderlineToDrawingML(val: string | undefined): string {
   if (!val) return 'sng';
-  return DOCX_TO_DRAWINGML[val] ?? 'sng';
+  return ownValue(DOCX_TO_DRAWINGML, val) ?? 'sng';
 }
