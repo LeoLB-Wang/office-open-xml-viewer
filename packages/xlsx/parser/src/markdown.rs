@@ -251,18 +251,20 @@ fn clear_merge_continuation_cells(
     }
     events.sort_unstable_by_key(|event| event.0);
     let mut tree = vec![0i64; MAX_COL as usize + 2];
+    // Fenwick tree over 1-based columns: an update climbs by the lowest set
+    // bit (`1 << trailing_zeros`), a prefix query drops it (`i &= i - 1`).
     let add = |tree: &mut [i64], index: u32, delta: i64| {
         let mut i = index as usize;
-        while i < tree.len() {
+        while i > 0 && i < tree.len() {
             tree[i] += delta;
-            i += i & i.wrapping_neg();
+            i += 1 << i.trailing_zeros();
         }
     };
     let covering = |tree: &[i64], index: u32| {
         let (mut i, mut sum) = (index as usize, 0i64);
         while i > 0 {
             sum += tree[i];
-            i -= i & i.wrapping_neg();
+            i &= i - 1;
         }
         sum
     };
